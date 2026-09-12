@@ -108,18 +108,23 @@ jobs:
           # host, and sidesteps the archive-area policy problem of shipping a
           # non-free assembler (an AppImage is not a distro package, so the DFSG
           # does not apply — only vasm's own redistribution terms do).
+          # emulator: only Linux bundles Hatari, and the comment below explains
+          # why that is a capability difference rather than an oversight.
           - name: linux-x86_64
             os: ubuntu-22.04
             vasm_artifact: vasm-linux
             deployed: false
+            emulator: true
           - name: macos-arm64
             os: macos-15
             vasm_artifact: vasm-macos
             deployed: true
+            emulator: false
           - name: windows-x86_64
             os: windows-latest
             vasm_artifact: vasm-windows
             deployed: true
+            emulator: false
 
     steps:
       - uses: actions/checkout@v4
@@ -128,6 +133,29 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.1'
+
+      # xvfb and the ALSA/X libraries are needed for two different reasons: xvfb to
+      # run the AppImage at all (the offscreen plugin is deliberately not bundled),
+      # and the libraries so that the AppImage has something to *fail* against. The
+      # smoke test is dishonest if the runner happens to have everything.
+      - name: Install the emulator and its libraries
+        if: matrix.emulator
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libsdl2-2.0-0 libreadline8 libpng16-16
+
+      # Same action the test job uses, so the emulator that ships is the one the
+      # test suite was run against. Only the Linux AppImage bundles it: on macOS
+      # the archive is built from a bundle whose executable does not run
+      # standalone (which is why the CI matrix has it switched off), and Windows
+      # has no MSYS2 Hatari package. Both therefore still ask the user to install
+      # Hatari, which the release notes say plainly.
+      - name: Build Hatari
+        if: matrix.emulator
+        uses: ./.github/actions/build-hatari
+        with:
+          destination: ${{ github.workspace }}/bundle/bin
 
       - uses: actions/download-artifact@v4
         with:
@@ -238,10 +266,29 @@ jobs:
           cp bundle/bin/vasmm68k_mot AppDir/usr/bin/
           mkdir -p AppDir/usr/share/emutos
           cp bundle/share/emutos/etos1024k.img AppDir/usr/share/emutos/
+          if [ -n "${{ matrix.emulator }}" ] && [ "${{ matrix.emulator }}" = "true" ]; then
+            cp bundle/bin/hatari AppDir/usr/bin/
+          fi
 
           export QMAKE="$(command -v qmake6 || command -v qmake)"
+
+          # Both executables are named with -e, which is what makes linuxdeploy
+          # bundle the libraries they need that are NOT universal on a desktop:
+          # with only `pist` named, the bundled Hatari arrived without SDL2,
+          # libreadline or libpng and could not start.
+          #
+          # X11, Wayland, libdrm, libgbm and libasound are deliberately NOT
+          # bundled, and that is linuxdeploy's own choice rather than an
+          # oversight: every desktop Linux has them, and copying them from the
+          # build host is actively dangerous. A library copied from a newer host
+          # can demand a glibc the user does not have — copying libtinfo from a
+          # development machine produced "version `GLIBC_2.42' not found" on a
+          # 2.39 system, turning a working archive into a broken one. Testing in a
+          # headless container therefore proves less than it appears to: a missing
+          # libasound there is not a defect, because no desktop lacks it.
           ./"$LD" --appdir AppDir \
             -e AppDir/usr/bin/pist \
+            -e AppDir/usr/bin/hatari \
             -d AppDir/usr/share/applications/pist.desktop \
             -i packaging/icons/pist-256.png \
             --plugin qt --output appimage
@@ -249,19 +296,70 @@ jobs:
           APPIMAGE=$(ls PiST-*.AppImage | head -1)
           echo "built $APPIMAGE ($(stat -c%s "$APPIMAGE") bytes)"
 
-          # Verify what will actually be published, from its own mount, with a
-          # clean environment: if the bundled Qt or the bundled assembler is
-          # missing, this fails here rather than on a user's machine.
-          echo "--- $APPIMAGE --diagnose ---"
-          env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
-            QT_QPA_PLATFORM=offscreen "./$APPIMAGE" --diagnose | tee diagnose-appimage.txt || true
+          # Verify what will actually be published, by running the bundled
+          # emulator itself rather than only asking pist where it thinks the
+          # emulator is. An emulator that cannot start is the failure this step
+          # exists to catch, and `--diagnose` would report it as present.
+          echo "--- extracting the published AppImage to inspect it ---"
+          rm -rf verify-appimage && mkdir -p verify-appimage
+          (cd verify-appimage && "../$APPIMAGE" --appimage-extract > /dev/null)
 
-          # The offscreen plugin is not bundled by linuxdeploy, so run with xcb and
-          # fall back to checking the mount contents if there is no display.
-          if ! grep -q 'vasmm68k_mot' diagnose-appimage.txt; then
-            echo "ERROR: the AppImage did not report an assembler"
+          if [ ! -x verify-appimage/squashfs-root/usr/bin/hatari ]; then
+            echo "ERROR: no emulator inside the AppImage"
             exit 1
           fi
+          echo "--- bundled hatari --version ---"
+          if ! verify-appimage/squashfs-root/usr/bin/hatari --version > hatari-version.txt 2>&1; then
+            echo "ERROR: the bundled emulator does not start. Output was:"
+            cat hatari-version.txt
+            exit 1
+          fi
+          sed -n '1,3p' hatari-version.txt
+
+          # The libraries linuxdeploy must be bundling, because a desktop without
+          # them exists. SDL2 in particular is not universally installed, whereas
+          # the excluded X11/ALSA set effectively is.
+          for lib in libSDL2-2.0 libreadline libpng; do
+            if ! find verify-appimage/squashfs-root/usr/lib -name "$lib*" | grep -q .; then
+              echo "ERROR: $lib was not bundled; the emulator needs it"
+              exit 1
+            fi
+          done
+          echo "OK: emulator starts and its non-universal libraries are bundled"
+
+          echo "--- $APPIMAGE --diagnose ---"
+          # Run through xvfb: the offscreen platform plugin is not bundled, and
+          # xcb is what a user gets. A real display is closer to the shipped
+          # configuration than a plugin that is not in the archive.
+          mkdir -p fakehome
+          env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
+            xvfb-run -a "./$APPIMAGE" --diagnose > diagnose-appimage.txt 2>&1 || true
+          cat diagnose-appimage.txt
+
+          # The same assertions the archive job makes, applied to the AppImage —
+          # and pointedly WITHOUT PIST_TOS_DIR, so that the discovery logic a user
+          # depends on is the logic being tested. The archive check sets that
+          # variable, which is why a bundled ROM that nothing searched still passed
+          # the release gate.
+          for needle in vasmm68k_mot hatari EmuTOS; do
+            if ! grep -q "$needle" diagnose-appimage.txt; then
+              echo "ERROR: the AppImage did not report $needle"
+              exit 1
+            fi
+          done
+          if grep -q 'cannot autostart' diagnose-appimage.txt; then
+            echo "ERROR: the emulator in the AppImage cannot autostart a program"
+            exit 1
+          fi
+          # And the ROM it must be *using* has to be the one inside the AppImage,
+          # not a system copy that happened to be on the runner. A user without the
+          # hatari package has no system copy, so this is the case that matters.
+          if ! grep -qE '^[[:space:]]+[0-9.]+[[:space:]]+/tmp/\.mount_' diagnose-appimage.txt; then
+            echo "ERROR: the AppImage did not find its own bundled ROM:"
+            cat diagnose-appimage.txt
+            exit 1
+          fi
+
           echo "ASSET=$APPIMAGE" >> "$GITHUB_ENV"
           echo "APPIMAGE=1" >> "$GITHUB_ENV"
 
@@ -383,8 +481,9 @@ jobs:
           body: |
             PiST — an IDE for Atari ST assembly development.
 
-            Each archive contains PiST, the `vasmm68k_mot` assembler, and an
-            EmuTOS ROM, so it runs without installing anything else.
+            Every archive contains PiST, the `vasmm68k_mot` assembler, and an
+            EmuTOS ROM. The Linux AppImage additionally contains the Hatari
+            emulator, so on Linux it runs and debugs with nothing else installed.
 
             **Assembler:** vasm is not free software. It is redistributed
             unmodified and for non-commercial use, which its licence permits; see
@@ -394,13 +493,22 @@ jobs:
             TOS images are copyrighted and are not included — supply your own in
             Project Settings if you need one.
 
-            A working emulator (Hatari) is **not** included; install it with your
-            package manager, or point PiST at one in Project Settings.
+            **Emulator:** the Linux AppImage bundles Hatari 2.6.1, GPL-2.0-or-later,
+            built unmodified from a checksum-pinned upstream tarball (it never
+            patches it and runs it as a separate process). The macOS and Windows
+            archives do **not** include it: there install Hatari yourself, or point
+            PiST at one in Project Settings. Use 2.5 or later — 2.4.1 returns
+            truncated debugger responses that break source-line debugging, and
+            Ubuntu 24.04 ships exactly that, so a distribution package is often not
+            recent enough. See `share/doc/pist/NOTICE` for the full licence details,
+            including the GNU Readline that the bundled build links.
 
             ### Linux
 
-            `pist-*-linux-x86_64.AppImage` is self-contained — Qt, the assembler
-            and the ROM are all inside it:
+            Nothing else to install: assemble, run and debug straight away.
+
+            `pist-*-linux-x86_64.AppImage` is self-contained — Qt, the assembler,
+            the emulator and the ROM are all inside it:
 
             ```sh
             chmod +x pist-*-linux-x86_64.AppImage
@@ -421,10 +529,13 @@ jobs:
 
             ### Known limitations
 
-            - **The emulator integration has only been exercised on Linux.** The
-              CI runs on all three platforms, but the runners have no Hatari, so
-              assembling and debugging on Windows and macOS is untested. Reports
-              from real machines are welcome.
+            - **The emulator integration has only been exercised on Linux**, which
+              is now the one platform that runs the emulator test suite against a
+              real Hatari. Windows has no Hatari package for MSYS2, and the macOS
+              Hatari build produces an application bundle whose executable does not
+              start standalone, so neither runner can exercise it. Assembling and
+              debugging on Windows and macOS is therefore untested. Reports from
+              real machines are welcome.
             - **On Windows**, pausing, changing breakpoints while running, and
               swapping disks at runtime are unavailable — Hatari compiles its
               control channel only on POSIX systems. Breakpoints and stepping

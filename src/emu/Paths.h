@@ -19,14 +19,31 @@ namespace paths {
 /// Environment variable that overrides the TOS ROM search path.
 inline constexpr const char *kTosDirEnvVar = "PIST_TOS_DIR";
 
+/// `share/emutos` and `share/hatari` directories found by walking up from
+/// `applicationDir`, for bundles that carry their own ROM.
+///
+/// Exposed separately from tosSearchPaths() because that function always starts
+/// from the running executable, so the layout rules could not otherwise be
+/// exercised by a test — which is how a released archive came to ship a ROM that
+/// nothing searched. Only directories that exist are returned.
+QStringList bundledDataSearchPaths(const QString &applicationDir);
+
 /// Directories to search for TOS ROM images, in priority order:
 ///
 ///   1. `$PIST_TOS_DIR` when set (explicit override, also used by the test suite)
-///   2. the OS data location for Hatari (`GenericDataLocation/hatari`), which
+///   2. `share/emutos` and `share/hatari` found by walking up from the
+///      executable's own directory, which is how every release archive is laid
+///      out: `bin/pist` beside `share/emutos`, `usr/bin/pist` beside
+///      `usr/share/emutos` inside an AppImage, and `Contents/MacOS/pist` beside
+///      `../share` in a macOS bundle. These come first because the ROM an archive
+///      carries is the one its release process verified, so it is what makes a
+///      fresh download run; it is still only a default, and a ROM chosen in
+///      Project Settings or named by `$PIST_TOS_DIR` takes precedence
+///   3. the OS data location for Hatari (`GenericDataLocation/hatari`), which
 ///      covers `/usr/share/hatari` on Linux and the equivalent elsewhere
-///   3. platform conventions (Homebrew and MacPorts prefixes on macOS)
-///   4. `<dir of hatari executable>/../share/hatari`, for a custom install prefix
-///   5. the executable's own directory, but only on Windows and macOS, where
+///   4. platform conventions (Homebrew and MacPorts prefixes on macOS)
+///   5. `<dir of hatari executable>/../share/hatari`, for a custom install prefix
+///   6. the executable's own directory, but only on Windows and macOS, where
 ///      Hatari's release bundles ship their data files beside the binary
 ///
 /// Non-existent paths, and paths that exist but are not directories, are

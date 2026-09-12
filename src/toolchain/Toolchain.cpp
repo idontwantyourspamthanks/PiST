@@ -177,11 +177,27 @@ QString linkerInstallHint()
 
 QString emulatorInstallHint()
 {
+    // The release archives do not all carry an emulator, so this is still
+    // reachable — but three different situations land here and one message
+    // cannot serve them: a release AppImage missing its copy (a packaging fault,
+    // not the user's problem), a macOS or Windows archive or a source build
+    // where the user genuinely has to supply one, and a system Hatari that is
+    // present but unusable. The message names the version requirement, because
+    // "install hatari" is what produced unusable 2.4.1 setups in the first place.
     return QObject::tr(
-        "PiST runs programs under Hatari, which is not bundled.\n\n"
-        "Install it with your package manager (for example `apt install hatari` "
-        "or `brew install hatari`), or set an explicit path in Project Settings, "
-        "or place the executable in:\n\n    %1")
+        "PiST runs programs under Hatari, and could not find a usable copy.\n\n"
+        "The Linux AppImage normally carries Hatari inside it, so if you are "
+        "running one, this is a packaging fault rather than something you can "
+        "fix — please report it.\n\n"
+        "The macOS and Windows archives, and builds from source, do not include "
+        "it. Install it with your package manager, or set an explicit path in "
+        "Project Settings, or place the executable in:\n\n    %1\n\n"
+        "Version matters: use Hatari 2.5 or later. The debugger transport PiST "
+        "relies on works reliably on 2.6.x, and the truncated register dumps "
+        "returned by 2.4.1 break source-line debugging. Ubuntu 24.04 ships 2.4.1 "
+        "and 22.04 ships 2.3.1, so a distribution package is often not enough — "
+        "build 2.6.1 from https://www.hatari-emu.org/ if your distribution does "
+        "not have a recent enough one.")
         .arg(suggestedInstallDir());
 }
 

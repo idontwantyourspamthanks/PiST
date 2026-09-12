@@ -83,74 +83,17 @@ jobs:
           cp vasm/vasmm68k_mot "$HOME/.local/bin/"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # Build the Hatari we actually support, rather than taking whatever the
-      # distribution ships. Ubuntu 24.04 packages 2.4.1 and 22.04 ships 2.3.1,
-      # while this project is developed and verified against 2.6.1 — and the
-      # difference is not cosmetic: running the suite against 2.4.1 produced
-      # truncated debugger responses and four failures that do not reproduce on
-      # 2.6.1 at all. Testing a version nobody will use is worse than useless,
-      # because the failures are noise and the passes are meaningless.
-      #
-      # This is also the build we intend to bundle in release archives, so the
-      # path is worth having proven. Pinned by checksum: an upstream change should
-      # fail loudly rather than quietly alter what is tested.
+      # Build the pinned Hatari. The rationale for the version, the checksum and
+      # the per-platform details lives with the build, in
+      # ./.github/actions/build-hatari — the release packaging job calls the same
+      # action, so there is only one copy of these steps to fix. The gate stays
+      # here: the emulator is only built and exercised where the matrix asks for
+      # it.
       - name: Build Hatari
         if: matrix.emulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          HATARI_URL=https://github.com/hatari/hatari/archive/refs/tags/v2.6.1.tar.gz
-          HATARI_SHA256=75f09c8deddb511b8c1574b84c507743097db9abc6edbb078f942efa8677547e
-          curl -fsSL -o hatari.tar.gz "$HATARI_URL"
-          echo "$HATARI_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
-            || echo "$HATARI_SHA256  hatari.tar.gz" | sha256sum -c -
-          tar xzf hatari.tar.gz
-
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo apt-get update -qq
-            # libreadline-dev matters: with it, Hatari's debugger reads commands
-            # through readline and prints its prompt to stdout. Without it, the
-            # build falls back to fgets and prints the prompt to stderr, which is
-            # a different transport path entirely — so the dependency is part of
-            # what is being tested, not an incidental.
-            sudo apt-get install -y -qq libsdl2-dev libpng-dev zlib1g-dev libreadline-dev
-          else
-            brew install sdl2 libpng pkg-config
-          fi
-
-          # On macOS, libpng and SDL2 live in the Homebrew prefix, which the
-          # system CMake does not search by default — without this the link fails
-          # on every `_png_*` symbol. pkg-config is installed for the same reason:
-          # Hatari uses it to find capstone and friends.
-          PREFIX_ARGS=""
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            # Homebrew on an Apple-silicon runner installs arm64 libraries, so the
-            # build has to target the same architecture or the link fails with
-            # every `_png_*` symbol unresolved. The runner's default toolchain is
-            # not guaranteed to agree with the Homebrew prefix, so it is stated.
-            BREW_PREFIX="$(brew --prefix)"
-            case "$BREW_PREFIX" in
-              /opt/homebrew) ARCH=arm64 ;;
-              *)             ARCH=x86_64 ;;
-            esac
-            echo "Homebrew prefix: $BREW_PREFIX -> targeting $ARCH"
-            PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$BREW_PREFIX -DCMAKE_OSX_ARCHITECTURES=$ARCH"
-          fi
-
-          cmake -S hatari-2.6.1 -B hatari-build -DCMAKE_BUILD_TYPE=Release $PREFIX_ARGS
-          cmake --build hatari-build --parallel
-
-          # macOS builds an application bundle, so the executable is named
-          # `Hatari` inside Contents/MacOS rather than `hatari` at the top level.
-          mkdir -p "$HOME/.local/bin"
-          HATARI_BIN=$(find hatari-build -type f -perm -u+x -iname hatari | head -1)
-          if [ -z "$HATARI_BIN" ]; then
-            echo "ERROR: no hatari executable produced; tree:"
-            find hatari-build -name '*atari*' -maxdepth 4 | head -20
-            exit 1
-          fi
-          cp "$HATARI_BIN" "$HOME/.local/bin/hatari"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/build-hatari
+        with:
+          destination: ${{ runner.temp }}/hatari-bin
 
       # A free ROM so the emulator suites have something to boot. Pinned by
       # checksum for the same reason vasm is: an upstream change should fail

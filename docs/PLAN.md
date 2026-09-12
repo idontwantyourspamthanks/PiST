@@ -585,7 +585,12 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 - A **release workflow** producing self-contained archives per platform, each
   carrying PiST, a vasm compiled from the author's unmodified source (pinned by
   sha256), and EmuTOS 1.4 (GPLv2) as a working default ROM, plus the licence and
-  notices. Qt is deployed with macdeployqt/windeployqt on macOS and Windows.
+  notices. Qt is deployed with macdeployqt/windeployqt on macOS and Windows, and
+  the **Linux AppImage additionally bundles Hatari 2.6.1**, built from a
+  checksum-pinned upstream tarball by the same action CI uses (see §2.4 for why no
+  distribution package will do). The macOS and Windows archives still do not
+  bundle it. No PiST source change was needed: tool discovery already looks beside
+  the executable first, so the bundled copy is found on its own.
 - **Verified end to end from a downloaded archive**: the shipped assembler builds
   a program, the shipped EmuTOS boots it, the program produces its output, and the
   debugger attaches with symbols loaded. Not a claim about the packaging — an
@@ -596,14 +601,18 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
   use is the failure this exists to catch, and it has already caught two real
   packaging defects.
 
-Open: installers (deb, RPM, MSI, dmg) are not produced — the archives are plain
-tarballs and zips. Windows vasm needs mingw-w64, which the release workflow
-provides; the CI workflow does not yet test it there. And the emulator remains
-unbundled by design: Hatari is a large GPL dependency, so the archive documents
-where to get it and PiST reports it clearly when absent.
+Open: installers (deb, RPM, MSI, dmg) are not produced — the Linux asset is a
+plain AppImage and the others are tarballs/zips. Windows vasm needs mingw-w64,
+which the release workflow provides; the CI workflow does not yet test it there.
+The emulator is bundled only in the Linux AppImage: the macOS and Windows archives
+still document where to get it, and PiST reports it clearly when absent. What
+remains by design is not the absence of Hatari but the relationship to it — PiST
+never patches it, never links it, and drives it purely through command-line
+arguments as a separate process (see §10), so shipping a copy does not move the
+licence boundary.
 
 - Dynamic Qt linking (LGPLv3 relink obligation), dependency notices
-- vasm **detect-and-use**, not bundled (see §7)
+- vasm **detect-and-use**, bundled only in the release artefacts (see §7)
 - Installers per platform
 
 ---
@@ -613,7 +622,8 @@ where to get it and PiST reports it clearly when absent.
 | Component | License | Can we ship it? | Boundary |
 |---|---|---|---|
 | **PiST** (this project) | GPL-2.0-or-later | — | Chosen for compatibility with the emulator ecosystem; see §10 |
-| Hatari | GPL-2.0-or-later, with an explicit statement that static **or dynamic** linking makes a combined work | Yes | **Separate process/binary**. Isolated in `EmulatorHost` so the boundary stays auditable; see §10 |
+| Hatari | GPL-2.0-or-later, with an explicit statement that static **or dynamic** linking makes a combined work | Yes | **Separate process/binary**, bundled in the Linux AppImage only, built unmodified from a checksum-pinned upstream tarball. Isolated in `EmulatorHost` so the boundary stays auditable; see §10 |
+| GNU Readline (linked by the bundled Hatari) | GPL-3.0-or-later | Yes | Redistributed unmodified with the Linux AppImage as a Hatari dependency; ship its licence text |
 | libretro Hatari core | GPL-2.0-or-later (identical `readme.txt` blob to upstream) | Yes | Same; `dlopen` does not escape the GPL |
 | libretro API header | MIT-style, per-file | Yes | Preserve notice |
 | **vasm / vbcc** | Non-free: "may be redistributed without modifications and used for non-commercial purposes" | **Yes — because PiST is free software** | **Redistribute unmodified only.** Never patch vasm. Ship its `readme.txt`/manual and mark it as third-party. Any commercial use still needs the author's written consent |
@@ -632,7 +642,9 @@ terms of every component permit bundling:
   be bundled and pinned to a known-good version instead of relying on the user to install it. The
   constraint is that the bundled binary must be byte-for-byte upstream's, so **the IDE must never
   patch vasm**; behaviours we need are obtained by command-line flags only.
-- **Hatari** — ships alongside as a separate executable (mere aggregation).
+- **Hatari** — GPL-2.0-or-later. Bundled in the Linux AppImage as a separate executable (mere
+  aggregation): built unmodified from a checksum-pinned upstream tarball, never patched. GNU
+  Readline, which that build links, travels with it.
 
 Two distribution rules follow from this:
 
@@ -642,19 +654,23 @@ Two distribution rules follow from this:
    user-configured path → bundled. This keeps the IDE usable with a different `vasmm68k_mot`, with
    a newer/patched Hatari, or for commercial use where bundling would not be permitted.
 
+Bundling a Hatari binary does not change the boundary: the copy in the Linux AppImage is still
+launched as a separate process, with command-line arguments only, never patched and never linked in.
+
 ### Toolchain acquisition
 
 Where each component comes from, kept deliberately separate from the source tree:
 
 | Context | vasm | Hatari |
 |---|---|---|
-| **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; a build dependency |
-| **Release artifacts** (Windows/macOS bundles, Linux AppImage) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) |
-| **Linux distro package** | Optional dependency; the distro's `vasm` package is used if present | Optional dependency |
-| **First run without a toolchain** | Offer a guided fetch of the author's official archive, verifying a pinned checksum. This is a *convenience*, never a silent download | Reported with an install hint |
+| **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; built from a checksum-pinned upstream tarball at packaging and CI time |
+| **Release artifacts** (Linux AppImage; Windows/macOS bundles) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage only; the Windows/macOS archives leave it to the user, since there is no MSYS2 Hatari package for Windows |
+| **Linux distro package** | Optional dependency; the distro's `vasm` package is used if present | Not usable as supplied: 22.04 ships 2.3.1 and 24.04 ships 2.4.1, below the 2.6.1 the IDE is verified against (§2.4) |
+| **First run without a toolchain** | Offer a guided fetch of the author's official archive, verifying a pinned checksum. This is a *convenience*, never a silent download | Reported with an install hint; the Linux AppImage needs none |
 
-This yields one-click setup on every platform without placing non-free bytes in the repository, and
-without ever breaching vasm's no-modification clause.
+This yields one-click setup on Linux — and on macOS and Windows for everything but the emulator —
+without placing non-free bytes in the repository, and without ever breaching vasm's no-modification
+clause.
 
 **The remaining vasm caveat:** its commercial exception is scoped to AmigaOS, so anyone shipping a
 *commercial* product based on this IDE must supply their own `vasmm68k_mot` (or obtain the author's
@@ -855,10 +871,15 @@ rather than licence necessity, and it keeps the integration surface small and au
 - The debugger transport (§3.3) is text-based and version-gated, which is easier to maintain against
   an upstream we do not control than a compiled-in dependency.
 
+Bundling Hatari in the Linux AppImage does not change this: the bundled copy is still launched as a
+separate process, with command-line arguments only, and is never patched or linked in (§7).
+
 ### Not bundled
 
-Original Atari TOS ROMs remain user-supplied (proprietary). Everything else needed to build and run
-assembly out of the box is bundleable — see §7.
+Original Atari TOS ROMs remain user-supplied (proprietary). Hatari is bundled in the Linux AppImage,
+but not in the macOS and Windows archives, nor in a source build; where it is absent, PiST reports it
+and points at where to get it. Everything else needed to build and run assembly out of the box is
+bundleable — see §7.
 
 ---
 

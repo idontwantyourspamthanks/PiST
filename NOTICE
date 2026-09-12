@@ -47,6 +47,51 @@ hatari — the emulator
     reason PiST runs it as a separate process.
     https://www.hatari-emu.org/
 
+    Redistribution: release archives of PiST *do* include a Hatari binary,
+    compiled by the release workflow from the upstream, unmodified source
+    tarball, pinned by checksum. The basis for this is the licence above: the
+    GPL, version 2 or later, permits redistribution of the compiled binary.
+
+    Two commitments follow from that basis:
+      - the binary is NEVER patched or modified. PiST drives Hatari purely
+        through command-line arguments.
+      - it is NEVER committed to the PiST source repository. It is produced by
+        the release workflow at release time only.
+
+    Version and source: Hatari 2.6.1, built from the upstream, unmodified source
+    tarball at
+    https://github.com/hatari/hatari/archive/refs/tags/v2.6.1.tar.gz
+    pinned by SHA-256
+    75f09c8deddb511b8c1574b84c507743097db9abc6edbb078f942efa8677547e
+    It is built with SDL2 (zlib licence) and libpng (libpng licence).
+
+    Bundling is necessary because no distribution package is a usable version.
+    Ubuntu 22.04 ships 2.3.1 and Ubuntu 24.04 ships 2.4.1, while PiST is
+    developed and verified against 2.6.1 — and 2.4.1 returns truncated debugger
+    responses that break source-line debugging, so relying on the user's package
+    manager cannot work.
+
+    This applies to the Linux AppImage. The macOS and Windows archives still
+    require the user to install Hatari themselves, and there is no MSYS2 Hatari
+    package for Windows.
+
+readline — the line editor linked into Hatari
+    GNU General Public License, version 3 or later. It is redistributed because
+    the bundled Hatari links it, so it is present inside the AppImage as part of
+    that binary rather than being chosen separately.
+    https://ftp.gnu.org/gnu/readline/
+
+    Redistribution: the same basis as Hatari above, with one qualification.
+    Hatari is licensed version 2 *or later*, and that is the only reason the two
+    can be combined: a GPL version 3 library joins GPL version 2 code only
+    through the "or later" option, so a version-2-only Hatari could not carry
+    readline at all.
+
+    It is load-bearing functionally, not incidentally. With readline, Hatari's
+    debugger prints its prompt to stdout; without it, Hatari falls back to fgets
+    and prints the prompt to stderr, which is a different transport path that
+    PiST's host does not use. The bundled build must therefore link it.
+
 A TOS ROM image is also required. Original Atari TOS images remain copyrighted
 and are NEVER distributed with PiST; the user supplies one. The ROM's version is
 read from the image header, and TOS 1.04 or later is required for the

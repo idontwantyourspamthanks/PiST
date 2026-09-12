@@ -10,10 +10,13 @@
 // be too old — so the guard against the silent-hang case would be skippable.
 
 #include "emu/Machine.h"
+#include "emu/Paths.h"
 #include "emu/TosRom.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -83,6 +86,16 @@ private slots:
     // selection
     void prefersNewestCompatibleRom();
     void steSelectionAvoidsStOnlyRom();
+
+    // Bundled-ROM discovery. Every release archive ships its ROM in share/emutos
+    // beside the executable's parent, but nothing searched there, so the ROM
+    // travelled in every archive and was still invisible on a machine without a
+    // system TOS. These pin the layouts that must resolve.
+    void findsBundledRomInTarballLayout();
+    void findsBundledRomInAppImageLayout();
+    void findsBundledRomInMacBundleLayout();
+    void reportsNoBundledDirWhenAbsent();
+    void tosSearchPathsIncludesBundledDir();
 };
 
 void TstTosRom::readsVersionFromHeader()
@@ -384,6 +397,131 @@ void TstTosRom::steSelectionAvoidsStOnlyRom()
              "an STe must not be given an ST-only ROM");
     QCOMPARE(chosen.versionCode, 0x0162);
     QVERIFY(chosen.supportsAutostart());
+}
+
+// ---------------------------------------------------------------------------
+// Bundled-ROM discovery.
+//
+// The layouts below are not hypothetical: each one is what a release artifact
+// actually unpacks to. The discovery walk is exercised directly with a
+// fabricated application directory, because tosSearchPaths() always starts from
+// the running test executable and so could never be pointed at a fixture — which
+// is precisely how an archive shipped a ROM that nothing searched.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Create <root>/<appDir>/ with a ROM in <root>/share/emutos, and return the
+/// fabricated executable directory. Returns an empty string on failure.
+QString makeBundle(QTemporaryDir &tmp, const QString &appDir, const QString &romName)
+{
+    const QString romDir = QDir(tmp.path()).filePath(QStringLiteral("share/emutos"));
+    if (!QDir().mkpath(romDir))
+        return {};
+    if (writeRom(romDir, romName, 0x0104, /*emuTos=*/true).isEmpty())
+        return {};
+
+    const QString binDir = QDir(tmp.path()).filePath(appDir);
+    if (!QDir().mkpath(binDir))
+        return {};
+    return binDir;
+}
+
+/// The share/emutos directory is a suffix of one of the reported paths.
+bool reportsEmutosDir(const QStringList &paths, QTemporaryDir &tmp)
+{
+    const QString expected =
+        QDir::cleanPath(QDir(tmp.path()).filePath(QStringLiteral("share/emutos")));
+    return paths.contains(expected);
+}
+
+} // namespace
+
+void TstTosRom::findsBundledRomInTarballLayout()
+{
+    // A tarball unpacks to bin/pist beside share/emutos.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString binDir = makeBundle(tmp, QStringLiteral("bin"), QStringLiteral("etos1024k.img"));
+    QVERIFY(!binDir.isEmpty());
+
+    QVERIFY(reportsEmutosDir(paths::bundledDataSearchPaths(binDir), tmp));
+}
+
+void TstTosRom::findsBundledRomInAppImageLayout()
+{
+    // An AppImage mounts usr/bin/pist beside usr/share/emutos.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString binDir = makeBundle(tmp, QStringLiteral("usr/bin"), QStringLiteral("etos1024k.img"));
+    QVERIFY(!binDir.isEmpty());
+
+    QVERIFY(reportsEmutosDir(paths::bundledDataSearchPaths(binDir), tmp));
+}
+
+void TstTosRom::findsBundledRomInMacBundleLayout()
+{
+    // A macOS bundle puts the executable in Contents/MacOS, three levels below
+    // the directory the ROM sits in.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString binDir = makeBundle(tmp, QStringLiteral("pist.app/Contents/MacOS"),
+                                      QStringLiteral("etos1024k.img"));
+    QVERIFY(!binDir.isEmpty());
+
+    QVERIFY(reportsEmutosDir(paths::bundledDataSearchPaths(binDir), tmp));
+}
+
+void TstTosRom::reportsNoBundledDirWhenAbsent()
+{
+    // A source build has no share/emutos, and must not invent one. Reported
+    // paths are shown to the user as "directories searched", so a fabricated
+    // entry would be a lie in the diagnostics.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString binDir = QDir(tmp.path()).filePath(QStringLiteral("bin"));
+    QVERIFY(QDir().mkpath(binDir));
+
+    QVERIFY(paths::bundledDataSearchPaths(binDir).isEmpty());
+    QVERIFY(paths::bundledDataSearchPaths(QString()).isEmpty());
+}
+
+void TstTosRom::tosSearchPathsIncludesBundledDir()
+{
+    // The wiring test, and the one that matters: the helper above can be correct
+    // while tosSearchPaths() never calls it, which is exactly the shape of the bug
+    // that shipped — a ROM in every archive that nothing looked for. This drives
+    // the real function against a directory laid out the way an archive unpacks.
+    //
+    // It has to create the directory beside the running test binary, because
+    // tosSearchPaths() always starts from the executable's own location. The path
+    // is removed again on every exit path; a leftover would be a directory in the
+    // build tree, which is generated and disposable.
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString shareDir = QDir(appDir).filePath(QStringLiteral("share/emutos"));
+
+    if (QFileInfo::exists(shareDir)) {
+        QSKIP("a share/emutos already exists beside the test binary; not touching it");
+    }
+    QVERIFY(QDir().mkpath(shareDir));
+
+    const QString rom = writeRom(shareDir, QStringLiteral("etos1024k.img"), 0x0104,
+                                /*emuTos=*/true);
+    QVERIFY(!rom.isEmpty());
+
+    const QStringList found = paths::tosSearchPaths();
+
+    // Unwind in the only order that works: the file, then its directory, then the
+    // one created for it. rmdir refuses a non-empty directory, so doing this the
+    // other way round would silently leave both behind.
+    QFile::remove(rom);
+    QDir().rmdir(shareDir);
+    QDir(appDir).rmdir(QStringLiteral("share"));
+
+    const QString expected = QDir::cleanPath(shareDir);
+    QVERIFY2(found.contains(expected),
+             qPrintable(QStringLiteral("share/emutos beside the executable was not searched; "
+                                       "searched: %1").arg(found.join(QStringLiteral(", ")))));
 }
 
 QTEST_MAIN(TstTosRom)

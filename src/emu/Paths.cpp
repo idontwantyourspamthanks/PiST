@@ -33,6 +33,33 @@ void appendUnique(QStringList &list, const QString &path)
 
 } // namespace
 
+QStringList bundledDataSearchPaths(const QString &applicationDir)
+{
+    QStringList dirs;
+    if (applicationDir.isEmpty())
+        return dirs;
+
+    // Four levels reaches `share` from every layout the release archives use:
+    //   <bundle>/bin/pist                      -> ../share
+    //   <mount>/usr/bin/pist                   -> ../../share
+    //   <bundle>/pist.app/Contents/MacOS/pist  -> ../../../share
+    // One level beyond the deepest of those costs a couple of stat calls and
+    // tolerates an extra wrapper directory, so the walk is deliberately shallow
+    // but not exactly fitted to today's layouts.
+    QDir up(applicationDir);
+    for (int level = 0; level < 4; ++level) {
+        for (const char *sub : {"share/emutos", "share/hatari"}) {
+            const QString candidate =
+                QDir::cleanPath(up.absoluteFilePath(QLatin1String(sub)));
+            if (QFileInfo(candidate).isDir() && !dirs.contains(candidate))
+                dirs.append(candidate);
+        }
+        if (!up.cdUp())
+            break;
+    }
+    return dirs;
+}
+
 QStringList tosSearchPaths()
 {
     QStringList dirs;
@@ -43,28 +70,49 @@ QStringList tosSearchPaths()
         QProcessEnvironment::systemEnvironment().value(QString::fromLatin1(kTosDirEnvVar));
     appendUnique(dirs, override);
 
-    // 2. The OS data location for Hatari. Covers /usr/share/hatari on Linux,
+    // 2. Data shipped beside the application. Every release archive puts the ROM
+    //    in a `share/emutos` directory next to the executable's parent: a tarball
+    //    unpacks to `bin/pist` beside `share/emutos`, and an AppImage mounts
+    //    `usr/bin/pist` beside `usr/share/emutos`. Walking up covers both, and the
+    //    macOS bundle (`Contents/MacOS/pist` beside `../share`) as well, without
+    //    hard-coding any one of those layouts.
+    //
+    //    This deliberately precedes the system locations. The archive's own ROM is
+    //    the one the release process verified against the GEMDOS-hard-disk
+    //    autostart path, so preferring it is what makes a fresh download run with
+    //    nothing else installed. Distribution ROMs are still found and listed
+    //    afterwards and remain selectable, and an explicit PIST_TOS_DIR still
+    //    wins over both.
+    //
+    //    Without this branch the ROM travelled inside every archive but was
+    //    invisible: the archives unpack to `share/emutos`, and nothing searched
+    //    there. The bug survived release checking because the verification step
+    //    set PIST_TOS_DIR, which skipped the discovery logic being tested.
+    for (const QString &dir : bundledDataSearchPaths(QCoreApplication::applicationDirPath()))
+        appendUnique(dirs, dir);
+
+    // 3. The OS data location for Hatari. Covers /usr/share/hatari on Linux,
     //    /usr/local/share/hatari, and the Homebrew prefix on macOS.
     const QStringList dataLocs =
         QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation);
     for (const QString &base : dataLocs)
         appendUnique(dirs, base + QStringLiteral("/hatari"));
 
-    // 3. Platform conventions Hatari packages use on macOS.
+    // 4. Platform conventions Hatari packages use on macOS.
 #ifdef Q_OS_MACOS
     appendUnique(dirs, QStringLiteral("/opt/homebrew/share/hatari"));
     appendUnique(dirs, QStringLiteral("/usr/local/share/hatari"));
     appendUnique(dirs, QStringLiteral("/opt/local/share/hatari"));
 #endif
 
-    // 4. Custom install prefixes: <prefix>/share/hatari for a hatari at
+    // 5. Custom install prefixes: <prefix>/share/hatari for a hatari at
     //    <prefix>/bin/hatari.
     const QString hatari = QStandardPaths::findExecutable(QStringLiteral("hatari"));
     if (!hatari.isEmpty()) {
         const QDir exeDir(QFileInfo(hatari).absolutePath());
         appendUnique(dirs, exeDir.absoluteFilePath(QStringLiteral("../share/hatari")));
 
-        // 5. Beside the executable, which is how the Windows and macOS release
+        // 6. Beside the executable, which is how the Windows and macOS release
         //    bundles are laid out. On Linux this would mean scanning /usr/bin,
         //    which is not where data files live.
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)

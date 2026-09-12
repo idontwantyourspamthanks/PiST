@@ -17,8 +17,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 > the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
-> What is missing is breadth rather than core function: no installers, no emulator bundled, and
-> the emulator integration itself has only been exercised on Linux — see
+> What is missing is breadth rather than core function: no installers, and the emulator ships only
+> in the Linux AppImage — the macOS and Windows archives still expect you to install Hatari. The
+> integration itself has only been exercised on Linux — see
 > [Known limitations](#known-limitations). [docs/PLAN.md](docs/PLAN.md) has the full design.
 
 ---
@@ -40,7 +41,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   and the editor following the program counter as you step
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
-allow, so there is nothing to assemble by hand before writing your first line of code.
+allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
+your first line of code. The Linux AppImage meets that goal today; the macOS and Windows archives
+still need Hatari installed separately.
 
 ## Target platform
 
@@ -149,17 +152,20 @@ themselves unless Hatari, `vasmm68k_mot` and a TOS ROM are available.
 
 ### Installing
 
-Download an archive from [Releases](../../releases). Each one contains PiST, the
-`vasmm68k_mot` assembler, and an EmuTOS ROM, and unpacks ready to run:
+Download an archive from [Releases](../../releases). The macOS and Windows archives
+contain PiST, the `vasmm68k_mot` assembler, and an EmuTOS ROM; the Linux AppImage
+carries those plus **Hatari 2.6.1**, so a fresh download runs and debugs with
+nothing else installed:
 
 ```sh
-tar xzf pist-*-linux-x86_64.tar.gz
-./bundle/bin/pist your-program.s
+chmod +x pist-*-linux-x86_64.AppImage
+./pist-*-linux-x86_64.AppImage your-program.s
 ```
 
-You still need **Hatari** for the emulator: it is a large GPL dependency and is
-not bundled. Everything else is included, so the IDE assembles and debugs out of
-the box once Hatari is present.
+On macOS and Windows you still need **Hatari** for the emulator: it is not bundled
+there — there is no MSYS2 Hatari package for Windows — so install it yourself, or
+point PiST at one in Project Settings. Everything else is included, so the IDE
+assembles out of the box once Hatari is present.
 
 To install from source instead:
 
@@ -261,8 +267,10 @@ attaches.
 
 Bundled or invoked third-party components keep their own licences. In particular `vasm` is *not*
 free software (it permits unmodified, non-commercial redistribution, which is why the IDE never
-patches it), and Qt is used under the LGPL. See [docs/PLAN.md](docs/PLAN.md) §7 for the full
-breakdown and the obligations that follow.
+patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage is
+GPL-2.0-or-later, redistributed unmodified from a checksum-pinned upstream tarball, and the GNU
+Readline (GPL-3.0-or-later) that build links travels with it. See [docs/PLAN.md](docs/PLAN.md) §7
+for the full breakdown and the obligations that follow.
 
 ## Known limitations
 
@@ -270,15 +278,24 @@ Stated plainly, because an early release should not imply more than it does:
 
 - **The emulator integration has only been exercised on Linux.** CI builds and
   tests on Windows and macOS, and the path handling, tool discovery and install
-  steps are verified there — but the runners have no Hatari, so assembling *and
-  debugging* on those platforms is untested. Bug reports from real Windows or
-  macOS machines are genuinely useful right now.
+  steps are verified there — but neither runner runs the emulator suite: Windows
+  has no Hatari package for MSYS2, and the macOS Hatari build produces an
+  application bundle whose binary does not run standalone. Linux CI now builds the
+  pinned Hatari 2.6.1 and exercises assembling *and* debugging against it, so bug
+  reports from real Windows or macOS machines remain genuinely useful.
 - **Pause, changing breakpoints while running, and swapping disks at runtime do
   not work on Windows.** Hatari compiles its control channel only on POSIX
   systems. Breaking at entry, on exceptions, and at source-line breakpoints all
   work. See [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix.
-- **No installers** — releases are tarballs and zips, not deb/RPM/MSI/dmg.
-- **Hatari is not bundled**, so the emulator must be installed separately.
+- **No installers** — releases are an AppImage on Linux and tarballs/zips elsewhere,
+  not deb/RPM/MSI/dmg.
+- **Hatari is bundled only in the Linux AppImage.** That copy is a pinned 2.6.1,
+  redistributed unmodified, so it debugs with nothing else installed. The macOS
+  and Windows archives do not include it (and neither does a source build), so
+  there the emulator must be installed separately — and no distribution package
+  will do: Ubuntu 22.04 ships 2.3.1 and 24.04 ships 2.4.1, whose truncated
+  debugger responses break source-line debugging, while the IDE is developed and
+  verified against 2.6.1.
 - Multi-file projects are supported through the linker (add sources in Project
   Settings; needs `vlink`, which is not bundled with the source build).
 - The interface is functional rather than polished.

@@ -144,14 +144,18 @@ Do it for macOS polish, not as an architectural simplification.
 
 ## 5. Packaging and toolchain acquisition
 
-**Status:** not started. Release artefacts and first-run setup.
+**Status:** partly delivered. Release artefacts already carry the assembler and EmuTOS, and the
+Linux AppImage bundles Hatari 2.6.1 too. First-run setup and installers are still open.
 
 Because `PiST` is free software, vasm's redistribution terms permit bundling it **unmodified** for
 non-commercial use, and EmuTOS can ship as the default ROM — so a one-click install is legally
-achievable. The plan (`docs/PLAN.md` §7) is to keep the repository free of non-free binaries, fetch
-the official vasm archive on first run with a pinned checksum, and bundle everything in release
-artefacts. Original TOS ROMs stay user-supplied, always.
+achievable. The plan (`docs/PLAN.md` §7) is to keep the repository free of non-free binaries and to
+bundle everything a release artefact can carry: the Linux AppImage now does, Hatari included, while
+the macOS and Windows archives still leave the emulator to the user (there is no MSYS2 Hatari
+package for Windows, and no distribution package is a usable version — Ubuntu 22.04 ships 2.3.1 and
+24.04 ships 2.4.1, against the 2.6.1 the project is verified on). A source build bundles none of it.
+Original TOS ROMs stay user-supplied, always.
 
-The pieces that do not exist yet: a first-run setup flow, a checksum-pinned download, per-platform
-installers, and the dependency-notice generation that the LGPL Qt and BSD Capstone obligations
-require.
+The pieces that do not exist yet: a first-run setup flow, a checksum-pinned download for the
+platforms that do not bundle a tool, per-platform installers, and the dependency-notice generation
+that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.

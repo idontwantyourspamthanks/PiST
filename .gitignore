@@ -1,0 +1,70 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+out/
+install/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+*.cmake.in
+CPackConfig.cmake
+CPackSourceConfig.cmake
+compile_commands.json
+
+# Qt Creator / Qt tooling
+*.user
+*.user.*
+CMakeLists.txt.user*
+*.autosave
+.qtc_clangd/
+.qmake.stash
+qmake.conf
+
+# Compiled / generated
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.lib
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*_autogen/
+.objdir/
+
+# Atari ST build artifacts (assembly projects opened in the IDE)
+*.prg
+*.tos
+*.ttp
+*.app
+*.acc
+*.lst
+*.sym
+
+# Per-session emulator state
+*.sock
+hatari.cfg
+hatari.nvram
+hatari.sav
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Scratch
+/tmp/
+scratch/
+*.log

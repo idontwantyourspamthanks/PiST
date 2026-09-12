@@ -1,0 +1,50 @@
+PiST — third-party components and their licences
+================================================
+
+PiST itself is free software under the GNU General Public License, version 2 or
+later. See LICENSE.
+
+PiST *drives* the components below as separate programs, passing command-line
+arguments. It does not link against them, does not modify them, and does not
+write their configuration files. That separation is deliberate and is what keeps
+the licensing straightforward (see docs/PLAN.md §7).
+
+
+Runtime dependencies (invoked as subprocesses, not distributed here)
+---------------------------------------------------------------------
+
+vasmm68k_mot — the assembler
+    Copyright (c) 2002-2026 Volker Barthelmann.
+    NOT free software. Its terms permit redistribution *without modification*
+    and use for non-commercial purposes; commercial use requires the author's
+    written consent except for the M68k/AmigaOS case. PiST therefore never
+    patches it and never commits it to this repository.
+    Source and licence: http://sun.hasenbraten.de/vasm/
+
+hatari — the emulator
+    GNU General Public License, version 2 or later. Hatari's own readme states
+    that linking it statically or dynamically makes a combined work, which is one
+    reason PiST runs it as a separate process.
+    https://www.hatari-emu.org/
+
+A TOS ROM image is also required. Original Atari TOS images remain copyrighted
+and are never distributed with PiST; the user supplies one. The ROM's version is
+read from the image header, and TOS 1.04 or later is required for the
+GEMDOS-hard-disk run path. EmuTOS (GPLv2) is a free alternative.
+    https://emutos.sourceforge.net/
+
+
+Build and link dependencies
+---------------------------
+
+Qt 6 (Core, Gui, Widgets, Network, Test)
+    Available under the GNU LGPL version 3, GPL version 2 or 3, or a commercial
+    licence from The Qt Company. PiST uses it under the LGPLv3 and links Qt
+    *dynamically*, which keeps the LGPL relink obligation satisfiable: a user who
+    replaces the Qt libraries can still relink and run PiST. The complete
+    corresponding source of the Qt version used must be made available, even
+    unmodified.
+    https://doc.qt.io/qt-6/licensing.html
+
+
+No code from Hatari, vasm or Qt is included in this repository's sources.

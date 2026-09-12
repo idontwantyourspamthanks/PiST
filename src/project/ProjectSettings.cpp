@@ -68,6 +68,7 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     root[QStringLiteral("version")] = 1;
 
     QJsonObject build;
+    build[QStringLiteral("assemblerPath")] = s.assemblerPath;
     build[QStringLiteral("cpu")] = s.cpu;
     build[QStringLiteral("includePaths")] = toArray(s.includePaths);
     build[QStringLiteral("defines")] = toArray(s.defines);
@@ -75,6 +76,7 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     root[QStringLiteral("build")] = build;
 
     QJsonObject emu;
+    emu[QStringLiteral("hatariPath")] = s.hatariPath;
     emu[QStringLiteral("machine")] = machineCliName(s.machine);
     emu[QStringLiteral("monitor")] = s.monitor;
     emu[QStringLiteral("memSizeMiB")] = s.memSizeMiB;
@@ -123,12 +125,15 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
     const QJsonObject root = doc.object();
 
     const QJsonObject build = root.value(QStringLiteral("build")).toObject();
+    s->assemblerPath = build.value(QStringLiteral("assemblerPath")).toString();
     s->cpu = build.value(QStringLiteral("cpu")).toString(QStringLiteral("68000"));
     s->includePaths = fromArray(build.value(QStringLiteral("includePaths")));
     s->defines = fromArray(build.value(QStringLiteral("defines")));
     s->extraBuildArgs = fromArray(build.value(QStringLiteral("extraArgs")));
 
     const QJsonObject emu = root.value(QStringLiteral("emulator")).toObject();
+    s->hatariPath = emu.value(QStringLiteral("hatariPath")).toString();
+
     Machine machine = Machine::St;
     if (machineFromCliName(emu.value(QStringLiteral("machine")).toString(), &machine))
         s->machine = machine;

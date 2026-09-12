@@ -62,6 +62,19 @@ void SettingsDialog::buildUi()
     auto *buildTab = new QWidget(this);
     auto *buildLayout = new QFormLayout(buildTab);
 
+    // Explicit tool paths. Placed first because a missing assembler blocks
+    // everything else, and the hint in the error dialog points here.
+    auto *assemblerRow = new QWidget(buildTab);
+    auto *assemblerLayout = new QHBoxLayout(assemblerRow);
+    assemblerLayout->setContentsMargins(0, 0, 0, 0);
+    m_assemblerPath = new QLineEdit(assemblerRow);
+    m_assemblerPath->setPlaceholderText(tr("Detected automatically"));
+    auto *browseAsm = new QPushButton(tr("Browse…"), assemblerRow);
+    connect(browseAsm, &QPushButton::clicked, this, &SettingsDialog::browseAssembler);
+    assemblerLayout->addWidget(m_assemblerPath, 1);
+    assemblerLayout->addWidget(browseAsm);
+    buildLayout->addRow(tr("vasmm68k_mot:"), assemblerRow);
+
     m_cpu = new QComboBox(buildTab);
     // Taken from vasm's documented -m values. The ST is a plain 68000; the rest
     // are here because vasm accepts them and some projects target accelerators.
@@ -117,6 +130,17 @@ void SettingsDialog::buildUi()
     // ------------------------------------------------------------- emulator
     auto *emuTab = new QWidget(this);
     auto *emuLayout = new QFormLayout(emuTab);
+
+    auto *emulatorRow = new QWidget(emuTab);
+    auto *emulatorLayout = new QHBoxLayout(emulatorRow);
+    emulatorLayout->setContentsMargins(0, 0, 0, 0);
+    m_emulatorPath = new QLineEdit(emulatorRow);
+    m_emulatorPath->setPlaceholderText(tr("Detected automatically"));
+    auto *browseEmu = new QPushButton(tr("Browse…"), emulatorRow);
+    connect(browseEmu, &QPushButton::clicked, this, &SettingsDialog::browseEmulator);
+    emulatorLayout->addWidget(m_emulatorPath, 1);
+    emulatorLayout->addWidget(browseEmu);
+    emuLayout->addRow(tr("hatari:"), emulatorRow);
 
     m_machine = new QComboBox(emuTab);
     for (Machine machine : allMachines())
@@ -205,6 +229,9 @@ void SettingsDialog::buildUi()
 
 void SettingsDialog::loadValues(const ProjectSettings &settings)
 {
+    m_assemblerPath->setText(settings.assemblerPath);
+    m_emulatorPath->setText(settings.hatariPath);
+
     const int cpuIndex = m_cpu->findText(settings.cpu);
     if (cpuIndex >= 0)
         m_cpu->setCurrentIndex(cpuIndex);
@@ -327,6 +354,24 @@ void SettingsDialog::browseHardDisk()
         m_hardDisk->setText(path);
 }
 
+void SettingsDialog::browseAssembler()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select the vasm m68k Motorola-syntax assembler"),
+        m_assemblerPath->text(), tr("All files (*)"));
+    if (!path.isEmpty())
+        m_assemblerPath->setText(path);
+}
+
+void SettingsDialog::browseEmulator()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select the Hatari executable"), m_emulatorPath->text(),
+        tr("All files (*)"));
+    if (!path.isEmpty())
+        m_emulatorPath->setText(path);
+}
+
 void SettingsDialog::browseFloppyA()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -377,6 +422,8 @@ ProjectSettings SettingsDialog::settings() const
 {
     ProjectSettings s = m_settings;
 
+    s.assemblerPath = m_assemblerPath->text().trimmed();
+    s.hatariPath = m_emulatorPath->text().trimmed();
     s.cpu = m_cpu->currentText();
 
     s.includePaths.clear();

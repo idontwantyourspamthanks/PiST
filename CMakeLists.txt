@@ -47,6 +47,8 @@ qt_add_executable(pist
     src/emu/SessionConfig.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -75,9 +77,30 @@ target_link_libraries(pist PRIVATE
     Qt6::Network
 )
 
+# ---------------------------------------------------------------------------
+# Installation
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+
 install(TARGETS pist
     BUNDLE  DESTINATION .
-    RUNTIME DESTINATION bin)
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# Licence and third-party notices. The LGPL (Qt) and BSD obligations require
+# these to travel with a binary distribution, and the NOTICE is also how a user
+# learns which external programs they still need to supply.
+install(FILES LICENSE NOTICE README.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+if(UNIX AND NOT APPLE)
+    # Desktop entry and icon, so the IDE appears in application menus rather than
+    # only being launchable from a terminal.
+    install(FILES pist.desktop
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
+    install(FILES packaging/pist.svg
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
+        RENAME pist.svg)
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -105,6 +128,8 @@ qt_add_executable(tst_tosrom
     tests/tst_tosrom.cpp
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -142,8 +167,12 @@ add_test(NAME debug COMMAND tst_debug)
 # Project settings persistence.
 qt_add_executable(tst_settings
     tests/tst_settings.cpp
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -205,6 +234,8 @@ qt_add_executable(tst_gui
     src/emu/SessionConfig.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -233,6 +264,8 @@ qt_add_executable(tst_emulatorhost
     src/emu/SessionConfig.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp

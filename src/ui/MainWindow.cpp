@@ -9,6 +9,7 @@
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "toolchain/Toolchain.h"
 #include "debug/Breakpoint.h"
 #include "ui/BreakpointPanel.h"
 #include "ui/DisassemblyView.h"
@@ -46,23 +47,6 @@ namespace pist {
 
 namespace {
 
-/// Locate `vasmm68k_mot` without hard-coding a path.
-QString findAssembler()
-{
-    const QString onPath = QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot"));
-    if (!onPath.isEmpty())
-        return onPath;
-    return QStringLiteral("vasmm68k_mot");
-}
-
-QString findHatari()
-{
-    const QString onPath = QStandardPaths::findExecutable(QStringLiteral("hatari"));
-    if (!onPath.isEmpty())
-        return onPath;
-    return QStringLiteral("hatari");
-}
-
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -72,7 +56,13 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(m_editor);
 
     m_build = new BuildService(this);
-    m_build->setAssemblerPath(findAssembler());
+    // Resolve the assembler through the toolchain locator, which searches beside
+    // the app and in a per-user tools directory before PATH. Previously this fell
+    // back to a bare name, so a missing vasm surfaced as a late process-start
+    // failure rather than an early, actionable message.
+    const ToolInfo assembler = toolchain::findAssembler();
+    m_build->setAssemblerPath(assembler.found() ? assembler.path
+                                                : QStringLiteral("vasmm68k_mot"));
     connect(m_build, &BuildService::finished, this, &MainWindow::onBuildFinished);
     connect(m_build, &BuildService::outputLine, this, [this](const QString &line) {
         m_log->appendPlainText(line);
@@ -167,7 +157,7 @@ MainWindow::MainWindow(QWidget *parent)
             openRecentSource();
     });
 
-    m_caps = probeHatari(findHatari());
+    m_caps = probeHatari(toolchain::findEmulator().path);
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     m_statusEmulator->setText(m_caps.summary());
@@ -758,10 +748,17 @@ void MainWindow::launchEmulator()
         return;
     }
 
+    const ToolInfo emulator = toolchain::findEmulator(m_settings.hatariPath);
+    if (!emulator.found()) {
+        QMessageBox::critical(this, tr("Emulator not found"),
+                              toolchain::emulatorInstallHint());
+        return;
+    }
+
     const QString sessionDir = makeSessionDir();
 
     SessionConfig config;
-    config.hatariPath = findHatari();
+    config.hatariPath = emulator.path;
     config.programPath = prg;
     config.sessionDir = sessionDir;
     config.gemdosDir = info.absolutePath();

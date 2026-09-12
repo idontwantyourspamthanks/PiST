@@ -37,6 +37,12 @@ struct ProjectSettings
     /// Extra arguments appended verbatim, for anything not yet modelled.
     QStringList extraBuildArgs;
 
+    /// Explicit tool paths from project or user settings. Empty means
+    /// "discover it", which searches beside the app, the per-user tools
+    /// directory, and PATH (src/toolchain/Toolchain.h).
+    QString assemblerPath;
+    QString hatariPath;
+
     // --- emulator --------------------------------------------------------
 
     Machine machine = Machine::St;

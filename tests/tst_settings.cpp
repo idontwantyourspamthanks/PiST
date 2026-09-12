@@ -8,6 +8,7 @@
 
 #include "emu/Paths.h"
 #include "project/ProjectSettings.h"
+#include "toolchain/Toolchain.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -35,6 +36,14 @@ private slots:
     void removesSessionDirInsideBase();
     void refusesToRemoveOutsideSessionBase();
     void prunesOnlyOldSessions();
+
+    // Toolchain resolution. A missing tool must be reported as missing rather
+    // than silently falling back to a bare name, which surfaced later as an
+    // opaque process-start failure.
+    void findsToolsOnPath();
+    void reportsMissingToolAsMissing();
+    void explicitPathWinsOverDiscovery();
+    void missingExplicitPathIsReported();
 };
 
 void TstSettings::roundTripsEverything()
@@ -189,6 +198,60 @@ void TstSettings::prunesOnlyOldSessions()
              "a recent session must survive: another instance may own it");
 
     QDir(newDir).removeRecursively();
+}
+
+void TstSettings::findsToolsOnPath()
+{
+    // vasm and hatari are not guaranteed present, so use a program that is: the
+    // shell. The point is that discovery through PATH works at all.
+    if (QStandardPaths::findExecutable(QStringLiteral("sh")).isEmpty())
+        QSKIP("no sh on PATH");
+
+    const QStringList paths = toolchain::searchPaths();
+    QVERIFY(!paths.isEmpty());
+    // The application directory and the per-user tools directory come first, so a
+    // bundled copy takes precedence over whatever happens to be installed.
+    QCOMPARE(paths.first(), QCoreApplication::applicationDirPath());
+}
+
+void TstSettings::reportsMissingToolAsMissing()
+{
+    // A name that cannot exist. Crucially this must yield an *empty* path, not a
+    // bare name: the caller decides how to report it, and the preflight checks
+    // rely on found() being honest.
+    const ToolInfo info = toolchain::findAssembler(
+        QStringLiteral("/nonexistent/definitely-not-here/vasmm68k_mot"));
+    QVERIFY2(!info.found(), "a missing tool must report as not found");
+    QVERIFY(info.path.isEmpty());
+}
+
+// An explicit path wins outright, including over a working system install: a user
+// pointing PiST at a specific vasm must get that one, not the packaged one.
+void TstSettings::explicitPathWinsOverDiscovery()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString fake = dir.filePath(QStringLiteral("vasmm68k_mot"));
+
+    QFile f(fake);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("#!/bin/sh\nexit 0\n");
+    f.close();
+    QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                             | QFileDevice::ExeOwner));
+
+    const ToolInfo info = toolchain::findAssembler(fake);
+    QVERIFY(info.found());
+    QCOMPARE(info.path, fake);
+    QCOMPARE(info.name, QStringLiteral("vasmm68k_mot"));
+}
+
+// A configured path that no longer resolves must be reported, not quietly
+// substituted with a different binary from PATH, which would be confusing.
+void TstSettings::missingExplicitPathIsReported()
+{
+    const ToolInfo info = toolchain::findEmulator(QStringLiteral("/gone/hatari"));
+    QVERIFY2(!info.found(), "a stale configured path must not silently fall back");
 }
 
 QTEST_MAIN(TstSettings)

@@ -138,11 +138,32 @@ ctest --test-dir build --output-on-failure
 There are two suites: parser tests (always run) and emulator integration tests, which skip
 themselves unless Hatari, `vasmm68k_mot` and a TOS ROM are available.
 
+### Installing
+
+```sh
+cmake --install build --prefix ~/.local
+```
+
+This installs the binary, a desktop entry and icon (on Linux), and the licence and
+third-party notices. It does not install vasm or Hatari — see below.
+
 To develop the IDE you will also want, at runtime:
 
-- **Hatari** — on `PATH`, or pointed to by configuration
-- **`vasmm68k_mot`** — on `PATH`
-- **A TOS ROM, version 1.04 or later** — see below
+- **`vasmm68k_mot`** — see [Assembler](#assembler)
+- **Hatari** — see [Emulator](#emulator)
+- **A TOS ROM, version 1.04 or later** — see [TOS ROMs](#tos-roms)
+
+Both tools are discovered in this order, so no configuration is needed in the
+common case:
+
+1. an explicit path set in **Project Settings**;
+2. beside the PiST executable (how release bundles are laid out);
+3. `~/.local/share/PiST/tools` (`%LOCALAPPDATA%` on Windows) — the same place a
+   bundled copy would live;
+4. the system `PATH`.
+
+If one is missing, PiST says which and where to get it rather than failing later
+with a process error.
 
 ## Platform support
 
@@ -209,3 +230,4 @@ breakdown and the obligations that follow.
   the launcher rules, roadmap, risk register and licensing analysis
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and the starting point for
   each item (notably: a portable emulator control channel, which is what Windows is missing)
+- **[NOTICE](NOTICE)** — third-party components and the licence obligations that follow from them

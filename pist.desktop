@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PiST
+GenericName=Atari ST Assembly IDE
+Comment=Write, build, run and debug 68000 assembly for the Atari ST
+Exec=pist %f
+Icon=pist
+Terminal=false
+Categories=Development;IDE;
+MimeType=text/x-asm;
+Keywords=atari;st;68000;m68k;assembly;asm;hatari;vasm;

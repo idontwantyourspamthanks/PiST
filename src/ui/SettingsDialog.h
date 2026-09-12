@@ -40,6 +40,8 @@ private slots:
     void onMachineChanged();
     void browseRom();
     void browseHardDisk();
+    void browseAssembler();
+    void browseEmulator();
     void browseFloppyA();
     void browseFloppyB();
     void addIncludePath();
@@ -53,6 +55,8 @@ private:
     void refreshRomList();
     void updateCompatibilityNote();
 
+    QLineEdit *m_assemblerPath = nullptr;
+    QLineEdit *m_emulatorPath = nullptr;
     QComboBox *m_machine = nullptr;
     QComboBox *m_monitor = nullptr;
     QComboBox *m_cpu = nullptr;

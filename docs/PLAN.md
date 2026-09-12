@@ -515,6 +515,23 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 
 ### Phase 4 — packaging
 
+**Status: in progress.** Delivered so far:
+
+- `cmake --install` installs the binary, a desktop entry and icon (Linux), and the
+  licence plus third-party notices
+- `NOTICE` records each component's licence and the obligation it creates —
+  notably Qt's LGPLv3 relink requirement, satisfied by dynamic linking
+- `src/toolchain/Toolchain` locates vasm and Hatari in a defined order (explicit
+  setting → beside the executable → per-user tools directory → `PATH`) and reports
+  a missing tool with instructions, rather than falling back to a bare name that
+  fails later as an opaque process-start error
+- Project settings carry explicit paths for both tools, so a user-supplied vasm or
+  a custom Hatari build works without touching the environment
+
+Still to do: a first-run fetch of vasm with a pinned checksum (permitted because
+its licence allows unmodified non-commercial redistribution), EmuTOS as a default
+ROM, per-platform installers, and a CI build across the three targets.
+
 - Dynamic Qt linking (LGPLv3 relink obligation), dependency notices
 - vasm **detect-and-use**, not bundled (see §7)
 - Installers per platform

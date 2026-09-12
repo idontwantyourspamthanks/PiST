@@ -139,7 +139,11 @@ Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets and Network), a C++17 com
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-```
+
+To try it without installing anything, `./run.sh` builds if needed and launches
+the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
+through to see the whole loop. It always uses your real display; run the tests
+(below) for the headless checks.
 
 Run the tests:
 

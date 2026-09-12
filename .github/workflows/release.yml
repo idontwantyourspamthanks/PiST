@@ -262,12 +262,17 @@ jobs:
           cp packaging/icons/pist-256.png AppDir/usr/share/icons/hicolor/256x256/apps/pist.png
 
           # Bundle the tools the archive carries, beside the executable, which is
-          # the first place tool discovery looks.
+          # the first place tool discovery looks. One matrix flag drives both the
+          # copy and the `-e` below, because splitting them means the AppImage
+          # builds the moment the flag is flipped and then fails confusingly; kept
+          # together, a no-emulator build is simply a smaller AppImage.
           cp bundle/bin/vasmm68k_mot AppDir/usr/bin/
           mkdir -p AppDir/usr/share/emutos
           cp bundle/share/emutos/etos1024k.img AppDir/usr/share/emutos/
-          if [ -n "${{ matrix.emulator }}" ] && [ "${{ matrix.emulator }}" = "true" ]; then
+          EXE_ARGS=(-e AppDir/usr/bin/pist)
+          if [ "${{ matrix.emulator }}" = "true" ]; then
             cp bundle/bin/hatari AppDir/usr/bin/
+            EXE_ARGS+=(-e AppDir/usr/bin/hatari)
           fi
 
           export QMAKE="$(command -v qmake6 || command -v qmake)"
@@ -287,8 +292,7 @@ jobs:
           # headless container therefore proves less than it appears to: a missing
           # libasound there is not a defect, because no desktop lacks it.
           ./"$LD" --appdir AppDir \
-            -e AppDir/usr/bin/pist \
-            -e AppDir/usr/bin/hatari \
+            "${EXE_ARGS[@]}" \
             -d AppDir/usr/share/applications/pist.desktop \
             -i packaging/icons/pist-256.png \
             --plugin qt --output appimage
@@ -354,16 +358,26 @@ jobs:
               exit 1
             fi
           done
-          if grep -q 'cannot autostart' diagnose-appimage.txt; then
-            echo "ERROR: the emulator in the AppImage cannot autostart a program"
-            exit 1
-          fi
           # And the ROM it must be *using* has to be the one inside the AppImage,
           # not a system copy that happened to be on the runner. A user without the
           # hatari package has no system copy, so this is the case that matters.
-          if ! grep -qE '^[[:space:]]+[0-9.]+[[:space:]]+/tmp/\.mount_' diagnose-appimage.txt; then
+          # The EmuTOS line is matched by its path rather than a leading version
+          # number, because EmuTOS does not render as one: it prints
+          # "EmuTOS (TOS 2.06)<TAB>/tmp/.mount_.../usr/share/emutos/etos1024k.img",
+          # and an earlier version of this check expected a number and therefore
+          # passed on a machine where only the system ROMs were found.
+          if ! grep -qE '/tmp/\.mount_[^[:space:]]+/usr/share/emutos/etos1024k\.img' diagnose-appimage.txt; then
             echo "ERROR: the AppImage did not find its own bundled ROM:"
             cat diagnose-appimage.txt
+            exit 1
+          fi
+          # The bundled ROM must also be usable, not merely present. "cannot
+          # autostart" would mean the GEMDOS-hard-disk run path is broken, which is
+          # what Run and debug both need. Matched on the EmuTOS line itself, so a
+          # system 1.02 ROM — which always carries that warning — does not produce
+          # a false failure.
+          if grep -E 'etos1024k\.img' diagnose-appimage.txt | grep -q 'cannot autostart'; then
+            echo "ERROR: the bundled EmuTOS cannot autostart a program"
             exit 1
           fi
 

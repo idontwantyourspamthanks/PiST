@@ -478,18 +478,31 @@ void EmulatorHost::processStderrData()
 
 void EmulatorHost::drainStderr()
 {
-    // The response travels on stderr and the completion signal on stdout, and the
-    // two pipes are independent. Hatari writes the response *before* printing the
-    // next prompt, so by the time the prompt is readable the response is already
-    // in its pipe — it may simply not have been delivered through Qt's notifier
-    // yet. Reading it directly here removes the dependence on that timing, which
-    // is what truncated responses on slower machines: the prompt arrived, the
-    // settle window expired, and the remaining output was still queued.
     if (!m_process)
         return;
+
+    // The response travels on stderr and the completion prompt on stdout, and the
+    // two pipes are independent. Hatari flushes the response *before* printing the
+    // next prompt, so by the time the prompt is readable the response is already
+    // in its pipe — but Qt may not have read it out yet.
+    //
+    // `bytesAvailable()` reports Qt's internal buffer, not the pipe, so simply
+    // reading in a loop returns nothing when the notifier has not run yet. That
+    // was the earlier mistake: the loop drained an empty buffer and the command
+    // completed without the response. `waitForReadyRead` waits on the pipe
+    // itself and returns as soon as anything arrives, which for data already
+    // written is immediate — this is not a sleep, it is a read that can block
+    // only if there is genuinely nothing there.
     int guard = 0;
-    while (m_process->bytesAvailable() > 0 && ++guard < 100)
+    while (guard++ < 8) {
+        if (m_process->bytesAvailable() > 0) {
+            processStderrData();
+            continue;
+        }
+        if (!m_process->waitForReadyRead(20))
+            break;
         processStderrData();
+    }
 }
 
 void EmulatorHost::completeCurrent()

@@ -105,8 +105,18 @@ void TstSettings::rejectsMalformedFile()
 
 void TstSettings::projectFileSitsBesideSource()
 {
-    const QString project = settings::projectFileFor(QStringLiteral("/home/x/tests/prog.s"));
-    QCOMPARE(project, QStringLiteral("/home/x/tests/prog.pistproject"));
+    // Asserted from a real path: "/home/x/tests/prog.s" is not absolute on
+    // Windows (no drive), so a hardcoded expectation fails there for reasons
+    // unrelated to the behaviour under test.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("prog.s"));
+    const QString project = settings::projectFileFor(source);
+
+    QVERIFY2(QFileInfo(project).isAbsolute(), qPrintable(project));
+    QVERIFY(QFileInfo(project).absolutePath() == QFileInfo(source).absolutePath());
+    QCOMPARE(QFileInfo(project).fileName(), QStringLiteral("prog.pistproject"));
+
     QVERIFY(settings::projectFileFor(QString()).isEmpty());
 }
 

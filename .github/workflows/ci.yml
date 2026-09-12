@@ -105,6 +105,21 @@ jobs:
           echo
           echo "### verbose re-run to capture the failures"
           ctest --test-dir build --build-config Release -V || true
+
+          # Last resort: run each test binary with its output redirected to a
+          # file, which captures output even when ctest's capture does not.
+          echo
+          echo "### direct runs with redirected output"
+          for exe in build/tst_* build/Release/tst_*.exe; do
+            [ -f "$exe" ] || continue
+            case "$exe" in *.exe.recipe|*.lib|*.pdb) continue ;; esac
+            out=$(mktemp)
+            "$exe" > "$out" 2>&1
+            code=$?
+            echo "--- $exe (exit $code) ---"
+            tail -30 "$out"
+            rm -f "$out"
+          done
           exit 1
 
       - name: Report test summary

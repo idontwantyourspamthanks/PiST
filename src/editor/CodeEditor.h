@@ -28,6 +28,11 @@ public:
     void setCurrentExecutionLine(int line);
     void clearCurrentExecutionLine();
 
+    /// The highlighted execution line, or 0 when none. Exposed so the debug loop
+    /// can be asserted without reaching into the widget's internals: the value is
+    /// what the user sees highlighted.
+    int currentExecutionLine() const { return m_currentExecutionLine; }
+
     /// Mark a line with a build-error gutter marker (1-based).
     void setErrorLines(const QList<int> &lines);
 

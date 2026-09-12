@@ -10,6 +10,7 @@
 // editor follows the PC and that breakpoints work, so those claims are asserted
 // here rather than assumed.
 
+#include "editor/CodeEditor.h"
 #include "ui/MainWindow.h"
 
 #include <QDir>
@@ -29,6 +30,7 @@ private slots:
     void initTestCase();
     void windowConstructs();
     void assemblesAndMapsLines();
+    void editorShowsExecutionLineAndBreakpoints();
 
 private:
     QString m_vasm;
@@ -111,6 +113,34 @@ void TstGui::assemblesAndMapsLines()
     QVERIFY2(LineMap::sameSource(back.file, QStringLiteral("prog.s")),
              qPrintable("recorded path does not match the open file: " + back.file));
     QVERIFY(LineMap::sameSource(back.file, m_source));
+}
+
+// The last step of the debug loop: MainWindow turns a resolved PC into a
+// highlight on the editor widget, and a gutter click into a marker. Both are
+// plain widget state, so they are asserted directly rather than inferred from
+// the line map being correct.
+void TstGui::editorShowsExecutionLineAndBreakpoints()
+{
+    MainWindow window;
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY2(editor, "MainWindow must own a CodeEditor");
+
+    editor->setPlainText(QStringLiteral("\ttext\nstart:\tnop\n\tbra.s\tstart\n\tend\n"));
+
+    // Highlight follows whatever the debug loop resolved.
+    QCOMPARE(editor->currentExecutionLine(), 0);
+    editor->setCurrentExecutionLine(2);
+    QCOMPARE(editor->currentExecutionLine(), 2);
+
+    editor->clearCurrentExecutionLine();
+    QCOMPARE(editor->currentExecutionLine(), 0);
+
+    // Gutter markers, which the breakpoint list drives.
+    QVERIFY(editor->breakpointLines().isEmpty());
+    editor->setBreakpointLines({2, 3});
+    QCOMPARE(editor->breakpointLines(), QList<int>({2, 3}));
+    editor->setBreakpointLines({});
+    QVERIFY(editor->breakpointLines().isEmpty());
 }
 
 QTEST_MAIN(TstGui)

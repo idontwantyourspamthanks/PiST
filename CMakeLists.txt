@@ -52,6 +52,8 @@ qt_add_executable(pist
     src/ui/MainWindow.h
     src/ui/RegistersView.cpp
     src/ui/RegistersView.h
+    src/ui/BreakpointPanel.cpp
+    src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
     src/ui/MemoryView.cpp
@@ -125,6 +127,10 @@ qt_add_executable(tst_gui
     src/ui/MainWindow.h
     src/ui/RegistersView.cpp
     src/ui/RegistersView.h
+    src/ui/BreakpointPanel.cpp
+    src/ui/BreakpointPanel.h
+    src/ui/BreakpointPanel.cpp
+    src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
     src/ui/MemoryView.cpp
@@ -162,6 +168,11 @@ set_tests_properties(gui PROPERTIES TIMEOUT 180)
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
+    src/build/LineMap.cpp
+    src/build/LineMap.h
+    src/build/Diagnostic.h
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
     src/emu/HatariProbe.cpp

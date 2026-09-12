@@ -13,6 +13,8 @@
 // Skips when Hatari, a TOS ROM, or vasm is unavailable, so the suite stays
 // runnable on a bare machine.
 
+#include "build/LineMap.h"
+#include "debug/Breakpoint.h"
 #include "emu/EmulatorHost.h"
 #include "emu/HatariProbe.h"
 #include "emu/SessionConfig.h"
@@ -21,6 +23,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
 #include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -63,6 +66,7 @@ private slots:
     void runsWithoutControlSocket();
     void breaksInOnIllegalInstruction();
     void doesNotBreakInOnNormalRun();
+    void sourceLineBreakpointFiresAndResolvesBack();
 
 private:
     QString m_hatari;
@@ -443,6 +447,117 @@ void TstEmulatorHost::doesNotBreakInOnNormalRun()
     QTest::qWait(6000);
     QVERIFY2(!host.isStopped(),
              "a healthy program must run without break-in under the default exception set");
+
+    host.stop();
+}
+
+// The end-to-end claim: a breakpoint set on a *source line* is resolved to an
+// address, armed, and then actually fires — and the resulting PC maps back to
+// that same line. This is the whole debug loop, and until it is asserted the
+// breakpoint and highlight behaviour are only partly proven: resolution is
+// covered by tst_debug, but not that the resulting command hits.
+void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
+{
+    // A program with a distinctive loop to break on.
+    const QString source = m_sourceDir + QStringLiteral("/line.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "\tmoveq\t#2,d1\n"
+              "\tmoveq\t#3,d2\n"
+              "loop:\tnop\n"
+              "\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    const QString prg = m_sourceDir + QStringLiteral("/line.prg");
+    const QString listing = m_sourceDir + QStringLiteral("/line.lst");
+    QProcess vasm;
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"),
+                        QStringLiteral("-L"), listing, QStringLiteral("-o"), prg, source});
+    QVERIFY(vasm.waitForFinished(20000));
+    QCOMPARE(vasm.exitCode(), 0);
+
+    // Parse with the source path exactly as the build passed it, which is what
+    // the real application does.
+    LineMap map;
+    QString mapError;
+    QVERIFY2(map.parseListing(listing, &mapError), qPrintable(mapError));
+
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = prg;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/line");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &s) { last = s; });
+
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "no entry stop");
+
+    // Phase two of the attach: load symbols and read the live section bases.
+    host.command(QStringLiteral("symbols prg"));
+    QVERIFY(finished.wait(15000));
+    finished.clear();
+    host.command(QStringLiteral("info basepage"));
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.hasBases(), 5000);
+    finished.clear();
+
+    LineMap::SectionBases bases;
+    bases.text = last.textBase;
+    bases.data = last.dataBase;
+    bases.bss = last.bssBase;
+
+    // `loop:` is line 5. Resolve it exactly as the gutter click does.
+    QList<Breakpoint> bps;
+    bps.append(Breakpoint{QFileInfo(source).fileName(), 5, QString(), true, 0, false});
+    const ArmPlan plan = planBreakpoints(bps, map, bases);
+    QCOMPARE(plan.commands.size(), 1);
+    QVERIFY2(plan.unresolved.isEmpty(), "line 5 should have an address");
+    const quint32 breakAddress = plan.armed.first().address;
+
+    // Arm it, then let the program run: it must stop on its own.
+    host.command(QStringLiteral("b all"));
+    QVERIFY(finished.wait(15000));
+    finished.clear();
+    host.command(plan.commands.first());
+    QVERIFY(finished.wait(15000));
+    const QString armResponse = finished.takeFirst().at(1).toString();
+    QVERIFY2(armResponse.contains(QLatin1String("breakpoint"), Qt::CaseInsensitive),
+             qPrintable("breakpoint was not accepted: " + armResponse.left(300)));
+
+    host.resume();
+
+    // Wait on state rather than on the signal: subsequent debugger entries are
+    // detected from the prompt, and the spy would already hold earlier entries.
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
+
+    host.command(QStringLiteral("r"));
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+
+    // The PC must be exactly where the breakpoint was placed.
+    QCOMPARE(last.pc, breakAddress);
+
+    // ...and mapping that PC back through the line map must land on line 5,
+    // which is what drives the editor highlight.
+    LineMap::Address back;
+    QVERIFY(map.lineFor(last.pc, bases, &back));
+    QCOMPARE(back.line, 5);
+    QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
+             qPrintable("highlight would not match the open file: " + back.file));
 
     host.stop();
 }

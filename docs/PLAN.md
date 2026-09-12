@@ -584,6 +584,18 @@ load-bearing dependency — which the detection order above already guarantees.
   installed on the development machine, whose header values agree with their conventional names)
 - **The `r` response does not contain a `CPU=` header**; the PC must be taken from the trailing
   instruction line
+- **The "You have entered debug mode" banner prints exactly once per session** — it is a `static`
+  initialised to non-NULL and set to NULL after its first print (`debugui.c:1309`). It therefore
+  reports the first stop only, and *every subsequent breakpoint hit or exception is invisible in the
+  output*. Successive debugger entries must be detected structurally instead: a prompt arriving while
+  no command is in flight. Without this, breakpoints work in the emulator but the IDE never learns
+  they were hit
+- **stdin at EOF makes the debugger abandon its read loop and resume emulation.** With no further
+  commands queued, a firing breakpoint therefore re-enters and immediately resumes in a hot loop
+  (observed ~1.17M hits in 15s). The IDE must hold the pipe open, which also means an IDE-driven
+  session never relies on EOF to end it
+- A source-line breakpoint was verified end to end in a live session: resolved from the listing to
+  an address, armed, fired, and its PC mapped back to the originating line
 - **Disassembly format follows the user's `bDisasmUAE` setting**, not the build
 - **`--control-socket` is absent on Windows** (declared under `HAVE_UNIX_DOMAIN_SOCKETS`), and a full
   session runs without it: break at entry, registers, symbols and stepping were all verified with the

@@ -26,6 +26,7 @@ namespace pist {
 
 class BuildService;
 class CodeEditor;
+class BreakpointPanel;
 class DisassemblyView;
 class EmulatorHost;
 class MemoryView;
@@ -49,6 +50,8 @@ private slots:
     void stepOver();
     void resume();
 
+    void removeBreakpoint(const QString &file, int line);
+    void goToBreakpoint(const QString &file, int line);
     void toggleBreakpointAtLine(int line);
     void editBreakpointCondition(int line);
     void clearAllBreakpoints();
@@ -67,6 +70,10 @@ private:
     /// load address is known, so breakpoints can finally be resolved and armed.
     void onDebuggerStopped();
     void armBreakpoints();
+
+    /// Fold the addresses the ArmPlan resolved back into the stored breakpoint
+    /// list, so the panel shows where each one actually landed.
+    QList<Breakpoint> mergeResolved(const ArmPlan &plan) const;
     void refreshBreakpointMarkers();
 
     /// Per-session working directory, kept short so the control socket path fits
@@ -81,6 +88,7 @@ private:
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
+    BreakpointPanel *m_breakpointPanel = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QTabWidget *m_bottomTabs = nullptr;

@@ -586,8 +586,23 @@ void EmulatorHost::onPrompt()
     // response is. Wait for a short quiet period on stderr instead. A fixed
     // zero-delay hop is not enough; it loses the race whenever the response is
     // large, such as a break-in session dump.
-    if (m_haveCurrent && m_promptCount >= m_promptTarget)
+    if (m_haveCurrent && m_promptCount >= m_promptTarget) {
         m_settleTimer->start(kSettleMs);
+        return;
+    }
+
+    // Nothing in flight, yet the debugger is sitting at a prompt: it must have
+    // just entered — a breakpoint hit, an exception, or a manual break-in.
+    //
+    // This cannot be detected from output text. The "You have entered debug
+    // mode" banner is a `static` in DebugUI that is set to NULL after its first
+    // print, so it appears exactly once per session and says nothing about
+    // subsequent stops. The prompt is the reliable signal, and it is structural
+    // rather than parsed.
+    if (!m_haveCurrent && m_queue.isEmpty() && !m_stopped) {
+        m_stopped = true;
+        emit stoppedChanged(true);
+    }
 }
 
 void EmulatorHost::onCommandTimeout()

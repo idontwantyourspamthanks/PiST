@@ -10,6 +10,7 @@
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "debug/Breakpoint.h"
+#include "ui/BreakpointPanel.h"
 #include "ui/DisassemblyView.h"
 #include "ui/MemoryView.h"
 #include "ui/RegistersView.h"
@@ -190,6 +191,19 @@ void MainWindow::createDocks()
         auto *dock = new QDockWidget(tr("Disassembly"), this);
         m_disassembly = new DisassemblyView(dock);
         dock->setWidget(m_disassembly);
+        return dock;
+    }());
+
+    addDockWidget(Qt::RightDockWidgetArea, [this] {
+        auto *dock = new QDockWidget(tr("Breakpoints"), this);
+        m_breakpointPanel = new BreakpointPanel(dock);
+        dock->setWidget(m_breakpointPanel);
+        connect(m_breakpointPanel, &BreakpointPanel::removeRequested,
+                this, &MainWindow::removeBreakpoint);
+        connect(m_breakpointPanel, &BreakpointPanel::breakpointActivated,
+                this, &MainWindow::goToBreakpoint);
+        connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
+                this, &MainWindow::clearAllBreakpoints);
         return dock;
     }());
 
@@ -555,6 +569,37 @@ void MainWindow::armBreakpoints()
                 .arg(plan.commands.size())
                 .arg(m_breakpoints.size()));
     }
+
+    // Show the resolved addresses and flag any breakpoint that could not be
+    // placed, so "why did my breakpoint not fire" is answerable at a glance.
+    if (m_breakpointPanel) {
+        m_breakpointPanel->setResolvable(true);
+        m_breakpointPanel->setBreakpoints(mergeResolved(plan));
+    }
+}
+
+QList<Breakpoint> MainWindow::mergeResolved(const ArmPlan &plan) const
+{
+    QList<Breakpoint> merged = m_breakpoints;
+
+    // Reset first: a breakpoint that was resolved on a previous run must not keep
+    // showing a stale address from before the program was relocated.
+    for (Breakpoint &bp : merged) {
+        bp.resolved = false;
+        bp.address = 0;
+    }
+
+    for (const Breakpoint &armed : plan.armed) {
+        for (Breakpoint &bp : merged) {
+            if (bp.line == armed.line && bp.file == armed.file) {
+                bp.address = armed.address;
+                bp.resolved = true;
+                break;
+            }
+        }
+    }
+
+    return merged;
 }
 
 void MainWindow::refreshBreakpointMarkers()
@@ -566,6 +611,9 @@ void MainWindow::refreshBreakpointMarkers()
             lines.append(bp.line);
     }
     m_editor->setBreakpointLines(lines);
+
+    if (m_breakpointPanel)
+        m_breakpointPanel->setBreakpoints(m_breakpoints);
 }
 
 void MainWindow::toggleBreakpointAtLine(int line)
@@ -590,6 +638,32 @@ void MainWindow::toggleBreakpointAtLine(int line)
     // breakpoint takes effect without restarting.
     if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
         armBreakpoints();
+}
+
+void MainWindow::removeBreakpoint(const QString &file, int line)
+{
+    auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
+                           [&](const Breakpoint &bp) {
+                               return bp.line == line && bp.file == file;
+                           });
+    if (it == m_breakpoints.end())
+        return;
+
+    m_breakpoints.erase(it);
+    refreshBreakpointMarkers();
+
+    if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
+        armBreakpoints();
+}
+
+void MainWindow::goToBreakpoint(const QString &file, int line)
+{
+    // Only navigate within the file that is open; switching documents is not
+    // supported yet, so silently doing nothing is better than jumping to the
+    // wrong line in the wrong file.
+    if (m_editor->filePath().isEmpty() || !LineMap::sameSource(file, m_editor->filePath()))
+        return;
+    m_editor->gotoLine(line);
 }
 
 void MainWindow::editBreakpointCondition(int line)

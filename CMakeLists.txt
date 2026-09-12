@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project(pist
     VERSION 0.1.0
-    DESCRIPTION "An IDE for Atari ST assembly development"
+    DESCRIPTION "PiST - an IDE for Atari ST assembly development"
     LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -28,6 +28,9 @@ qt_add_executable(pist
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
+
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
     src/build/LineMap.cpp
     src/build/LineMap.h
 
@@ -36,6 +39,8 @@ qt_add_executable(pist
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/MachineState.h
+    src/emu/MemoryDump.cpp
+    src/emu/MemoryDump.h
     src/emu/Paths.cpp
     src/emu/Paths.h
     src/emu/SessionConfig.cpp
@@ -49,6 +54,8 @@ qt_add_executable(pist
     src/ui/RegistersView.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/MemoryView.cpp
+    src/ui/MemoryView.h
 )
 
 target_include_directories(pist PRIVATE src)
@@ -74,6 +81,9 @@ qt_add_executable(tst_parsers
     src/build/LineMap.cpp
     src/build/LineMap.h
     src/build/Diagnostic.h
+
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
 )
 target_include_directories(tst_parsers PRIVATE src)
 target_link_libraries(tst_parsers PRIVATE Qt6::Test)
@@ -92,6 +102,63 @@ target_include_directories(tst_tosrom PRIVATE src)
 target_link_libraries(tst_tosrom PRIVATE Qt6::Test)
 add_test(NAME tosrom COMMAND tst_tosrom)
 
+# Breakpoint resolution and memory-dump parsing: pure functions, no emulator.
+qt_add_executable(tst_debug
+    tests/tst_debug.cpp
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
+    src/build/LineMap.cpp
+    src/build/LineMap.h
+    src/build/Diagnostic.h
+    src/emu/MemoryDump.cpp
+    src/emu/MemoryDump.h
+)
+target_include_directories(tst_debug PRIVATE src)
+target_link_libraries(tst_debug PRIVATE Qt6::Test)
+add_test(NAME debug COMMAND tst_debug)
+
+# GUI-level: constructs MainWindow and verifies the line map against a real
+# vasm listing, covering the PC <-> source-line claim end to end.
+qt_add_executable(tst_gui
+    tests/tst_gui.cpp
+    src/ui/MainWindow.cpp
+    src/ui/MainWindow.h
+    src/ui/RegistersView.cpp
+    src/ui/RegistersView.h
+    src/ui/DisassemblyView.cpp
+    src/ui/DisassemblyView.h
+    src/ui/MemoryView.cpp
+    src/ui/MemoryView.h
+    src/editor/CodeEditor.cpp
+    src/editor/CodeEditor.h
+    src/editor/AsmHighlighter.cpp
+    src/editor/AsmHighlighter.h
+    src/build/BuildService.cpp
+    src/build/BuildService.h
+    src/build/Diagnostic.h
+    src/build/LineMap.cpp
+    src/build/LineMap.h
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
+    src/emu/EmulatorHost.cpp
+    src/emu/EmulatorHost.h
+    src/emu/HatariProbe.cpp
+    src/emu/HatariProbe.h
+    src/emu/MachineState.h
+    src/emu/MemoryDump.cpp
+    src/emu/MemoryDump.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+    src/emu/SessionConfig.cpp
+    src/emu/SessionConfig.h
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
+)
+target_include_directories(tst_gui PRIVATE src)
+target_link_libraries(tst_gui PRIVATE Qt6::Test Qt6::Widgets Qt6::Network)
+add_test(NAME gui COMMAND tst_gui)
+set_tests_properties(gui PROPERTIES TIMEOUT 180)
+
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
@@ -106,6 +173,8 @@ qt_add_executable(tst_emulatorhost
     src/emu/TosRom.cpp
     src/emu/TosRom.h
     src/emu/MachineState.h
+    src/emu/MemoryDump.cpp
+    src/emu/MemoryDump.h
 )
 target_include_directories(tst_emulatorhost PRIVATE src)
 target_link_libraries(tst_emulatorhost PRIVATE Qt6::Test Qt6::Network)

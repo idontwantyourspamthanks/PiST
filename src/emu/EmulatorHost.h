@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #pragma once
 
@@ -71,11 +71,33 @@ public:
     /// Queue the commands needed to render a full state snapshot.
     void refresh();
 
+    /// Remove every breakpoint, then arm the given ones. Order matters: clearing
+    /// first means a rebuilt program cannot leave a stale breakpoint behind at an
+    /// address that has been reused by different code.
+    ///
+    /// Must be called after the entry stop, because the program's load address is
+    /// only known once it has been executed (docs/PLAN.md §5 rule 6).
+    void clearBreakpoints();
+
+    /// Arm one breakpoint by emitting its Hatari `b` command. The caller resolves
+    /// source lines to addresses first (see debug/Breakpoint.h).
+    void armBreakpoint(const QString &condition);
+
+    /// Request a memory dump of `length` bytes at `address`. The response arrives
+    /// via commandFinished; the raw text is also parsed into memoryDumpReady.
+    void requestMemoryDump(quint32 address, int length);
+
+    /// Read all registers into the host's cached state.
+    void dumpRegisters();
+
     static QString writeBootstrapScript(const QString &directory,
                                         const HatariCapabilities &caps,
                                         QString *error);
 
 signals:
+    /// A `memdump` response, with the command it answered.
+    void memoryDumpReady(quint32 address, const QString &response);
+
     void runningChanged(bool running);
     void stoppedChanged(bool stopped);
     void commandFinished(const QString &command, const QString &response);
@@ -136,6 +158,10 @@ private:
     /// Prompts still owed by commands that timed out. Their arrival must be
     /// swallowed so they cannot complete a later command.
     int m_owedPrompts = 0;
+
+    /// Address of the most recent memdump request, so its response can be
+    /// reported back with the address it came from.
+    quint32 m_pendingDumpAddress = 0;
 
     MachineState m_state;
     bool m_stopped = false;

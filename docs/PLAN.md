@@ -1,4 +1,4 @@
-# pist — an IDE for Atari ST assembly development
+# PiST — an IDE for Atari ST assembly development
 
 Cross-platform (Linux, Windows, macOS) Qt6 IDE for developing m68k assembly for the Atari ST/STE,
 with an embedded Hatari emulator and integrated debugging.
@@ -92,7 +92,7 @@ The `echo` abort is triggered by any argument containing no backslash escape, be
 
 ```mermaid
 flowchart TB
-  subgraph IDE["pist (Qt6 Widgets, Qt linked dynamically under LGPLv3)"]
+  subgraph IDE["PiST (Qt6 Widgets, Qt linked dynamically under LGPLv3)"]
     ED[Editor + 68k mot highlighter]
     PR[Problems pane]
     FB[File / project browser]
@@ -489,18 +489,18 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 
 | Component | License | Can we ship it? | Boundary |
 |---|---|---|---|
-| **pist** (this project) | GPL-2.0-or-later | — | Chosen for compatibility with the emulator ecosystem; see §10 |
+| **PiST** (this project) | GPL-2.0-or-later | — | Chosen for compatibility with the emulator ecosystem; see §10 |
 | Hatari | GPL-2.0-or-later, with an explicit statement that static **or dynamic** linking makes a combined work | Yes | **Separate process/binary**. Isolated in `EmulatorHost` so the boundary stays auditable; see §10 |
 | libretro Hatari core | GPL-2.0-or-later (identical `readme.txt` blob to upstream) | Yes | Same; `dlopen` does not escape the GPL |
 | libretro API header | MIT-style, per-file | Yes | Preserve notice |
-| **vasm / vbcc** | Non-free: "may be redistributed without modifications and used for non-commercial purposes" | **Yes — because pist is free software** | **Redistribute unmodified only.** Never patch vasm. Ship its `readme.txt`/manual and mark it as third-party. Any commercial use still needs the author's written consent |
+| **vasm / vbcc** | Non-free: "may be redistributed without modifications and used for non-commercial purposes" | **Yes — because PiST is free software** | **Redistribute unmodified only.** Never patch vasm. Ship its `readme.txt`/manual and mark it as third-party. Any commercial use still needs the author's written consent |
 | Original Atari TOS ROMs | Proprietary | No | User-supplied; validate size/version; add our own hash check |
 | EmuTOS | GPLv2 | Yes | Data file, not linked. GPLv2 text + source offer |
-| Qt 6 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only / commercial | Yes | **Dynamic linking** under LGPLv3 (deliver Qt source, relink ability, Installation Information). Qt's GPL-2.0-only option is also available to us, since pist is GPL-2.0-or-later |
+| Qt 6 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only / commercial | Yes | **Dynamic linking** under LGPLv3 (deliver Qt source, relink ability, Installation Information). Qt's GPL-2.0-only option is also available to us, since PiST is GPL-2.0-or-later |
 | SDL2 (only if embedding upstream Hatari) | zlib | Yes | Acknowledgement |
 | Capstone | BSD-3-Clause | Yes | Attach `LICENSE.TXT` |
 
-**Batteries-included is legally achievable.** Because pist is free software, the redistribution
+**Batteries-included is legally achievable.** Because PiST is free software, the redistribution
 terms of every component permit bundling:
 
 - **EmuTOS** — GPLv2, ships as the default ROM so the IDE works out of the box with no user setup.
@@ -592,7 +592,7 @@ load-bearing dependency — which the detection order above already guarantees.
   `--debug-except autostart,illegal` — verified stopping on the `illegal` instruction
 - **Arming `bus` breaks in spuriously**: TOS raises a bus error at `0xfc0ee2` during startup, before
   the program is executed
-- End-to-end in `pist`: `ctest` runs 9 parser tests, 12 ROM-identification tests, and 7
+- End-to-end in `PiST`: `ctest` runs 9 parser tests, 12 ROM-identification tests, and 7
   emulator-integration tests against a real Hatari, all passing
 
 ### Verified by reading source (not executed)
@@ -619,7 +619,7 @@ load-bearing dependency — which the detection order above already guarantees.
 
 ## 10. Licensing decision: open source
 
-**Decided.** pist is **free software, GPL-2.0-or-later**, released for anyone to use and contribute
+**Decided.** PiST is **free software, GPL-2.0-or-later**, released for anyone to use and contribute
 to. This resolves the `libretro` question that previously gated Phase 3: an in-process emulator core
 is *possible*, subject to the compatibility note below.
 
@@ -651,7 +651,7 @@ Consequence:
 | MIT / Apache-2.0 | Maximum contributor uptake, but permits closed forks of a project whose value lies substantially in its emulator/toolchain integration |
 | LGPL-3.0-or-later | Same GPLv2-vs-v3 incompatibility in the linking direction, with less benefit for an end-user application |
 
-"Or later" is retained (rather than plain GPL-2.0-only) so downstream users combining pist with
+"Or later" is retained (rather than plain GPL-2.0-only) so downstream users combining PiST with
 other GPLv3 code — and *not* with Hatari — may take the whole work to v3.
 
 GPL-2.0-or-later also matches the surrounding ecosystem (Hatari, EmuTOS), which keeps

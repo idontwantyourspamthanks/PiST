@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #include "ui/MainWindow.h"
 
@@ -9,7 +9,9 @@
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "debug/Breakpoint.h"
 #include "ui/DisassemblyView.h"
+#include "ui/MemoryView.h"
 #include "ui/RegistersView.h"
 
 #include <QAction>
@@ -28,6 +30,8 @@
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QInputDialog>
+#include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
 
@@ -75,11 +79,44 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_host, &EmulatorHost::errorOccurred, this, [this](const QString &message) {
         m_log->appendPlainText(QStringLiteral("[error] ") + message);
     });
+    connect(m_host, &EmulatorHost::memoryDumpReady, this,
+            [this](quint32, const QString &response) {
+                if (m_memory)
+                    m_memory->applyDump(response);
+            });
+
+    connect(m_editor, &CodeEditor::gutterClicked, this, [this](int line, Qt::MouseButton button) {
+        if (button == Qt::LeftButton)
+            toggleBreakpointAtLine(line);
+        else if (button == Qt::RightButton)
+            editBreakpointCondition(line);
+    });
+    connect(m_editor, &CodeEditor::gutterContextMenuRequested, this,
+            [this](int line, const QPoint &pos) {
+                QMenu menu;
+                const bool hasBreakpoint = std::any_of(
+                    m_breakpoints.cbegin(), m_breakpoints.cend(),
+                    [this, line](const Breakpoint &bp) {
+                        return bp.line == line
+                            && bp.file == QFileInfo(m_editor->filePath()).fileName();
+                    });
+                QAction *toggle = menu.addAction(hasBreakpoint ? tr("Remove breakpoint")
+                                                               : tr("Add breakpoint"));
+                QAction *condition = menu.addAction(tr("Edit condition…"));
+                QAction *chosen = menu.exec(pos);
+                if (chosen == toggle)
+                    toggleBreakpointAtLine(line);
+                else if (chosen == condition)
+                    editBreakpointCondition(line);
+            });
+
     connect(m_host, &EmulatorHost::stoppedChanged, this, [this](bool stopped) {
         m_actStep->setEnabled(stopped);
         m_actStepOver->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
         m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
+        if (stopped)
+            onDebuggerStopped();
     });
 
     createActions();
@@ -92,7 +129,7 @@ MainWindow::MainWindow(QWidget *parent)
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     m_statusEmulator->setText(m_caps.summary());
 
-    setWindowTitle(tr("pist — Atari ST assembly IDE"));
+    setWindowTitle(tr("PiST — Atari ST assembly IDE"));
     resize(1280, 860);
 }
 
@@ -130,6 +167,10 @@ void MainWindow::createActions()
     m_actStepOver->setEnabled(false);
     connect(m_actStepOver, &QAction::triggered, this, &MainWindow::stepOver);
 
+    m_actClearBreakpoints = new QAction(tr("Clear &Breakpoints"), this);
+    m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
+    connect(m_actClearBreakpoints, &QAction::triggered, this, &MainWindow::clearAllBreakpoints);
+
     m_actResume = new QAction(tr("&Continue"), this);
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
     m_actResume->setEnabled(false);
@@ -149,6 +190,14 @@ void MainWindow::createDocks()
         auto *dock = new QDockWidget(tr("Disassembly"), this);
         m_disassembly = new DisassemblyView(dock);
         dock->setWidget(m_disassembly);
+        return dock;
+    }());
+
+    addDockWidget(Qt::BottomDockWidgetArea, [this] {
+        auto *dock = new QDockWidget(tr("Memory"), this);
+        m_memory = new MemoryView(dock);
+        dock->setWidget(m_memory);
+        connect(m_memory, &MemoryView::dumpRequested, m_host, &EmulatorHost::requestMemoryDump);
         return dock;
     }());
 
@@ -190,6 +239,8 @@ void MainWindow::createToolBar()
     bar->addAction(m_actResume);
     bar->addAction(m_actStep);
     bar->addAction(m_actStepOver);
+    bar->addSeparator();
+    bar->addAction(m_actClearBreakpoints);
 }
 
 void MainWindow::createStatusBar()
@@ -364,7 +415,7 @@ void MainWindow::run()
         QMessageBox::critical(
             this, tr("Run"),
             tr("No TOS ROM image found.\n\n"
-               "Original TOS images cannot be bundled with pist, so one has to be supplied "
+               "Original TOS images cannot be bundled with PiST, so one has to be supplied "
                "separately. Place a ROM image in one of these directories, or point "
                "$PIST_TOS_DIR at the directory containing it:\n\n%1")
                 .arg(searched.isEmpty() ? tr("(no searchable directory found)")
@@ -412,6 +463,11 @@ void MainWindow::run()
     }
     config.tosPath = rom.path;
 
+    // A new session relocates the program, so previously resolved addresses are
+    // meaningless and arming must happen again after the next entry stop.
+    m_sessionArmed = false;
+    m_bases = LineMap::SectionBases();
+
     m_host->setCapabilities(m_caps);
     if (!m_host->start(config, &error)) {
         QMessageBox::critical(this, tr("Run"), error);
@@ -444,15 +500,161 @@ void MainWindow::resume()
     m_host->resume();
 }
 
+void MainWindow::onDebuggerStopped()
+{
+    if (m_sessionArmed)
+        return;
+    m_sessionArmed = true;
+
+    // The two-phase attach, in order. The program's load address is only known
+    // once it has been executed, so:
+    //
+    //   1. stop at entry (armed at launch via --parse, using the TEXT variable,
+    //      which needs no symbols)
+    //   2. load symbols, which relocates them against the live base page
+    //   3. read the base page, because the line map needs the section addresses
+    //
+    // Only then can a source line be turned into an address
+    // (docs/PLAN.md §5 rules 5 and 6).
+    m_host->command(QStringLiteral("symbols prg"));
+    m_host->command(QStringLiteral("info basepage"));
+    m_host->dumpRegisters();
+    m_host->command(QStringLiteral("d"));
+
+    // Arming is chained after those commands complete, because it needs the
+    // section bases they report.
+    QTimer::singleShot(0, this, [this] {
+        if (m_bases.isValid())
+            armBreakpoints();
+        else
+            m_log->appendPlainText(
+                tr("[breakpoints] no program base page yet; breakpoints will arm on the next stop"));
+    });
+}
+
+void MainWindow::armBreakpoints()
+{
+    const ArmPlan plan = planBreakpoints(m_breakpoints, m_lineMap, m_bases);
+
+    // Clear before arming. A rebuilt program can occupy different addresses, so
+    // leaving old breakpoints in place would silently break on whatever code now
+    // lives at those addresses.
+    m_host->clearBreakpoints();
+
+    for (const QString &command : plan.commands)
+        m_host->armBreakpoint(command);
+
+    for (const QString &label : plan.unresolved) {
+        m_log->appendPlainText(
+            tr("[breakpoints] %1 has no address (it emits no code or data)").arg(label));
+    }
+
+    if (!plan.commands.isEmpty()) {
+        m_log->appendPlainText(
+            tr("[breakpoints] armed %1 of %2")
+                .arg(plan.commands.size())
+                .arg(m_breakpoints.size()));
+    }
+}
+
+void MainWindow::refreshBreakpointMarkers()
+{
+    const QString file = QFileInfo(m_editor->filePath()).fileName();
+    QList<int> lines;
+    for (const Breakpoint &bp : m_breakpoints) {
+        if (bp.file == file)
+            lines.append(bp.line);
+    }
+    m_editor->setBreakpointLines(lines);
+}
+
+void MainWindow::toggleBreakpointAtLine(int line)
+{
+    if (m_editor->filePath().isEmpty() || line <= 0)
+        return;
+
+    const QString file = QFileInfo(m_editor->filePath()).fileName();
+
+    auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
+                           [&](const Breakpoint &bp) {
+                               return bp.line == line && bp.file == file;
+                           });
+    if (it != m_breakpoints.end())
+        m_breakpoints.erase(it);
+    else
+        m_breakpoints.append(Breakpoint{file, line, QString(), true, 0, false});
+
+    refreshBreakpointMarkers();
+
+    // Re-arm immediately if a session is already running and stopped, so the new
+    // breakpoint takes effect without restarting.
+    if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
+        armBreakpoints();
+}
+
+void MainWindow::editBreakpointCondition(int line)
+{
+    if (m_editor->filePath().isEmpty() || line <= 0)
+        return;
+
+    const QString file = QFileInfo(m_editor->filePath()).fileName();
+    auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
+                           [&](const Breakpoint &bp) {
+                               return bp.line == line && bp.file == file;
+                           });
+    if (it == m_breakpoints.end()) {
+        // Nothing to edit yet, so create one first rather than silently doing
+        // nothing on a right-click at an empty line.
+        toggleBreakpointAtLine(line);
+        it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
+                          [&](const Breakpoint &bp) {
+                              return bp.line == line && bp.file == file;
+                          });
+        if (it == m_breakpoints.end())
+            return;
+    }
+
+    bool accepted = false;
+    const QString condition = QInputDialog::getText(
+        this, tr("Breakpoint condition"),
+        tr("Extra condition for %1:%2 (ANDed with the program counter).\n\n"
+           "Hatari has no memory watchpoints, so this is how you watch a value,\n"
+           "for example:  d0 = $1234   or   (buf) = $ff")
+            .arg(file)
+            .arg(line),
+        QLineEdit::Normal, it->condition, &accepted);
+    if (!accepted)
+        return;
+
+    it->condition = condition.trimmed();
+    if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
+        armBreakpoints();
+}
+
+void MainWindow::clearAllBreakpoints()
+{
+    m_breakpoints.clear();
+    refreshBreakpointMarkers();
+    if (m_host->isRunning())
+        m_host->clearBreakpoints();
+    m_log->appendPlainText(tr("[breakpoints] all cleared"));
+}
+
 void MainWindow::onStateUpdated(const MachineState &state)
 {
     m_registers->setState(state);
     m_disassembly->setState(state);
 
     if (state.hasBases()) {
+        const bool firstBases = !m_bases.isValid();
         m_bases.text = state.textBase;
         m_bases.data = state.dataBase;
         m_bases.bss = state.bssBase;
+
+        // Point the memory pane at the program's own data on the first stop.
+        // Its previous address is meaningless across sessions.
+        if (firstBases && m_memory)
+            m_memory->goToAddress(state.dataBase ? state.dataBase : state.textBase);
     }
 
     locationFromPc(state.pc);
@@ -471,9 +673,12 @@ void MainWindow::locationFromPc(quint32 pc)
         return;
     }
 
-    // Only follow the PC into the file that is actually open.
+    // Only follow the PC into the file that is actually open. The comparison
+    // must be path-tolerant: the listing records whatever path was passed to
+    // vasm (usually absolute), while the editor knows the file it was opened
+    // with (usually just a name).
     if (!m_editor->filePath().isEmpty()
-        && address.file != QFileInfo(m_editor->filePath()).fileName()) {
+        && !LineMap::sameSource(address.file, m_editor->filePath())) {
         return;
     }
 

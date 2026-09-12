@@ -82,7 +82,7 @@ Two things it must get right:
 Do it **upstream first**. `hatari-devel` is the submission path (the GitHub mirror explicitly says
 not to open pull requests there). A patch that adds an optional `host:port` form to an existing
 option, without changing existing behaviour, is a much easier sell than a new debug protocol — and
-if it lands, `pist` needs no fork at all. Only vendor a fork if upstream declines *and* the Windows
+if it lands, `PiST` needs no fork at all. Only vendor a fork if upstream declines *and* the Windows
 features become a real user request.
 
 ### Related, and already proven
@@ -131,7 +131,7 @@ m68k-only. Anything deeper means going through HRDB or writing Falcon-specific t
 `NSView*` and AppKit has no cross-process reparenting — so the emulator runs as a detached window
 there (`docs/PLAN.md` §3.2).
 
-An in-process emulator core would fix that, and with `pist` at GPL-2.0-or-later it is
+An in-process emulator core would fix that, and with `PiST` at GPL-2.0-or-later it is
 **licence-compatible**: Hatari contains three GPL-2.0-only files, so a combined work must be
 conveyed under GPLv2, which our licence permits. The cost is reimplementing the video, input and
 audio plumbing that Hatari's SDL frontend already provides, plus the licence audit for each release.
@@ -146,7 +146,7 @@ Do it for macOS polish, not as an architectural simplification.
 
 **Status:** not started. Release artefacts and first-run setup.
 
-Because `pist` is free software, vasm's redistribution terms permit bundling it **unmodified** for
+Because `PiST` is free software, vasm's redistribution terms permit bundling it **unmodified** for
 non-commercial use, and EmuTOS can ship as the default ROM — so a one-click install is legally
 achievable. The plan (`docs/PLAN.md` §7) is to keep the repository free of non-free binaries, fetch
 the official vasm archive on first run with a pinned checksum, and bundle everything in release

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #pragma once
 
 #include "build/Diagnostic.h"
+#include "debug/Breakpoint.h"
 #include "build/LineMap.h"
 #include "emu/HatariProbe.h"
 #include "emu/MachineState.h"
@@ -27,6 +28,7 @@ class BuildService;
 class CodeEditor;
 class DisassemblyView;
 class EmulatorHost;
+class MemoryView;
 class RegistersView;
 
 class MainWindow : public QMainWindow
@@ -47,6 +49,10 @@ private slots:
     void stepOver();
     void resume();
 
+    void toggleBreakpointAtLine(int line);
+    void editBreakpointCondition(int line);
+    void clearAllBreakpoints();
+
 private:
     void createActions();
     void createDocks();
@@ -56,6 +62,12 @@ private:
     void onBuildFinished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void onStateUpdated(const pist::MachineState &state);
     void locationFromPc(quint32 pc);
+
+    /// Called once the debugger stops. This is the point at which the program's
+    /// load address is known, so breakpoints can finally be resolved and armed.
+    void onDebuggerStopped();
+    void armBreakpoints();
+    void refreshBreakpointMarkers();
 
     /// Per-session working directory, kept short so the control socket path fits
     /// in sockaddr_un::sun_path.
@@ -68,6 +80,7 @@ private:
 
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
+    MemoryView *m_memory = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QTabWidget *m_bottomTabs = nullptr;
@@ -78,6 +91,14 @@ private:
     LineMap m_lineMap;
     LineMap::SectionBases m_bases;
 
+    /// Breakpoints are stored per file:line, never per address: the program is
+    /// relocated by GEMDOS on every run (docs/PLAN.md §5 rule 6).
+    QList<Breakpoint> m_breakpoints;
+
+    /// Set once the entry stop has been handled for the current session, so the
+    /// arming sequence runs exactly once.
+    bool m_sessionArmed = false;
+
     QAction *m_actOpen = nullptr;
     QAction *m_actSave = nullptr;
     QAction *m_actBuild = nullptr;
@@ -86,6 +107,7 @@ private:
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
     QAction *m_actResume = nullptr;
+    QAction *m_actClearBreakpoints = nullptr;
 };
 
 } // namespace pist

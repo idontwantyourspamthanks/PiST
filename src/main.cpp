@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #include "ui/MainWindow.h"
 
@@ -11,9 +11,9 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QApplication::setApplicationName(QStringLiteral("pist"));
+    QApplication::setApplicationName(QStringLiteral("PiST"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
-    QApplication::setOrganizationName(QStringLiteral("pist"));
+    QApplication::setOrganizationName(QStringLiteral("PiST"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(

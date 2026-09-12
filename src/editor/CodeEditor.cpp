@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #include "editor/CodeEditor.h"
 
 #include "editor/AsmHighlighter.h"
 
+#include <QContextMenuEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QTextBlock>
 #include <QTextStream>
@@ -33,6 +35,21 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *event) override { m_editor->lineNumberAreaPaintEvent(event); }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        const int line = m_editor->lineAtY(event->position().y());
+        if (line > 0)
+            emit m_editor->gutterClicked(line, event->button());
+        QWidget::mousePressEvent(event);
+    }
+
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        const int line = m_editor->lineAtY(event->pos().y());
+        if (line > 0)
+            emit m_editor->gutterContextMenuRequested(line, event->globalPos());
+    }
 
 private:
     CodeEditor *m_editor;
@@ -150,6 +167,32 @@ void CodeEditor::setErrorLines(const QList<int> &lines)
     refreshExtraSelections();
 }
 
+void CodeEditor::setBreakpointLines(const QList<int> &lines)
+{
+    m_breakpointLines = lines;
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
+}
+
+// Maps a y offset inside the gutter to a block number, so a click lands on the
+// line the user actually aimed at rather than the nearest text position.
+int CodeEditor::lineAtY(int y) const
+{
+    QTextBlock block = firstVisibleBlock();
+    int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+    int blockNumber = block.blockNumber();
+
+    while (block.isValid()) {
+        const int height = qRound(blockBoundingRect(block).height());
+        if (y >= top && y < top + height)
+            return blockNumber + 1;
+        top += height;
+        block = block.next();
+        ++blockNumber;
+    }
+    return 0;
+}
+
 void CodeEditor::gotoLine(int line)
 {
     if (line <= 0 || line > blockCount())
@@ -173,6 +216,17 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
     while (block.isValid() && top <= event->rect().bottom()) {
         if (block.isVisible() && bottom >= event->rect().top()) {
             const int line = blockNumber + 1;
+
+            if (m_breakpointLines.contains(line)) {
+                // A filled dot, drawn rather than glyph-based so it does not
+                // depend on a font that happens to have the character.
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                painter.setBrush(QColor(0xc0, 0x30, 0x30));
+                painter.setPen(Qt::NoPen);
+                const int d = fontMetrics().height() - 6;
+                painter.drawEllipse(QRect(2, top + 3, d, d));
+                painter.setRenderHint(QPainter::Antialiasing, false);
+            }
 
             if (m_errorLines.contains(line)) {
                 painter.setPen(QColor(0xd0, 0x30, 0x30));

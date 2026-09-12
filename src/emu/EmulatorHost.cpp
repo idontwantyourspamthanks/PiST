@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #include "emu/EmulatorHost.h"
 
@@ -493,6 +493,8 @@ void EmulatorHost::completeCurrent()
         parseBasepage(response);
     else if (commandText.startsWith(QLatin1Char('d')))
         parseDisassembly(response);
+    else if (commandText.startsWith(QLatin1Char('m')) && commandText.contains(QLatin1Char(' ')))
+        emit memoryDumpReady(m_pendingDumpAddress, response);
 
     m_haveCurrent = false;
     const QString text = m_current.text;
@@ -526,6 +528,34 @@ void EmulatorHost::refresh()
     command(QStringLiteral("r"));
     command(QStringLiteral("info basepage"));
     command(QStringLiteral("d"));
+}
+
+void EmulatorHost::clearBreakpoints()
+{
+    // `b all` removes every conditional breakpoint. Note this also removes the
+    // bootstrap entry breakpoint if it somehow still exists, which is fine
+    // because it is set with `:once` and has already fired by this point.
+    command(QStringLiteral("b all"));
+}
+
+void EmulatorHost::armBreakpoint(const QString &condition)
+{
+    command(condition);
+}
+
+void EmulatorHost::requestMemoryDump(quint32 address, int length)
+{
+    // `m <address> <count>`; the debugger's own number base is hex.
+    const QString cmd = QStringLiteral("m $%1 %2")
+                            .arg(address, 0, 16)
+                            .arg(length);
+    m_pendingDumpAddress = address;
+    command(cmd);
+}
+
+void EmulatorHost::dumpRegisters()
+{
+    command(QStringLiteral("r"));
 }
 
 void EmulatorHost::onPrompt()

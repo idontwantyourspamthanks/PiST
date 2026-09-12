@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #pragma once
 
@@ -19,7 +19,7 @@ struct SessionConfig
 {
     QString hatariPath = QStringLiteral("hatari");
 
-    /// TOS ROM image. Never bundled with pist: original TOS images remain
+    /// TOS ROM image. Never bundled with PiST: original TOS images remain
     /// proprietary, so this is always user-supplied (docs/PLAN.md §7).
     QString tosPath;
 

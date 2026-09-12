@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// pist - an IDE for Atari ST assembly development
+// PiST - an IDE for Atari ST assembly development
 
 #pragma once
 
@@ -31,6 +31,13 @@ public:
     /// Mark a line with a build-error gutter marker (1-based).
     void setErrorLines(const QList<int> &lines);
 
+    /// Lines that currently hold a breakpoint (1-based).
+    void setBreakpointLines(const QList<int> &lines);
+    QList<int> breakpointLines() const { return m_breakpointLines; }
+
+    /// Line the gutter is hovering, for click targeting.
+    int lineAtY(int y) const;
+
     void gotoLine(int line);
 
     int lineNumberAreaWidth() const;
@@ -38,6 +45,11 @@ public:
 
 signals:
     void cursorLineChanged(int line);
+
+    /// The gutter was clicked on `line` (1-based). The receiver decides whether
+    /// this toggles a breakpoint or opens an editor for its condition.
+    void gutterClicked(int line, Qt::MouseButton button);
+    void gutterContextMenuRequested(int line, const QPoint &globalPos);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -55,6 +67,7 @@ private:
     QWidget *m_lineNumberArea = nullptr;
     int m_currentExecutionLine = 0;
     QList<int> m_errorLines;
+    QList<int> m_breakpointLines;
 };
 
 } // namespace pist

@@ -26,6 +26,7 @@ private slots:
     void lineMapMapsLinesToOffsets();
     void lineMapResolvesAgainstLiveBases();
     void lineMapRejectsUnknownLine();
+    void lineMapMatchesAbsoluteListingPaths();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -190,6 +191,51 @@ void TstParsers::lineMapRejectsUnknownLine()
     quint32 addr = 0;
     QVERIFY(!map.addressFor(QStringLiteral("ok.s"), 9999, bases, &addr));
     QVERIFY(!map.addressFor(QStringLiteral("other.s"), 4, bases, &addr));
+}
+
+// vasm records the source path exactly as passed on the command line. The IDE
+// builds with an absolute path but identifies the open file by name, so a literal
+// comparison silently matches nothing — which would break both breakpoint arming
+// and the PC-to-line highlight, with no error anywhere.
+void TstParsers::lineMapMatchesAbsoluteListingPaths()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath(QStringLiteral("prog.lst"));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream out(&f);
+    out << "Sections:\n"
+           "00: \"text\" (0-C)\n"
+           "\n"
+           "Source: \"" << dir.filePath(QStringLiteral("prog.s")) << "\"\n"
+           "00:0000000C 60FE            \t     6: loop:\tbra.s\tloop\n";
+    out.flush();
+    f.close();
+
+    LineMap map;
+    QString error;
+    QVERIFY2(map.parseListing(path, &error), qPrintable(error));
+
+    LineMap::SectionBases bases;
+    bases.text = 0x12596;
+
+    // Queried by base name, as the IDE does.
+    quint32 addr = 0;
+    QVERIFY2(map.addressFor(QStringLiteral("prog.s"), 6, bases, &addr),
+             "a bare file name must match an absolute path in the listing");
+    QCOMPARE(addr, 0x12596u + 0x0Cu);
+
+    // And the reverse, which drives the editor highlight.
+    LineMap::Address back;
+    QVERIFY(map.lineFor(addr, bases, &back));
+    QCOMPARE(back.line, 6);
+    QVERIFY(LineMap::sameSource(back.file, QStringLiteral("prog.s")));
+
+    // A genuinely different file must still not match.
+    QVERIFY(!map.addressFor(QStringLiteral("other.s"), 6, bases, &addr));
+    QVERIFY(!LineMap::sameSource(back.file, QStringLiteral("other.s")));
 }
 
 QTEST_MAIN(TstParsers)

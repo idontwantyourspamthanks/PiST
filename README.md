@@ -1,9 +1,11 @@
-# pist
+# PiST
 
 **An IDE for Atari ST assembly development.**
 
+*Program in ST* — an IDE for writing 68000 assembly for the Atari ST.
+
 Write 68000 assembly, assemble it, run it in an emulator, and debug it — without leaving the
-editor. `pist` bundles the pieces that are otherwise scattered across a text editor, a build
+editor. `PiST` bundles the pieces that are otherwise scattered across a text editor, a build
 script, a terminal, a debugger and an emulator, and presents them as one tool.
 
 > **Status: early.** Phase 0 (the spike) is complete and working end to end. The IDE is usable for
@@ -53,7 +55,7 @@ clean, and means a newer (or a user-supplied) toolchain just works.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  pist  (Qt 6, GPL-2.0-or-later)                                      │
+│  PiST  (Qt 6, GPL-2.0-or-later)                                      │
 │                                                                      │
 │  ┌────────────┐   ┌──────────────┐   ┌──────────────┐                │
 │  │  Editor    │   │  Problems    │   │  Debug panels│                │
@@ -143,7 +145,7 @@ To develop the IDE you will also want, at runtime:
 ## Platform support
 
 All three targets build and run a full assemble → run → debug session. One feature differs, because
-of an upstream Hatari limitation rather than anything in `pist`:
+of an upstream Hatari limitation rather than anything in `PiST`:
 
 | Capability | Linux | Windows | macOS |
 |---|---|---|---|
@@ -157,7 +159,7 @@ of an upstream Hatari limitation rather than anything in `pist`:
 
 The three gaps are all downstream of one thing: Hatari's control channel is compiled only on
 POSIX systems (`HAVE_UNIX_DOMAIN_SOCKETS`), and it is the only way to command an *already running*
-emulator. `pist` detects this and omits the option rather than passing it and failing to start.
+emulator. `PiST` detects this and omits the option rather than passing it and failing to start.
 Everything else works everywhere, because debugger commands travel over stdin — the control socket
 is starved whenever the debugger is stopped anyway, so it was never carrying the debug traffic.
 
@@ -166,13 +168,13 @@ approach, in **[docs/FUTURE.md](docs/FUTURE.md)**.
 
 ## Emulator embedding
 
-`pist` embeds the emulator window where the platform allows it: X11, Windows and macOS all support
+`PiST` embeds the emulator window where the platform allows it: X11, Windows and macOS all support
 it, and Wayland is handled through XWayland. A detached-window mode is always available, and is the
 only mode on Wayland without XWayland.
 
 
 
-`pist` does **not** ship original Atari TOS ROMs: they remain copyrighted, so you must supply your
+`PiST` does **not** ship original Atari TOS ROMs: they remain copyrighted, so you must supply your
 own. [EmuTOS](https://emutos.sourceforge.net/) is a free, GPL-licensed alternative that works well.
 
 ROMs are discovered in the standard Hatari data locations, next to the emulator executable, or in
@@ -183,7 +185,7 @@ PIST_TOS_DIR=~/atari/roms ./build/pist
 ```
 
 **TOS 1.04 or later is required.** Hatari cannot autostart a program from a GEMDOS hard disk on
-older TOS versions, so the run-and-debug workflow depends on it. `pist` reads the version field from
+older TOS versions, so the run-and-debug workflow depends on it. `PiST` reads the version field from
 the ROM image's header — the same field Hatari itself reads — and tells you if the image you have is
 too old. If the version cannot be determined, it asks before running, because a too-old ROM
 otherwise fails *silently*: the emulator boots, the program never starts, and debugging never
@@ -191,7 +193,7 @@ attaches.
 
 ## Licence
 
-`pist` is free software under the **GNU General Public License, version 2 or later**
+`PiST` is free software under the **GNU General Public License, version 2 or later**
 (see [LICENSE](LICENSE)). Contributions are welcome under the same terms.
 
 Bundled or invoked third-party components keep their own licences. In particular `vasm` is *not*

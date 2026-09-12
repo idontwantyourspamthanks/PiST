@@ -16,6 +16,7 @@
 #include "emu/EmulatorHost.h"
 #include "emu/HatariProbe.h"
 #include "emu/SessionConfig.h"
+#include "emu/Paths.h"
 #include "emu/TosRom.h"
 
 #include <QDir>
@@ -32,10 +33,13 @@ namespace {
 
 /// Choose a ROM that can actually autostart. Using the alphabetically first
 /// image would pick TOS 1.02, which silently cannot run a program from the HD
-/// directory (PLAN.md §5 rule 3).
+/// directory (docs/PLAN.md §5 rule 3).
 QString findTos()
 {
-    const QList<TosRom> roms = scanTosRoms(QStringLiteral("/usr/share/hatari"));
+    // Use exactly the resolver the application uses. Hard-coding a directory
+    // here would make the only end-to-end emulator test skip on macOS and
+    // Windows, which are two of the three target platforms.
+    const QList<TosRom> roms = findTosRoms();
     const TosRom chosen = selectPreferredRom(roms);
     if (chosen.path.isEmpty() || !chosen.supportsAutostart())
         return {};
@@ -73,7 +77,7 @@ void TstEmulatorHost::initTestCase()
     m_tos = findTos();
 
     if (m_hatari.isEmpty() || m_vasm.isEmpty() || m_tos.isEmpty()) {
-        QSKIP("needs hatari, vasmm68k_mot and a TOS ROM in /usr/share/hatari");
+        QSKIP("needs hatari, vasmm68k_mot, and a TOS ROM 1.04+ (set $PIST_TOS_DIR if needed)");
     }
 
     m_work = new QTemporaryDir;

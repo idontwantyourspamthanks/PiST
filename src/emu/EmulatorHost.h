@@ -25,7 +25,7 @@ class HatariCapabilities;
 
 /// Owns one Hatari process and the debug channels attached to it.
 ///
-/// Channel model (verified against Hatari 2.6.1; PLAN.md §3.3). The two channels
+/// Channel model (verified against Hatari 2.6.1; docs/PLAN.md §3.3). The two channels
 /// are not interchangeable:
 ///
 ///   stdin   the *only* channel that works while the debugger is stopped. The

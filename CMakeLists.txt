@@ -36,6 +36,8 @@ qt_add_executable(pist
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/MachineState.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
     src/emu/SessionConfig.cpp
     src/emu/SessionConfig.h
     src/emu/TosRom.cpp
@@ -84,6 +86,8 @@ qt_add_executable(tst_emulatorhost
     src/emu/EmulatorHost.h
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
     src/emu/SessionConfig.cpp
     src/emu/SessionConfig.h
     src/emu/TosRom.cpp

@@ -41,7 +41,7 @@ QStringList SessionConfig::toArgv() const
 
     // A reset-requiring option change raises a modal dialog inside the emulator
     // window, which would hang a headless IDE. Reset-requiring changes are
-    // applied by relaunching instead (PLAN.md §5 rule 8).
+    // applied by relaunching instead (docs/PLAN.md §5 rule 8).
     argv << QStringLiteral("--alert-level") << QStringLiteral("fatal");
     argv << QStringLiteral("--confirm-quit") << QStringLiteral("off");
     argv << QStringLiteral("--sound") << QStringLiteral("off");
@@ -65,7 +65,7 @@ QStringList SessionConfig::toArgv() const
 
     // Exactly one positional argument, and it must be the program: this is the
     // only form that both mounts the GEMDOS HD and autostarts the program, which
-    // in turn is what makes Hatari load its symbols (PLAN.md §5 rule 1).
+    // in turn is what makes Hatari load its symbols (docs/PLAN.md §5 rule 1).
     if (!programPath.isEmpty())
         argv << programPath;
 

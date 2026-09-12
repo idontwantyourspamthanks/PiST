@@ -692,7 +692,7 @@ debug: bind control socket before spawning Hatari
 
 1. Builds cleanly (`cmake --build build`).
 2. New behaviour verified against the real thing — a real build, a real emulator run — not a mock.
-3. `PLAN.md` updated if a verified fact, launcher rule, or phase scope changed. **Findings that
+3. `docs/PLAN.md` updated if a verified fact, launcher rule, or phase scope changed. **Findings that
    contradict the plan should be recorded in §9 rather than silently absorbed.**
 4. No writes to a user's real `hatari.cfg` (§5 rule 7).
 

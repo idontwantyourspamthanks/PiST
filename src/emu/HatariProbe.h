@@ -12,7 +12,7 @@ namespace pist {
 ///
 /// The IDE must never assume a feature exists: upstream options have appeared
 /// and disappeared between releases, and a distro build may lag git `main`
-/// (PLAN.md §2.4). Everything the debug client depends on is probed once at
+/// (docs/PLAN.md §2.4). Everything the debug client depends on is probed once at
 /// startup.
 struct HatariCapabilities
 {

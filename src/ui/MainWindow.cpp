@@ -7,6 +7,7 @@
 #include "build/BuildService.h"
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
+#include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "ui/DisassemblyView.h"
 #include "ui/RegistersView.h"
@@ -201,10 +202,13 @@ void MainWindow::createStatusBar()
 
 QString MainWindow::makeSessionDir()
 {
-    // Keep this path short: it hosts the control socket, and sun_path is
-    // limited (108 bytes on Linux). /tmp/pist-XXXX is deliberately terse.
+    // The session directory hosts the generated bootstrap script, the control
+    // socket, and an isolated Hatari config. It must be short on Unix, because
+    // the socket path has to fit in sockaddr_un::sun_path (108 bytes on Linux).
+    // Windows uses named pipes and has no equivalent limit.
     static int counter = 0;
-    const QString dir = QStringLiteral("/tmp/pist-%1-%2")
+    const QString dir = paths::sessionBaseDir()
+                      + QStringLiteral("/%1-%2")
                             .arg(QCoreApplication::applicationPid())
                             .arg(++counter);
     QDir().mkpath(dir);
@@ -336,18 +340,23 @@ void MainWindow::run()
     }
 
     // A TOS ROM is required. Hatari ships none and original ROMs remain
-    // proprietary, so this must be user-supplied (PLAN.md §7).
+    // proprietary, so this must be user-supplied (docs/PLAN.md §7).
     //
     // Selection matters: autostart needs TOS >= 1.04, and picking the
     // alphabetically first image would select TOS 1.02 and produce a session
-    // that never reaches the entry breakpoint (PLAN.md §5 rule 3).
-    const QList<TosRom> roms = scanTosRoms(QStringLiteral("/usr/share/hatari"));
+    // that never reaches the entry breakpoint (docs/PLAN.md §5 rule 3).
+    const QList<TosRom> roms = findTosRoms();
     const TosRom rom = selectPreferredRom(roms);
     if (rom.path.isEmpty()) {
-        QMessageBox::critical(this, tr("Run"),
-                              tr("No TOS ROM image found in /usr/share/hatari.\n\n"
-                                 "Original TOS images cannot be bundled with pist, so one has "
-                                 "to be supplied separately."));
+        const QStringList searched = paths::tosSearchPaths();
+        QMessageBox::critical(
+            this, tr("Run"),
+            tr("No TOS ROM image found.\n\n"
+               "Original TOS images cannot be bundled with pist, so one has to be supplied "
+               "separately. Place a ROM image in one of these directories, or point "
+               "$PIST_TOS_DIR at the directory containing it:\n\n%1")
+                .arg(searched.isEmpty() ? tr("(no searchable directory found)")
+                                        : searched.join(QLatin1Char('\n'))));
         return;
     }
     if (rom.versionKnown && !rom.supportsAutostart()) {

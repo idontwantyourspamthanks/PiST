@@ -183,7 +183,7 @@ QString EmulatorHost::writeBootstrapScript(const QString &directory,
     QTextStream out(&file);
 
     // Version-gate: 2.6.1 has the boolean form, git main has three modes and a
-    // CLI equivalent. Never assume either (PLAN.md §5 rule 9).
+    // CLI equivalent. Never assume either (docs/PLAN.md §5 rule 9).
     if (caps.hasSymbolAutoloadOption)
         out << "symbols autoload debugger\n";
     else
@@ -195,7 +195,7 @@ QString EmulatorHost::writeBootstrapScript(const QString &directory,
     out << "b pc = TEXT && pc < $e00000 :once\n";
 
     // `echo` must never appear here: on 2.6.1 it aborts the emulator through a
-    // failed assertion in Str_UnEscape (PLAN.md §2.4).
+    // failed assertion in Str_UnEscape (docs/PLAN.md §2.4).
 
     out.flush();
     file.close();
@@ -207,7 +207,7 @@ void EmulatorHost::openSocketServer(QString *error)
     // Hatari is the *client*: it calls connect() and never binds, so the IDE has
     // to be listening before the process starts. However, the socket is only
     // serviced from the SDL event pump while emulation is running, so it carries
-    // control commands only, never debugger commands (PLAN.md §3.3).
+    // control commands only, never debugger commands (docs/PLAN.md §3.3).
     m_server = new QLocalServer(this);
 
     QLocalServer::removeServer(m_config.controlSocketPath);
@@ -278,7 +278,7 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
 
     // Isolate the session from the user's real configuration: Hatari always
     // loads it unless HATARI_TEST is set, and CLI arguments only override what
-    // we pass explicitly (PLAN.md §5 rule 7).
+    // we pass explicitly (docs/PLAN.md §5 rule 7).
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("HOME"), config.sessionDir);
     env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);

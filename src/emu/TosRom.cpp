@@ -4,9 +4,12 @@
 
 #include "emu/TosRom.h"
 
+#include "emu/Paths.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QSet>
 
 namespace pist {
 
@@ -49,6 +52,23 @@ QList<TosRom> scanTosRoms(const QString &directory)
     }
 
     return roms;
+}
+
+QList<TosRom> findTosRoms()
+{
+    QList<TosRom> all;
+    QSet<QString> seen;
+
+    for (const QString &dir : paths::tosSearchPaths()) {
+        for (const TosRom &rom : scanTosRoms(dir)) {
+            if (seen.contains(rom.path))
+                continue;
+            seen.insert(rom.path);
+            all.append(rom);
+        }
+    }
+
+    return all;
 }
 
 TosRom selectPreferredRom(const QList<TosRom> &roms)

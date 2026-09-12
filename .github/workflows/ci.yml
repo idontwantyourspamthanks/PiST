@@ -92,7 +92,25 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        run: |
+          if ctest --test-dir build --build-config Release --output-on-failure; then
+            exit 0
+          fi
+
+          # ctest's output capture is unreliable here — on Windows a failing test
+          # reported no output whatsoever — so run each binary directly to get the
+          # assertion that failed. Without this a red run is undiagnosable.
+          echo
+          echo "### direct test runs (ctest output was empty)"
+          while IFS= read -r exe; do
+            case "$exe" in
+              *.o|*.obj|*.pdb|*.ilk) continue ;;
+            esac
+            echo
+            echo "--- $exe ---"
+            "$exe" 2>&1 | tail -40 || true
+          done < <(find build -type f -name 'tst_*' -perm -u+x | sort)
+          exit 1
 
       - name: Report test summary
         if: always()

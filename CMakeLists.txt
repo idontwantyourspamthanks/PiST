@@ -13,6 +13,14 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
+# An installed binary must be able to find its shared libraries when installed to
+# a non-system prefix, which is the normal case for a local `cmake --install`.
+# Without this the staged binary links but cannot start (observed on macOS as
+# "Library not loaded: @rpath/QtWidgets.framework/..."). This uses the link-time
+# library directories, so it works as long as the Qt installation stays put;
+# self-contained deployment (macdeployqt, windeployqt) is separate work.
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network)
 
 qt_standard_project_setup()

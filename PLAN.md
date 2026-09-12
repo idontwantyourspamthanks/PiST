@@ -190,27 +190,65 @@ sequenceDiagram
   IDE->>H: spawn: --parse boot.ini <builddir>/prog.prg
   Note over H: boot.ini arms: b pc = TEXT && pc < $e00000 :once
   H-->>IDE: stderr "You have entered debug mode."
-  Note over H: debugger enters AT PROGRAM START
-  IDE->>H: socket: hatari-debug symbols prg
-  H-->>IDE: stderr "Loaded N symbols"
-  IDE->>H: socket: hatari-debug b pc = $ADDR
-  IDE->>H: stdin: "c\n"
+  Note over H: debugger enters AT PROGRAM START, prints session dump
+  H-->>IDE: stdout "> " prompt  (marks entry dump complete)
+  IDE->>H: stdin: symbols prg
+  H-->>IDE: stderr "Loaded N symbols" + stdout "> "
+  IDE->>H: stdin: b pc = $ADDR
+  IDE->>H: stdin: c
+  Note over H: emulation runs; ONLY NOW is the socket serviced
   H-->>IDE: stderr breakpoint hit, PC dump
   IDE->>E: highlight line for PC (via LineMap)
-  IDE->>H: stdin: "s\n" / "n\n"
+  IDE->>H: stdin: s / n
   H-->>IDE: stderr new PC + disassembly
 ```
 
+Note that every debugger command — symbols, breakpoints, stepping — goes over **stdin**, because the
+socket is not serviced while the debugger is stopped.
+
 | Channel | Direction | Carries | Notes |
 |---|---|---|---|
-| `--control-socket` | IDE → Hatari | `hatari-debug <cmd>` one-shot commands; `hatari-stop` / `hatari-cont` | Returns almost nothing — only embed-size is written back. **Hatari is the client**: it calls `connect()` (`control.c:588`) and never binds. The IDE must be listening *before* spawning Hatari, or Hatari exits with "connection to control socket failed" |
-| stdin | IDE → Hatari | `s`, `n`, `c` — the interactive loop | **Mandatory for stepping**, because `s`/`n`/`c` return `ENDCONT` and the debugger re-enters its interactive read loop |
-| stderr | Hatari → IDE | Command responses, debugger output, Hatari log lines | Responses are interleaved with `INFO`/`WARN` logs |
-| stdout | Hatari → IDE | `> ` prompt, `--conout` guest console | |
-| `logfile <f>` | Hatari → file | Registers, memory, disassembly dumps only | Used to obtain bulk output without mixing with logs |
+| stdin | IDE → Hatari | **All debugger commands.** The only channel that works while the debugger is stopped | The debugger blocks in `DebugUI_GetCommand` reading stdin |
+| `--control-socket` | IDE → Hatari | `hatari-stop` / `hatari-cont`, `hatari-option`, `hatari-event`; debugger commands **only while emulation is running** | **Hatari is the client**: it calls `connect()` (`control.c:588`) and never binds, so the IDE must already be listening. Returns almost nothing |
+| stderr | Hatari → IDE | Command output, debugger output, Hatari log lines | Mixed; responses are delimited by the prompt/echo markers below |
+| stdout | Hatari → IDE | The debugger prompt (readline builds), `--conout` guest console | |
+| `logfile <f>` | Hatari → file | Registers, memory, disassembly dumps only | Avoids mixing bulk output with logs |
 
-**Response framing:** `echo <nonce>` is **not usable** on 2.6.1 (see §2.4). Use `logfile` plus
-byte-count/quiescence delimiting on stderr, and never write `echo` into a script file.
+**The control socket is starved while stopped.** `Control_CheckUpdates()` has exactly one call site —
+`src/sdl/gui_event.c:134`, the SDL event pump — and none under `src/debug/`. When the debugger is
+waiting for input, nothing services the socket, so `hatari-debug` commands sent while stopped are
+never read. Verified: with the debugger stopped at entry, a socket `hatari-debug e TEXT` produced
+**zero bytes** on stderr, while the same command over stdin worked immediately; resuming emulation
+made the socket deliver again.
+
+Consequence: the split is **not** "socket = commands, stdin = stepping". It is
+**stdin = everything while stopped**, socket = control commands while running. This also means the
+`--control-socket` POSIX-only limitation is a far smaller problem than it first appears: Windows
+loses only `hatari-stop`/`hatari-option`-style control, not debugging.
+
+**Command completion is framed by the debugger prompt, not by content.** The debugger writes `> `
+before each blocking read, and cannot print the next prompt until the current command has finished
+executing, so a prompt is a true end-of-command signal. Which stream carries it is build-dependent:
+
+| Build | Prompt | Command echo |
+|---|---|---|
+| readline (Linux, macOS) | `readline("> ")` → **stdout** | readline echoes to stdout |
+| `!HAVE_LIBREADLINE` (Windows) | `fprintf(stderr, "> ")` → **stderr** | **none** |
+
+Both streams are therefore counted, stderr being recognised by a trailing `> ` with no newline —
+which cannot be confused with the `> <cmd>` echoes that `DebugUI_ParseLine` and `DebugUI_ParseFile`
+write to stderr, since those always end in a newline.
+
+Two further framing requirements, both found by test failures:
+
+- **Consume the entry dump before dispatching.** After announcing entry the debugger prints its
+  session dump (autoloaded symbols, `info` output, registers). Dispatching the first command
+  immediately attributes that dump to it; the queue must wait for the entry prompt.
+- **Account for owed prompts.** A command that times out (step-over can legitimately block until its
+  internal breakpoint hits) is still executing; its late prompt must be swallowed, or it completes
+  the *next* command with the previous command's output.
+
+**`echo <nonce>` framing is unnecessary** — and unusable, since `echo` aborts 2.6.1 (§2.4).
 
 **Implementation:** use `QLocalServer`/`QLocalSocket` (`Qt6::Network`, already part of qtbase) rather
 than raw POSIX sockets. On Unix these are `AF_UNIX`/`SOCK_STREAM`, exactly matching Hatari's
@@ -297,8 +335,12 @@ These are the operational constraints the launch builder must encode.
    `inffile.c:1042` bails for `TosVersion < 0x0104` with
    *"Only TOS versions >= 1.04 support autostarting & resolution overriding!"*.
    On TOS 1.00/1.02 the run silently no-ops: no Pexec, no `CurrentProgramPath`, no autoloaded
-   symbols. **The ROM picker must be paired with a run-path choice**, or fall back to booting the
-   HD's `AUTO` folder / a floppy image.
+   symbols, and the entry breakpoint never fires — the session simply appears to hang.
+   Because ROM filenames are arbitrary for user-supplied images, the version must be read from the
+   **image header**, not the name: `TOS_LoadImage` reads it as a big-endian 16-bit value at offset 2
+   (`src/tos.c:1027`). Hatari itself rejects GEMDOS HD entirely below 1.04 with
+   *"Please use at least TOS v1.04 for the HD directory emulation"*, so this is a hard floor for the
+   whole GEMDOS-HD run path, not just autostart.
 4. **Never write `<prg>.sym` next to the `.PRG`.** A sidecar wins over the PRG's own DRI/GST table
    (`symbols.c:922-928`, `1032-1038`) and, because it is loaded with no base offset for code
    symbols, **stale content silently yields wrong addresses**. Put generated symbols in a
@@ -322,6 +364,13 @@ These are the operational constraints the launch builder must encode.
     binds. Listen on the socket path **before** spawning Hatari, or Hatari exits immediately with
     `connection to control socket failed`. Use `QLocalServer`/`QLocalSocket` (see §3.3), call
     `removeServer()` first to clear a stale path, and keep the path under the `sun_path` limit.
+11. **Accept both disassembler output formats.** Which engine produces the disassembly is a *user
+    configuration* setting, not a build property: `bDisasmUAE` defaults to `true`
+    (`configuration.c:624`), giving `00012596 7001   moveq #$01,d0`, while `false` selects Capstone,
+    giving `$00012596 7001   moveq #$01,d0`. Because the IDE always runs with an isolated config
+    directory (§5 rule 7) it consistently sees the *default* engine — so a parser tuned against a
+    developer's own `~/.config/hatari/hatari.cfg` will differ from what the IDE actually receives.
+    Treat the `$` as optional. The same applies to other engine-dependent output.
 
 ### 5.1 Bootstrap parse file
 
@@ -397,7 +446,8 @@ follows the source line; step-over correctly clears a subroutine.
 
 - `HrdbBackend` over TCP for hardware register reads
 - GDB-stub backend for memory watchpoints
-- In-process libretro core for macOS integration (requires accepting GPL-2 implications)
+- In-process libretro core for macOS integration (permitted under GPL-2.0-or-later combined with
+  Hatari; see §10)
 
 None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 
@@ -420,7 +470,7 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 | **vasm / vbcc** | Non-free: "may be redistributed without modifications and used for non-commercial purposes" | **Yes — because pist is free software** | **Redistribute unmodified only.** Never patch vasm. Ship its `readme.txt`/manual and mark it as third-party. Any commercial use still needs the author's written consent |
 | Original Atari TOS ROMs | Proprietary | No | User-supplied; validate size/version; add our own hash check |
 | EmuTOS | GPLv2 | Yes | Data file, not linked. GPLv2 text + source offer |
-| Qt 6 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only / commercial | Yes | **Dynamic linking** keeps the LGPLv3 route available and avoids the GPLv2-vs-v3 audit; deliver Qt source, relink ability, Installation Information |
+| Qt 6 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only / commercial | Yes | **Dynamic linking** under LGPLv3 (deliver Qt source, relink ability, Installation Information). Qt's GPL-2.0-only option is also available to us, since pist is GPL-2.0-or-later |
 | SDL2 (only if embedding upstream Hatari) | zlib | Yes | Acknowledgement |
 | Capstone | BSD-3-Clause | Yes | Attach `LICENSE.TXT` |
 
@@ -491,14 +541,24 @@ load-bearing dependency — which the detection order above already guarantees.
   contents, `-dwarf` + `-Ftos` failure, `-dwarf` + `-Felf` success
 - `gst2ascii` output format and address convention
 - Hatari: control-socket connection and `hatari-debug` one-shot commands
+- **The control socket is starved while the debugger is stopped** (0 bytes returned), and works
+  again once emulation resumes
+- **The debugger prompt is a reliable end-of-command signal**, on stdout for readline builds
 - `b pc = TEXT && pc < $e00000 :once` armed at launch stops at program entry
 - `symbols prg` relocates onto the live basepage exactly (`start` == `Text segment`)
-- Stepping over a stdin pipe: `r`, `s`, `n`, `d`, `c` all functional
+- Stepping: `r`, `s`, `n`, `d`, `c` all functional over stdin
 - Disassembly annotated with symbol labels
 - `info basepage` field layout
 - `--conout 2` captures guest console output to stdout
 - Autoload fires on debugger entry, and a `.sym` sidecar takes precedence over the PRG's DRI table
 - `echo` in a `--parse` file aborts 2.6.1 (`assert(s2 < s1)`)
+- **TOS 1.02 cannot use the GEMDOS-HD run path at all** — Hatari refuses it, so both autostart and
+  symbol loading fail silently
+- **The `r` response does not contain a `CPU=` header**; the PC must be taken from the trailing
+  instruction line
+- **Disassembly format follows the user's `bDisasmUAE` setting**, not the build
+- End-to-end in `pist`: `ctest` runs 9 parser tests and 7 emulator-integration tests against a real
+  Hatari, all passing
 
 ### Verified by reading source (not executed)
 
@@ -537,10 +597,15 @@ Determined by an actual audit of Hatari's 369 `.c`/`.h` files, not by assumption
 | Canonical header: *"distributed under the GNU General Public License, version 2 **or at your option any later version**"* | 289 files |
 | **GPL-2.0-only**: *"Licensed under the terms of the GNU General Public License version 2."* | **3 files** — `src/cpu/uae/{attributes,types,vm}.h` |
 
-Those three files are **not vestigial**: `src/cpu/sysdeps.h:102` includes `"uae/types.h"`, and
-`sysdeps.h` is part of the `UaeCpu` object library (`src/cpu/CMakeLists.txt:99`). They are compiled
-into every Hatari build, so the resulting binary is a mixed work that can only be conveyed under
-**GPLv2** — the GPL-2.0-only files cannot be relicensed upward.
+Those three files are **not vestigial**. Two independent include chains reach them:
+
+- `src/cpu/sysdeps.h:102` includes `"uae/types.h"`, and `sysdeps.h` is included by `fpp_native.c`
+  (`:18`), which is listed in `WINUAE_SRCS` (`src/cpu/CMakeLists.txt:12-13`) and therefore built
+  into the `UaeCpu` object library.
+- `newcpu.h`, `cpummu.h`, `custom.h` and others likewise pull in `uae/types.h`.
+
+So GPL-2.0-only source is compiled into every Hatari binary, and the resulting work can only be
+conveyed under **GPLv2** — the GPL-2.0-only files cannot be relicensed upward.
 
 Consequence:
 

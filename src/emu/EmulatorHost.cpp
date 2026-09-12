@@ -599,9 +599,17 @@ void EmulatorHost::onPrompt()
     // print, so it appears exactly once per session and says nothing about
     // subsequent stops. The prompt is the reliable signal, and it is structural
     // rather than parsed.
-    if (!m_haveCurrent && m_queue.isEmpty() && !m_stopped) {
+    //
+    // Deliberately not gated on the queue being empty. `dispatchNext` re-queues
+    // a command rather than sending it while emulation is running, so a command
+    // queued just before a resume leaves the queue non-empty — and testing for
+    // emptiness here would miss the entry entirely and stall until the command
+    // timeout. A prompt with nothing in flight means the debugger is waiting for
+    // us, whatever is queued; dispatching is safe once we record the stop.
+    if (!m_haveCurrent && !m_stopped) {
         m_stopped = true;
         emit stoppedChanged(true);
+        dispatchNext();
     }
 }
 

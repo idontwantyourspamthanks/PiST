@@ -347,7 +347,24 @@ These are the operational constraints the launch builder must encode.
 
    Hatari itself rejects GEMDOS HD entirely below 1.04 with
    *"Please use at least TOS v1.04 for the HD directory emulation"*, so this is a hard floor for the
-   whole GEMDOS-HD run path, not just autostart. Three outcomes must be distinguished, never
+   whole GEMDOS-HD run path, not just autostart.
+
+   **Machine type and ROM are coupled, and Hatari enforces the pairing by overriding `--machine`.**
+   Verified matrix (TOS version × requested machine):
+
+   | ROM | `--machine st` | `--machine ste` |
+   |---|---|---|
+   | 1.02 | accepted, but no autostart (WARN) | *"TOS versions <= 1.4 work only in"* → **switches to ST** |
+   | 1.04 | accepted | *"TOS versions <= 1.4 work only in"* → **switches to ST** |
+   | 1.06 | *"TOS versions 1.06 and 1.62 are for Atari STE only"* → **switches to STE** | accepted |
+   | 1.62 | same → **switches to STE** | accepted |
+
+   Two consequences for the setup UI, which must not be two independent dropdowns:
+   - a machine/ROM pair can be **invalid**, and Hatari resolves it by silently overriding the
+     requested machine (logging an `ERROR` line the IDE should surface);
+   - the effective machine may therefore differ from the requested one, so the UI must reflect what
+     was actually selected. A user who picks STE for DMA sound or the extended palette, with a 1.04
+     ROM, silently gets an ST and their code fails in confusing ways. Three outcomes must be distinguished, never
    collapsed:
    - **known too old** → refuse, naming the version read from the header;
    - **known good** → proceed;
@@ -596,6 +613,8 @@ load-bearing dependency — which the detection order above already guarantees.
   session never relies on EOF to end it
 - A source-line breakpoint was verified end to end in a live session: resolved from the listing to
   an address, armed, fired, and its PC mapped back to the originating line
+- **`--machine` is advisory, not authoritative**: Hatari overrides it to match the TOS ROM, both
+  directions (see §5 rule 3). The requested machine can silently differ from the emulated one
 - **Disassembly format follows the user's `bDisasmUAE` setting**, not the build
 - **`--control-socket` is absent on Windows** (declared under `HAVE_UNIX_DOMAIN_SOCKETS`), and a full
   session runs without it: break at entry, registers, symbols and stepping were all verified with the

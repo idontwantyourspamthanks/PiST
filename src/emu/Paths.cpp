@@ -5,6 +5,7 @@
 #include "emu/Paths.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QProcessEnvironment>
@@ -83,6 +84,39 @@ QString sessionBaseDir()
     if (base.isEmpty())
         base = QDir::tempPath();
     return QDir(base).absoluteFilePath(QStringLiteral("pist"));
+}
+
+void removeSessionDir(const QString &dir)
+{
+    if (dir.isEmpty())
+        return;
+    const QFileInfo info(dir);
+    if (!info.isDir())
+        return;
+
+    // Refuse to delete outside the session base: a bad path must not turn this
+    // into a recursive delete somewhere important.
+    const QString base = QDir(sessionBaseDir()).absolutePath();
+    if (!info.absoluteFilePath().startsWith(base + QLatin1Char('/')))
+        return;
+
+    QDir(dir).removeRecursively();
+}
+
+void pruneStaleSessions(int maxAgeMinutes)
+{
+    const QDir base(sessionBaseDir());
+    if (!base.exists())
+        return;
+
+    const QDateTime cutoff = QDateTime::currentDateTime().addSecs(-60LL * maxAgeMinutes);
+    const QFileInfoList entries =
+        base.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+
+    for (const QFileInfo &entry : entries) {
+        if (entry.lastModified() < cutoff)
+            QDir(entry.absoluteFilePath()).removeRecursively();
+    }
 }
 
 } // namespace paths

@@ -18,6 +18,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -129,6 +130,10 @@ MainWindow::MainWindow(QWidget *parent)
     createDocks();
     createToolBar();
     createStatusBar();
+
+    // Sessions left by a crash or a kill, once they are old enough that no live
+    // instance could still own them.
+    paths::pruneStaleSessions();
 
     m_caps = probeHatari(findHatari());
     m_statusToolchain->setText(
@@ -312,12 +317,20 @@ QString MainWindow::makeSessionDir()
     // socket, and an isolated Hatari config. It must be short on Unix, because
     // the socket path has to fit in sockaddr_un::sun_path (108 bytes on Linux).
     // Windows uses named pipes and has no equivalent limit.
+    // Starting a new session supersedes the previous one, so drop it now rather
+    // than leaving a directory (and its config tree) behind on every run.
+    if (!m_currentSessionDir.isEmpty()) {
+        paths::removeSessionDir(m_currentSessionDir);
+        m_currentSessionDir.clear();
+    }
+
     static int counter = 0;
     const QString dir = paths::sessionBaseDir()
                       + QStringLiteral("/%1-%2")
                             .arg(QCoreApplication::applicationPid())
                             .arg(++counter);
     QDir().mkpath(dir);
+    m_currentSessionDir = dir;
     return dir;
 }
 
@@ -731,6 +744,23 @@ void MainWindow::launchEmulator()
 void MainWindow::stopSession()
 {
     m_host->stop();
+
+    if (!m_currentSessionDir.isEmpty()) {
+        paths::removeSessionDir(m_currentSessionDir);
+        m_currentSessionDir.clear();
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // Leaving this to the age-based prune would mean a directory survives every
+    // ordinary quit, not just a crash.
+    m_host->stop();
+    if (!m_currentSessionDir.isEmpty()) {
+        paths::removeSessionDir(m_currentSessionDir);
+        m_currentSessionDir.clear();
+    }
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::step()

@@ -43,6 +43,21 @@ QStringList tosSearchPaths();
 /// has no such limit.
 QString sessionBaseDir();
 
+/// Remove a session directory and everything in it. Safe to call on a path that
+/// does not exist, and never follows non-directories.
+void removeSessionDir(const QString &dir);
+
+/// Delete session directories older than `maxAgeMinutes`, left behind by a
+/// crashed or killed session. Called once at startup.
+///
+/// Each session creates a directory holding the generated debugger script, the
+/// control socket and an isolated Hatari config tree, so without this the temp
+/// location grows by one directory per run, indefinitely.
+///
+/// Age-based rather than "delete everything" because another PiST instance may be
+/// running, and its live session must not be removed from under it.
+void pruneStaleSessions(int maxAgeMinutes = 120);
+
 } // namespace paths
 
 } // namespace pist

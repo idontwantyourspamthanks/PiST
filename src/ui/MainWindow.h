@@ -46,6 +46,9 @@ public slots:
     /// and for anything that already knows what it wants to open.
     void openPath(const QString &path);
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void openFile();
     void saveFile();
@@ -124,6 +127,11 @@ private:
     /// Set by Run, consumed by onBuildFinished. Needed because the build is
     /// asynchronous: the launch has to wait for it, not run alongside it.
     bool m_launchAfterBuild = false;
+
+    /// Session directory of the current (or most recent) run, so it can be
+    /// removed when the session ends instead of accumulating in the temp
+    /// location. See paths::removeSessionDir.
+    QString m_currentSessionDir;
 
     /// Project configuration. Persisted to a `.pistproject` file beside the
     /// source, so settings travel with the project (docs/PLAN.md §5 rule 7 —

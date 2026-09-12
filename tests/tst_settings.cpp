@@ -6,12 +6,16 @@
 // configures survives save/load, because the alternative is silent loss of build
 // configuration between sessions.
 
+#include "emu/Paths.h"
 #include "project/ProjectSettings.h"
 
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#include <chrono>
+#include <filesystem>
 
 using namespace pist;
 
@@ -24,6 +28,13 @@ private slots:
     void rejectsMalformedFile();
     void projectFileSitsBesideSource();
     void appliesDefaultsForMissingKeys();
+
+    // Session directory lifecycle. These matter because removing one is a
+    // recursive delete, so the guard against deleting outside the session base
+    // is as important as the removal itself.
+    void removesSessionDirInsideBase();
+    void refusesToRemoveOutsideSessionBase();
+    void prunesOnlyOldSessions();
 };
 
 void TstSettings::roundTripsEverything()
@@ -112,6 +123,72 @@ void TstSettings::appliesDefaultsForMissingKeys()
     QCOMPARE(settings.monitor, QStringLiteral("mono"));
     QVERIFY(settings.includePaths.isEmpty());
     QVERIFY(settings.fastForward);
+}
+
+void TstSettings::removesSessionDirInsideBase()
+{
+    const QString dir = paths::sessionBaseDir() + QStringLiteral("/test-remove-me");
+    QVERIFY(QDir().mkpath(dir + QStringLiteral("/nested")));
+    QFile f(dir + QStringLiteral("/nested/file.txt"));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+
+    QVERIFY(QFileInfo::exists(dir));
+    paths::removeSessionDir(dir);
+    QVERIFY2(!QFileInfo::exists(dir), "a session directory must be removed completely");
+}
+
+// The removal is recursive, so a path outside the session base must be refused
+// outright rather than trusted. This is the guard that stops a bad path turning
+// into a delete somewhere important.
+void TstSettings::refusesToRemoveOutsideSessionBase()
+{
+    QTemporaryDir outside;
+    QVERIFY(outside.isValid());
+    const QString victim = outside.filePath(QStringLiteral("precious"));
+    QVERIFY(QDir().mkpath(victim));
+    QFile f(victim + QStringLiteral("/keep.txt"));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+
+    paths::removeSessionDir(victim);
+    QVERIFY2(QFileInfo::exists(victim),
+             "a directory outside the session base must not be deleted");
+
+    // Empty and non-existent paths are no-ops rather than errors.
+    paths::removeSessionDir(QString());
+    paths::removeSessionDir(QStringLiteral("/"));
+    paths::removeSessionDir(outside.filePath(QStringLiteral("does-not-exist")));
+}
+
+void TstSettings::prunesOnlyOldSessions()
+{
+    const QString base = paths::sessionBaseDir();
+    QVERIFY(QDir().mkpath(base));
+
+    const QString oldDir = base + QStringLiteral("/test-old-session");
+    const QString newDir = base + QStringLiteral("/test-new-session");
+    QVERIFY(QDir().mkpath(oldDir));
+    QVERIFY(QDir().mkpath(newDir));
+
+    // Backdate one directory well past the cutoff. The prune reads the
+    // *directory's* modification time, and QFile cannot set that, so use
+    // std::filesystem, which handles directories.
+    std::error_code ec;
+    std::filesystem::last_write_time(
+        oldDir.toStdString(),
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(4), ec);
+    QVERIFY2(!ec, "could not backdate the test directory");
+
+    paths::pruneStaleSessions(120);
+
+    QVERIFY2(!QFileInfo::exists(oldDir), "a stale session must be pruned");
+    QVERIFY2(QFileInfo::exists(newDir),
+             "a recent session must survive: another instance may own it");
+
+    QDir(newDir).removeRecursively();
 }
 
 QTEST_MAIN(TstSettings)

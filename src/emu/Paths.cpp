@@ -21,7 +21,10 @@ void appendUnique(QStringList &list, const QString &path)
     if (path.isEmpty())
         return;
     const QString clean = QDir::cleanPath(path);
-    if (!QFileInfo::exists(clean))
+    // Must be a directory: an executable path (e.g. /usr/bin/hatari) exists but
+    // is not somewhere ROMs live, and listing it in the "directories searched"
+    // message would be misleading.
+    if (!QFileInfo(clean).isDir())
         return;
     if (!list.contains(clean))
         list.append(clean);
@@ -46,23 +49,26 @@ QStringList tosSearchPaths()
     for (const QString &base : dataLocs)
         appendUnique(dirs, base + QStringLiteral("/hatari"));
 
-    // 3. Platform-specific conventions Hatari packages use.
+    // 3. Platform conventions Hatari packages use on macOS.
 #ifdef Q_OS_MACOS
     appendUnique(dirs, QStringLiteral("/opt/homebrew/share/hatari"));
     appendUnique(dirs, QStringLiteral("/usr/local/share/hatari"));
     appendUnique(dirs, QStringLiteral("/opt/local/share/hatari"));
 #endif
-#ifdef Q_OS_WIN
-    // Windows builds keep data files next to the executable; handled in step 4.
-#endif
 
-    // 4. Beside the Hatari executable, which is how the Windows and macOS
-    //    bundles are laid out.
+    // 4. Custom install prefixes: <prefix>/share/hatari for a hatari at
+    //    <prefix>/bin/hatari.
     const QString hatari = QStandardPaths::findExecutable(QStringLiteral("hatari"));
     if (!hatari.isEmpty()) {
         const QDir exeDir(QFileInfo(hatari).absolutePath());
-        appendUnique(dirs, exeDir.absoluteFilePath(QStringLiteral("hatari")));
+        appendUnique(dirs, exeDir.absoluteFilePath(QStringLiteral("../share/hatari")));
+
+        // 5. Beside the executable, which is how the Windows and macOS release
+        //    bundles are laid out. On Linux this would mean scanning /usr/bin,
+        //    which is not where data files live.
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
         appendUnique(dirs, exeDir.absolutePath());
+#endif
     }
 
     return dirs;

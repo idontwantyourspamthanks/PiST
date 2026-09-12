@@ -87,7 +87,8 @@ static QString writeListing(QTemporaryDir &dir)
     // Verbatim structure of `vasmm68k_mot -L`, including the section table.
     const QString path = dir.filePath(QStringLiteral("ok.lst"));
     QFile f(path);
-    f.open(QIODevice::WriteOnly | QIODevice::Text);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return {}; // empty path: the caller's parse will fail visibly
     QTextStream out(&f);
     out << "Sections:\n"
            "00: \"text\" (0-C)\n"

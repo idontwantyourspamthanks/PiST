@@ -338,9 +338,21 @@ These are the operational constraints the launch builder must encode.
    symbols, and the entry breakpoint never fires — the session simply appears to hang.
    Because ROM filenames are arbitrary for user-supplied images, the version must be read from the
    **image header**, not the name: `TOS_LoadImage` reads it as a big-endian 16-bit value at offset 2
-   (`src/tos.c:1027`). Hatari itself rejects GEMDOS HD entirely below 1.04 with
+   (`src/tos.c:1027`). Two refinements matter when predicting Hatari's behaviour:
+   - a filename is **not evidence**; Hatari never reads names, so a version inferred from one must
+     not authorise the autostart path. Only a header-derived version may.
+   - version bytes are displayed in **hex**, matching Hatari's own `%x.%02x` (`src/tos.c:874`), so
+     the field `0x0162` is TOS **1.62**, not 1.98. The filename convention follows the same rule
+     ("TOS v1.62"), so a decimal parse silently produces `0x013E`.
+
+   Hatari itself rejects GEMDOS HD entirely below 1.04 with
    *"Please use at least TOS v1.04 for the HD directory emulation"*, so this is a hard floor for the
-   whole GEMDOS-HD run path, not just autostart.
+   whole GEMDOS-HD run path, not just autostart. Three outcomes must be distinguished, never
+   collapsed:
+   - **known too old** → refuse, naming the version read from the header;
+   - **known good** → proceed;
+   - **unknown** → warn and ask. Refusing outright would be wrong for a valid ROM whose header is
+     unreadable, and proceeding silently reproduces the hang this rule exists to prevent.
 4. **Never write `<prg>.sym` next to the `.PRG`.** A sidecar wins over the PRG's own DRI/GST table
    (`symbols.c:922-928`, `1032-1038`) and, because it is loaded with no base offset for code
    symbols, **stale content silently yields wrong addresses**. Put generated symbols in a
@@ -554,11 +566,13 @@ load-bearing dependency — which the detection order above already guarantees.
 - `echo` in a `--parse` file aborts 2.6.1 (`assert(s2 < s1)`)
 - **TOS 1.02 cannot use the GEMDOS-HD run path at all** — Hatari refuses it, so both autostart and
   symbol loading fail silently
+- **TOS version bytes are hex**: the field `0x0162` is TOS 1.62 (verified against the four ROMs
+  installed on the development machine, whose header values agree with their conventional names)
 - **The `r` response does not contain a `CPU=` header**; the PC must be taken from the trailing
   instruction line
 - **Disassembly format follows the user's `bDisasmUAE` setting**, not the build
-- End-to-end in `pist`: `ctest` runs 9 parser tests and 7 emulator-integration tests against a real
-  Hatari, all passing
+- End-to-end in `pist`: `ctest` runs 9 parser tests, 12 ROM-identification tests, and 7
+  emulator-integration tests against a real Hatari, all passing
 
 ### Verified by reading source (not executed)
 

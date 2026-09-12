@@ -359,13 +359,44 @@ void MainWindow::run()
                                         : searched.join(QLatin1Char('\n'))));
         return;
     }
-    if (rom.versionKnown && !rom.supportsAutostart()) {
+    // Three distinct cases, because collapsing them produces either a false
+    // error or the silent hang this check exists to prevent:
+    //
+    //   known too old  -> refuse, with the version we read
+    //   known good     -> proceed
+    //   unknown        -> warn and ask; a pre-1.04 ROM here boots the emulator
+    //                     but never starts the program, so the IDE would wait
+    //                     forever for a breakpoint that never comes
+    if (rom.knownTooOldForAutostart()) {
         QMessageBox::critical(
             this, tr("Run"),
-            tr("TOS %1 cannot autostart a program from a GEMDOS hard disk: "
-               "Hatari requires TOS 1.04 or later. Choose a newer ROM.")
+            tr("This ROM reports TOS %1, which cannot autostart a program from a GEMDOS "
+               "hard disk: Hatari requires TOS 1.04 or later.\n\nChoose a newer ROM.")
                 .arg(rom.versionText()));
         return;
+    }
+
+    if (!rom.supportsAutostart()) {
+        QString detail;
+        if (rom.versionKnown) {
+            // A version was read from the filename only. Hatari never consults
+            // filenames, so this is not evidence about what it will do.
+            detail = tr("Its filename suggests TOS %1, but the version field in the image "
+                        "header could not be read, so this cannot be confirmed.")
+                         .arg(rom.versionText());
+        } else {
+            detail = tr("Its TOS version could not be determined.");
+        }
+
+        const auto answer = QMessageBox::warning(
+            this, tr("Run"),
+            tr("Autostarting a program requires TOS 1.04 or later.\n\n%1\n\n"
+               "If this image is older than 1.04 the program will not start and debugging "
+               "will not attach.\n\nTry to run anyway?")
+                .arg(detail),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
     }
     config.tosPath = rom.path;
 

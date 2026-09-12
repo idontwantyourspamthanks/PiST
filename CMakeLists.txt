@@ -79,6 +79,19 @@ target_include_directories(tst_parsers PRIVATE src)
 target_link_libraries(tst_parsers PRIVATE Qt6::Test)
 add_test(NAME parsers COMMAND tst_parsers)
 
+# TOS ROM identification: version must come from the image header, so the
+# autostart guard cannot be skipped by an unusual filename.
+qt_add_executable(tst_tosrom
+    tests/tst_tosrom.cpp
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+)
+target_include_directories(tst_tosrom PRIVATE src)
+target_link_libraries(tst_tosrom PRIVATE Qt6::Test)
+add_test(NAME tosrom COMMAND tst_tosrom)
+
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp

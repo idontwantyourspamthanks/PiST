@@ -153,8 +153,11 @@ PIST_TOS_DIR=~/atari/roms ./build/pist
 ```
 
 **TOS 1.04 or later is required.** Hatari cannot autostart a program from a GEMDOS hard disk on
-older TOS versions, so the run-and-debug workflow depends on it. `pist` reads the version from the
-ROM image itself and tells you if the one you have is too old.
+older TOS versions, so the run-and-debug workflow depends on it. `pist` reads the version field from
+the ROM image's header — the same field Hatari itself reads — and tells you if the image you have is
+too old. If the version cannot be determined, it asks before running, because a too-old ROM
+otherwise fails *silently*: the emulator boots, the program never starts, and debugging never
+attaches.
 
 ## Licence
 

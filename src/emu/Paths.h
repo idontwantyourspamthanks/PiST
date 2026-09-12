@@ -24,9 +24,14 @@ inline constexpr const char *kTosDirEnvVar = "PIST_TOS_DIR";
 ///   1. `$PIST_TOS_DIR` when set (explicit override, also used by the test suite)
 ///   2. the OS data location for Hatari (`GenericDataLocation/hatari`), which
 ///      covers `/usr/share/hatari` on Linux and the equivalent elsewhere
-///   3. `$XDG_DATA_HOME`-relative and Homebrew/MacPorts-style locations
-///   4. the directory containing the Hatari executable, which is where the
-///      Windows and macOS bundles keep their data files
+///   3. platform conventions (Homebrew and MacPorts prefixes on macOS)
+///   4. `<dir of hatari executable>/../share/hatari`, for a custom install prefix
+///   5. the executable's own directory, but only on Windows and macOS, where
+///      Hatari's release bundles ship their data files beside the binary
+///
+/// Non-existent paths, and paths that exist but are not directories, are
+/// omitted — so the list is also safe to show to the user as "directories
+/// searched".
 QStringList tosSearchPaths();
 
 /// Base directory for per-session state (the generated bootstrap script, the

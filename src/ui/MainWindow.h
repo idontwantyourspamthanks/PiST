@@ -34,6 +34,7 @@ class EmulatorHost;
 class FileBrowser;
 class MemoryView;
 class RegistersView;
+class EmulatorDisplayWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -47,6 +48,24 @@ public slots:
     /// Open a source file by path, without a dialog. Used for the command line
     /// and for anything that already knows what it wants to open.
     void openPath(const QString &path);
+
+    /// The build & debug console contents, for scripted verification.
+    QString debugConsoleText() const;
+
+    /// A plain-text snapshot of the machine state (registers, PC, running
+    /// state), for the remote-control interface. Read-only.
+    QString stateSummary() const;
+
+signals:
+    /// The asynchronous build finished, for the remote-control interface to
+    /// answer a `build` command. Success carries no diagnostics; a failure is
+    /// accompanied by the console text.
+    void buildCompleted(bool success);
+
+    /// The emulator session started or stopped, so the remote-control interface
+    /// can answer `run` when the session is actually up rather than merely
+    /// requested.
+    void sessionRunningChanged(bool running);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -110,10 +129,34 @@ private:
 
     /// Per-session working directory, kept short so the control socket path fits
     /// in sockaddr_un::sun_path.
+
+    /// Whether the emulator's display can be embedded in this session: it needs
+    /// PiST to be an X11 (xcb) client, and the control socket that carries the
+    /// video-size report. When false the option is disabled and the emulator
+    /// runs as a separate window regardless of the setting.
+    bool canEmbedDisplay() const;
+
+    /// The embedded/separate display preference. Applies on the next Run; a
+    /// running session keeps the mode it was launched with. Persisted as an
+    /// application setting, because it is a view choice, not a project one.
+    void setDisplayEmbedded(bool on);
+    void updateEmbedActionState();
     QString makeSessionDir();
 
     CodeEditor *m_editor = nullptr;
     BuildService *m_build = nullptr;
+
+
+    /// The most recent machine state, kept so the remote-control interface can
+    /// answer `state` without touching the emulator.
+    MachineState m_lastState;
+    /// The dock and widget that host the emulator's display in embedded mode.
+    /// The dock is hidden in separate-window mode.
+    QDockWidget *m_displayDock = nullptr;
+    EmulatorDisplayWidget *m_display = nullptr;
+
+    /// The embedded/separate display preference. Persisted via QSettings.
+    bool m_embeddedDisplay = false;
     EmulatorHost *m_host = nullptr;
     HatariCapabilities m_caps;
 
@@ -164,6 +207,7 @@ private:
     QAction *m_actBuild = nullptr;
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
+    QAction *m_actEmbedDisplay = nullptr;
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
     QAction *m_actResume = nullptr;

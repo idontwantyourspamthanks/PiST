@@ -106,6 +106,11 @@ signals:
     void logLine(const QString &line);
     void errorOccurred(const QString &message);
 
+    /// The emulator reported a new video size over the control socket, in
+    /// response to `hatari-embed-info`. Only emitted when the display is
+    /// embedded; the container resizes itself to match.
+    void embeddedSizeChanged(int width, int height);
+
 private:
     struct Pending
     {

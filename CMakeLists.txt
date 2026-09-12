@@ -23,6 +23,13 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network)
 
+# X11 is needed only to map the embedded emulator's SDL window (see
+# src/ui/EmbedX11.cpp). It is optional: without it the build still succeeds and
+# the emulator simply runs as a separate window.
+if(UNIX AND NOT APPLE)
+    find_package(X11)
+endif()
+
 qt_standard_project_setup()
 
 qt_add_executable(pist
@@ -36,6 +43,9 @@ qt_add_executable(pist
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
+
+    src/control/RemoteControl.cpp
+    src/control/RemoteControl.h
 
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
@@ -74,6 +84,10 @@ qt_add_executable(pist
     src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/EmulatorDisplayWidget.cpp
+    src/ui/EmulatorDisplayWidget.h
+    src/ui/EmbedX11.cpp
+    src/ui/EmbedX11.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
     src/ui/MemoryView.cpp
@@ -88,6 +102,11 @@ target_link_libraries(pist PRIVATE
     Qt6::Widgets
     Qt6::Network
 )
+
+if(X11_FOUND)
+    target_compile_definitions(pist PRIVATE PIST_HAVE_X11)
+    target_link_libraries(pist PRIVATE X11::X11)
+endif()
 
 # ---------------------------------------------------------------------------
 # Installation
@@ -261,6 +280,10 @@ qt_add_executable(tst_gui
     src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/EmulatorDisplayWidget.cpp
+    src/ui/EmulatorDisplayWidget.h
+    src/ui/EmbedX11.cpp
+    src/ui/EmbedX11.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
     src/ui/FileBrowser.cpp
@@ -317,6 +340,76 @@ target_link_libraries(tst_gui PRIVATE Qt6::Test Qt6::Widgets Qt6::Network)
 add_dependencies(tst_gui pist)
 add_test(NAME gui COMMAND tst_gui)
 set_tests_properties(gui PROPERTIES TIMEOUT 180)
+
+# Remote-control socket protocol: framing, block terminators, and the synchronous
+# command responses an agent depends on. Drives MainWindow offscreen, needs no
+# display or emulator.
+qt_add_executable(tst_remotecontrol
+    tests/tst_remotecontrol.cpp
+    src/control/RemoteControl.cpp
+    src/control/RemoteControl.h
+    src/ui/MainWindow.cpp
+    src/ui/MainWindow.h
+    src/ui/RegistersView.cpp
+    src/ui/RegistersView.h
+    src/ui/BreakpointPanel.cpp
+    src/ui/BreakpointPanel.h
+    src/ui/DisassemblyView.cpp
+    src/ui/DisassemblyView.h
+    src/ui/EmulatorDisplayWidget.cpp
+    src/ui/EmulatorDisplayWidget.h
+    src/ui/EmbedX11.cpp
+    src/ui/EmbedX11.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
+    src/ui/MemoryView.cpp
+    src/ui/MemoryView.h
+    src/ui/SettingsDialog.cpp
+    src/ui/SettingsDialog.h
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/editor/CodeEditor.cpp
+    src/editor/CodeEditor.h
+    src/editor/AsmHighlighter.cpp
+    src/editor/AsmHighlighter.h
+    src/build/BuildService.cpp
+    src/build/BuildService.h
+    src/build/Diagnostic.h
+    src/build/LineMap.cpp
+    src/build/LineMap.h
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
+    src/emu/EmulatorHost.cpp
+    src/emu/EmulatorHost.h
+    src/emu/HatariProbe.cpp
+    src/emu/HatariProbe.h
+    src/emu/MachineState.h
+    src/emu/MemoryDump.cpp
+    src/emu/MemoryDump.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+    src/emu/SessionConfig.cpp
+    src/emu/SessionConfig.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
+)
+target_include_directories(tst_remotecontrol PRIVATE src)
+target_link_libraries(tst_remotecontrol PRIVATE Qt6::Test Qt6::Widgets Qt6::Network)
+if(X11_FOUND)
+    target_compile_definitions(tst_remotecontrol PRIVATE PIST_HAVE_X11)
+    target_link_libraries(tst_remotecontrol PRIVATE X11::X11)
+endif()
+add_dependencies(tst_remotecontrol pist)
+add_test(NAME remotecontrol COMMAND tst_remotecontrol)
+set_tests_properties(remotecontrol PROPERTIES TIMEOUT 120)
 
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
 qt_add_executable(tst_emulatorhost

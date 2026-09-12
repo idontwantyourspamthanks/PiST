@@ -80,6 +80,9 @@ private slots:
     void parsesLongDump();
     void ignoresNonDumpText();
     void rendersCharacterColumn();
+    void readsBigEndianLong();
+    void rejectsOutOfRangeLong();
+    void classifiesPointerValues();
 
     // paths
     void outputPathsDeriveFromSource();
@@ -324,6 +327,41 @@ void TstDebug::rendersCharacterColumn()
     QVector<quint8> bytes;
     bytes << 0x48 << 0x7a << 0x00 << 0x7f << 0x20 << 0xff;
     QCOMPARE(renderMemoryChars(bytes), QStringLiteral("Hz.. ."));
+}
+
+// A pointer in memory is a big-endian long: the 68000 fetches the high byte
+// first. Reading it the other way round would follow the wrong address.
+void TstDebug::readsBigEndianLong()
+{
+    QCOMPARE(readLongBE(QByteArray::fromHex("00012596"), 0), 0x00012596u);
+    // The offset selects position within the buffer, not just its start.
+    QCOMPARE(readLongBE(QByteArray::fromHex("ff487a000c"), 1), 0x487a000cu);
+}
+
+void TstDebug::rejectsOutOfRangeLong()
+{
+    const QByteArray bytes = QByteArray::fromHex("00012596");
+    // Fewer than four bytes from the offset cannot make a long, so rather than
+    // reading past the dump it reports nothing.
+    QCOMPARE(readLongBE(bytes, 4), 0u);
+    QCOMPARE(readLongBE(bytes, 1), 0u);
+    QCOMPARE(readLongBE(bytes, -1), 0u);
+    QCOMPARE(readLongBE(QByteArray(), 0), 0u);
+}
+
+void TstDebug::classifiesPointerValues()
+{
+    // Zero points nowhere.
+    QVERIFY(!looksLikeAddress(0u));
+    // Odd addresses raise an address error on a long access, so they are data.
+    QVERIFY(!looksLikeAddress(0x00012597u));
+    // Past the 24-bit bus; the ST does not decode those bits, so the top byte is
+    // register junk rather than part of an address.
+    QVERIFY(!looksLikeAddress(0x01000000u));
+    QVERIFY(!looksLikeAddress(0xFFFFFFFFu));
+    // The highest even address the bus can reach, and a normal program pointer.
+    QVERIFY(looksLikeAddress(0x00FFFFFEu));
+    QVERIFY(looksLikeAddress(0x00012596u));
 }
 
 QTEST_MAIN(TstDebug)

@@ -244,6 +244,16 @@ void EmulatorHost::openSocketServer(QString *error)
             m_socket->deleteLater();
             m_socket = nullptr;
         });
+
+        // Ask for the video size so the embedded container can be sized to it.
+        // Commands on this channel are newline-terminated ASCII, and the only
+        // reply Hatari writes is the size (docs/PLAN.md §3.3). Only meaningful
+        // when the display is embedded; sending it otherwise is harmless but
+        // pointless, so it is gated.
+        if (!m_config.parentWindowId.isEmpty()) {
+            m_socket->write("hatari-embed-info\n");
+            emit logLine(tr("Control socket connected; requested embedded video size reports."));
+        }
     });
 }
 
@@ -295,6 +305,15 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("HOME"), config.sessionDir);
     env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);
+
+    if (!config.parentWindowId.isEmpty()) {
+        // Embedded display: Hatari reparents its SDL window into the container
+        // window named here (src/control.c, under HAVE_X11 && SDL_VIDEO_DRIVER_X11).
+        // Both processes must be X11 clients of the same display, which is why the
+        // child is pinned to the X11 driver and why PiST runs on the xcb platform.
+        env.insert(QStringLiteral("PARENT_WIN_ID"), config.parentWindowId);
+        env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("x11"));
+    }
     m_process->setProcessEnvironment(env);
 
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
@@ -669,16 +688,46 @@ void EmulatorHost::onCommandTimeout()
     dispatchNext();
 }
 
+namespace {
+
+/// Parse a "<w>x<h>" embed-size report into width and height. Returns false for
+/// anything that is not exactly two positive integers around an 'x', so socket
+/// noise is never treated as a size and the container is never resized to junk.
+bool parseEmbedSize(const QString &line, int *width, int *height)
+{
+    const int x = line.indexOf(QLatin1Char('x'));
+    if (x <= 0)
+        return false;
+    bool okWidth = false, okHeight = false;
+    const int w = line.left(x).toInt(&okWidth);
+    const int h = line.mid(x + 1).toInt(&okHeight);
+    if (!okWidth || !okHeight || w <= 0 || h <= 0)
+        return false;
+    *width = w;
+    *height = h;
+    return true;
+}
+
+} // namespace
+
 void EmulatorHost::handleSocketData()
 {
     if (!m_socket)
         return;
     m_socketBuffer += m_socket->readAll();
-    if (!m_socketBuffer.trimmed().isEmpty()) {
-        const QString text = QString::fromUtf8(m_socketBuffer).trimmed();
-        // The only reply Hatari writes on this channel is the embed size.
-        if (text.contains(QLatin1Char('x')))
-            emit logLine(tr("Emulator window size: %1").arg(text));
+
+    // Hatari reports the embedded video size as "<w>x<h>" with NO terminator:
+    // Control_SendEmbedSize's sprintf writes no newline (its own comment claims
+    // one, but the code writes none), so this must not wait for a line — doing so
+    // left every report sitting in the buffer unparsed, which is why the embedded
+    // display never learned its size. Each report is a separate write, spaced by
+    // a video mode change, so one report per read is the rule. Parse whatever has
+    // arrived, and only clear the buffer once a complete size has been consumed.
+    const QString text = QString::fromUtf8(m_socketBuffer).trimmed();
+    int width = 0, height = 0;
+    if (parseEmbedSize(text, &width, &height)) {
+        emit logLine(tr("Emulator window size: %1x%2").arg(width).arg(height));
+        emit embeddedSizeChanged(width, height);
         m_socketBuffer.clear();
     }
 }

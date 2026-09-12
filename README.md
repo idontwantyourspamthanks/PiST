@@ -241,9 +241,13 @@ It builds with plain `make`. A single-file project needs no linker at all.
 
 ## Emulator embedding
 
-`PiST` embeds the emulator window where the platform allows it: X11, Windows and macOS all support
-it, and Wayland is handled through XWayland. A detached-window mode is always available, and is the
-only mode on Wayland without XWayland.
+On Linux, `PiST` can run the emulator's display **inside the IDE** instead of in a
+separate window: **View ▸ Embed emulator display**. The mechanism is X11
+reparenting — the emulator attaches its own window into a panel in the IDE — so
+it works on X11 and, under Wayland, through XWayland. The preference is
+remembered. Where reparenting is not possible (Wayland without XWayland, and for
+now macOS and Windows), the option is unavailable and the emulator always runs as
+a separate window, which remains the default everywhere.
 
 
 
@@ -263,6 +267,68 @@ the ROM image's header — the same field Hatari itself reads — and tells you 
 too old. If the version cannot be determined, it asks before running, because a too-old ROM
 otherwise fails *silently*: the emulator boots, the program never starts, and debugging never
 attaches.
+
+## Remote control (driving the IDE from a script or an AI agent)
+
+`PiST` can be driven from another program — a build script, a test harness, or an
+AI agent — over a small text protocol, instead of by synthesising keyboard and
+mouse input (brittle) or by reading the screen (worse). It is the same idea as
+the control socket the emulator itself exposes, and PiST speaks both ends of
+that arrangement.
+
+The server is **off by default** and listens on localhost only; an IDE that opens
+a network port unasked would be a surprise. Enable it with a flag or an
+environment variable:
+
+```sh
+./pist --control-port 9999 your-program.s
+PIST_CONTROL_PORT=9999 ./pist your-program.s
+```
+
+Connect and send one command per line. Replies are a single line (`ok` or `error
+<message>`) or, for queries that return text, a block that ends with a line
+containing only `.`:
+
+```
+open <path>        open a source file
+build              assemble; the reply arrives when the build finishes
+run                build and start the emulator; the reply arrives when it is running
+stop               stop the emulator session
+step / stepover / continue
+breakpoint <n>     toggle a breakpoint at source line n
+screenshot <file>  save the window as a PNG (default /tmp/pist-screenshot.png)
+console            the build & debug console text (block reply)
+state              registers and PC (block reply)
+help               list the commands
+quit               close the IDE
+```
+
+`build` and `run` answer only once the work is actually done, so a script does
+not have to poll: `run` returning `ok` means the emulator session is up.
+
+A minimal client in Python:
+
+```python
+import socket
+s = socket.create_connection(("127.0.0.1", 9999))
+def cmd(line, block=False):
+    s.sendall((line + "\n").encode())
+    if not block:
+        return s.recv(4096).decode().strip()
+    out = b""
+    while not out.endswith(b"\n.\n"):
+        out += s.recv(4096)
+    return out.decode()
+
+print(cmd("run"))                       # ok, once the session is up
+cmd("screenshot /tmp/pist.png")         # save the window (including the embedded display)
+print(cmd("state", block=True))         # registers
+```
+
+There is no authentication, so the socket is bound to localhost and nothing else;
+do not forward or expose it. It is a debugging and automation aid, not a general
+IPC mechanism. The `screenshot` command raises the window first, so it reflects
+what is actually on screen.
 
 ## Licence
 

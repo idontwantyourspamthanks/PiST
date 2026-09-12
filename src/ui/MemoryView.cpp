@@ -68,6 +68,12 @@ MemoryView::MemoryView(QWidget *parent)
     layout->addWidget(m_table);
 
     connect(m_addressEdit, &QLineEdit::returnPressed, this, &MemoryView::onAddressEntered);
+    connect(m_table, &QTableWidget::cellDoubleClicked, this, &MemoryView::onCellDoubleClicked);
+}
+
+quint32 MemoryView::currentAddress() const
+{
+    return m_base;
 }
 
 void MemoryView::onAddressEntered()
@@ -100,6 +106,29 @@ void MemoryView::goToAddress(quint32 address)
     emit dumpRequested(m_base, kRowBytes * kRows);
 }
 
+void MemoryView::refresh()
+{
+    emit dumpRequested(m_base, kRowBytes * kRows);
+}
+
+void MemoryView::onCellDoubleClicked(int row, int column)
+{
+    // Double-click, not single: a single click must stay free to select a cell.
+    if (column < kFirstByteColumn || column >= kFirstByteColumn + kRowBytes)
+        return;
+
+    // A cell shows one byte, but a pointer is four. Re-align down to even, which
+    // is the only alignment the 68000 itself would use for a long access.
+    int offset = row * kRowBytes + (column - kFirstByteColumn);
+    offset -= offset % 2;
+
+    const quint32 value = readLongBE(m_bytes, offset);
+    if (looksLikeAddress(value))
+        goToAddress(value);
+    // Anything that cannot be an address is ignored outright: following a data
+    // value or a null would be a surprising jump with no way to predict it.
+}
+
 void MemoryView::clear()
 {
     for (int r = 0; r < m_table->rowCount(); ++r) {
@@ -122,6 +151,7 @@ void MemoryView::applyDump(const QString &response)
 
     clear();
     m_table->setRowCount(kRows);
+    m_bytes.clear();
 
     int row = 0;
     for (const MemoryRow &dump : rows) {
@@ -153,6 +183,12 @@ void MemoryView::applyDump(const QString &response)
             m_table->setItem(row, kCharColumn, chars);
         }
         chars->setText(renderMemoryChars(dump.bytes));
+
+        // Keep the raw bytes so a cell's pointer can be read back; only the
+        // bytes actually shown count, so a short dump does not let a click read
+        // past the data it is displaying.
+        m_bytes.append(reinterpret_cast<const char *>(dump.bytes.constData()),
+                       qMin(dump.bytes.size(), static_cast<qsizetype>(kRowBytes)));
 
         ++row;
     }

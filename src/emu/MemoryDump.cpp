@@ -78,4 +78,23 @@ QString renderMemoryChars(const QVector<quint8> &bytes)
     return text;
 }
 
+quint32 readLongBE(const QByteArray &bytes, int offset)
+{
+    if (offset < 0 || bytes.size() - offset < 4)
+        return 0;
+
+    const auto *p = reinterpret_cast<const quint8 *>(bytes.constData()) + offset;
+    return (quint32(p[0]) << 24) | (quint32(p[1]) << 16) | (quint32(p[2]) << 8)
+           | quint32(p[3]);
+}
+
+bool looksLikeAddress(quint32 value)
+{
+    // Non-zero because a null pointer points nowhere; even because the 68000
+    // raises an address error on an odd long access; within 24 bits because the
+    // ST does not decode the rest, and a register's stale high byte is not part
+    // of the address.
+    return value != 0 && (value & 1u) == 0 && value <= 0x00FFFFFFu;
+}
+
 } // namespace pist

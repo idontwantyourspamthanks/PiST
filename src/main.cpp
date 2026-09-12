@@ -6,6 +6,7 @@
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
 #include "ui/MainWindow.h"
+#include "control/RemoteControl.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -92,6 +93,19 @@ int runDiagnose()
 
 int main(int argc, char *argv[])
 {
+#if defined(Q_OS_LINUX)
+    // Embedded display needs PiST to be an X11 client: the container widget's
+    // window ID is handed to Hatari as PARENT_WIN_ID, and that only exists on
+    // xcb. On a Wayland session Qt would otherwise choose the wayland platform,
+    // leaving no X11 window to embed into. Prefer xcb whenever an X display is
+    // reachable (native X11, or XWayland under Wayland); when there is none we
+    // stay native Wayland and the embedded option is simply unavailable. An
+    // explicit QT_QPA_PLATFORM always wins.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")
+        && !qEnvironmentVariableIsEmpty("DISPLAY"))
+        qputenv("QT_QPA_PLATFORM", "xcb");
+#endif
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("PiST"));
     QApplication::setApplicationVersion(QStringLiteral("0.2.0"));
@@ -108,6 +122,15 @@ int main(int argc, char *argv[])
         QStringLiteral("Report the tools and ROMs PiST can find, then exit."));
     parser.addOption(diagnose);
 
+    QCommandLineOption controlPort(
+        QStringLiteral("control-port"),
+        QStringLiteral("Listen on 127.0.0.1:<port> for remote-control commands "
+                       "(open/build/run/step/screenshot/state/console/quit). "
+                       "May also be set with the PIST_CONTROL_PORT environment "
+                       "variable. Off by default."),
+        QStringLiteral("port"));
+    parser.addOption(controlPort);
+
     parser.addPositionalArgument(QStringLiteral("source"),
                                  QStringLiteral("Assembly source file to open."));
     parser.process(app);
@@ -119,6 +142,30 @@ int main(int argc, char *argv[])
 
     pist::MainWindow window;
     window.show();
+
+    // The remote-control interface is strictly opt-in: an IDE that opens a
+    // listening socket without being asked would be a surprise. --control-port
+    // wins over the environment variable.
+    pist::RemoteControl remoteControl(&window);
+    {
+        QString portText = parser.value(controlPort);
+        if (portText.isEmpty())
+            portText = qEnvironmentVariable("PIST_CONTROL_PORT");
+        if (!portText.isEmpty()) {
+            bool ok = false;
+            const quint16 port = portText.toUShort(&ok);
+            QString error;
+            if (!ok || port == 0) {
+                fprintf(stderr, "Invalid control port '%s'\n", qPrintable(portText));
+            } else if (!remoteControl.listen(port, &error)) {
+                fprintf(stderr, "Cannot listen for remote control on %d: %s\n",
+                        int(port), qPrintable(error));
+            } else {
+                fprintf(stderr, "Listening for remote control on 127.0.0.1:%d\n",
+                        int(remoteControl.boundPort()));
+            }
+        }
+    }
 
     const QStringList args = parser.positionalArguments();
     if (!args.isEmpty()) {

@@ -13,6 +13,8 @@
 #include "debug/Breakpoint.h"
 #include "ui/BreakpointPanel.h"
 #include "ui/DisassemblyView.h"
+#include "ui/EmulatorDisplayWidget.h"
+#include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
 #include "ui/MemoryView.h"
 #include "ui/SettingsDialog.h"
@@ -32,9 +34,11 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QGuiApplication>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QSettings>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -85,6 +89,7 @@ MainWindow::MainWindow(QWidget *parent)
     // because only stoppedChanged was connected. A dead emulator looked live and
     // step/continue stayed enabled.
     connect(m_host, &EmulatorHost::runningChanged, this, [this](bool running) {
+        emit sessionRunningChanged(running);
         if (running)
             return;
         m_statusEmulator->setText(m_caps.valid ? m_caps.summary() : tr("Not running"));
@@ -101,6 +106,20 @@ MainWindow::MainWindow(QWidget *parent)
                 if (m_memory)
                     m_memory->applyDump(response);
             });
+    connect(m_host, &EmulatorHost::embeddedSizeChanged, this,
+            [this](int width, int height) {
+                if (!m_display)
+                    return;
+                m_display->setEmulatorSize(width, height);
+                // The size report arrives right after the reparent, and Hatari
+                // never maps the SDL window it created hidden, so map it now —
+                // otherwise the embedded display stays black.
+                mapEmbeddedWindowChildren(m_display->winId());
+            });
+
+    // Restore the display preference before any dock is created, so the dock's
+    // initial visibility matches it.
+    m_embeddedDisplay = QSettings().value(QStringLiteral("display/embedded"), false).toBool();
 
     // The title carries the modified marker, so the user can always tell whether
     // work is unsaved without looking for a toolbar state.
@@ -158,6 +177,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     m_caps = probeHatari(toolchain::findEmulator().path);
+    updateEmbedActionState();
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     m_statusEmulator->setText(m_caps.summary());
@@ -218,6 +238,13 @@ void MainWindow::createActions()
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
     m_actResume->setEnabled(false);
     connect(m_actResume, &QAction::triggered, this, &MainWindow::resume);
+
+    // Checked state mirrors the persisted preference; the enabled state is set
+    // later, once the emulator's capabilities are known.
+    m_actEmbedDisplay = new QAction(tr("&Embed emulator display"), this);
+    m_actEmbedDisplay->setCheckable(true);
+    m_actEmbedDisplay->setChecked(m_embeddedDisplay);
+    connect(m_actEmbedDisplay, &QAction::toggled, this, &MainWindow::setDisplayEmbedded);
 }
 
 void MainWindow::createMenus()
@@ -236,6 +263,9 @@ void MainWindow::createMenus()
     quit->setShortcut(QKeySequence::Quit);
     connect(quit, &QAction::triggered, this, &QWidget::close);
     fileMenu->addAction(quit);
+
+    auto *viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(m_actEmbedDisplay);
 
     auto *runMenu = menuBar()->addMenu(tr("&Run"));
     runMenu->addAction(m_actBuild);
@@ -286,6 +316,17 @@ void MainWindow::createDocks()
         connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
                 this, &MainWindow::clearAllBreakpoints);
         return dock;
+    }());
+
+    // The embedded display lives in a dock that is shown only when the option
+    // is on; in separate-window mode it is hidden and the widget is unused.
+    addDockWidget(Qt::RightDockWidgetArea, [this] {
+        m_displayDock = new QDockWidget(tr("Emulator"), this);
+        m_displayDock->setObjectName(QStringLiteral("emulatorDisplayDock"));
+        m_display = new EmulatorDisplayWidget(m_displayDock);
+        m_displayDock->setWidget(m_display);
+        m_displayDock->setVisible(m_embeddedDisplay);
+        return m_displayDock;
     }());
 
     addDockWidget(Qt::BottomDockWidgetArea, [this] {
@@ -681,6 +722,8 @@ void MainWindow::build()
 
 void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnostics)
 {
+    emit buildCompleted(success);
+
     QString error;
     if (success)
         rebuildProgramMap();
@@ -809,6 +852,20 @@ void MainWindow::launchEmulator()
         config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
     else
         config.controlSocketPath.clear();
+
+    // Embedded display: name the container's X11 window so Hatari reparents its
+    // SDL window into it. Gated on the platform and the control socket, so a
+    // Wayland-native session or a socket-less build falls back to a separate
+    // window even when the option is on. The dock is shown and the widget
+    // realized now, because winId() has to be a live X11 window before Hatari
+    // starts or there is nothing to reparent into.
+    if (m_embeddedDisplay && canEmbedDisplay() && m_display) {
+        m_displayDock->setVisible(true);
+        m_display->setVisible(true);
+        config.parentWindowId = QString::number(m_display->winId());
+    } else {
+        config.parentWindowId.clear();
+    }
 
     if (!m_caps.hasDebugExcept)
         config.debugExceptions.clear();
@@ -1210,9 +1267,11 @@ void MainWindow::clearAllBreakpoints()
 
 void MainWindow::onStateUpdated(const MachineState &state)
 {
+    m_lastState = state;
     m_registers->setState(state);
     m_disassembly->setState(state);
 
+    bool navigated = false;
     if (state.hasBases()) {
         const bool firstBases = !m_bases.isValid();
         m_bases.text = state.textBase;
@@ -1221,11 +1280,73 @@ void MainWindow::onStateUpdated(const MachineState &state)
 
         // Point the memory pane at the program's own data on the first stop.
         // Its previous address is meaningless across sessions.
-        if (firstBases && m_memory)
+        if (firstBases && m_memory) {
             m_memory->goToAddress(state.dataBase ? state.dataBase : state.textBase);
+            navigated = true;
+        }
     }
 
+    // Re-read the memory pane whenever the machine state changes, not only when
+    // the user navigates: a memory view that goes stale the moment you step is
+    // broken. The first stop is skipped because it just navigated, and that
+    // already requested the dump it needs.
+    if (m_memory && !navigated)
+        m_memory->refresh();
+
     locationFromPc(state.pc);
+}
+
+bool MainWindow::canEmbedDisplay() const
+{
+    // Both ends must be X11 clients of the same display, and the size report
+    // that sizes the container travels on the control socket.
+    return QGuiApplication::platformName() == QLatin1String("xcb")
+        && m_caps.hasControlSocket;
+}
+
+void MainWindow::setDisplayEmbedded(bool on)
+{
+    m_embeddedDisplay = on;
+    QSettings().setValue(QStringLiteral("display/embedded"), on);
+    if (m_displayDock)
+        m_displayDock->setVisible(on);
+    // A running session keeps the display mode it was launched with; the change
+    // takes effect on the next Run.
+}
+
+void MainWindow::updateEmbedActionState()
+{
+    if (!m_actEmbedDisplay)
+        return;
+    const bool can = canEmbedDisplay();
+    m_actEmbedDisplay->setEnabled(can);
+    m_actEmbedDisplay->setToolTip(
+        can ? tr("Run the emulator's display inside the IDE rather than in a "
+                 "separate window.")
+            : tr("Embedded display needs X11 (this session is on '%1') and an "
+                 "emulator with a control socket.")
+                  .arg(QGuiApplication::platformName()));
+}
+
+QString MainWindow::debugConsoleText() const
+{
+    return m_log ? m_log->toPlainText() : QString();
+}
+
+QString MainWindow::stateSummary() const
+{
+    if (!m_lastState.regs.valid)
+        return tr("no session state\n");
+
+    const Registers &r = m_lastState.regs;
+    QStringList lines;
+    lines << QStringLiteral("pc  %1").arg(m_lastState.pc, 8, 16, QLatin1Char('0'));
+    for (int i = 0; i < 8; ++i)
+        lines << QStringLiteral("d%1  %2").arg(i).arg(r.d[i], 8, 16, QLatin1Char('0'));
+    for (int i = 0; i < 8; ++i)
+        lines << QStringLiteral("a%1  %2").arg(i).arg(r.a[i], 8, 16, QLatin1Char('0'));
+    lines << QStringLiteral("sr  %1").arg(r.sr, 4, 16, QLatin1Char('0'));
+    return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
 }
 
 void MainWindow::locationFromPc(quint32 pc)

@@ -63,6 +63,14 @@ struct SessionConfig
     /// probe rather than setting this unconditionally.
     QString controlSocketPath;
 
+    /// Embedded display: the X11 window ID (as text) of the container PiST
+    /// provides. Exported to the child as `PARENT_WIN_ID`, and Hatari reparents
+    /// its SDL window into it (src/control.c). Empty means the emulator runs as
+    /// its own top-level window, which is the default and the only mode that
+    /// works off X11. Setting it also pins the child to SDL_VIDEODRIVER=x11, so
+    /// both ends are clients of the same X display.
+    QString parentWindowId;
+
     /// Exception flags for `--debug-except`.
     ///
     /// The `autostart` entry is load-bearing rather than a real exception class:

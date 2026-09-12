@@ -109,14 +109,31 @@ jobs:
             # what is being tested, not an incidental.
             sudo apt-get install -y -qq libsdl2-dev libpng-dev zlib1g-dev libreadline-dev
           else
-            brew install sdl2 libpng
+            brew install sdl2 libpng pkg-config
           fi
 
-          cmake -S hatari-2.6.1 -B hatari-build -DCMAKE_BUILD_TYPE=Release
+          # On macOS, libpng and SDL2 live in the Homebrew prefix, which the
+          # system CMake does not search by default — without this the link fails
+          # on every `_png_*` symbol. pkg-config is installed for the same reason:
+          # Hatari uses it to find capstone and friends.
+          PREFIX_ARGS=""
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$(brew --prefix)"
+          fi
+
+          cmake -S hatari-2.6.1 -B hatari-build -DCMAKE_BUILD_TYPE=Release $PREFIX_ARGS
           cmake --build hatari-build --parallel
 
+          # macOS builds an application bundle, so the executable is named
+          # `Hatari` inside Contents/MacOS rather than `hatari` at the top level.
           mkdir -p "$HOME/.local/bin"
-          find hatari-build -name hatari -type f -executable -exec cp {} "$HOME/.local/bin/hatari" \;
+          HATARI_BIN=$(find hatari-build -type f -perm -u+x -iname hatari | head -1)
+          if [ -z "$HATARI_BIN" ]; then
+            echo "ERROR: no hatari executable produced; tree:"
+            find hatari-build -name '*atari*' -maxdepth 4 | head -20
+            exit 1
+          fi
+          cp "$HATARI_BIN" "$HOME/.local/bin/hatari"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # A free ROM so the emulator suites have something to boot. Pinned by

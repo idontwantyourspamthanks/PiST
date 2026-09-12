@@ -41,6 +41,11 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+public slots:
+    /// Open a source file by path, without a dialog. Used for the command line
+    /// and for anything that already knows what it wants to open.
+    void openPath(const QString &path);
+
 private slots:
     void openFile();
     void saveFile();
@@ -49,6 +54,7 @@ private slots:
     void editSettings();
     void build();
     void run();
+    void launchEmulator();
     void stopSession();
     void step();
     void stepOver();
@@ -66,6 +72,9 @@ private:
     void createDocks();
     void createToolBar();
     void createStatusBar();
+
+    /// Load the project settings that sit beside a source file, if any.
+    void loadProjectForSource(const QString &sourcePath);
 
     void onBuildFinished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void onStateUpdated(const pist::MachineState &state);
@@ -111,6 +120,10 @@ private:
     /// Set once the entry stop has been handled for the current session, so the
     /// arming sequence runs exactly once.
     bool m_sessionArmed = false;
+
+    /// Set by Run, consumed by onBuildFinished. Needed because the build is
+    /// asynchronous: the launch has to wait for it, not run alongside it.
+    bool m_launchAfterBuild = false;
 
     /// Project configuration. Persisted to a `.pistproject` file beside the
     /// source, so settings travel with the project (docs/PLAN.md §5 rule 7 —

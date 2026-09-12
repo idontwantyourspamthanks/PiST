@@ -11,6 +11,9 @@
 // here rather than assumed.
 
 #include "editor/CodeEditor.h"
+#include "emu/EmulatorHost.h"
+#include "emu/Paths.h"
+#include "emu/TosRom.h"
 #include "ui/MainWindow.h"
 
 #include <QDir>
@@ -31,6 +34,10 @@ private slots:
     void windowConstructs();
     void assemblesAndMapsLines();
     void editorShowsExecutionLineAndBreakpoints();
+
+    /// Run must eventually start an emulator session — and must do so *after* the
+    /// asynchronous build finishes, not alongside it.
+    void runStartsAnEmulatorSession();
 
 private:
     QString m_vasm;
@@ -141,6 +148,66 @@ void TstGui::editorShowsExecutionLineAndBreakpoints()
     QCOMPARE(editor->breakpointLines(), QList<int>({2, 3}));
     editor->setBreakpointLines({});
     QVERIFY(editor->breakpointLines().isEmpty());
+}
+
+// The regression this guards: Run called build() (asynchronous) and then checked
+// whether a build was in flight, which is always true immediately after starting
+// one — so the entire emulator-launch path was unreachable dead code and Run
+// appeared to "just build".
+void TstGui::runStartsAnEmulatorSession()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        QSKIP("needs hatari");
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    // A program that assembles cleanly and spins, so the session stops at entry.
+    const QString source = m_work->path() + QStringLiteral("/run.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    // A project file with no include paths, so no modal dialog can interrupt.
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY2(host, "MainWindow must own an EmulatorHost");
+    QVERIFY(!host->isRunning());
+
+    window.openPath(source);
+    QCOMPARE(window.windowTitle().contains(QLatin1String("PiST")), true);
+
+    QSignalSpy runningSpy(host, &EmulatorHost::runningChanged);
+
+    // Invoke Run exactly as the toolbar action does.
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    // The emulator must come up without further interaction. The build runs first,
+    // so allow for it.
+    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+
+    // ...and it must be a real session, not just a spawned process.
+    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
+    QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
+             "the emulator started but never reached the debugger");
+
+    host->stop();
 }
 
 QTEST_MAIN(TstGui)

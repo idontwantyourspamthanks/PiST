@@ -28,8 +28,10 @@ int main(int argc, char *argv[])
     window.show();
 
     const QStringList args = parser.positionalArguments();
-    if (!args.isEmpty())
-        QMetaObject::invokeMethod(&window, "openFile", Qt::QueuedConnection);
+    if (!args.isEmpty()) {
+        QMetaObject::invokeMethod(&window, "openPath", Qt::QueuedConnection,
+                                  Q_ARG(QString, args.first()));
+    }
 
     return app.exec();
 }

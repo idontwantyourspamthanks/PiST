@@ -328,8 +328,21 @@ void MainWindow::openFile()
         tr("Assembly sources (*.s *.S *.asm *.x68);;All files (*)"));
     if (path.isEmpty())
         return;
-    if (m_editor->loadFile(path))
-        statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
+    openPath(path);
+}
+
+void MainWindow::openPath(const QString &path)
+{
+    if (path.isEmpty())
+        return;
+    if (!m_editor->loadFile(path)) {
+        QMessageBox::warning(this, tr("Open"),
+                             tr("Could not open %1").arg(path));
+        return;
+    }
+
+    statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
+    loadProjectForSource(path);
 }
 
 void MainWindow::openProject()
@@ -418,6 +431,39 @@ void MainWindow::editSettings()
         5000);
 }
 
+void MainWindow::loadProjectForSource(const QString &sourcePath)
+{
+    if (sourcePath.isEmpty())
+        return;
+
+    const QString projectPath = settings::projectFileFor(sourcePath);
+    if (!QFileInfo::exists(projectPath)) {
+        // No project file: keep the current settings but point them at the new
+        // source, so Build uses the source the user just opened.
+        m_settings.sourceFile = sourcePath;
+        return;
+    }
+
+    ProjectSettings loaded;
+    QString error;
+    if (!settings::load(&loaded, projectPath, &error)) {
+        m_log->appendPlainText(tr("[project] %1").arg(error));
+        m_settings.sourceFile = sourcePath;
+        return;
+    }
+
+    loaded.sourceFile = sourcePath;
+    m_settings = loaded;
+
+    settings::rememberLastProject(projectPath, sourcePath);
+    m_log->appendPlainText(tr("[project] loaded %1").arg(projectPath));
+    statusBar()->showMessage(
+        tr("Project settings: %1, %2, %3 MiB")
+            .arg(machineDisplayName(m_settings.machine), m_settings.monitor)
+            .arg(m_settings.memSizeMiB),
+        6000);
+}
+
 void MainWindow::saveFile()
 {
     if (m_editor->filePath().isEmpty()) {
@@ -469,8 +515,13 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
 {
     QString error;
     if (success && m_lineMap.parseListing(m_build->listingFile(), &error)) {
+        // This counts source *files* contributing to the listing, not lines. The
+        // two differ by orders of magnitude for a real project, so naming it
+        // correctly matters (a multi-file build reports 2, not the 2000+ lines).
+        const int files = m_lineMap.sourceFiles().size();
         statusBar()->showMessage(
-            tr("Build succeeded — %1 source lines mapped").arg(m_lineMap.sourceFiles().size()),
+            files == 1 ? tr("Build succeeded — 1 source file mapped")
+                       : tr("Build succeeded — %1 source files mapped").arg(files),
             5000);
     } else if (!error.isEmpty()) {
         m_log->appendPlainText(QStringLiteral("[line map] ") + error);
@@ -499,6 +550,15 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
     m_log->appendPlainText(success ? tr("Build succeeded.")
                                    : tr("Build failed with %1 diagnostic(s).")
                                          .arg(diagnostics.size()));
+
+    // Run was requested: continue now that the build has actually finished.
+    if (m_launchAfterBuild) {
+        m_launchAfterBuild = false;
+        if (success)
+            launchEmulator();
+        else
+            m_log->appendPlainText(tr("[run] build failed, so nothing was launched"));
+    }
 }
 
 void MainWindow::run()
@@ -510,10 +570,18 @@ void MainWindow::run()
 
     // Always rebuild before running: this keeps the listing in step with the
     // binary, which is what the line map depends on.
+    //
+    // The launch cannot happen here. build() starts the assembler asynchronously
+    // and returns immediately, so anything after it would run while the build was
+    // still in flight — and a "is the build running?" guard here is always true,
+    // which silently turned the whole launch path into dead code. The launch is
+    // chained onto build completion instead, via onBuildFinished.
+    m_launchAfterBuild = true;
     build();
-    if (m_build->isRunning())
-        return;
+}
 
+void MainWindow::launchEmulator()
+{
     const QFileInfo info(m_editor->filePath());
     const QString prg = info.absolutePath() + QDir::separator()
                       + info.completeBaseName() + QStringLiteral(".prg");

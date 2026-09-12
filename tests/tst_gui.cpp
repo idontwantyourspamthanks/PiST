@@ -308,12 +308,27 @@ void TstGui::editorTracksUnsavedChanges()
 void TstGui::diagnoseReportsToolsAndRoms()
 {
     // The test executable is not pist, so locate the application binary beside
-    // it — the same directory CMake puts them both in.
-    QString app = QCoreApplication::applicationDirPath() + QStringLiteral("/pist");
+    // it. On macOS the application is a bundle, so its executable sits inside
+    // Contents/MacOS rather than directly alongside the tests.
+    const QString dir = QCoreApplication::applicationDirPath();
+    QStringList candidates;
 #ifdef Q_OS_WIN
-    app += QStringLiteral(".exe");
+    candidates << dir + QStringLiteral("/pist.exe");
+#elif defined(Q_OS_MACOS)
+    candidates << dir + QStringLiteral("/pist.app/Contents/MacOS/pist")
+               << dir + QStringLiteral("/pist");
+#else
+    candidates << dir + QStringLiteral("/pist");
 #endif
-    if (!QFileInfo::exists(app))
+
+    QString app;
+    for (const QString &candidate : candidates) {
+        if (QFileInfo(candidate).isExecutable()) {
+            app = candidate;
+            break;
+        }
+    }
+    if (app.isEmpty())
         QSKIP("pist binary not found next to the test executable");
 
     QProcess process;

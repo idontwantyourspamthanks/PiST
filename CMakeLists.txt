@@ -90,6 +90,14 @@ target_link_libraries(pist PRIVATE
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
+if(APPLE)
+    # A GUI application on macOS belongs in a bundle: it is what macdeployqt
+    # operates on, carries the icon and Info.plist, and is what a user drags to
+    # Applications. Without this the release packaging step failed with
+    # "Could not find app bundle".
+    set_target_properties(pist PROPERTIES MACOSX_BUNDLE TRUE)
+endif()
+
 install(TARGETS pist
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

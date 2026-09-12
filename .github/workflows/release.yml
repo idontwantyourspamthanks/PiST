@@ -129,6 +129,18 @@ jobs:
           name: ${{ matrix.vasm_artifact }}
           path: bundle/bin
 
+      # Artifacts do not preserve the executable bit, so a downloaded assembler is
+      # present but not runnable, and discovery rightly skips it — which shipped an
+      # archive whose bundled assembler was reported NOT FOUND. Restore the mode
+      # before it is used or packaged; tar preserves it, so the archive is correct.
+      - name: Make the assembler executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x bundle/bin/vasmm68k_mot
+          ls -l bundle/bin/
+
       - name: Fetch and verify EmuTOS
         shell: bash
         run: |
@@ -165,9 +177,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p bundle/bin
-          cp build/pist bundle/bin/
-          macdeployqt bundle/bin/pist -always-overwrite
+          mkdir -p bundle
+          cp -R build/pist.app bundle/
+          macdeployqt bundle/pist.app -always-overwrite
+          # The assembler belongs beside the executable inside the bundle, which
+          # is where discovery looks first, so the archive stays self-sufficient
+          # wherever it is unpacked from.
+          cp bundle/bin/vasmm68k_mot bundle/pist.app/Contents/MacOS/
+          rm -rf bundle/bin
+          find bundle -maxdepth 4 -type f | head -20
 
       - name: Deploy Qt runtime (Windows)
         if: matrix.deployed && runner.os == 'Windows'
@@ -204,12 +222,14 @@ jobs:
           set -euo pipefail
           BIN=bundle/bin/pist
           [ -f "$BIN" ] || BIN="$BIN.exe"
+          # On macOS the executable lives inside the .app bundle.
+          [ -f "$BIN" ] || BIN=bundle/pist.app/Contents/MacOS/pist
           echo "--- $BIN --diagnose ---"
           "$BIN" --diagnose | tee diagnose.txt
 
           echo
           echo "Asserting the archive is self-sufficient..."
-          bindir="$(cd bundle/bin && pwd)"
+          bindir="$(cd "$(dirname "$BIN")" && pwd)"
 
           # The assembler reported must be the one travelling in this archive,
           # not one that happens to be installed on the build machine.

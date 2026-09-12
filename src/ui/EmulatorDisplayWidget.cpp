@@ -4,16 +4,13 @@
 
 #include "ui/EmulatorDisplayWidget.h"
 
+#include "ui/EmbedX11.h"
+
 #include <QPalette>
+#include <QResizeEvent>
+#include <QTimer>
 
 namespace pist {
-
-namespace {
-// A reasonable surface to show before the emulator reports its real size: the
-// ST's low-resolution screen, doubled, which is also roughly what Hatari opens.
-constexpr int kDefaultWidth = 640;
-constexpr int kDefaultHeight = 400;
-} // namespace
 
 EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
     : QWidget(parent)
@@ -31,17 +28,49 @@ EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
     p.setColor(QPalette::Window, Qt::black);
     setPalette(p);
 
-    setMinimumSize(kDefaultWidth, kDefaultHeight);
+    // Expand to fill the dock. The display tracks this size (see fitEmbedded),
+    // scaling the way Hatari does when its own window is resized, rather than
+    // leaving the video at its native resolution with dead space around it.
+    setMinimumSize(320, 200);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // The dock's layout settles over the first moments after launch, and this
+    // widget's Qt size can lag the size the underlying X11 window actually ends
+    // up with. Re-fit a few times so the embedded display lands on the settled
+    // size, not the transient one.
+    m_settleTimer = new QTimer(this);
+    m_settleTimer->setInterval(150);
+    connect(m_settleTimer, &QTimer::timeout, this, [this] {
+        fitEmbedded();
+        if (++m_settleTicks >= 12)
+            m_settleTimer->stop();
+    });
 }
 
-void EmulatorDisplayWidget::setEmulatorSize(int width, int height)
+void EmulatorDisplayWidget::showEmbedded()
 {
-    if (width <= 0 || height <= 0)
-        return;
-    // Fixed rather than minimum: the reparented SDL window keeps its own size
-    // and sits at our origin, so matching it exactly is what avoids clipping
-    // (too small) or dead space (too large).
-    setFixedSize(width, height);
+    // Hatari never maps the window it created hidden, so map it, then make it
+    // fill this widget. Done together because a mapped-but-wrong-sized window is
+    // exactly the black-with-dead-space look this is avoiding.
+    mapEmbeddedWindowChildren(winId());
+    m_settleTicks = 0;
+    m_settleTimer->start();
+    fitEmbedded();
+}
+
+void EmulatorDisplayWidget::fitEmbedded()
+{
+    // Fit from the X server's idea of the container's size, not the widget's,
+    // which can be stale here.
+    fitEmbeddedWindowToContainer(winId());
+}
+
+void EmulatorDisplayWidget::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    // The dock changed size, so the embedded window must change with it. Hatari
+    // rescales its renderer to match, as it does for a hand-resized window.
+    fitEmbedded();
 }
 
 } // namespace pist

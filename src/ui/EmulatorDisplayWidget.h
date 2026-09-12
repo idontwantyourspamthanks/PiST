@@ -30,9 +30,21 @@ public:
     explicit EmulatorDisplayWidget(QWidget *parent = nullptr);
 
 public slots:
-    /// Resize to the emulator's reported video size. Negative or zero sizes are
-    /// ignored: they mean a transient state, not a real mode.
-    void setEmulatorSize(int width, int height);
+    /// Show the embedded window and make it fill this widget. Called when the
+    /// emulator reports its video size, which happens right after the reparent.
+    void showEmbedded();
+
+    /// Resize the embedded window to fill this widget. Hatari rescales its
+    /// renderer to fit, exactly as it does when its own window is resized by
+    /// hand. Called on embed-size and whenever the dock changes size.
+    void fitEmbedded();
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
+private:
+    class QTimer *m_settleTimer = nullptr;
+    int m_settleTicks = 0;
 };
 
 } // namespace pist

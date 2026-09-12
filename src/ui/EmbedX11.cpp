@@ -81,4 +81,38 @@ QImage captureWindowImage(quintptr windowId)
 #endif
 }
 
+
+
+
+void fitEmbeddedWindowToContainer(quintptr windowId)
+{
+#if defined(PIST_HAVE_X11)
+    auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    if (!x11)
+        return;
+    Display *display = x11->display();
+    if (!display)
+        return;
+
+    const Window window = static_cast<Window>(windowId);
+    XWindowAttributes attrs;
+    if (!XGetWindowAttributes(display, window, &attrs)
+        || attrs.width <= 0 || attrs.height <= 0)
+        return;
+
+    Window root = 0, parent = 0, *children = nullptr;
+    unsigned int count = 0;
+    if (XQueryTree(display, window, &root, &parent, &children, &count) && children) {
+        for (unsigned int i = 0; i < count; ++i)
+            XMoveResizeWindow(display, children[i], 0, 0,
+                              static_cast<unsigned>(attrs.width),
+                              static_cast<unsigned>(attrs.height));
+        XFree(children);
+    }
+    XFlush(display);
+#else
+    Q_UNUSED(windowId);
+#endif
+}
+
 } // namespace pist

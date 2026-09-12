@@ -107,14 +107,13 @@ MainWindow::MainWindow(QWidget *parent)
                     m_memory->applyDump(response);
             });
     connect(m_host, &EmulatorHost::embeddedSizeChanged, this,
-            [this](int width, int height) {
+            [this](int, int) {
                 if (!m_display)
                     return;
-                m_display->setEmulatorSize(width, height);
                 // The size report arrives right after the reparent, and Hatari
-                // never maps the SDL window it created hidden, so map it now —
-                // otherwise the embedded display stays black.
-                mapEmbeddedWindowChildren(m_display->winId());
+                // never maps the SDL window it created hidden, so show it now
+                // and make it fill the dock — otherwise the display stays black.
+                m_display->showEmbedded();
             });
 
     // Restore the display preference before any dock is created, so the dock's

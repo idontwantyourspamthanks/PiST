@@ -300,21 +300,7 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
 
     connect(m_process, &QProcess::readyReadStandardError, this, [this] {
-        m_stderrBuffer += m_process->readAllStandardError();
-        int nl;
-        while ((nl = m_stderrBuffer.indexOf('\n')) >= 0) {
-            const QByteArray raw = m_stderrBuffer.left(nl);
-            m_stderrBuffer.remove(0, nl + 1);
-            handleStderrLine(QString::fromUtf8(raw).remove(QLatin1Char('\r')));
-        }
-        // On builds without readline the debugger prompt is written to stderr
-        // instead of stdout, with no trailing newline. Check only after every
-        // complete line has been consumed, otherwise a trailing prompt would be
-        // counted once per line still sitting in the buffer. It is safe from
-        // confusion with the `> cmd` echoes emitted by DebugUI_ParseLine and
-        // DebugUI_ParseFile, because those always end in a newline.
-        if (stderrEndsWithPrompt(m_stderrBuffer))
-            onPrompt();
+        processStderrData();
     });
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
@@ -456,15 +442,63 @@ void EmulatorHost::dispatchNext()
     m_current.raw.clear();
     m_current.response.clear();
     m_settleTimer->stop();
+    m_stderrAtDispatch = m_stderrBuffer.size();
 
     m_process->write(m_current.text.toUtf8() + "\n");
     m_commandTimeout->start(kCommandTimeoutMs);
+}
+
+void EmulatorHost::processStderrData()
+{
+    if (!m_process)
+        return;
+
+    m_stderrBuffer += m_process->readAllStandardError();
+
+    int nl;
+    while ((nl = m_stderrBuffer.indexOf('\n')) >= 0) {
+        const QByteArray raw = m_stderrBuffer.left(nl);
+        m_stderrBuffer.remove(0, nl + 1);
+        handleStderrLine(QString::fromUtf8(raw).remove(QLatin1Char('\r')));
+    }
+
+    // On builds without readline the debugger prompt is written to stderr rather
+    // than stdout, with no trailing newline. Checked only after every complete
+    // line is consumed, or a trailing prompt would be counted once per line still
+    // in the buffer. The `> cmd` echoes from DebugUI_ParseLine/ParseFile cannot be
+    // confused with it, because those always end in a newline.
+    //
+    // A prompt already sitting at the front of the buffer is stale: it is the one
+    // from *before* the command we are waiting on, so only a prompt that has
+    // arrived since is a completion signal. Tracked by remembering the length the
+    // buffer had when the command was dispatched.
+    if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch)
+        onPrompt();
+}
+
+void EmulatorHost::drainStderr()
+{
+    // The response travels on stderr and the completion signal on stdout, and the
+    // two pipes are independent. Hatari writes the response *before* printing the
+    // next prompt, so by the time the prompt is readable the response is already
+    // in its pipe — it may simply not have been delivered through Qt's notifier
+    // yet. Reading it directly here removes the dependence on that timing, which
+    // is what truncated responses on slower machines: the prompt arrived, the
+    // settle window expired, and the remaining output was still queued.
+    if (!m_process)
+        return;
+    int guard = 0;
+    while (m_process->bytesAvailable() > 0 && ++guard < 100)
+        processStderrData();
 }
 
 void EmulatorHost::completeCurrent()
 {
     if (!m_haveCurrent)
         return;
+
+    // Take anything still queued before deciding the response is complete.
+    drainStderr();
 
     m_commandTimeout->stop();
     m_settleTimer->stop();

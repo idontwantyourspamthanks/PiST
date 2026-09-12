@@ -57,6 +57,7 @@ class TstEmulatorHost : public QObject
 
 private slots:
     void initTestCase();
+    void cleanup();
 
     void debuggerStopsAtProgramEntry();
     void registersRoundTrip();
@@ -76,6 +77,7 @@ private:
     QString m_program;
     QString m_sourceDir;
     QTemporaryDir *m_work = nullptr;
+    QStringList m_log;
 };
 
 void TstEmulatorHost::initTestCase()
@@ -136,6 +138,22 @@ void TstEmulatorHost::initTestCase()
     QVERIFY(QFileInfo::exists(m_program));
 }
 
+// QtTest calls this after every test, before the next one. Dumping the captured
+// dialogue only on failure keeps successful runs quiet while making a failure
+// explain itself — which matters here because the transport is a conversation
+// with another program, and an assertion alone says nothing about what it said.
+void TstEmulatorHost::cleanup()
+{
+    if (QTest::currentTestFailed() && !m_log.isEmpty()) {
+        qWarning().noquote() << "--- emulator dialogue ---";
+        // Bounded, so a pathological run cannot flood the log.
+        const int start = qMax(0, m_log.size() - 60);
+        for (int i = start; i < m_log.size(); ++i)
+            qWarning().noquote() << "   " << m_log.at(i);
+    }
+    m_log.clear();
+}
+
 void TstEmulatorHost::debuggerStopsAtProgramEntry()
 {
     HatariCapabilities caps = probeHatari(m_hatari);
@@ -154,6 +172,8 @@ void TstEmulatorHost::debuggerStopsAtProgramEntry()
     QVERIFY2(!config.bootstrapScriptPath.isEmpty(), qPrintable(error));
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QStringList log;
     connect(&host, &EmulatorHost::logLine, this,
             [&log](const QString &l) { log.append(l); });
@@ -190,6 +210,8 @@ void TstEmulatorHost::registersRoundTrip()
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
     QVERIFY(host.start(config, nullptr));
@@ -224,6 +246,8 @@ void TstEmulatorHost::basepageReportsProgramSections()
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
     MachineState last;
@@ -266,6 +290,8 @@ void TstEmulatorHost::disassemblyIsLabelled()
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
     MachineState last;
@@ -309,6 +335,8 @@ void TstEmulatorHost::steppingAdvancesPc()
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
     MachineState last;
@@ -355,6 +383,8 @@ void TstEmulatorHost::runsWithoutControlSocket()
     QVERIFY(!config.toArgv().contains(QStringLiteral("--control-socket")));
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
     MachineState last;
@@ -414,6 +444,8 @@ void TstEmulatorHost::breaksInOnIllegalInstruction()
     QVERIFY(config.toArgv().contains(QStringLiteral("--debug-except")));
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
 
@@ -453,6 +485,8 @@ void TstEmulatorHost::doesNotBreakInOnNormalRun()
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
 
     // Replace the bootstrap's entry breakpoint with nothing, so the program runs
@@ -518,6 +552,8 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
         EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QSignalSpy finished(&host, &EmulatorHost::commandFinished);
     MachineState last;
@@ -612,6 +648,8 @@ void TstEmulatorHost::floppyIsMountedInTheEmulator()
         EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
     EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
     QStringList log;
     connect(&host, &EmulatorHost::logLine, this,
             [&log](const QString &line) { log.append(line); });

@@ -119,6 +119,12 @@ private:
     void onPrompt();
     void onCommandTimeout();
     void handleStderrLine(const QString &line);
+
+    /// Read and dispatch whatever stderr data the process has buffered.
+    void processStderrData();
+
+    /// Read pending stderr synchronously, before deciding a response is done.
+    void drainStderr();
     void handleStdoutData(const QByteArray &data);
     void handleSocketData();
     void parseRegisters(const QString &response);
@@ -158,6 +164,10 @@ private:
     /// Prompts still owed by commands that timed out. Their arrival must be
     /// swallowed so they cannot complete a later command.
     int m_owedPrompts = 0;
+
+    /// Size of the stderr buffer when the current command was dispatched. Used to
+    /// tell a fresh prompt from the stale one left over from before it.
+    int m_stderrAtDispatch = 0;
 
     /// Address of the most recent memdump request, so its response can be
     /// reported back with the address it came from.

@@ -28,6 +28,12 @@ struct HatariCapabilities
     bool hasBacktraceCommand = false;     // `bt` (git main; absent in 2.6.1)
     bool hasConout = false;
 
+    /// `--debug-except`: breaks in on CPU exceptions.
+    bool hasDebugExcept = false;
+
+    /// `--parse`: run debugger commands from a file at startup.
+    bool hasParse = false;
+
     /// True when the debugger command is `symbols autoload <mode>` (main) rather
     /// than the boolean `symbols autoload on|off` (2.6.1).
     bool hasThreeModeSymbolAutoload() const { return hasSymbolAutoloadOption; }

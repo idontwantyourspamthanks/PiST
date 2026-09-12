@@ -26,8 +26,10 @@ namespace {
 /// emulator so the queue cannot stall forever.
 constexpr int kCommandTimeoutMs = 10000;
 
-/// Sent as a last resort when a command produces no prompt.
-constexpr int kRetryTimeoutMs = 2000;
+/// Quiet period on stderr that marks a response as complete. The prompt arrives
+/// on stdout and the response on stderr, and the two pipes are independent, so
+/// completion is driven by stderr going quiet rather than by the prompt alone.
+constexpr int kSettleMs = 40;
 
 /// `  D0 00000000   D1 00000019   D2 00002304   D3 00000000`
 const QRegularExpression &dataRegRe()
@@ -146,6 +148,14 @@ EmulatorHost::EmulatorHost(QObject *parent)
     m_commandTimeout = new QTimer(this);
     m_commandTimeout->setSingleShot(true);
     connect(m_commandTimeout, &QTimer::timeout, this, &EmulatorHost::onCommandTimeout);
+
+    // Completes the current command once its stderr output has stopped arriving.
+    m_settleTimer = new QTimer(this);
+    m_settleTimer->setSingleShot(true);
+    connect(m_settleTimer, &QTimer::timeout, this, [this] {
+        if (m_haveCurrent)
+            completeCurrent();
+    });
 }
 
 EmulatorHost::~EmulatorHost()
@@ -204,6 +214,12 @@ QString EmulatorHost::writeBootstrapScript(const QString &directory,
 
 void EmulatorHost::openSocketServer(QString *error)
 {
+    // No socket requested: the emulator build has no support for one (it is
+    // compiled only under HAVE_UNIX_DOMAIN_SOCKETS), so nothing will connect.
+    // This is not an error — the session runs with stdin/stderr only.
+    if (m_config.controlSocketPath.isEmpty())
+        return;
+
     // Hatari is the *client*: it calls connect() and never binds, so the IDE has
     // to be listening before the process starts. However, the socket is only
     // serviced from the SDL event pump while emulation is running, so it carries
@@ -271,7 +287,9 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     }
 
     openSocketServer(error);
-    if (!m_server)
+    // A socket is optional: it is unavailable on Windows, and the session works
+    // over stdin/stderr without it.
+    if (!m_config.controlSocketPath.isEmpty() && !m_server)
         return false;
 
     m_process = new QProcess(this);
@@ -451,6 +469,7 @@ void EmulatorHost::dispatchNext()
     m_promptTarget = m_promptCount;
     m_current.raw.clear();
     m_current.response.clear();
+    m_settleTimer->stop();
 
     m_process->write(m_current.text.toUtf8() + "\n");
     m_commandTimeout->start(kCommandTimeoutMs);
@@ -462,6 +481,7 @@ void EmulatorHost::completeCurrent()
         return;
 
     m_commandTimeout->stop();
+    m_settleTimer->stop();
 
     const QString commandText = m_current.text;
     const QString response = m_current.raw.trimmed();
@@ -530,19 +550,14 @@ void EmulatorHost::onPrompt()
     }
 
     // A prompt means the previous command finished and the debugger is reading
-    // again. Completion is deferred because the command's output travels on
-    // stderr, and Qt gives no ordering guarantee between the two readyRead
-    // notifiers — completing inline here can observe a response that has not
-    // been drained yet.
-    if (m_haveCurrent && m_promptCount >= m_promptTarget) {
-        const quint64 target = m_promptTarget;
-        QTimer::singleShot(0, this, [this, target] {
-            // Re-check: a stderr drain or a new command may have changed state
-            // between the prompt arriving and this running.
-            if (m_haveCurrent && m_promptTarget == target)
-                completeCurrent();
-        });
-    }
+    // again. Completion cannot happen immediately: the command's output travels
+    // on stderr, and the prompt on stdout, and the two pipes have no ordering
+    // guarantee between them — the prompt can be readable before the tail of the
+    // response is. Wait for a short quiet period on stderr instead. A fixed
+    // zero-delay hop is not enough; it loses the race whenever the response is
+    // large, such as a break-in session dump.
+    if (m_haveCurrent && m_promptCount >= m_promptTarget)
+        m_settleTimer->start(kSettleMs);
 }
 
 void EmulatorHost::onCommandTimeout()
@@ -554,6 +569,7 @@ void EmulatorHost::onCommandTimeout()
     // internal breakpoint hits). Do not resend: just record that one prompt is
     // owed, release the slot, and report what arrived so far.
     m_owedPrompts += 1;
+    m_settleTimer->stop();
     m_haveCurrent = false;
     const QString command = m_current.text;
     const QString response = m_current.raw.trimmed();
@@ -592,8 +608,13 @@ void EmulatorHost::handleStderrLine(const QString &line)
         return;
     }
 
-    if (m_haveCurrent)
+    if (m_haveCurrent) {
         m_current.raw += (line + QLatin1Char('\n')).toUtf8();
+        // More output arrived, so the response is not complete yet: extend the
+        // quiet period.
+        if (m_promptCount >= m_promptTarget)
+            m_settleTimer->start(kSettleMs);
+    }
 
     emit logLine(line);
 }

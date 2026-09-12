@@ -383,6 +383,19 @@ These are the operational constraints the launch builder must encode.
     directory (§5 rule 7) it consistently sees the *default* engine — so a parser tuned against a
     developer's own `~/.config/hatari/hatari.cfg` will differ from what the IDE actually receives.
     Treat the `$` as optional. The same applies to other engine-dependent output.
+12. **Never pass `--control-socket` unconditionally.** It is declared inside
+    `#if HAVE_UNIX_DOMAIN_SOCKETS` (`options.c:551`), so on Windows the option does not exist and
+    Hatari exits with `Unrecognized option` — a startup failure that reads like a crash. Gate it on
+    the capability probe, and treat an absent socket as normal: all debugger commands travel over
+    stdin (§3.3), and the socket is currently unused by the IDE. `--debug-except` and `--parse` are
+    *not* gated and are safe everywhere, which is what makes a socket-free session viable.
+13. **Do not arm the `bus` exception.** `--debug-except autostart,bus` makes TOS raise a bus error
+    at `0xfc0ee2` (inside the ROM) during startup, so the debugger breaks in before the program is
+    executed — which also leaves `symbols prg` with no program to load. `autostart,illegal,address`
+    and `zerodiv` were each verified to leave a healthy program running untouched. `linea`/`linef`
+    are excluded too: they are normal parts of graphics calls.
+    Note the `autostart` entry is not an exception class but a *deferral*: it arms the mask at INF
+    load (`event.c`) rather than at startup, which is what keeps boot-time faults from breaking in.
 
 ### 5.1 Bootstrap parse file
 
@@ -457,6 +470,7 @@ follows the source line; step-over correctly clears a subroutine.
 ### Phase 3 — optional backends
 
 - `HrdbBackend` over TCP for hardware register reads
+- A portable control channel for Windows (see `docs/FUTURE.md`)
 - GDB-stub backend for memory watchpoints
 - In-process libretro core for macOS integration (permitted under GPL-2.0-or-later combined with
   Hatari; see §10)
@@ -571,6 +585,13 @@ load-bearing dependency — which the detection order above already guarantees.
 - **The `r` response does not contain a `CPU=` header**; the PC must be taken from the trailing
   instruction line
 - **Disassembly format follows the user's `bDisasmUAE` setting**, not the build
+- **`--control-socket` is absent on Windows** (declared under `HAVE_UNIX_DOMAIN_SOCKETS`), and a full
+  session runs without it: break at entry, registers, symbols and stepping were all verified with the
+  socket path left empty
+- **A faulting program breaks in with no breakpoint set**, via
+  `--debug-except autostart,illegal` — verified stopping on the `illegal` instruction
+- **Arming `bus` breaks in spuriously**: TOS raises a bus error at `0xfc0ee2` during startup, before
+  the program is executed
 - End-to-end in `pist`: `ctest` runs 9 parser tests, 12 ROM-identification tests, and 7
   emulator-integration tests against a real Hatari, all passing
 

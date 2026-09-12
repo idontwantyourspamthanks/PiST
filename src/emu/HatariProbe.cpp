@@ -67,6 +67,8 @@ HatariCapabilities probeHatari(const QString &hatariPath)
         caps.hasCmdFifo = help.contains(QLatin1String("--cmd-fifo"));
         caps.hasSymbolAutoloadOption = help.contains(QLatin1String("--symload"));
         caps.hasConout = help.contains(QLatin1String("--conout"));
+        caps.hasDebugExcept = help.contains(QLatin1String("--debug-except"));
+        caps.hasParse = help.contains(QLatin1String("--parse"));
     }
 
     return caps;

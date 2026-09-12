@@ -118,6 +118,7 @@ private:
     bool m_haveCurrent = false;
     Pending m_current;
     QTimer *m_commandTimeout = nullptr;
+    QTimer *m_settleTimer = nullptr;
 
     /// Prompt detection. The debugger prompt is `> ` written before each
     /// blocking read; which stream carries it depends on the build (stdout with

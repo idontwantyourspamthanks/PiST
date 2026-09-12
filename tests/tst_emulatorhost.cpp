@@ -60,6 +60,9 @@ private slots:
     void basepageReportsProgramSections();
     void disassemblyIsLabelled();
     void steppingAdvancesPc();
+    void runsWithoutControlSocket();
+    void breaksInOnIllegalInstruction();
+    void doesNotBreakInOnNormalRun();
 
 private:
     QString m_hatari;
@@ -303,6 +306,143 @@ void TstEmulatorHost::steppingAdvancesPc()
 
     QTRY_VERIFY_WITH_TIMEOUT(last.pc != firstPc, 5000);
     QVERIFY2(last.pc > firstPc, "PC did not advance after a single step");
+
+    host.stop();
+}
+
+// Windows parity: Hatari's control socket is compiled only under
+// HAVE_UNIX_DOMAIN_SOCKETS, so on Windows the IDE must run a full session with
+// no socket at all. The integration suite runs on Linux, so the socket is
+// simply left unset here, which exercises the same code path.
+void TstEmulatorHost::runsWithoutControlSocket()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/nosock");
+    config.gemdosDir = m_sourceDir;
+    // Deliberately empty: this is what a Windows session looks like.
+    config.controlSocketPath.clear();
+    config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    QVERIFY(!config.toArgv().contains(QStringLiteral("--control-socket")));
+
+    EmulatorHost host;
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &s) { last = s; });
+
+    QVERIFY2(host.start(config, nullptr), "a session must start without a control socket");
+    QVERIFY2(stoppedSpy.wait(15000), "debugger never stopped without a control socket");
+
+    // The debug transport is stdin/stderr, so it must work identically.
+    host.command(QStringLiteral("r"));
+    QVERIFY2(finished.wait(15000), "no response to 'r' without a control socket");
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+    QVERIFY(last.pc != 0);
+
+    host.stop();
+}
+
+// A program that executes an illegal instruction must break into the debugger
+// on its own, with no breakpoint set. This is the portable equivalent of
+// "break in when something goes wrong", and it works on Windows too because it
+// uses --debug-except rather than the control socket.
+void TstEmulatorHost::breaksInOnIllegalInstruction()
+{
+    // Assemble a program that faults, with no entry breakpoint so it runs free
+    // until the fault.
+    const QString source = m_sourceDir + QStringLiteral("/fault.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "\tillegal\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+    const QString prg = m_sourceDir + QStringLiteral("/fault.prg");
+    QProcess vasm;
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"), QStringLiteral("-o"),
+                        prg, source});
+    QVERIFY(vasm.waitForFinished(20000));
+    QCOMPARE(vasm.exitCode(), 0);
+
+    HatariCapabilities caps = probeHatari(m_hatari);
+    QVERIFY2(caps.hasDebugExcept, "this Hatari does not support --debug-except");
+
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = prg;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/fault");
+    config.gemdosDir = m_sourceDir;
+    config.controlSocketPath.clear(); // must work without a socket, as on Windows
+    config.debugExceptions = QStringLiteral("autostart,illegal");
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+    QVERIFY(config.toArgv().contains(QStringLiteral("--debug-except")));
+
+    EmulatorHost host;
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "illegal instruction did not break in");
+
+    // The break-in must land on the faulting instruction, not somewhere in TOS:
+    // no breakpoint was set, so this stop can only have come from the exception.
+    host.command(QStringLiteral("r"));
+    QVERIFY2(finished.wait(15000), "no response to 'r' after the break-in");
+    const QString response = finished.takeFirst().at(1).toString();
+    // The exception is reported on the faulting instruction, which appears in
+    // the Prefetch line ("4afc (ILLEGAL)") and as the address after "Next PC".
+    // Matching is case-insensitive because Hatari upper-cases the mnemonic in
+    // the prefetch summary while the disassembly line uses lower case.
+    QVERIFY2(response.contains(QLatin1String("illegal"), Qt::CaseInsensitive),
+             qPrintable("the stop was not at an illegal instruction: " + response.left(400)));
+    QVERIFY2(response.contains(QLatin1String("Next PC")),
+             qPrintable("no next-PC line in the break-in dump: " + response.left(400)));
+
+    host.stop();
+}
+
+// The default exception set must not break in on a healthy program, or the
+// debugger would be unusable: arming `linea`/`linef`/`trace` would trip during
+// ordinary TOS and VDI calls.
+void TstEmulatorHost::doesNotBreakInOnNormalRun()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program; // prints and then spins in a loop
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/clean");
+    config.gemdosDir = m_sourceDir;
+    config.controlSocketPath.clear();
+    config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+
+    // Replace the bootstrap's entry breakpoint with nothing, so the program runs
+    // from autostart through to its idle loop unattended.
+    QFile boot(config.bootstrapScriptPath);
+    QVERIFY(boot.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text));
+    boot.write("symbols autoload on\n");
+    boot.close();
+
+    QVERIFY(host.start(config, nullptr));
+
+    // Give it well past the time a spurious break-in would take.
+    QTest::qWait(6000);
+    QVERIFY2(!host.isStopped(),
+             "a healthy program must run without break-in under the default exception set");
 
     host.stop();
 }

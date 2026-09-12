@@ -58,6 +58,14 @@ QStringList SessionConfig::toArgv() const
     if (!bootstrapScriptPath.isEmpty())
         argv << QStringLiteral("--parse") << bootstrapScriptPath;
 
+    // Break in on the faults that mean the program under test is broken.
+    // `hasDebugExcept` is checked by the caller, which leaves this empty on a
+    // build that would reject the option.
+    if (!debugExceptions.isEmpty())
+        argv << QStringLiteral("--debug-except") << debugExceptions;
+
+    // Omitted entirely when the emulator has no control-socket support; see the
+    // field comment.
     if (!controlSocketPath.isEmpty())
         argv << QStringLiteral("--control-socket") << controlSocketPath;
 

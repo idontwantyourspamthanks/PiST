@@ -328,8 +328,20 @@ void MainWindow::run()
     config.hatariPath = findHatari();
     config.programPath = prg;
     config.sessionDir = sessionDir;
-    config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
     config.gemdosDir = info.absolutePath();
+
+    // The control socket is compiled into Hatari only under
+    // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
+    // Hatari exit with "Unrecognized option", so it must be gated rather than
+    // passed unconditionally (docs/PLAN.md §5 rule 12). Nothing in the IDE
+    // depends on it yet: all debugger commands travel over stdin.
+    if (m_caps.hasControlSocket)
+        config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
+    else
+        config.controlSocketPath.clear();
+
+    if (!m_caps.hasDebugExcept)
+        config.debugExceptions.clear();
 
     QString error;
     config.bootstrapScriptPath =

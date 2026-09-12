@@ -140,7 +140,37 @@ To develop the IDE you will also want, at runtime:
 - **`vasmm68k_mot`** — on `PATH`
 - **A TOS ROM, version 1.04 or later** — see below
 
-## TOS ROMs
+## Platform support
+
+All three targets build and run a full assemble → run → debug session. One feature differs, because
+of an upstream Hatari limitation rather than anything in `pist`:
+
+| Capability | Linux | Windows | macOS |
+|---|---|---|---|
+| Build, run, break at program entry | ✓ | ✓ | ✓ |
+| Registers, memory, disassembly, stepping | ✓ | ✓ | ✓ |
+| Breakpoints (set before launch) | ✓ | ✓ | ✓ |
+| Break in when the program faults | ✓ | ✓ | ✓ |
+| Pause a healthy running program | ✓ | ✗ | ✓ |
+| Change breakpoints while running | ✓ | ✗ | ✓ |
+| Swap disk images at runtime | ✓ | ✗ | ✓ |
+
+The three gaps are all downstream of one thing: Hatari's control channel is compiled only on
+POSIX systems (`HAVE_UNIX_DOMAIN_SOCKETS`), and it is the only way to command an *already running*
+emulator. `pist` detects this and omits the option rather than passing it and failing to start.
+Everything else works everywhere, because debugger commands travel over stdin — the control socket
+is starved whenever the debugger is stopped anyway, so it was never carrying the debug traffic.
+
+Removing that gap is a small, well-understood upstream patch. It is written up, with the proposed
+approach, in **[docs/FUTURE.md](docs/FUTURE.md)**.
+
+## Emulator embedding
+
+`pist` embeds the emulator window where the platform allows it: X11, Windows and macOS all support
+it, and Wayland is handled through XWayland. A detached-window mode is always available, and is the
+only mode on Wayland without XWayland.
+
+
 
 `pist` does **not** ship original Atari TOS ROMs: they remain copyrighted, so you must supply your
 own. [EmuTOS](https://emutos.sourceforge.net/) is a free, GPL-licensed alternative that works well.
@@ -173,3 +203,5 @@ breakdown and the obligations that follow.
 
 - **[docs/PLAN.md](docs/PLAN.md)** — the design document: verified findings, architecture,
   the launcher rules, roadmap, risk register and licensing analysis
+- **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and the starting point for
+  each item (notably: a portable emulator control channel, which is what Windows is missing)

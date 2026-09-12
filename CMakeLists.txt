@@ -60,6 +60,8 @@ qt_add_executable(pist
     src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
     src/ui/SettingsDialog.cpp
@@ -159,6 +161,12 @@ qt_add_executable(tst_gui
     src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
     src/ui/SettingsDialog.cpp

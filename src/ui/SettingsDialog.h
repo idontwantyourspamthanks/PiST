@@ -40,6 +40,8 @@ private slots:
     void onMachineChanged();
     void browseRom();
     void browseHardDisk();
+    void browseFloppyA();
+    void browseFloppyB();
     void addIncludePath();
     void removeIncludePath();
     void addDefine();
@@ -58,7 +60,8 @@ private:
     QComboBox *m_rom = nullptr;
     QLabel *m_romNote = nullptr;
     QLineEdit *m_hardDisk = nullptr;
-    QLabel *m_floppyNote = nullptr;
+    QLineEdit *m_floppyA = nullptr;
+    QLineEdit *m_floppyB = nullptr;
     QListWidget *m_includePaths = nullptr;
     QListWidget *m_defines = nullptr;
     QPlainTextEdit *m_extraBuildArgs = nullptr;

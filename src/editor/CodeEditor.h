@@ -24,6 +24,9 @@ public:
     QString filePath() const { return m_filePath; }
     bool isModifiedSinceLoad() const;
 
+    /// File name only, for the window title.
+    QString displayName() const;
+
     /// Mark a line as the current execution point (1-based).
     void setCurrentExecutionLine(int line);
     void clearCurrentExecutionLine();
@@ -50,6 +53,10 @@ public:
 
 signals:
     void cursorLineChanged(int line);
+
+    /// The document's modified state changed, so the window title and any
+    /// save-on-close prompt must be updated.
+    void modificationChanged(bool modified);
 
     /// The gutter was clicked on `line` (1-based). The receiver decides whether
     /// this toggles a breakpoint or opens an editor for its condition.

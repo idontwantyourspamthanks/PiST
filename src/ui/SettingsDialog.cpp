@@ -163,13 +163,30 @@ void SettingsDialog::buildUi()
     hdLayout->addWidget(browseHd);
     emuLayout->addRow(tr("Hard disk:"), hdRow);
 
-    m_floppyNote = new QLabel(
-        tr("Floppy images are not configurable yet. The GEMDOS hard-disk route is used for "
-           "running programs, which is what makes debugging attach to them."),
-        emuTab);
-    m_floppyNote->setWordWrap(true);
-    m_floppyNote->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    emuLayout->addRow(QString(), m_floppyNote);
+    // Floppy drives. Both are optional and independent of the GEMDOS hard disk:
+    // a program launched from the HD can still read a floppy, and a disk image is
+    // the only way to ship data a program expects on A: or B:.
+    auto *floppyA = new QWidget(emuTab);
+    auto *floppyALayout = new QHBoxLayout(floppyA);
+    floppyALayout->setContentsMargins(0, 0, 0, 0);
+    m_floppyA = new QLineEdit(floppyA);
+    m_floppyA->setPlaceholderText(tr("Optional disk image for drive A:"));
+    auto *browseA = new QPushButton(tr("Browse…"), floppyA);
+    connect(browseA, &QPushButton::clicked, this, &SettingsDialog::browseFloppyA);
+    floppyALayout->addWidget(m_floppyA, 1);
+    floppyALayout->addWidget(browseA);
+    emuLayout->addRow(tr("Floppy A:"), floppyA);
+
+    auto *floppyB = new QWidget(emuTab);
+    auto *floppyBLayout = new QHBoxLayout(floppyB);
+    floppyBLayout->setContentsMargins(0, 0, 0, 0);
+    m_floppyB = new QLineEdit(floppyB);
+    m_floppyB->setPlaceholderText(tr("Optional disk image for drive B:"));
+    auto *browseB = new QPushButton(tr("Browse…"), floppyB);
+    connect(browseB, &QPushButton::clicked, this, &SettingsDialog::browseFloppyB);
+    floppyBLayout->addWidget(m_floppyB, 1);
+    floppyBLayout->addWidget(browseB);
+    emuLayout->addRow(tr("Floppy B:"), floppyB);
 
     m_extraEmuArgs = new QPlainTextEdit(emuTab);
     m_extraEmuArgs->setPlaceholderText(tr("One argument per line"));
@@ -209,6 +226,10 @@ void SettingsDialog::loadValues(const ProjectSettings &settings)
 
     m_ram->setValue(settings.memSizeMiB);
     m_hardDisk->setText(settings.hardDiskImage);
+    if (settings.floppyImages.size() > 0)
+        m_floppyA->setText(settings.floppyImages.at(0));
+    if (settings.floppyImages.size() > 1)
+        m_floppyB->setText(settings.floppyImages.at(1));
     m_extraEmuArgs->setPlainText(settings.extraEmulatorArgs.join(QLatin1Char('\n')));
 
     refreshRomList();
@@ -306,6 +327,24 @@ void SettingsDialog::browseHardDisk()
         m_hardDisk->setText(path);
 }
 
+void SettingsDialog::browseFloppyA()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select a floppy image for drive A:"), QString(),
+        tr("Disk images (*.st *.msa *.img *.dim *.ipf);;All files (*)"));
+    if (!path.isEmpty())
+        m_floppyA->setText(path);
+}
+
+void SettingsDialog::browseFloppyB()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select a floppy image for drive B:"), QString(),
+        tr("Disk images (*.st *.msa *.img *.dim *.ipf);;All files (*)"));
+    if (!path.isEmpty())
+        m_floppyB->setText(path);
+}
+
 void SettingsDialog::addIncludePath()
 {
     const QString dir = QFileDialog::getExistingDirectory(this, tr("Add include path"));
@@ -355,6 +394,10 @@ ProjectSettings SettingsDialog::settings() const
     s.monitor = m_monitor->currentText();
     s.memSizeMiB = m_ram->value();
     s.hardDiskImage = m_hardDisk->text().trimmed();
+
+    s.floppyImages.clear();
+    for (const QLineEdit *edit : {m_floppyA, m_floppyB})
+        s.floppyImages.append(edit->text().trimmed());
 
     s.extraEmulatorArgs = linesToArgs(m_extraEmuArgs->toPlainText());
 

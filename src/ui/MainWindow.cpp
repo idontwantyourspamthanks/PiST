@@ -12,6 +12,7 @@
 #include "debug/Breakpoint.h"
 #include "ui/BreakpointPanel.h"
 #include "ui/DisassemblyView.h"
+#include "ui/FileBrowser.h"
 #include "ui/MemoryView.h"
 #include "ui/SettingsDialog.h"
 #include "ui/RegistersView.h"
@@ -91,6 +92,11 @@ MainWindow::MainWindow(QWidget *parent)
                     m_memory->applyDump(response);
             });
 
+    // The title carries the modified marker, so the user can always tell whether
+    // work is unsaved without looking for a toolbar state.
+    connect(m_editor, &CodeEditor::modificationChanged, this,
+            [this](bool) { updateModifiedState(); });
+
     connect(m_editor, &CodeEditor::gutterClicked, this, [this](int line, Qt::MouseButton button) {
         if (button == Qt::LeftButton)
             toggleBreakpointAtLine(line);
@@ -135,12 +141,18 @@ MainWindow::MainWindow(QWidget *parent)
     // instance could still own them.
     paths::pruneStaleSessions();
 
+    // Reopen where the user left off when nothing was passed on the command line.
+    QTimer::singleShot(0, this, [this] {
+        if (m_editor->filePath().isEmpty())
+            openRecentSource();
+    });
+
     m_caps = probeHatari(findHatari());
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     m_statusEmulator->setText(m_caps.summary());
 
-    setWindowTitle(tr("PiST — Atari ST assembly IDE"));
+    updateModifiedState();
     resize(1280, 860);
 }
 
@@ -209,7 +221,11 @@ void MainWindow::createMenus()
     fileMenu->addSeparator();
     fileMenu->addAction(m_actSettings);
     fileMenu->addSeparator();
-    fileMenu->addAction(tr("E&xit"), this, &QWidget::close, QKeySequence::Quit);
+    // Explicit QAction rather than the deprecated combined overload.
+    auto *quit = new QAction(tr("E&xit"), this);
+    quit->setShortcut(QKeySequence::Quit);
+    connect(quit, &QAction::triggered, this, &QWidget::close);
+    fileMenu->addAction(quit);
 
     auto *runMenu = menuBar()->addMenu(tr("&Run"));
     runMenu->addAction(m_actBuild);
@@ -225,6 +241,16 @@ void MainWindow::createMenus()
 
 void MainWindow::createDocks()
 {
+    addDockWidget(Qt::LeftDockWidgetArea, [this] {
+        auto *dock = new QDockWidget(tr("Project files"), this);
+        m_fileBrowser = new FileBrowser(dock);
+        dock->setWidget(m_fileBrowser);
+        // Opening from the browser goes through the same path as the menu, so the
+        // unsaved-changes prompt and project discovery behave identically.
+        connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
+        return dock;
+    }());
+
     addDockWidget(Qt::RightDockWidgetArea, [this] {
         auto *dock = new QDockWidget(tr("Registers"), this);
         m_registers = new RegistersView(dock);
@@ -334,6 +360,66 @@ QString MainWindow::makeSessionDir()
     return dir;
 }
 
+void MainWindow::updateModifiedState()
+{
+    const QString name = m_editor->displayName();
+    const bool modified = m_editor->isModifiedSinceLoad();
+
+    // The "[*]" placeholder is replaced by Qt when windowModified is set, which
+    // is the platform-correct way to show an unsaved document.
+    setWindowTitle(tr("%1[*] — PiST").arg(name));
+    setWindowModified(modified);
+
+    if (m_actSave)
+        m_actSave->setEnabled(modified);
+}
+
+bool MainWindow::maybeSave()
+{
+    if (!m_editor->isModifiedSinceLoad())
+        return true;
+
+    const auto answer = QMessageBox::warning(
+        this, tr("Unsaved changes"),
+        tr("%1 has unsaved changes.\n\nSave before continuing?")
+            .arg(m_editor->displayName()),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Discard)
+        return true;
+
+    // Save: to the existing path when there is one, otherwise ask for one.
+    if (m_editor->filePath().isEmpty()) {
+        const QString path = QFileDialog::getSaveFileName(
+            this, tr("Save assembly source"), QString(),
+            tr("Assembly sources (*.s *.S *.asm)"));
+        if (path.isEmpty())
+            return false;
+        if (!m_editor->saveFile(path)) {
+            QMessageBox::critical(this, tr("Save"), tr("Could not write %1").arg(path));
+            return false;
+        }
+    } else if (!m_editor->saveFile(m_editor->filePath())) {
+        QMessageBox::critical(this, tr("Save"),
+                              tr("Could not write %1").arg(m_editor->filePath()));
+        return false;
+    }
+
+    updateModifiedState();
+    return true;
+}
+
+void MainWindow::openRecentSource()
+{
+    // Offered when there is nothing open, so a restart lands somewhere useful
+    // rather than on an empty editor.
+    const QString last = settings::lastSourcePath();
+    if (!last.isEmpty() && QFileInfo::exists(last))
+        openPath(last);
+}
+
 void MainWindow::openFile()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -348,6 +434,11 @@ void MainWindow::openPath(const QString &path)
 {
     if (path.isEmpty())
         return;
+
+    // Replacing the current document would discard unsaved work.
+    if (!maybeSave())
+        return;
+
     if (!m_editor->loadFile(path)) {
         QMessageBox::warning(this, tr("Open"),
                              tr("Could not open %1").arg(path));
@@ -356,6 +447,10 @@ void MainWindow::openPath(const QString &path)
 
     statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
     loadProjectForSource(path);
+    updateModifiedState();
+
+    if (m_fileBrowser)
+        m_fileBrowser->showFor(path);
 }
 
 void MainWindow::openProject()
@@ -489,6 +584,7 @@ void MainWindow::saveFile()
     } else {
         m_editor->saveFile(m_editor->filePath());
     }
+    updateModifiedState();
 }
 
 void MainWindow::build()
@@ -623,6 +719,8 @@ void MainWindow::launchEmulator()
         config.acsiId = 0;
     }
 
+    config.floppyImages = m_settings.floppyImages;
+
     // The control socket is compiled into Hatari only under
     // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
     // Hatari exit with "Unrecognized option", so it must be gated rather than
@@ -753,6 +851,11 @@ void MainWindow::stopSession()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    if (!maybeSave()) {
+        event->ignore();
+        return;
+    }
+
     // Leaving this to the age-based prune would mean a directory survives every
     // ordinary quit, not just a crash.
     m_host->stop();

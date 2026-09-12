@@ -30,6 +30,7 @@ class CodeEditor;
 class BreakpointPanel;
 class DisassemblyView;
 class EmulatorHost;
+class FileBrowser;
 class MemoryView;
 class RegistersView;
 
@@ -79,6 +80,15 @@ private:
     /// Load the project settings that sit beside a source file, if any.
     void loadProjectForSource(const QString &sourcePath);
 
+    /// Update the title and the Save action to reflect the modified state.
+    void updateModifiedState();
+
+    /// Ask to save when there is unsaved work. Returns false if the user
+    /// cancelled, in which case the caller must abandon its action.
+    bool maybeSave();
+
+    void openRecentSource();
+
     void onBuildFinished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void onStateUpdated(const pist::MachineState &state);
     void locationFromPc(quint32 pc);
@@ -106,6 +116,7 @@ private:
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
+    FileBrowser *m_fileBrowser = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QTabWidget *m_bottomTabs = nullptr;

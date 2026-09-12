@@ -43,7 +43,7 @@ QString findTos()
     // here would make the only end-to-end emulator test skip on macOS and
     // Windows, which are two of the three target platforms.
     const QList<TosRom> roms = findTosRoms();
-    const TosRom chosen = selectPreferredRom(roms);
+    const TosRom chosen = selectPreferredRom(roms, Machine::St);
     if (chosen.path.isEmpty() || !chosen.supportsAutostart())
         return {};
     return chosen.path;

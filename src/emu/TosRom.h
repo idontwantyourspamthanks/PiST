@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "emu/Machine.h"
+
 #include <QList>
 #include <QString>
 
@@ -56,6 +58,14 @@ struct TosRom
         return versionKnown && versionFromHeader && versionCode < 0x0104;
     }
 
+    bool supportsMachine(Machine machine) const
+    {
+        // An unreadable version is not evidence of incompatibility.
+        if (!versionKnown)
+            return true;
+        return machineAcceptsTos(machine, versionCode, isEmuTos);
+    }
+
     QString versionText() const
     {
         if (!versionKnown)
@@ -82,6 +92,16 @@ struct TosRom
 /// in which case the caller may fall back to a filename heuristic.
 bool readTosHeader(const QString &path, TosRom *rom);
 
+/// Pick the best ROM for a machine: the **newest** autostart-capable ROM that the
+/// machine can actually run, then an unknown version, and only then anything
+/// else. Returns an invalid entry (empty path) if the list is empty.
+///
+/// Newest matters rather than first-in-directory-order: an STe accepts both 1.06
+/// and 1.62, and 1.62 is the later release with bug fixes, so it is the better
+/// default. Likewise an ST must not be handed 1.06 just because it sorts earlier
+/// than the 1.04 it needs.
+TosRom selectPreferredRom(const QList<TosRom> &roms, Machine machine);
+
 /// Scan a directory for ROM images (`.img`, `.rom`). Versions come from each
 /// image's header; a filename such as "TOS v1.04 (1989)(...)" is used only when
 /// the header cannot be read.
@@ -91,10 +111,5 @@ QList<TosRom> scanTosRoms(const QString &directory);
 /// order, de-duplicating by absolute path. This is what the application uses;
 /// there is no single directory that works on all three platforms.
 QList<TosRom> findTosRoms();
-
-/// Pick the best ROM for running a program: prefer a known autostart-capable
-/// version, then an unknown one, and only then a known-incompatible version.
-/// Returns an invalid entry (empty path) if the list is empty.
-TosRom selectPreferredRom(const QList<TosRom> &roms);
 
 } // namespace pist

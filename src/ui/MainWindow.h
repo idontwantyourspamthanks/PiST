@@ -10,6 +10,7 @@
 #include "emu/HatariProbe.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
+#include "project/ProjectSettings.h"
 
 #include <QMainWindow>
 #include <QString>
@@ -43,6 +44,9 @@ public:
 private slots:
     void openFile();
     void saveFile();
+    void openProject();
+    void saveProject();
+    void editSettings();
     void build();
     void run();
     void stopSession();
@@ -58,6 +62,7 @@ private slots:
 
 private:
     void createActions();
+    void createMenus();
     void createDocks();
     void createToolBar();
     void createStatusBar();
@@ -107,7 +112,15 @@ private:
     /// arming sequence runs exactly once.
     bool m_sessionArmed = false;
 
+    /// Project configuration. Persisted to a `.pistproject` file beside the
+    /// source, so settings travel with the project (docs/PLAN.md §5 rule 7 —
+    /// never via a user's hatari.cfg).
+    ProjectSettings m_settings;
+
     QAction *m_actOpen = nullptr;
+    QAction *m_actOpenProject = nullptr;
+    QAction *m_actSaveProject = nullptr;
+    QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;
     QAction *m_actBuild = nullptr;
     QAction *m_actRun = nullptr;

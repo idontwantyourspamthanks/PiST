@@ -136,20 +136,33 @@ QList<TosRom> findTosRoms()
     return all;
 }
 
-TosRom selectPreferredRom(const QList<TosRom> &roms)
+TosRom selectPreferredRom(const QList<TosRom> &roms, Machine machine)
 {
-    // Three passes, best first.
+    // Pass 1: usable on this machine, autostart-capable, newest version wins.
+    const TosRom *best = nullptr;
     for (const TosRom &rom : roms) {
-        if (rom.supportsAutostart())
+        if (!rom.supportsAutostart() || !rom.supportsMachine(machine))
+            continue;
+        if (!best || rom.versionCode > best->versionCode)
+            best = &rom;
+    }
+    if (best)
+        return *best;
+
+    // Pass 2: version unknown, so neither usable nor unusable can be proven.
+    for (const TosRom &rom : roms) {
+        if (!rom.versionKnown && rom.supportsMachine(machine))
             return rom;
     }
+
+    // Pass 3: nothing suitable. Return the newest rather than the first, so the
+    // caller's error message names something as close to usable as possible.
+    best = nullptr;
     for (const TosRom &rom : roms) {
-        if (!rom.versionKnown)
-            return rom;
+        if (!best || rom.versionCode > best->versionCode)
+            best = &rom;
     }
-    if (!roms.isEmpty())
-        return roms.first();
-    return {};
+    return best ? *best : TosRom{};
 }
 
 } // namespace pist

@@ -359,6 +359,11 @@ These are the operational constraints the launch builder must encode.
    | 1.06 | *"TOS versions 1.06 and 1.62 are for Atari STE only"* → **switches to STE** | accepted |
    | 1.62 | same → **switches to STE** | accepted |
 
+   Note that **both 1.06 and 1.62 are STe ROMs** — 1.62 is the later release and fixes a
+   number of bugs, so it is the better default when both are present. An STe cannot run an
+   ST-only ROM (1.00–1.04) at all, which is why ROM selection is machine-aware rather than
+   "first usable file in the directory".
+
    Two consequences for the setup UI, which must not be two independent dropdowns:
    - a machine/ROM pair can be **invalid**, and Hatari resolves it by silently overriding the
      requested machine (logging an `ERROR` line the IDE should surface);

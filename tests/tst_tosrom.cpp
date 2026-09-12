@@ -9,6 +9,7 @@
 // "unknown", and the application only rejects ROMs whose version is *known* to
 // be too old — so the guard against the silent-hang case would be skippable.
 
+#include "emu/Machine.h"
 #include "emu/TosRom.h"
 
 #include <QDir>
@@ -71,6 +72,17 @@ private slots:
     void autostartRequires104();
     void filenameClaimIsNotEnoughForAutostart();
     void selectsAutostartCapableRom();
+
+    // machine pairing
+    void stAcceptsStTosAndRejectsSteTos();
+    void steAcceptsSteTosAndRejectsStTos();
+    void steAcceptsBothSteTosVersions();
+    void unknownVersionIsNotExcluded();
+    void machineModelRoundTripsThroughCliNames();
+
+    // selection
+    void prefersNewestCompatibleRom();
+    void steSelectionAvoidsStOnlyRom();
 };
 
 void TstTosRom::readsVersionFromHeader()
@@ -257,9 +269,121 @@ void TstTosRom::selectsAutostartCapableRom()
     const QList<TosRom> roms = scanTosRoms(dir.path());
     QCOMPARE(roms.size(), 2);
 
-    const TosRom chosen = selectPreferredRom(roms);
+    const TosRom chosen = selectPreferredRom(roms, Machine::St);
     QVERIFY2(chosen.supportsAutostart(), "selection must skip the 1.02 image");
     QCOMPARE(chosen.versionCode, 0x0104);
+}
+
+// --- machine pairing -----------------------------------------------------
+//
+// These encode what Hatari itself enforces, verified by running each pairing and
+// reading its override messages:
+//
+//   TOS 1.04 + --machine ste -> "TOS versions <= 1.4 work only in" -> switches to ST
+//   TOS 1.06 + --machine st  -> "1.06 and 1.62 are for Atari STE only" -> switches to STE
+//
+// PiST must model this itself, because Hatari resolves a mismatch by silently
+// changing the machine.
+
+void TstTosRom::stAcceptsStTosAndRejectsSteTos()
+{
+    QVERIFY(machineAcceptsTos(Machine::St, 0x0100, false));
+    QVERIFY(machineAcceptsTos(Machine::St, 0x0102, false));
+    QVERIFY(machineAcceptsTos(Machine::St, 0x0104, false));
+    QVERIFY(machineAcceptsTos(Machine::MegaSt, 0x0104, false));
+
+    QVERIFY(!machineAcceptsTos(Machine::St, 0x0106, false));
+    QVERIFY(!machineAcceptsTos(Machine::St, 0x0162, false));
+}
+
+void TstTosRom::steAcceptsSteTosAndRejectsStTos()
+{
+    QVERIFY(machineAcceptsTos(Machine::Ste, 0x0106, false));
+    QVERIFY(machineAcceptsTos(Machine::Ste, 0x0162, false));
+
+    // An STe cannot run an ST-only TOS at all; Hatari switches the machine.
+    QVERIFY(!machineAcceptsTos(Machine::Ste, 0x0104, false));
+    QVERIFY(!machineAcceptsTos(Machine::Ste, 0x0102, false));
+}
+
+// 1.06 and 1.62 are both STe ROMs; 1.62 is the later release with bug fixes.
+void TstTosRom::steAcceptsBothSteTosVersions()
+{
+    const QList<Machine> for106 = machinesForTos(0x0106, false);
+    const QList<Machine> for162 = machinesForTos(0x0162, false);
+
+    QVERIFY(for106.contains(Machine::Ste));
+    QVERIFY(for162.contains(Machine::Ste));
+    QVERIFY(for106.contains(Machine::MegaSte));
+    QVERIFY(for162.contains(Machine::MegaSte));
+
+    // Neither belongs on a plain ST.
+    QVERIFY(!for106.contains(Machine::St));
+    QVERIFY(!for162.contains(Machine::St));
+}
+
+void TstTosRom::unknownVersionIsNotExcluded()
+{
+    // No version read means no evidence of incompatibility, so every machine must
+    // still accept it rather than the file being silently dropped.
+    for (Machine machine : allMachines())
+        QVERIFY(machineAcceptsTos(machine, 0, true)); // EmuTOS adapts itself
+
+    TosRom unknown;
+    unknown.versionKnown = false;
+    QVERIFY(unknown.supportsMachine(Machine::St));
+    QVERIFY(unknown.supportsMachine(Machine::Falcon));
+}
+
+void TstTosRom::machineModelRoundTripsThroughCliNames()
+{
+    for (Machine machine : allMachines()) {
+        Machine parsed = Machine::St;
+        QVERIFY(machineFromCliName(machineCliName(machine), &parsed));
+        QCOMPARE(parsed, machine);
+        QVERIFY(!machineDisplayName(machine).isEmpty());
+    }
+    QVERIFY(!machineFromCliName(QStringLiteral("amiga"), nullptr));
+}
+
+void TstTosRom::prefersNewestCompatibleRom()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Directory order deliberately puts the older ROMs first.
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("a-102.img"), 0x0102).isEmpty());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("b-104.img"), 0x0104).isEmpty());
+
+    const QList<TosRom> roms = scanTosRoms(dir.path());
+    QCOMPARE(roms.size(), 2);
+
+    // On an ST, 1.04 is the newest usable ROM.
+    const TosRom st = selectPreferredRom(roms, Machine::St);
+    QCOMPARE(st.versionCode, 0x0104);
+    QVERIFY(st.supportsMachine(Machine::St));
+}
+
+// The regression this guards: an STe project must not be handed an ST-only ROM
+// just because it sorts first, and where two STe ROMs exist the later bugfix
+// release (1.62) is the better default.
+void TstTosRom::steSelectionAvoidsStOnlyRom()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("a-104.img"), 0x0104).isEmpty());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("b-106.img"), 0x0106).isEmpty());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("c-162.img"), 0x0162).isEmpty());
+
+    const QList<TosRom> roms = scanTosRoms(dir.path());
+    QCOMPARE(roms.size(), 3);
+
+    const TosRom chosen = selectPreferredRom(roms, Machine::Ste);
+    QVERIFY2(chosen.supportsMachine(Machine::Ste),
+             "an STe must not be given an ST-only ROM");
+    QCOMPARE(chosen.versionCode, 0x0162);
+    QVERIFY(chosen.supportsAutostart());
 }
 
 QTEST_MAIN(TstTosRom)

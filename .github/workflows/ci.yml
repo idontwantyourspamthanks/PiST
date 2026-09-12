@@ -97,29 +97,14 @@ jobs:
             exit 0
           fi
 
-          # ctest's output capture is unreliable here — on Windows a failing test
-          # reported no output whatsoever — so run each binary directly to get the
-          # assertion that failed. Without this a red run is undiagnosable.
+          # ctest's output capture proved unreliable here — on Windows a failing
+          # test reported no output at all — so re-run verbosely, which makes
+          # ctest print each test's command line and its output. Locating the
+          # binaries by hand was tried and is worse: build artefacts such as
+          # *.vcxproj also match a `tst_*` glob.
           echo
-          echo "### direct test runs (ctest output was empty)"
-          # -perm is not meaningful for Git-bash `find` on Windows, so match by
-          # name and filter out anything that is not a runnable file.
-          found=0
-          while IFS= read -r exe; do
-            [ -f "$exe" ] || continue
-            case "$exe" in
-              *.o|*.obj|*.pdb|*.ilk|*.cmake|*autogen*|*.tlog|*.log) continue ;;
-            esac
-            found=1
-            echo
-            echo "--- $exe ---"
-            "$exe" 2>&1 | tail -40 || true
-          done < <(find build -type f \( -name 'tst_*' -o -name 'tst_*.exe' \) | sort)
-
-          if [ "$found" = 0 ]; then
-            echo "### no test binaries matched; build tree:"
-            find build -maxdepth 2 -name 'tst_*' | head -20
-          fi
+          echo "### verbose re-run to capture the failures"
+          ctest --test-dir build --build-config Release -V || true
           exit 1
 
       - name: Report test summary

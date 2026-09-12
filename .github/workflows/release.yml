@@ -229,19 +229,40 @@ jobs:
 
           echo
           echo "Asserting the archive is self-sufficient..."
-          bindir="$(cd "$(dirname "$BIN")" && pwd)"
 
-          # The assembler reported must be the one travelling in this archive,
-          # not one that happens to be installed on the build machine.
-          if ! grep -F "Assembler (vasmm68k_mot): $bindir" diagnose.txt > /dev/null; then
-            echo "ERROR: the assembler resolved is not the bundled one"
-            grep -F 'Assembler' diagnose.txt || true
+          # Compare by resolving what was actually reported rather than by
+          # string-matching a path we compute here: Git-bash reports
+          # /d/a/PiST/... while Qt reports D:/a/PiST/..., so an equality test
+          # against a locally derived path fails on Windows for reasons that have
+          # nothing to do with the bundle.
+          reported="$(grep -F 'Assembler (vasmm68k_mot):' diagnose.txt \
+                      | head -1 | sed 's/^Assembler (vasmm68k_mot): //' | tr -d '\r')"
+
+          if [ "$reported" = "NOT FOUND" ] || [ -z "$reported" ]; then
+            echo "ERROR: no assembler was found at all"
+            exit 1
+          fi
+          if [ ! -f "$reported" ]; then
+            echo "ERROR: the reported assembler does not exist: $reported"
+            exit 1
+          fi
+          # It must be the copy travelling in this archive, not one installed on
+          # the build machine — a bundle that ships a binary it does not use is
+          # the failure this check exists to catch.
+          case "$reported" in
+            *bundle*) ;;
+            *) echo "ERROR: resolved assembler is outside the bundle: $reported"; exit 1 ;;
+          esac
+          # And it must be byte-identical to what we packaged, which proves it is
+          # our build rather than a same-named file that happened to be nearby.
+          if ! cmp -s "$reported" "$(dirname "$reported")/vasmm68k_mot" \
+             && ! cmp -s "$reported" "$(dirname "$reported")/vasmm68k_mot.exe"; then
+            echo "ERROR: the resolved assembler is not the packaged one"
             exit 1
           fi
 
-          # And the ROM it carries must be recognised and usable: one that cannot
-          # autostart would break the Run path, so it is not enough that a file
-          # was copied in.
+          # The ROM it carries must be recognised and usable: one that cannot
+          # autostart would break the Run path, so copying a file in is not enough.
           if ! grep -q 'EmuTOS' diagnose.txt; then
             echo "ERROR: the bundled ROM was not found"
             exit 1

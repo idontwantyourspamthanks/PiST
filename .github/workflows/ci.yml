@@ -37,7 +37,13 @@ jobs:
           - name: macOS (clang)
             os: macos-15
             vasm: true
-            emulator: true
+            # Parked, not broken. Hatari builds successfully on macOS (the arch
+            # mismatch was real and is fixed), but it produces an application
+            # bundle whose executable does not run standalone, so the verification
+            # step hangs. Since the priority is a first-class Linux experience,
+            # this is deliberately left off rather than chased — flip to true to
+            # resume, and expect to sort out running the bundle's binary.
+            emulator: false
           # No Hatari package for MSYS2, so Windows builds and unit-tests but
           # cannot exercise the emulator. Its emulator suite therefore skips
           # rather than failing, which is honest as long as its green means less.

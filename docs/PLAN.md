@@ -515,7 +515,7 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 
 ### Phase 4 — packaging
 
-**Status: in progress.** Delivered so far:
+**Status: substantially complete.** Delivered:
 
 - `cmake --install` installs the binary, a desktop entry and icon (Linux), and the
   licence plus third-party notices
@@ -528,9 +528,25 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
 - Project settings carry explicit paths for both tools, so a user-supplied vasm or
   a custom Hatari build works without touching the environment
 
-Still to do: a first-run fetch of vasm with a pinned checksum (permitted because
-its licence allows unmodified non-commercial redistribution), EmuTOS as a default
-ROM, per-platform installers, and a CI build across the three targets.
+- A **release workflow** producing self-contained archives per platform, each
+  carrying PiST, a vasm compiled from the author's unmodified source (pinned by
+  sha256), and EmuTOS 1.4 (GPLv2) as a working default ROM, plus the licence and
+  notices. Qt is deployed with macdeployqt/windeployqt on macOS and Windows.
+- **Verified end to end from a downloaded archive**: the shipped assembler builds
+  a program, the shipped EmuTOS boots it, the program produces its output, and the
+  debugger attaches with symbols loaded. Not a claim about the packaging — an
+  observation of the artefact.
+- **Every archive is verified before publication** by running its own binary with
+  `--diagnose` and asserting the resolved assembler is *inside the archive* and
+  byte-identical to what was packaged. A bundle that ships a binary it does not
+  use is the failure this exists to catch, and it has already caught two real
+  packaging defects.
+
+Open: installers (deb, RPM, MSI, dmg) are not produced — the archives are plain
+tarballs and zips. Windows vasm needs mingw-w64, which the release workflow
+provides; the CI workflow does not yet test it there. And the emulator remains
+unbundled by design: Hatari is a large GPL dependency, so the archive documents
+where to get it and PiST reports it clearly when absent.
 
 - Dynamic Qt linking (LGPLv3 relink obligation), dependency notices
 - vasm **detect-and-use**, not bundled (see §7)

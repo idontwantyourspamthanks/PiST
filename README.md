@@ -140,12 +140,26 @@ themselves unless Hatari, `vasmm68k_mot` and a TOS ROM are available.
 
 ### Installing
 
+Download an archive from [Releases](../../releases). Each one contains PiST, the
+`vasmm68k_mot` assembler, and an EmuTOS ROM, and unpacks ready to run:
+
+```sh
+tar xzf pist-*-linux-x86_64.tar.gz
+./bundle/bin/pist your-program.s
+```
+
+You still need **Hatari** for the emulator: it is a large GPL dependency and is
+not bundled. Everything else is included, so the IDE assembles and debugs out of
+the box once Hatari is present.
+
+To install from source instead:
+
 ```sh
 cmake --install build --prefix ~/.local
 ```
 
-This installs the binary, a desktop entry and icon (on Linux), and the licence and
-third-party notices. It does not install vasm or Hatari — see below.
+which installs the binary, a desktop entry and icon (on Linux), and the licence
+and third-party notices — but not vasm or Hatari, so see below.
 
 To develop the IDE you will also want, at runtime:
 

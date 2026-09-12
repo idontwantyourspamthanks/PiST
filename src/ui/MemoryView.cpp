@@ -100,11 +100,6 @@ void MemoryView::goToAddress(quint32 address)
     emit dumpRequested(m_base, kRowBytes * kRows);
 }
 
-void MemoryView::refresh()
-{
-    emit dumpRequested(m_base, kRowBytes * kRows);
-}
-
 void MemoryView::clear()
 {
     for (int r = 0; r < m_table->rowCount(); ++r) {

@@ -32,10 +32,9 @@ struct SessionConfig
     /// ST RAM size in MiB (1..14). 0 means Hatari's 512 KiB default.
     int memSizeMiB = 1;
 
-    QString tosResolution; // optional: --tos-res
 
-    /// Hard disk images.
-    QString ideMasterImage;
+    /// Hard disk image, attached as ACSI. ACSI is used rather than IDE because it
+    /// exists on every ST-family machine, whereas IDE is STe and later.
     QString acsiImage;
     int acsiId = 0;
 

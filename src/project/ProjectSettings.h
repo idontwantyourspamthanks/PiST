@@ -59,13 +59,6 @@ struct ProjectSettings
     /// Extra arguments appended to the emulator command line.
     QStringList extraEmulatorArgs;
 
-    // --- discovery -------------------------------------------------------
-
-    /// Directories actually searched for ROMs, for diagnostics.
-    static QStringList romSearchPaths();
-
-    /// Every ROM found, in priority order.
-    static QList<struct TosRom> availableRoms();
 };
 
 /// Persist and restore a project's settings.
@@ -82,6 +75,23 @@ struct ProjectSettings
 namespace settings {
 
 inline constexpr const char *kProjectSuffix = ".pistproject";
+
+/// Derived output paths for a source file.
+///
+/// Defined once because the build and the launch must agree on them: the build
+/// writes `<base>.prg` and the launch runs it, so if the two derivations ever
+/// diverged the IDE would either fail to find what it just built or, worse, run
+/// a stale binary from a previous build.
+struct OutputPaths
+{
+    QString program;  ///< <base>.prg
+    QString listing;  ///< <base>.lst
+    QString project;  ///< <base>.pistproject
+
+    bool isValid() const { return !program.isEmpty(); }
+};
+
+OutputPaths outputPathsFor(const QString &sourcePath);
 
 /// Default path of the project file for a source file.
 QString projectFileFor(const QString &sourcePath);

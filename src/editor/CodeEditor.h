@@ -21,6 +21,9 @@ public:
 
     bool loadFile(const QString &path);
     bool saveFile(const QString &path);
+
+    /// Reason the last save failed, for the caller to report.
+    QString lastError() const { return m_lastError; }
     QString filePath() const { return m_filePath; }
     bool isModifiedSinceLoad() const;
 
@@ -52,8 +55,6 @@ public:
     void lineNumberAreaPaintEvent(QPaintEvent *event);
 
 signals:
-    void cursorLineChanged(int line);
-
     /// The document's modified state changed, so the window title and any
     /// save-on-close prompt must be updated.
     void modificationChanged(bool modified);
@@ -80,6 +81,7 @@ private:
     int m_currentExecutionLine = 0;
     QList<int> m_errorLines;
     QList<int> m_breakpointLines;
+    QString m_lastError;
 };
 
 } // namespace pist

@@ -119,6 +119,14 @@ add_test(NAME tosrom COMMAND tst_tosrom)
 # Breakpoint resolution and memory-dump parsing: pure functions, no emulator.
 qt_add_executable(tst_debug
     tests/tst_debug.cpp
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
     src/build/LineMap.cpp

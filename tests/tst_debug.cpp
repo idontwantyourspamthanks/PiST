@@ -9,6 +9,7 @@
 #include "debug/Breakpoint.h"
 #include "build/LineMap.h"
 #include "emu/MemoryDump.h"
+#include "project/ProjectSettings.h"
 
 #include <QDir>
 #include <QFile>
@@ -70,6 +71,7 @@ private slots:
     void reportsLinesWithNoCode();
     void skipsDisabledBreakpoints();
     void refusesToResolveWithoutBases();
+    void refusesAddressPastTheEndOfItsSection();
 
     // --- memory dump parsing ---------------------------------------------
 
@@ -78,6 +80,9 @@ private slots:
     void parsesLongDump();
     void ignoresNonDumpText();
     void rendersCharacterColumn();
+
+    // paths
+    void outputPathsDeriveFromSource();
 };
 
 void TstDebug::resolvesLineToAddress()
@@ -178,6 +183,55 @@ void TstDebug::refusesToResolveWithoutBases()
     LineMap::SectionBases empty;
     const ArmPlan plan = planBreakpoints(bps, map, empty);
     QCOMPARE(plan.commands.size(), 0);
+}
+
+// Without a span bound, any address past the last entry — ROM, stack, or the
+// tail of a section — resolved to the program's final source line, so the editor
+// highlighted and scrolled to a line unrelated to the PC.
+void TstDebug::refusesAddressPastTheEndOfItsSection()
+{
+    QTemporaryDir dir;
+    LineMap map;
+    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+
+    LineMap::SectionBases bases = liveBases();
+
+    // Last text entry is line 6 at offset 0x0C; line 8 is data at offset 0.
+    // A text address well beyond the final text entry belongs to no line.
+    LineMap::Address a;
+    const quint32 pastText = bases.text + 0x40;
+    QVERIFY2(!map.lineFor(pastText, bases, &a),
+             "an address past the section's last entry must not resolve to a line");
+
+    // An address inside the last text instruction still resolves.
+    QVERIFY(map.lineFor(bases.text + 0x0Cu, bases, &a));
+    QCOMPARE(a.line, 6);
+
+    // And one inside a later section resolves within that section, not to the
+    // last line of the previous one.
+    QVERIFY(map.lineFor(bases.data, bases, &a));
+    QCOMPARE(a.line, 8);
+}
+
+// --- paths --------------------------------------------------------------
+
+// The build writes <base>.prg and the launch runs it. Deriving those twice was a
+// hazard: a change to one would silently break Run, or worse, run a stale binary.
+void TstDebug::outputPathsDeriveFromSource()
+{
+    const settings::OutputPaths paths =
+        settings::outputPathsFor(QStringLiteral("/home/x/proj/main.s"));
+    QCOMPARE(paths.program, QStringLiteral("/home/x/proj/main.prg"));
+    QCOMPARE(paths.listing, QStringLiteral("/home/x/proj/main.lst"));
+    QCOMPARE(paths.project, QStringLiteral("/home/x/proj/main.pistproject"));
+
+    // A source with dots in the name keeps only the final extension stripped, so
+    // the program path cannot collide with a differently-named sibling.
+    const settings::OutputPaths dotted =
+        settings::outputPathsFor(QStringLiteral("/home/x/proj/game.v2.s"));
+    QCOMPARE(dotted.program, QStringLiteral("/home/x/proj/game.v2.prg"));
+
+    QVERIFY(!settings::outputPathsFor(QString()).isValid());
 }
 
 // --- memory --------------------------------------------------------------

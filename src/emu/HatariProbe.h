@@ -23,20 +23,16 @@ struct HatariCapabilities
     int versionPatch = 0;
 
     bool hasControlSocket = false;
-    bool hasCmdFifo = false;
-    bool hasSymbolAutoloadOption = false; // --symload (git main; absent in 2.6.1)
-    bool hasBacktraceCommand = false;     // `bt` (git main; absent in 2.6.1)
-    bool hasConout = false;
+    /// `--symload` (git main; absent in 2.6.1). Present iff the debugger uses the
+    /// three-mode `symbols autoload <exec|debugger|off>` form rather than the
+    /// boolean one, so it also selects which bootstrap script line to write.
+    bool hasSymbolAutoloadOption = false;
 
     /// `--debug-except`: breaks in on CPU exceptions.
     bool hasDebugExcept = false;
 
     /// `--parse`: run debugger commands from a file at startup.
     bool hasParse = false;
-
-    /// True when the debugger command is `symbols autoload <mode>` (main) rather
-    /// than the boolean `symbols autoload on|off` (2.6.1).
-    bool hasThreeModeSymbolAutoload() const { return hasSymbolAutoloadOption; }
 
     QString summary() const;
 };

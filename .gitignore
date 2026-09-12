@@ -1,9 +1,11 @@
-# Build output
-build/
-build-*/
-cmake-build-*/
-out/
-install/
+# Build output. Anchored to the repository root: an unanchored `build/` also
+# matches sources such as `src/build/`, which silently excludes them from the
+# repository and means a fresh clone cannot be built.
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/install/
 
 # CMake
 CMakeCache.txt

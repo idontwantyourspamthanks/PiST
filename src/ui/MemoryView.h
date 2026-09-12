@@ -25,17 +25,12 @@ class MemoryView : public QWidget
 public:
     explicit MemoryView(QWidget *parent = nullptr);
 
-    quint32 baseAddress() const { return m_base; }
-
 public slots:
     /// Move the window and refresh from the emulator.
     void goToAddress(quint32 address);
 
     /// Parse a `memdump` response and display it.
     void applyDump(const QString &response);
-
-    /// Address of an expression was requested; emitted when the user enters one.
-    void refresh();
 
 signals:
     /// The view wants a dump of `address`, `length` bytes.

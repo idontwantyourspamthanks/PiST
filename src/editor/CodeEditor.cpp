@@ -118,7 +118,6 @@ void CodeEditor::resizeEvent(QResizeEvent *event)
 void CodeEditor::onCursorPositionChanged()
 {
     refreshExtraSelections();
-    emit cursorLineChanged(textCursor().blockNumber() + 1);
 }
 
 void CodeEditor::refreshExtraSelections()
@@ -272,6 +271,14 @@ bool CodeEditor::saveFile(const QString &path)
 
     QTextStream stream(&file);
     stream << toPlainText();
+    stream.flush();
+    // Without this the document is marked clean even when the write was
+    // truncated, which loses the only copy of the user's work.
+    if (stream.status() != QTextStream::Ok || file.error() != QFileDevice::NoError) {
+        m_lastError = file.errorString();
+        return false;
+    }
+
     m_filePath = path;
     document()->setModified(false);
     return true;

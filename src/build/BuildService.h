@@ -50,22 +50,17 @@ public:
 
     bool isRunning() const;
 
-    /// The exact argv used by the most recent build, for the build log.
-    QStringList lastCommand() const { return m_lastCommand; }
-
 public slots:
     void build();
     void cancel();
 
 signals:
-    void started(const QStringList &argv);
     void finished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void outputLine(const QString &line);
 
 private:
     void handleStderrLine(const QString &line);
     void handleStdoutLine(const QString &line);
-    void flushPendingExcerpt();
 
     QString m_assemblerPath;
     QString m_sourceFile;
@@ -75,15 +70,11 @@ private:
     QStringList m_defines;
     QString m_cpu;
     QStringList m_extraArgs;
-    QStringList m_lastCommand;
 
     QProcess *m_process = nullptr;
     QList<Diagnostic> m_diagnostics;
     QByteArray m_stderrBuffer;
     QByteArray m_stdoutBuffer;
-
-    /// Index into m_diagnostics of the diagnostic awaiting its `> excerpt` line.
-    int m_awaitingExcerpt = -1;
 };
 
 } // namespace pist

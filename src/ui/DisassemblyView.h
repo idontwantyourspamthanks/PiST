@@ -22,7 +22,6 @@ public:
 
 public slots:
     void setState(const pist::MachineState &state);
-    void clear();
     void goToAddress(quint32 address);
 
 private:

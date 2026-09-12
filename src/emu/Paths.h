@@ -43,6 +43,11 @@ QStringList tosSearchPaths();
 /// has no such limit.
 QString sessionBaseDir();
 
+/// Create a directory, reporting failure. Used for session directories and for
+/// the location of the generated bootstrap script, which are the same thing at
+/// different points in the launch.
+bool ensureDirectory(const QString &dir, QString *error);
+
 /// Remove a session directory and everything in it. Safe to call on a path that
 /// does not exist, and never follows non-directories.
 void removeSessionDir(const QString &dir);

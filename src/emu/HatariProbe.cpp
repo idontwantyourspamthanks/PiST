@@ -20,8 +20,6 @@ QString HatariCapabilities::summary() const
                                : QObject::tr("control socket: NO"));
     if (hasSymbolAutoloadOption)
         notes << QObject::tr("--symload: yes");
-    if (hasBacktraceCommand)
-        notes << QObject::tr("backtrace: yes");
     return notes.join(QStringLiteral(" · "));
 }
 
@@ -64,9 +62,7 @@ HatariCapabilities probeHatari(const QString &hatariPath)
         // Probe by option name rather than by version number: distro builds and
         // forks do not track upstream's versioning exactly.
         caps.hasControlSocket = help.contains(QLatin1String("--control-socket"));
-        caps.hasCmdFifo = help.contains(QLatin1String("--cmd-fifo"));
         caps.hasSymbolAutoloadOption = help.contains(QLatin1String("--symload"));
-        caps.hasConout = help.contains(QLatin1String("--conout"));
         caps.hasDebugExcept = help.contains(QLatin1String("--debug-except"));
         caps.hasParse = help.contains(QLatin1String("--parse"));
     }

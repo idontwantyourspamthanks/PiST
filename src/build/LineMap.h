@@ -45,8 +45,6 @@ public:
     {
         QString file;
         int line = 0;
-
-        bool isValid() const { return line > 0; }
     };
 
     /// Parse a listing produced by `vasmm68k_mot -L <file>`.
@@ -91,6 +89,11 @@ private:
     };
 
     QHash<QString, QString> m_sectionNames; // listing index -> section name
+
+    /// Section name -> end offset (exclusive), from the listing's `(start-end)`
+    /// header. Used to bound a line's span, so an address past the end of a
+    /// section does not resolve to that section's final line.
+    QHash<QString, quint32> m_sectionEnds;
     QList<Entry> m_entries;                 // sorted by section, then offset
     QStringList m_sourceFiles;
 };

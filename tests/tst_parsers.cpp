@@ -167,8 +167,16 @@ void TstParsers::lineMapResolvesAgainstLiveBases()
     QVERIFY(map.lineFor(0x12596u + 0x0Au, bases, &a));
     QCOMPARE(a.line, 5);
 
-    // Past the end of the text section, the nearest preceding entry is line 5.
-    QVERIFY(map.lineFor(0x12596u + 0x10u, bases, &a));
+    // Past the end of the text section there is no line to report. This
+    // expectation was previously the opposite — the lookup resolved to line 5
+    // wherever the PC landed — which meant a PC in ROM, on the stack, or anywhere
+    // past the program highlighted an unrelated source line.
+    QVERIFY2(!map.lineFor(0x12596u + 0x10u, bases, &a),
+             "an address past the section extent must not resolve to a line");
+
+    // The bound comes from the listing's own `(0-C)` extent, so the last valid
+    // offset still resolves.
+    QVERIFY(map.lineFor(0x12596u + 0x0Au, bases, &a));
     QCOMPARE(a.line, 5);
 
     // Uninitialised bases must not resolve.

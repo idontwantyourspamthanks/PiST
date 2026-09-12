@@ -90,14 +90,4 @@ void RegistersView::setState(const MachineState &state)
     m_flags->resizeColumnsToContents();
 }
 
-void RegistersView::clear()
-{
-    for (int i = 0; i < 8; ++i) {
-        m_table->item(i, 1)->setText(QString());
-        m_table->item(i, 3)->setText(QString());
-    }
-    for (int i = 0; i < 4; ++i)
-        m_flags->item(i, 1)->setText(QString());
-}
-
 } // namespace pist

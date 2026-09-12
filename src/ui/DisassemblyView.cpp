@@ -78,9 +78,4 @@ void DisassemblyView::goToAddress(quint32 address)
     }
 }
 
-void DisassemblyView::clear()
-{
-    m_table->setRowCount(0);
-}
-
 } // namespace pist

@@ -87,7 +87,6 @@ void BuildService::build()
     }
 
     m_diagnostics.clear();
-    m_awaitingExcerpt = -1;
     m_stderrBuffer.clear();
     m_stdoutBuffer.clear();
 
@@ -116,8 +115,6 @@ void BuildService::build()
     argv << m_extraArgs;
     argv << m_sourceFile;
 
-    m_lastCommand = argv;
-    emit started(argv);
 
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
@@ -145,16 +142,26 @@ void BuildService::build()
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error != QProcess::FailedToStart)
             return;
+
+        // Qt emits `finished` only when a child process dies, so a process that
+        // never started would otherwise produce no completion at all: the caller
+        // would wait forever, the pending Run flag would stay armed, and the
+        // QProcess would leak. Finish the build here instead.
         Diagnostic d;
         d.severity = Diagnostic::Error;
         d.message = tr("Could not run '%1'. Is the assembler installed?")
                         .arg(m_assemblerPath);
         m_diagnostics.append(d);
+
+        if (m_process) {
+            m_process->deleteLater();
+            m_process = nullptr;
+        }
+        emit finished(false, m_diagnostics);
     });
 
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
             [this](int exitCode, QProcess::ExitStatus status) {
-                flushPendingExcerpt();
                 const bool ok = (status == QProcess::NormalExit && exitCode == 0);
                 m_process->deleteLater();
                 m_process = nullptr;
@@ -166,18 +173,6 @@ void BuildService::build()
 
 void BuildService::handleStderrLine(const QString &line)
 {
-    // A `>` line is the source excerpt belonging to the diagnostic above it.
-    if (line.startsWith(QLatin1Char('>'))) {
-        if (m_awaitingExcerpt >= 0 && m_awaitingExcerpt < m_diagnostics.size()) {
-            m_diagnostics[m_awaitingExcerpt].excerpt = line.mid(1).trimmed();
-            m_awaitingExcerpt = -1;
-        }
-        emit outputLine(line);
-        return;
-    }
-
-    flushPendingExcerpt();
-
     auto located = locatedRe().match(line);
     if (located.hasMatch()) {
         Diagnostic d;
@@ -187,7 +182,6 @@ void BuildService::handleStderrLine(const QString &line)
         d.file = located.captured(4);
         d.message = located.captured(5).trimmed();
         m_diagnostics.append(d);
-        m_awaitingExcerpt = m_diagnostics.size() - 1;
         emit outputLine(line);
         return;
     }
@@ -217,13 +211,6 @@ void BuildService::handleStdoutLine(const QString &line)
     // banner but not the sizes. Surface them in the build log.
     if (!line.trimmed().isEmpty())
         emit outputLine(line);
-}
-
-void BuildService::flushPendingExcerpt()
-{
-    // vasm always prints the excerpt immediately after the diagnostic, so a
-    // pending index at this point means there was none (e.g. end of output).
-    m_awaitingExcerpt = -1;
 }
 
 } // namespace pist

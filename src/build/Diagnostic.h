@@ -20,16 +20,13 @@ namespace pist {
 /// "no location".
 struct Diagnostic
 {
-    enum Severity { Error, Warning, Info };
+    enum Severity { Error, Warning };
 
     Severity severity = Error;
     int code = 0;
     QString file;
     int line = 0;
     QString message;
-
-    /// The source excerpt vasm prints on the following line, prefixed with '>'.
-    QString excerpt;
 
     bool hasLocation() const { return line > 0 && !file.isEmpty(); }
 };

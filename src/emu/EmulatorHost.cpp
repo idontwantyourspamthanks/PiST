@@ -5,6 +5,7 @@
 #include "emu/EmulatorHost.h"
 
 #include "emu/HatariProbe.h"
+#include "emu/Paths.h"
 
 #include <QDir>
 #include <QFile>
@@ -175,11 +176,8 @@ QString EmulatorHost::writeBootstrapScript(const QString &directory,
     // Create the directory here rather than relying on the caller: this is
     // called before start() creates the session directory, and a failure to
     // write the script is otherwise reported as "the debugger never stopped".
-    if (!QDir().mkpath(directory)) {
-        if (error)
-            *error = QStringLiteral("cannot create session directory '%1'").arg(directory);
+    if (!paths::ensureDirectory(directory, error))
         return {};
-    }
 
     const QString path = QDir(directory).filePath(QStringLiteral("boot.ini"));
     QFile file(path);
@@ -280,11 +278,8 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     m_stdoutLoggedChars = 0;
     m_stdoutText.clear();
 
-    if (!QFileInfo::exists(config.sessionDir) && !QDir().mkpath(config.sessionDir)) {
-        if (error)
-            *error = tr("cannot create session directory '%1'").arg(config.sessionDir);
+    if (!paths::ensureDirectory(config.sessionDir, error))
         return false;
-    }
 
     openSocketServer(error);
     // A socket is optional: it is unavailable on Windows, and the session works
@@ -408,15 +403,6 @@ void EmulatorHost::handleStdoutData(const QByteArray &data)
                 emit logLine(trimmed);
         }
     }
-}
-
-bool EmulatorHost::control(const QString &hatariCommand)
-{
-    if (!m_socket || m_socket->state() != QLocalSocket::ConnectedState)
-        return false;
-    m_socket->write("hatari-" + hatariCommand.toUtf8() + "\n");
-    m_socket->flush();
-    return true;
 }
 
 void EmulatorHost::command(const QString &commandText)
@@ -545,7 +531,10 @@ void EmulatorHost::armBreakpoint(const QString &condition)
 
 void EmulatorHost::requestMemoryDump(quint32 address, int length)
 {
-    // `m <address> <count>`; the debugger's own number base is hex.
+    // The address carries a `$` prefix so it is read as hex, but the count is a
+    // bare number and the debugger reads that as **decimal**. Verified against
+    // Hatari 2.6.1: `m $12596 100` returns 112 bytes (7 rows of 16), i.e. 100
+    // bytes rounded up to a row; a hex reading would have returned 256.
     const QString cmd = QStringLiteral("m $%1 %2")
                             .arg(address, 0, 16)
                             .arg(length);

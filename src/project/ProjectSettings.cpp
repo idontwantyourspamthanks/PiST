@@ -4,7 +4,6 @@
 
 #include "project/ProjectSettings.h"
 
-#include "build/BuildService.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 
@@ -38,17 +37,21 @@ QStringList fromArray(const QJsonValue &value)
 
 } // namespace
 
-QStringList ProjectSettings::romSearchPaths()
-{
-    return paths::tosSearchPaths();
-}
-
-QList<TosRom> ProjectSettings::availableRoms()
-{
-    return findTosRoms();
-}
-
 namespace settings {
+
+OutputPaths outputPathsFor(const QString &sourcePath)
+{
+    OutputPaths paths;
+    if (sourcePath.isEmpty())
+        return paths;
+
+    const QFileInfo info(sourcePath);
+    const QString base = info.absolutePath() + QLatin1Char('/') + info.completeBaseName();
+    paths.program = base + QStringLiteral(".prg");
+    paths.listing = base + QStringLiteral(".lst");
+    paths.project = base + QLatin1String(kProjectSuffix);
+    return paths;
+}
 
 QString projectFileFor(const QString &sourcePath)
 {
@@ -88,7 +91,14 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
             *error = QStringLiteral("cannot write '%1': %2").arg(path, file.errorString());
         return false;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    // An ignored short write would report success for a truncated file, and the
+    // user would only discover it when the project failed to load later.
+    if (file.write(json) != json.size()) {
+        if (error)
+            *error = QStringLiteral("could not write '%1': %2").arg(path, file.errorString());
+        return false;
+    }
     return true;
 }
 
@@ -122,8 +132,17 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
     Machine machine = Machine::St;
     if (machineFromCliName(emu.value(QStringLiteral("machine")).toString(), &machine))
         s->machine = machine;
-    s->monitor = emu.value(QStringLiteral("monitor")).toString(QStringLiteral("mono"));
-    s->memSizeMiB = emu.value(QStringLiteral("memSizeMiB")).toInt(1);
+    // A hand-edited or third-party project file must not be able to pass an
+    // invalid monitor or an impossible RAM size to the emulator command line,
+    // where it would abort startup with no visible explanation.
+    const QString monitor = emu.value(QStringLiteral("monitor")).toString(QStringLiteral("mono"));
+    static const QStringList validMonitors = {QStringLiteral("mono"), QStringLiteral("rgb"),
+                                              QStringLiteral("vga"), QStringLiteral("tv")};
+    if (validMonitors.contains(monitor))
+        s->monitor = monitor;
+
+    const int ram = emu.value(QStringLiteral("memSizeMiB")).toInt(1);
+    s->memSizeMiB = qBound(0, ram, 14);
     s->tosPath = emu.value(QStringLiteral("tosPath")).toString();
     s->hardDiskImage = emu.value(QStringLiteral("hardDiskImage")).toString();
     s->floppyImages = fromArray(emu.value(QStringLiteral("floppyImages")));

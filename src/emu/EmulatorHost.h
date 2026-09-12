@@ -47,6 +47,8 @@ public:
     explicit EmulatorHost(QObject *parent = nullptr);
     ~EmulatorHost() override;
 
+    /// Record what the emulator build supports. Consulted when writing the
+    /// bootstrap script, which is version-gated (§5 rule 9).
     void setCapabilities(const HatariCapabilities &caps) { m_caps = &caps; }
 
     bool start(const SessionConfig &config, QString *error);
@@ -54,15 +56,10 @@ public:
 
     bool isRunning() const;
     bool isStopped() const { return m_stopped; }
-    SessionConfig config() const { return m_config; }
 
     /// Queue a debugger command. Delivered over stdin, so it works while the
     /// debugger is stopped. A `commandFinished` signal follows.
     void command(const QString &command);
-
-    /// Send a Hatari control command over the socket. Only serviced while
-    /// emulation is *running*; while stopped this silently does nothing.
-    bool control(const QString &hatariCommand);
 
     void step();     // `s`
     void stepOver(); // `n`
@@ -149,7 +146,6 @@ private:
     int m_stdoutLoggedChars = 0;
     quint64 m_promptCount = 0;
     quint64 m_promptTarget = 0;
-    bool m_promptStreamIsStdout = false;
 
     /// Set when the debugger has announced entry but its session dump is still
     /// being written; cleared once it reaches its prompt.

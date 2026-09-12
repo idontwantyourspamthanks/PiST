@@ -83,8 +83,28 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_host, &EmulatorHost::logLine, this, [this](const QString &line) {
         m_log->appendPlainText(line);
     });
+    // Emulator errors are reported in the log *and* the status bar. Log-only was
+    // the previous behaviour, and the log is a bottom-dock tab that is not always
+    // visible, so a failed launch looked like a normal window.
     connect(m_host, &EmulatorHost::errorOccurred, this, [this](const QString &message) {
         m_log->appendPlainText(QStringLiteral("[error] ") + message);
+        statusBar()->showMessage(message, 15000);
+    });
+
+    // Without this the status bar kept saying "Running" after Hatari had died,
+    // because only stoppedChanged was connected. A dead emulator looked live and
+    // step/continue stayed enabled.
+    connect(m_host, &EmulatorHost::runningChanged, this, [this](bool running) {
+        if (running)
+            return;
+        m_statusEmulator->setText(m_caps.valid ? m_caps.summary() : tr("Not running"));
+        if (m_sessionArmed) {
+            m_sessionArmed = false;
+            if (m_actStep) m_actStep->setEnabled(false);
+            if (m_actStepOver) m_actStepOver->setEnabled(false);
+            if (m_actResume) m_actResume->setEnabled(false);
+            m_log->appendPlainText(tr("[session] emulator is no longer running"));
+        }
     });
     connect(m_host, &EmulatorHost::memoryDumpReady, this,
             [this](quint32, const QString &response) {
@@ -355,7 +375,11 @@ QString MainWindow::makeSessionDir()
                       + QStringLiteral("/%1-%2")
                             .arg(QCoreApplication::applicationPid())
                             .arg(++counter);
-    QDir().mkpath(dir);
+    QString error;
+    if (!paths::ensureDirectory(dir, &error)) {
+        m_log->appendPlainText(QStringLiteral("[session] ") + error);
+        return {};
+    }
     m_currentSessionDir = dir;
     return dir;
 }
@@ -480,8 +504,15 @@ void MainWindow::openProject()
         source.clear();
 
     if (!source.isEmpty()) {
+        // Adopting the project's build settings while the *previous* document
+        // stays open would build the old file with the new configuration.
+        if (!m_editor->loadFile(source)) {
+            QMessageBox::critical(this, tr("Open project"),
+                                  tr("The project refers to %1, which could not be opened.")
+                                      .arg(source));
+            return;
+        }
         loaded.sourceFile = source;
-        m_editor->loadFile(source);
     }
 
     m_settings = loaded;
@@ -526,10 +557,17 @@ void MainWindow::editSettings()
         m_settings.sourceFile = m_editor->filePath();
         const QString path = settings::projectFileFor(m_editor->filePath());
         QString error;
-        if (settings::save(m_settings, path, &error))
-            settings::rememberLastProject(path, m_editor->filePath());
-        else
-            m_log->appendPlainText(QStringLiteral("[project] ") + error);
+        if (!settings::save(m_settings, path, &error)) {
+            // Report before the success message below, and do not swallow it: the
+            // in-memory settings have already changed, so saying "updated" would
+            // be a false claim that silently reverts on restart.
+            QMessageBox::warning(this, tr("Project settings"),
+                                 tr("The settings were applied to this session but could not "
+                                    "be saved:\n\n%1")
+                                     .arg(error));
+            return;
+        }
+        settings::rememberLastProject(path, m_editor->filePath());
     }
 
     statusBar()->showMessage(
@@ -555,7 +593,10 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
     ProjectSettings loaded;
     QString error;
     if (!settings::load(&loaded, projectPath, &error)) {
+        // Previously log-only, which meant a corrupt project file silently ran the
+        // previous project's settings with no indication of why.
         m_log->appendPlainText(tr("[project] %1").arg(error));
+        statusBar()->showMessage(tr("Project settings ignored: %1").arg(error), 15000);
         m_settings.sourceFile = sourcePath;
         return;
     }
@@ -581,8 +622,10 @@ void MainWindow::saveFile()
         if (path.isEmpty())
             return;
         m_editor->saveFile(path);
-    } else {
-        m_editor->saveFile(m_editor->filePath());
+    } else if (!m_editor->saveFile(m_editor->filePath())) {
+        QMessageBox::critical(this, tr("Save"),
+                              tr("Could not write %1: %2")
+                                  .arg(m_editor->filePath(), m_editor->lastError()));
     }
     updateModifiedState();
 }
@@ -595,15 +638,23 @@ void MainWindow::build()
         return;
     }
 
-    m_editor->saveFile(m_editor->filePath());
+    // A failed save must stop the build: otherwise the assembler runs on the
+    // previous on-disk contents and reports a result for code the user is not
+    // looking at.
+    if (!m_editor->saveFile(m_editor->filePath())) {
+        QMessageBox::critical(this, tr("Build"),
+                              tr("Could not save %1: %2")
+                                  .arg(m_editor->filePath(), m_editor->lastError()));
+        return;
+    }
+
     m_problems->clear();
     m_log->appendPlainText(tr("--- build ---"));
 
     const QFileInfo info(m_editor->filePath());
-    const QString outPath = info.absolutePath() + QDir::separator()
-                          + info.completeBaseName() + QStringLiteral(".prg");
-    const QString listPath = info.absolutePath() + QDir::separator()
-                           + info.completeBaseName() + QStringLiteral(".lst");
+    const settings::OutputPaths paths = settings::outputPathsFor(info.absoluteFilePath());
+    const QString outPath = paths.program;
+    const QString listPath = paths.listing;
 
     m_build->setSourceFile(info.absoluteFilePath());
     m_build->setOutputFile(outPath);
@@ -633,7 +684,15 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
                        : tr("Build succeeded — %1 source files mapped").arg(files),
             5000);
     } else if (!error.isEmpty()) {
+        // Breakpoints and the PC highlight both depend on this map. Failing
+        // silently left every visible signal green while neither worked.
         m_log->appendPlainText(QStringLiteral("[line map] ") + error);
+        auto *item = new QTreeWidgetItem(m_problems);
+        item->setText(0, tr("(build)"));
+        item->setText(2, tr("Could not read the listing, so source-line breakpoints and "
+                            "the execution highlight will not work: %1").arg(error));
+        item->setForeground(2, QColor(0xc0, 0x20, 0x20));
+        m_bottomTabs->setCurrentWidget(m_problems);
     }
 
     QList<int> errorLines;
@@ -692,8 +751,7 @@ void MainWindow::run()
 void MainWindow::launchEmulator()
 {
     const QFileInfo info(m_editor->filePath());
-    const QString prg = info.absolutePath() + QDir::separator()
-                      + info.completeBaseName() + QStringLiteral(".prg");
+    const QString prg = settings::outputPathsFor(info.absoluteFilePath()).program;
     if (!QFileInfo::exists(prg)) {
         QMessageBox::warning(this, tr("Run"),
                              tr("The build did not produce %1.").arg(prg));

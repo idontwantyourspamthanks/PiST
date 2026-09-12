@@ -19,7 +19,7 @@ namespace {
 const QRegularExpression &sectionRe()
 {
     static const QRegularExpression re(
-        QStringLiteral(R"RX(^\s*([0-9A-Fa-f]{2}):\s+"([^"]+)"\s*\()RX"));
+        QStringLiteral(R"RX(^\s*([0-9A-Fa-f]{2}):\s+"([^"]+)"\s*\(([0-9A-Fa-f]+)-([0-9A-Fa-f]+)\))RX"));
     return re;
 }
 
@@ -53,6 +53,7 @@ QString normalised(const QString &path)
 void LineMap::clear()
 {
     m_sectionNames.clear();
+    m_sectionEnds.clear();
     m_entries.clear();
     m_sourceFiles.clear();
 }
@@ -85,7 +86,12 @@ bool LineMap::parseListing(const QString &path, QString *error)
         // a hex index, so order does not matter here.
         auto section = sectionRe().match(raw);
         if (section.hasMatch()) {
-            m_sectionNames.insert(section.captured(1).toUpper(), section.captured(2));
+            const QString index = section.captured(1).toUpper();
+            const QString name = section.captured(2);
+            m_sectionNames.insert(index, name);
+            // The range is `(start-end)`, both inclusive offsets within the
+            // section, so the exclusive end is one past `end`.
+            m_sectionEnds.insert(name, section.captured(4).toUInt(nullptr, 16) + 1);
             continue;
         }
 
@@ -155,8 +161,14 @@ bool LineMap::lineFor(quint32 address, const SectionBases &bases, Address *resul
     if (!bases.isValid())
         return false;
 
+    // Find the entry with the greatest address <= the one asked about, *within
+    // the same section*. The span bound matters: without it, any address past the
+    // last entry — ROM, the stack, or the tail of BSS — would resolve to the
+    // program's final source line, and the editor would highlight and scroll to a
+    // line with nothing to do with the PC.
     const Entry *best = nullptr;
     quint32 bestAddress = 0;
+    QString bestSection;
 
     for (const Entry &e : m_entries) {
         const quint32 base = baseForSection(e.section, bases);
@@ -168,14 +180,38 @@ bool LineMap::lineFor(quint32 address, const SectionBases &bases, Address *resul
         if (!best || addr > bestAddress) {
             best = &e;
             bestAddress = addr;
+            bestSection = e.section;
         }
     }
 
     if (!best)
         return false;
 
-    // Only accept a match within the same section's span. Without section sizes
-    // from the listing we approximate using the next entry's address.
+    // A PC past the end of the section is not inside any line's code, so there is
+    // no honest line to report. The bound comes from the listing's own
+    // `(start-end)` extent — `00: "text" (0-12)` — which is authoritative, with
+    // the next entry used only if a listing omitted the extent.
+    bool haveSpan = false;
+    quint32 spanEnd = 0;
+
+    if (m_sectionEnds.contains(bestSection)) {
+        spanEnd = baseForSection(bestSection, bases) + m_sectionEnds.value(bestSection);
+        haveSpan = true;
+    } else {
+        for (const Entry &e : m_entries) {
+            if (e.section != bestSection)
+                continue;
+            const quint32 addr = baseForSection(e.section, bases) + e.offset;
+            if (addr > bestAddress && (!haveSpan || addr < spanEnd)) {
+                spanEnd = addr;
+                haveSpan = true;
+            }
+        }
+    }
+
+    if (haveSpan && address >= spanEnd)
+        return false;
+
     if (result) {
         result->file = best->file;
         result->line = best->line;

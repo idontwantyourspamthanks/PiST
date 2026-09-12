@@ -23,7 +23,6 @@ struct Registers
     bool flagZ = false;
     bool flagV = false;
     bool flagC = false;
-    int interruptMask = 0;
 
     bool valid = false;
 };

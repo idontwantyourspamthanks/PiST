@@ -21,12 +21,6 @@ QStringList SessionConfig::toArgv() const
 
     argv << QStringLiteral("--monitor") << monitor;
 
-    if (!tosResolution.isEmpty())
-        argv << QStringLiteral("--tos-res") << tosResolution;
-
-    if (!ideMasterImage.isEmpty())
-        argv << QStringLiteral("--ide-master") << ideMasterImage;
-
     if (!acsiImage.isEmpty()) {
         argv << QStringLiteral("--acsi")
              << QStringLiteral("%1=%2").arg(acsiId).arg(acsiImage);

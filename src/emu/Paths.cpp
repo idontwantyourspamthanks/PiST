@@ -86,6 +86,22 @@ QString sessionBaseDir()
     return QDir(base).absoluteFilePath(QStringLiteral("pist"));
 }
 
+bool ensureDirectory(const QString &dir, QString *error)
+{
+    if (dir.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("no directory given");
+        return false;
+    }
+    if (QFileInfo(dir).isDir())
+        return true;
+    if (QDir().mkpath(dir))
+        return true;
+    if (error)
+        *error = QStringLiteral("cannot create directory '%1'").arg(dir);
+    return false;
+}
+
 void removeSessionDir(const QString &dir)
 {
     if (dir.isEmpty())

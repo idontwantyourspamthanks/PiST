@@ -1,0 +1,116 @@
+name: CI
+
+# Builds and tests on all three supported platforms.
+#
+# This is the only source of Windows and macOS evidence: the project is developed
+# on Linux, and a great deal of its cross-platform correctness (path handling, the
+# absent control socket on Windows, process and socket APIs) is otherwise only
+# checked by reading source. Compiling and running the suite on real runners is
+# what turns those claims into observations.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # A failure on one platform must not hide the others: the whole point is
+      # seeing all three results side by side.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (gcc)
+            os: ubuntu-latest
+            vasm: true
+          - name: macOS (clang)
+            os: macos-latest
+            vasm: true
+          - name: Windows (MSVC)
+            os: windows-latest
+            vasm: false   # needs MSYS2 make; enabled once the rest is green
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+          modules: ''
+
+      # vasm is the assembler PiST drives. It is built from the author's source
+      # rather than downloaded, because no binaries are published for host
+      # platforms — only Amiga-family and Atari targets. Building it here also
+      # means the emulator and build tests exercise a real assembler instead of
+      # skipping.
+      - name: Build vasm (Linux/macOS)
+        if: matrix.vasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+          # Pinned: an unexpected change upstream must fail loudly rather than
+          # silently altering what we test against.
+          VASM_SHA256=c84b2de1cbb87831795fe64a85c5d9a7002a766e3a7c30b0a2d7d5e99d878f49
+          curl -fsSL -o vasm.tar.gz "$VASM_URL"
+          echo "$VASM_SHA256  vasm.tar.gz" | shasum -a 256 -c -
+          tar xzf vasm.tar.gz
+          make -C vasm CPU=m68k SYNTAX=mot
+          mkdir -p "$HOME/.local/bin"
+          cp vasm/vasmm68k_mot "$HOME/.local/bin/"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the assembler runs
+        if: matrix.vasm
+        shell: bash
+        run: |
+          vasmm68k_mot 2>&1 | head -1
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel
+
+      # The integration suites skip themselves when Hatari or a TOS ROM is
+      # absent, which is the case on every runner. They report as skipped rather
+      # than passed, so a green run never overstates what was verified.
+      - name: Test
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Report test summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ctest --test-dir build --build-config Release 2>&1 | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install (staged)
+        if: matrix.vasm
+        shell: bash
+        run: |
+          cmake --install build --config Release --prefix "$GITHUB_WORKSPACE/stage"
+          find stage -type f | sort
+
+      # Proves the installed tree is self-sufficient rather than merely present.
+      - name: Verify the installed binary starts
+        if: matrix.vasm
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          "$GITHUB_WORKSPACE/stage/bin/pist" --version
+          ls "$GITHUB_WORKSPACE/stage/share/doc/pist"

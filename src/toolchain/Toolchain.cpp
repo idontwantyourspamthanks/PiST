@@ -19,20 +19,38 @@ namespace {
 constexpr const char *kAssemblerName = "vasmm68k_mot";
 constexpr const char *kEmulatorName = "hatari";
 
-/// Read a version string from `--version`, tolerating tools that print to either
-/// stream or exit non-zero for it. Best-effort: a missing version is not an error.
+/// Read a version string from a tool, tolerating either convention.
+///
+/// `--version` first (Hatari answers it), then no arguments at all: vasm prints
+/// its banner and exits when given no input, and does not support `--version` at
+/// all, so probing only the flag would report no version for the assembler.
+/// Best-effort throughout — a missing version is not an error.
 QString probeVersion(const QString &path)
 {
-    QProcess p;
-    p.start(path, {QStringLiteral("--version")});
-    if (!p.waitForStarted(3000) || !p.waitForFinished(5000))
-        return {};
+    const QStringList attempts = {QStringLiteral("--version"), QString()};
 
-    const QString output = QString::fromUtf8(p.readAllStandardOutput())
-                         + QString::fromUtf8(p.readAllStandardError());
-    static const QRegularExpression re(QStringLiteral(R"((\d+\.\d+[a-z]?(?:\.\d+)?))"));
-    const auto match = re.match(output);
-    return match.hasMatch() ? match.captured(1) : QString();
+    for (const QString &args : attempts) {
+        QProcess p;
+        p.start(path, args.isEmpty() ? QStringList{} : QStringList{args});
+        if (!p.waitForStarted(3000))
+            continue;
+        if (!p.waitForFinished(5000)) {
+            p.kill();
+            p.waitForFinished(1000);
+        }
+
+        const QString output = QString::fromUtf8(p.readAllStandardOutput())
+                             + QString::fromUtf8(p.readAllStandardError());
+        static const QRegularExpression re(QStringLiteral(R"((\d+\.\d+[a-z]?(?:\.\d+)?))"));
+        const auto match = re.match(output);
+        if (match.hasMatch())
+            return match.captured(1);
+
+        // A tool with no version output on this invocation: try the next form
+        // rather than reporting failure.
+    }
+
+    return {};
 }
 
 ToolInfo locate(const QString &program, const QString &overridePath)

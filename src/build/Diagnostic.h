@@ -28,6 +28,15 @@ struct Diagnostic
     int line = 0;
     QString message;
 
+    /// Set for linker diagnostics, which identify a module and an offset within a
+    /// section rather than a source line. The line map resolves these once the
+    /// listings are loaded, which is what lets a link error point at the line
+    /// that caused it.
+    QString objectFile;
+    QString section;
+    quint32 sectionOffset = 0;
+    bool hasObjectOffset = false;
+
     bool hasLocation() const { return line > 0 && !file.isEmpty(); }
 };
 

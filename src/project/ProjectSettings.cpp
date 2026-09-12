@@ -69,6 +69,8 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
 
     QJsonObject build;
     build[QStringLiteral("assemblerPath")] = s.assemblerPath;
+    build[QStringLiteral("linkerPath")] = s.linkerPath;
+    build[QStringLiteral("additionalSources")] = toArray(s.additionalSources);
     build[QStringLiteral("cpu")] = s.cpu;
     build[QStringLiteral("includePaths")] = toArray(s.includePaths);
     build[QStringLiteral("defines")] = toArray(s.defines);
@@ -126,6 +128,8 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
 
     const QJsonObject build = root.value(QStringLiteral("build")).toObject();
     s->assemblerPath = build.value(QStringLiteral("assemblerPath")).toString();
+    s->linkerPath = build.value(QStringLiteral("linkerPath")).toString();
+    s->additionalSources = fromArray(build.value(QStringLiteral("additionalSources")));
     s->cpu = build.value(QStringLiteral("cpu")).toString(QStringLiteral("68000"));
     s->includePaths = fromArray(build.value(QStringLiteral("includePaths")));
     s->defines = fromArray(build.value(QStringLiteral("defines")));

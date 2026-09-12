@@ -32,6 +32,12 @@ ToolInfo findAssembler(const QString &overridePath = QString());
 /// The emulator. `overridePath` (from project or user settings) wins when set.
 ToolInfo findEmulator(const QString &overridePath = QString());
 
+/// The linker, needed only when a project has more than one source file.
+///
+/// Separate assembly requires linking, and the linker is a different program with
+/// its own licence and its own (absent) binaries — see NOTICE.
+ToolInfo findLinker(const QString &overridePath = QString());
+
 /// Directories searched, for reporting when a tool is missing.
 QStringList searchPaths();
 
@@ -44,6 +50,9 @@ QStringList searchPaths();
 QString assemblerInstallHint();
 
 QString emulatorInstallHint();
+
+/// How to obtain the linker, shown when a multi-source project cannot be built.
+QString linkerInstallHint();
 
 /// Suggested destination for a first-run download of a bundled tool, matching
 /// `searchPaths()` so a fetch is found on the next launch without configuration.

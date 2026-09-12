@@ -483,9 +483,9 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
 
     // Parse with the source path exactly as the build passed it, which is what
     // the real application does.
-    LineMap map;
+    ProgramLineMap map;
     QString mapError;
-    QVERIFY2(map.parseListing(listing, &mapError), qPrintable(mapError));
+    QVERIFY2(map.addModule(source, prg, listing, &mapError), qPrintable(mapError));
 
     HatariCapabilities caps = probeHatari(m_hatari);
     SessionConfig config;
@@ -520,11 +520,12 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     bases.text = last.textBase;
     bases.data = last.dataBase;
     bases.bss = last.bssBase;
+    map.setLiveBases(bases);
 
     // `loop:` is line 5. Resolve it exactly as the gutter click does.
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QFileInfo(source).fileName(), 5, QString(), true, 0, false});
-    const ArmPlan plan = planBreakpoints(bps, map, bases);
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 1);
     QVERIFY2(plan.unresolved.isEmpty(), "line 5 should have an address");
     const quint32 breakAddress = plan.armed.first().address;
@@ -555,7 +556,7 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     // ...and mapping that PC back through the line map must land on line 5,
     // which is what drives the editor highlight.
     LineMap::Address back;
-    QVERIFY(map.lineFor(last.pc, bases, &back));
+    QVERIFY(map.lineFor(last.pc, &back));
     QCOMPARE(back.line, 5);
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));

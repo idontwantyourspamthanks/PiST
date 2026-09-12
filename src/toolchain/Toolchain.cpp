@@ -18,6 +18,7 @@ namespace {
 
 constexpr const char *kAssemblerName = "vasmm68k_mot";
 constexpr const char *kEmulatorName = "hatari";
+constexpr const char *kLinkerName = "vlink";
 
 /// Read a version string from a tool, tolerating either convention.
 ///
@@ -131,6 +132,11 @@ ToolInfo findEmulator(const QString &overridePath)
     return locate(QString::fromLatin1(kEmulatorName), overridePath);
 }
 
+ToolInfo findLinker(const QString &overridePath)
+{
+    return locate(QString::fromLatin1(kLinkerName), overridePath);
+}
+
 QString suggestedInstallDir()
 {
     // GenericDataLocation rather than AppLocalDataLocation: the latter is
@@ -154,6 +160,18 @@ QString assemblerInstallHint()
         "Some distributions also package it (for example `apt install vasm` on "
         "Debian and Ubuntu). Alternatively set an explicit path in Project "
         "Settings, or place the binary in:\n\n    %1")
+        .arg(suggestedInstallDir());
+}
+
+QString linkerInstallHint()
+{
+    return QObject::tr(
+        "PiST links separately-assembled sources with vlink, which is not bundled "
+        "with the source build.\n\n"
+        "Get it from the author:\n\n"
+        "    http://sun.hasenbraten.de/vlink/\n\n"
+        "It builds with plain `make`. Alternatively set an explicit path in "
+        "Project Settings, or place the binary in:\n\n    %1")
         .arg(suggestedInstallDir());
 }
 

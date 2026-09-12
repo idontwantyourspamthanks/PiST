@@ -5,6 +5,7 @@
 #pragma once
 
 #include "build/LineMap.h"
+#include "build/ProgramLineMap.h"
 
 #include <QList>
 #include <QString>
@@ -59,11 +60,16 @@ struct ArmPlan
 /// Resolve source-line breakpoints to Hatari `b` commands.
 ///
 /// Pure function, so the resolution rules are testable without an emulator.
-/// `bases` must come from a *running* session: the program's load address is
-/// only known after it has been executed, which is why arming happens after the
-/// entry stop (docs/PLAN.md §5 rule 6).
+/// The map must have live bases from a *running* session: the program's load
+/// address is only known after it has been executed, which is why arming happens
+/// after the entry stop (docs/PLAN.md §5 rule 6).
+/// The line map is the *program* map rather than a single-module one: a linked
+/// program has several modules, each with its own base, so resolving a line needs
+/// the whole set (docs/PLAN.md §4.3).
+/// Bases are not passed separately: the program map holds one per module, once
+/// the program is running, so it is the single source of truth for where a line
+/// lives.
 ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
-                        const LineMap &lineMap,
-                        const LineMap::SectionBases &bases);
+                        const ProgramLineMap &lineMap);
 
 } // namespace pist

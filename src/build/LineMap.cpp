@@ -89,9 +89,12 @@ bool LineMap::parseListing(const QString &path, QString *error)
             const QString index = section.captured(1).toUpper();
             const QString name = section.captured(2);
             m_sectionNames.insert(index, name);
-            // The range is `(start-end)`, both inclusive offsets within the
-            // section, so the exclusive end is one past `end`.
-            m_sectionEnds.insert(name, section.captured(4).toUInt(nullptr, 16) + 1);
+            // vasm writes `(start-end)` where `end` is the section *size*, i.e.
+            // already exclusive: a 0xC-byte section reads `(0-C)` and its last
+            // byte is at 0xB. Adding one here made every span a byte too long, so
+            // a section could claim an address belonging to the next one — which
+            // is how two modules in a linked program both matched the same PC.
+            m_sectionEnds.insert(name, section.captured(4).toUInt(nullptr, 16));
             continue;
         }
 
@@ -130,8 +133,13 @@ bool LineMap::sameSource(const QString &recorded, const QString &queried)
 
 quint32 LineMap::baseForSection(const QString &section, const SectionBases &bases)
 {
+    // The section name depends on the output format: `-Ftos` writes "text",
+    // "data", "bss" while `-Fvobj` (the format used for linking) writes "CODE",
+    // "DATA", "BSS". Accepting only one spelling silently resolves nothing for
+    // the other, which is exactly what happened the first time a linked build
+    // was tried.
     const QString name = section.toLower();
-    if (name == QLatin1String("text"))
+    if (name == QLatin1String("text") || name == QLatin1String("code"))
         return bases.text;
     if (name == QLatin1String("data"))
         return bases.data;
@@ -154,6 +162,39 @@ bool LineMap::addressFor(const QString &file, int line, const SectionBases &base
         return true;
     }
     return false;
+}
+
+bool LineMap::lineForSectionOffset(const QString &section, quint32 offset, Address *result) const
+{
+    const QString wanted = section.toLower();
+    const Entry *best = nullptr;
+    quint32 bestOffset = 0;
+
+    for (const Entry &e : m_entries) {
+        if (e.section.toLower() != wanted)
+            continue;
+        if (e.offset > offset)
+            continue;
+        if (!best || e.offset > bestOffset) {
+            best = &e;
+            bestOffset = e.offset;
+        }
+    }
+
+    if (!best)
+        return false;
+
+    // Bounded the same way as lineFor: the section extent limits the last entry,
+    // so an offset past it belongs to no line rather than to the final one.
+    const quint32 spanEnd = m_sectionEnds.value(best->section, 0);
+    if (spanEnd != 0 && offset >= spanEnd)
+        return false;
+
+    if (result) {
+        result->file = best->file;
+        result->line = best->line;
+    }
+    return true;
 }
 
 bool LineMap::lineFor(quint32 address, const SectionBases &bases, Address *result) const

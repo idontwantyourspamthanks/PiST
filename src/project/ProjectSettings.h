@@ -22,8 +22,14 @@ struct ProjectSettings
 {
     // --- build -----------------------------------------------------------
 
-    /// The assembly source being built.
+    /// The assembly source being built. With additional sources present this is
+    /// the entry module, and must be listed first: TOS begins executing at the
+    /// start of text, so its code has to come first in the link.
     QString sourceFile;
+
+    /// Further sources to assemble and link with the primary one. Each is
+    /// assembled separately, which is what makes multi-file projects possible.
+    QStringList additionalSources;
 
     /// `-I` search paths, in order.
     QStringList includePaths;
@@ -41,6 +47,7 @@ struct ProjectSettings
     /// "discover it", which searches beside the app, the per-user tools
     /// directory, and PATH (src/toolchain/Toolchain.h).
     QString assemblerPath;
+    QString linkerPath;
     QString hatariPath;
 
     // --- emulator --------------------------------------------------------

@@ -92,7 +92,7 @@ static QString writeListing(QTemporaryDir &dir)
         return {}; // empty path: the caller's parse will fail visibly
     QTextStream out(&f);
     out << "Sections:\n"
-           "00: \"text\" (0-C)\n"
+           "00: \"text\" (0-E)\n"
            "01: \"data\" (0-4)\n"
            "02: \"bss\" (0-10)\n"
            "\n\n"
@@ -215,7 +215,7 @@ void TstParsers::lineMapMatchesAbsoluteListingPaths()
     QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
     QTextStream out(&f);
     out << "Sections:\n"
-           "00: \"text\" (0-C)\n"
+           "00: \"text\" (0-E)\n"
            "\n"
            "Source: \"" << dir.filePath(QStringLiteral("prog.s")) << "\"\n"
            "00:0000000C 60FE            \t     6: loop:\tbra.s\tloop\n";

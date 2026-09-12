@@ -44,6 +44,8 @@ private slots:
     void browseEmulator();
     void browseFloppyA();
     void browseFloppyB();
+    void addSource();
+    void removeSource();
     void addIncludePath();
     void removeIncludePath();
     void addDefine();
@@ -66,6 +68,7 @@ private:
     QLineEdit *m_hardDisk = nullptr;
     QLineEdit *m_floppyA = nullptr;
     QLineEdit *m_floppyB = nullptr;
+    QListWidget *m_sources = nullptr;
     QListWidget *m_includePaths = nullptr;
     QListWidget *m_defines = nullptr;
     QPlainTextEdit *m_extraBuildArgs = nullptr;

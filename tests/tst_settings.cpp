@@ -58,6 +58,8 @@ void TstSettings::roundTripsEverything()
     original.defines = {QStringLiteral("DEBUG"), QStringLiteral("VERSION=2")};
     original.cpu = QStringLiteral("68020");
     original.extraBuildArgs = {QStringLiteral("-align"), QStringLiteral("-spaces")};
+    original.additionalSources = {QStringLiteral("/p/utils.s"), QStringLiteral("/p/data.s")};
+    original.linkerPath = QStringLiteral("/usr/local/bin/vlink");
     original.machine = Machine::Ste;
     original.monitor = QStringLiteral("rgb");
     original.memSizeMiB = 4;
@@ -76,6 +78,8 @@ void TstSettings::roundTripsEverything()
     QCOMPARE(loaded.defines, original.defines);
     QCOMPARE(loaded.cpu, original.cpu);
     QCOMPARE(loaded.extraBuildArgs, original.extraBuildArgs);
+    QCOMPARE(loaded.additionalSources, original.additionalSources);
+    QCOMPARE(loaded.linkerPath, original.linkerPath);
     QCOMPARE(loaded.machine, original.machine);
     QCOMPARE(loaded.monitor, original.monitor);
     QCOMPARE(loaded.memSizeMiB, original.memSizeMiB);

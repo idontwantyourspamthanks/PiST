@@ -83,6 +83,35 @@ void SettingsDialog::buildUi()
                      QStringLiteral("68040"), QStringLiteral("68060")});
     buildLayout->addRow(tr("CPU:"), m_cpu);
 
+    // Additional sources. More than one switches the build to separate
+    // compilation, so the note explains the ordering rule that TOS imposes.
+    m_sources = new QListWidget(buildTab);
+    m_sources->setSelectionMode(QAbstractItemView::SingleSelection);
+    auto *srcButtons = new QHBoxLayout;
+    auto *addSrc = new QPushButton(tr("Add file…"), buildTab);
+    auto *removeSrc = new QPushButton(tr("Remove"), buildTab);
+    srcButtons->addWidget(addSrc);
+    srcButtons->addWidget(removeSrc);
+    srcButtons->addStretch(1);
+    connect(addSrc, &QPushButton::clicked, this, &SettingsDialog::addSource);
+    connect(removeSrc, &QPushButton::clicked, this, &SettingsDialog::removeSource);
+
+    auto *srcBox = new QWidget(buildTab);
+    auto *srcLayout = new QVBoxLayout(srcBox);
+    srcLayout->setContentsMargins(0, 0, 0, 0);
+    srcLayout->addWidget(m_sources);
+    srcLayout->addLayout(srcButtons);
+    auto *srcNote = new QLabel(
+        tr("Linked into the program after the file being edited, which is the entry "
+           "module — TOS starts executing at the beginning of text, so that must come "
+           "first. Adding any file here switches the build to separate compilation "
+           "and needs vlink."),
+        buildTab);
+    srcNote->setWordWrap(true);
+    srcNote->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    srcLayout->addWidget(srcNote);
+    buildLayout->addRow(tr("Additional sources:"), srcBox);
+
     // Include paths
     m_includePaths = new QListWidget(buildTab);
     m_includePaths->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -236,6 +265,8 @@ void SettingsDialog::loadValues(const ProjectSettings &settings)
     if (cpuIndex >= 0)
         m_cpu->setCurrentIndex(cpuIndex);
 
+    for (const QString &path : settings.additionalSources)
+        m_sources->addItem(path);
     for (const QString &path : settings.includePaths)
         m_includePaths->addItem(path);
     for (const QString &define : settings.defines)
@@ -390,6 +421,29 @@ void SettingsDialog::browseFloppyB()
         m_floppyB->setText(path);
 }
 
+void SettingsDialog::addSource()
+{
+    const QStringList paths = QFileDialog::getOpenFileNames(
+        this, tr("Add assembly sources"), QString(),
+        tr("Assembly sources (*.s *.S *.asm *.x68);;All files (*)"));
+    for (const QString &path : paths) {
+        // A duplicate would be assembled twice and then clash at link time on
+        // its own global symbols.
+        bool already = false;
+        for (int i = 0; i < m_sources->count(); ++i) {
+            if (m_sources->item(i)->text() == path)
+                already = true;
+        }
+        if (!already)
+            m_sources->addItem(path);
+    }
+}
+
+void SettingsDialog::removeSource()
+{
+    delete m_sources->takeItem(m_sources->currentRow());
+}
+
 void SettingsDialog::addIncludePath()
 {
     const QString dir = QFileDialog::getExistingDirectory(this, tr("Add include path"));
@@ -425,6 +479,10 @@ ProjectSettings SettingsDialog::settings() const
     s.assemblerPath = m_assemblerPath->text().trimmed();
     s.hatariPath = m_emulatorPath->text().trimmed();
     s.cpu = m_cpu->currentText();
+
+    s.additionalSources.clear();
+    for (int i = 0; i < m_sources->count(); ++i)
+        s.additionalSources.append(m_sources->item(i)->text());
 
     s.includePaths.clear();
     for (int i = 0; i < m_includePaths->count(); ++i)

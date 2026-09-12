@@ -293,6 +293,46 @@ error 10 in line 2 of "bad.s": number or identifier expected
 - No column data exists; map by line only, and refine using the listing's per-line byte offsets.
 - Output file is deleted on error; the build service must not assume a stale `.PRG` exists.
 
+### 4.3 Separate compilation (vlink)
+
+Multi-file projects are assembled one module at a time and linked, because
+`vasm -Ftos` can only produce a program from a single file:
+
+```
+vasmm68k_mot -quiet -Fvobj -I<dirs> -L <mod>.lst -o <mod>.o <mod>.s     # per module
+vlink -b ataritos -M<prog>.map -o <prog>.prg <mod>.o ...                 # then link
+```
+
+The **entry module must be listed first**: TOS begins executing at the start of
+text, so the module containing the entry point has to come first in the link.
+
+Verified end to end: the linked `.PRG` carries a DRI/GST symbol table that
+`gst2ascii` and Hatari's `symbols prg` both read, so breakpoints and disassembly
+labels keep working across modules with no new debug plumbing.
+
+Two consequences for the line map, both of which broke the single-module
+assumption (§4.2):
+
+- **Each module restarts its offsets at zero.** One listing's offsets can no
+  longer be added to a single live base; every module needs its own.
+- **The linker's map supplies those bases.** `vlink -M` reports each module's
+  address range within the merged output section, and `-lineoffsets` is *not* an
+  alternative — vobj and DRI objects carry no line data, so it comes out empty.
+
+So `ProgramLineMap` composes one `LineMap` per module and derives each module's
+base from the live section address plus its map offset. A single-file build needs
+no linker and no map, and is the same code path with one module at offset zero.
+
+Two further facts that only appear once linking is attempted:
+
+- **The section name depends on the output format.** `-Ftos` writes `"text"`,
+  `"data"`, `"bss"`; `-Fvobj` writes `"CODE"`, `"DATA"`, `"BSS"`. A lookup that
+  accepts one spelling silently resolves nothing for the other.
+- **vasm's `(start-end)` is exclusive**: a 0xC-byte section reads `(0-C)` and its
+  last byte is at 0xB. Treating it as inclusive makes every span a byte too long,
+  so a section can claim an address belonging to the next one — which is how two
+  modules in a linked program both matched the same PC.
+
 ### 4.2 Line mapping (PC ↔ source line)
 
 Derived from the `-L` listing, **not** from DWARF. The listing contains, for each source line:

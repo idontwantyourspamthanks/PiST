@@ -30,7 +30,7 @@ QString writeListing(QTemporaryDir &dir)
         return {};
     QTextStream out(&f);
     out << "Sections:\n"
-           "00: \"text\" (0-C)\n"
+           "00: \"text\" (0-E)\n"
            "01: \"data\" (0-4)\n"
            "\n"
            "Source: \"prog.s\"\n"
@@ -88,13 +88,16 @@ private slots:
 void TstDebug::resolvesLineToAddress()
 {
     QTemporaryDir dir;
-    LineMap map;
-    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
 
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QStringLiteral("prog.s"), 6, QString(), true, 0, false}); // loop:
 
-    const ArmPlan plan = planBreakpoints(bps, map, liveBases());
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 1);
     QCOMPARE(plan.armed.size(), 1);
     QCOMPARE(plan.armed.first().address, 0x12596u + 0x0Cu);
@@ -106,13 +109,16 @@ void TstDebug::resolvesLineToAddress()
 void TstDebug::emitsConditionExpressionNotBareAddress()
 {
     QTemporaryDir dir;
-    LineMap map;
-    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
 
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QStringLiteral("prog.s"), 4, QString(), true, 0, false});
 
-    const ArmPlan plan = planBreakpoints(bps, map, liveBases());
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 1);
     const QString cmd = plan.commands.first();
     QVERIFY2(cmd.startsWith(QLatin1String("b pc = $")), qPrintable(cmd));
@@ -124,13 +130,16 @@ void TstDebug::emitsConditionExpressionNotBareAddress()
 void TstDebug::appendsUserCondition()
 {
     QTemporaryDir dir;
-    LineMap map;
-    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
 
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QStringLiteral("prog.s"), 4, QStringLiteral("d0 = $1234"), true, 0, false});
 
-    const ArmPlan plan = planBreakpoints(bps, map, liveBases());
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 1);
     const QString cmd = plan.commands.first();
     QVERIFY(cmd.contains(QLatin1String("&& d0 = $1234")));
@@ -140,14 +149,17 @@ void TstDebug::appendsUserCondition()
 void TstDebug::reportsLinesWithNoCode()
 {
     QTemporaryDir dir;
-    LineMap map;
-    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
 
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QStringLiteral("prog.s"), 1, QString(), true, 0, false}); // `text`
     bps.append(Breakpoint{QStringLiteral("prog.s"), 7, QString(), true, 0, false}); // `even`
 
-    const ArmPlan plan = planBreakpoints(bps, map, liveBases());
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 0);
     QCOMPARE(plan.unresolved.size(), 2);
 }
@@ -155,13 +167,16 @@ void TstDebug::reportsLinesWithNoCode()
 void TstDebug::skipsDisabledBreakpoints()
 {
     QTemporaryDir dir;
-    LineMap map;
-    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
 
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QStringLiteral("prog.s"), 6, QString(), false, 0, false});
 
-    const ArmPlan plan = planBreakpoints(bps, map, liveBases());
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 0);
     // Disabled is not the same as unresolvable, so it must not be reported as
     // a problem either.
@@ -174,14 +189,16 @@ void TstDebug::skipsDisabledBreakpoints()
 void TstDebug::refusesToResolveWithoutBases()
 {
     QTemporaryDir dir;
-    LineMap map;
-    QVERIFY(map.parseListing(writeListing(dir), nullptr));
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    // No live bases: nothing is resolved yet, so nothing may be armed.
 
     QList<Breakpoint> bps;
     bps.append(Breakpoint{QStringLiteral("prog.s"), 6, QString(), true, 0, false});
 
-    LineMap::SectionBases empty;
-    const ArmPlan plan = planBreakpoints(bps, map, empty);
+    const ArmPlan plan = planBreakpoints(bps, map);
     QCOMPARE(plan.commands.size(), 0);
 }
 

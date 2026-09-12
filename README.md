@@ -1,5 +1,9 @@
 # PiST
 
+[![CI](https://github.com/idontwantyourspamthanks/PiST/actions/workflows/ci.yml/badge.svg)](https://github.com/idontwantyourspamthanks/PiST/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/idontwantyourspamthanks/PiST)](https://github.com/idontwantyourspamthanks/PiST/releases)
+[![Licence: GPL-2.0-or-later](https://img.shields.io/badge/licence-GPL--2.0--or--later-blue)](LICENSE)
+
 **An IDE for Atari ST assembly development.**
 
 *Program in ST* — an IDE for writing 68000 assembly for the Atari ST.
@@ -212,6 +216,19 @@ is starved whenever the debugger is stopped anyway, so it was never carrying the
 Removing that gap is a small, well-understood upstream patch. It is written up, with the proposed
 approach, in **[docs/FUTURE.md](docs/FUTURE.md)**.
 
+## Linker
+
+Multi-file projects are assembled separately and linked with **vlink**, from the
+same author as vasm and under the same licence terms (unmodified redistribution,
+non-commercial use). Release archives do not include it — a source build needs it
+installed separately if you use more than one source file:
+
+```
+http://sun.hasenbraten.de/vlink/
+```
+
+It builds with plain `make`. A single-file project needs no linker at all.
+
 ## Emulator embedding
 
 `PiST` embeds the emulator window where the platform allows it: X11, Windows and macOS all support
@@ -262,9 +279,8 @@ Stated plainly, because an early release should not imply more than it does:
   work. See [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix.
 - **No installers** — releases are tarballs and zips, not deb/RPM/MSI/dmg.
 - **Hatari is not bundled**, so the emulator must be installed separately.
-- Single-file in practice: multi-file projects work through include paths, but
-  there is no linker step, so `vlink` and separate compilation are not yet
-  supported.
+- Multi-file projects are supported through the linker (add sources in Project
+  Settings; needs `vlink`, which is not bundled with the source build).
 - The interface is functional rather than polished.
 
 ## Documentation

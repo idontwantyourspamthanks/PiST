@@ -41,6 +41,10 @@ qt_add_executable(pist
     src/debug/Breakpoint.h
     src/build/LineMap.cpp
     src/build/LineMap.h
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
 
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
@@ -129,6 +133,10 @@ qt_add_executable(tst_parsers
     tests/tst_parsers.cpp
     src/build/LineMap.cpp
     src/build/LineMap.h
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
     src/build/Diagnostic.h
 
     src/debug/Breakpoint.cpp
@@ -160,6 +168,10 @@ add_test(NAME tosrom COMMAND tst_tosrom)
 # Breakpoint resolution and memory-dump parsing: pure functions, no emulator.
 qt_add_executable(tst_debug
     tests/tst_debug.cpp
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
     src/emu/Paths.cpp
@@ -172,6 +184,10 @@ qt_add_executable(tst_debug
     src/debug/Breakpoint.h
     src/build/LineMap.cpp
     src/build/LineMap.h
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
     src/build/Diagnostic.h
     src/emu/MemoryDump.cpp
     src/emu/MemoryDump.h
@@ -179,6 +195,23 @@ qt_add_executable(tst_debug
 target_include_directories(tst_debug PRIVATE src)
 target_link_libraries(tst_debug PRIVATE Qt6::Test)
 add_test(NAME debug COMMAND tst_debug)
+
+# Multi-module source mapping through a linker's map file. The end-to-end case
+# runs a real vasm+vlink when both are available and skips otherwise, so CI
+# without vlink still exercises the parsing and the address arithmetic.
+qt_add_executable(tst_link
+    tests/tst_link.cpp
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
+    src/build/LineMap.cpp
+    src/build/LineMap.h
+    src/build/Diagnostic.h
+)
+target_include_directories(tst_link PRIVATE src)
+target_link_libraries(tst_link PRIVATE Qt6::Test)
+add_test(NAME link COMMAND tst_link)
 
 # Project settings persistence.
 qt_add_executable(tst_settings
@@ -235,6 +268,10 @@ qt_add_executable(tst_gui
     src/build/Diagnostic.h
     src/build/LineMap.cpp
     src/build/LineMap.h
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
     src/emu/EmulatorHost.cpp
@@ -272,6 +309,10 @@ qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
     src/build/LineMap.cpp
     src/build/LineMap.h
+    src/build/LinkMap.cpp
+    src/build/LinkMap.h
+    src/build/ProgramLineMap.cpp
+    src/build/ProgramLineMap.h
     src/build/Diagnostic.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
@@ -303,7 +344,7 @@ set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 # Test binaries must be console applications on Windows. qt_add_executable marks
 # them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
 # nothing at all, making a red run on Windows undiagnosable.
-foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost)
+foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

@@ -67,6 +67,12 @@ public:
     /// outside every known section.
     bool lineFor(quint32 address, const SectionBases &bases, Address *result) const;
 
+    /// Nearest source line at or before `offset` within `section` ("text", "code",
+    /// ...). Used to place a linker diagnostic, which names a module and a section
+    /// offset rather than an address — the linked addresses are not known until
+    /// the program runs, but offsets within a module are known immediately.
+    bool lineForSectionOffset(const QString &section, quint32 offset, Address *result) const;
+
     /// Section base for a listing section name ("text", "data", "bss").
     static quint32 baseForSection(const QString &section, const SectionBases &bases);
 

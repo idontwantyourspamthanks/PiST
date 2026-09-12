@@ -7,8 +7,7 @@
 namespace pist {
 
 ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
-                        const LineMap &lineMap,
-                        const LineMap::SectionBases &bases)
+                        const ProgramLineMap &lineMap)
 {
     ArmPlan plan;
 
@@ -21,7 +20,7 @@ ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
         }
 
         quint32 address = 0;
-        if (!lineMap.addressFor(bp.file, bp.line, bases, &address)) {
+        if (!lineMap.addressFor(bp.file, bp.line, &address)) {
             // The line produced no code or data, which is normal for a comment,
             // a blank line, or a directive that emits nothing.
             plan.unresolved.append(bp.label());

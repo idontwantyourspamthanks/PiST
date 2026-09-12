@@ -649,6 +649,24 @@ void MainWindow::build()
     m_build->setSourceFile(info.absoluteFilePath());
     m_build->setOutputFile(outPath);
     m_build->setListingFile(listPath);
+    m_build->setAdditionalSources(m_settings.additionalSources);
+
+    // A multi-module build needs a linker and a placement map. Reported up front
+    // rather than letting the link fail with a less useful message.
+    const bool linking = !m_settings.additionalSources.isEmpty();
+    if (linking) {
+        const ToolInfo linker = toolchain::findLinker(m_settings.linkerPath);
+        if (!linker.found()) {
+            QMessageBox::critical(this, tr("Linker not found"),
+                                  toolchain::linkerInstallHint());
+            return;
+        }
+        m_build->setLinkerPath(linker.path);
+        m_build->setLinkMapFile(info.absolutePath() + QDir::separator()
+                                + info.completeBaseName() + QStringLiteral(".map"));
+    } else {
+        m_build->setLinkMapFile(QString());
+    }
 
     // Everything else comes from the project settings. Before this existed the
     // include/define/cpu setters were never called, so a multi-file project
@@ -664,41 +682,47 @@ void MainWindow::build()
 void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnostics)
 {
     QString error;
-    if (success && m_lineMap.parseListing(m_build->listingFile(), &error)) {
-        // This counts source *files* contributing to the listing, not lines. The
-        // two differ by orders of magnitude for a real project, so naming it
-        // correctly matters (a multi-file build reports 2, not the 2000+ lines).
-        const int files = m_lineMap.sourceFiles().size();
-        statusBar()->showMessage(
-            files == 1 ? tr("Build succeeded — 1 source file mapped")
-                       : tr("Build succeeded — %1 source files mapped").arg(files),
-            5000);
-    } else if (!error.isEmpty()) {
-        // Breakpoints and the PC highlight both depend on this map. Failing
-        // silently left every visible signal green while neither worked.
-        m_log->appendPlainText(QStringLiteral("[line map] ") + error);
-        auto *item = new QTreeWidgetItem(m_problems);
-        item->setText(0, tr("(build)"));
-        item->setText(2, tr("Could not read the listing, so source-line breakpoints and "
-                            "the execution highlight will not work: %1").arg(error));
-        item->setForeground(2, QColor(0xc0, 0x20, 0x20));
-        m_bottomTabs->setCurrentWidget(m_problems);
-    }
+    if (success)
+        rebuildProgramMap();
+
+    const int files = m_programMap.sourceFiles().size();
+    if (success && !m_programMap.isEmpty())
+        statusBar()->showMessage(files == 1
+                                     ? tr("Build succeeded — 1 source file mapped")
+                                     : tr("Build succeeded — %1 source files mapped")
+                                           .arg(files),
+                                 5000);
+    else if (success)
+        statusBar()->showMessage(tr("Build succeeded"), 5000);
 
     QList<int> errorLines;
     for (const Diagnostic &d : diagnostics) {
+        // A linker diagnostic names a module and a section offset rather than a
+        // line. Turning it into a line here is what makes "undefined symbol" point
+        // at the offending source, rather than at an object file name.
+        QString file = d.file;
+        int line = d.line;
+        if (d.hasObjectOffset) {
+            LineMap::Address resolved;
+            if (m_programMap.lineForObjectOffset(d.objectFile, d.section,
+                                                 d.sectionOffset, &resolved)) {
+                file = QFileInfo(resolved.file).fileName();
+                line = resolved.line;
+            } else {
+                file = d.objectFile;
+            }
+        }
+
         auto *item = new QTreeWidgetItem(m_problems);
-        item->setText(0, d.file.isEmpty() ? tr("(build)") : d.file);
-        item->setText(1, d.line > 0 ? QString::number(d.line) : QString());
+        item->setText(0, file.isEmpty() ? tr("(build)") : file);
+        item->setText(1, line > 0 ? QString::number(line) : QString());
         item->setText(2, d.message);
         if (d.severity == Diagnostic::Error)
             item->setForeground(2, QColor(0xc0, 0x20, 0x20));
 
         // Only diagnostics belonging to the open file can be marked in its gutter.
-        if (d.hasLocation() && d.line > 0
-            && d.file == QFileInfo(m_editor->filePath()).fileName()) {
-            errorLines.append(d.line);
-        }
+        if (line > 0 && LineMap::sameSource(file, m_editor->filePath()))
+            errorLines.append(line);
     }
     m_editor->setErrorLines(errorLines);
 
@@ -971,9 +995,54 @@ void MainWindow::onDebuggerStopped()
     });
 }
 
+void MainWindow::rebuildProgramMap()
+{
+    m_programMap.clear();
+
+    const QStringList listings = m_build->listingFiles();
+    const QStringList objects = m_build->objectFiles();
+    QFileInfo sourceInfo(m_editor->filePath());
+
+    QStringList sources{sourceInfo.absoluteFilePath()};
+    sources += m_settings.additionalSources;
+
+    QString error;
+    for (int i = 0; i < listings.size() && i < sources.size(); ++i) {
+        // A module whose listing cannot be read is reported and skipped rather
+        // than abandoning the whole map: the program still built and runs, only
+        // that module's source lines are unavailable.
+        if (!m_programMap.addModule(sources.at(i), objects.value(i), listings.at(i), &error)) {
+            m_log->appendPlainText(QStringLiteral("[line map] ") + error);
+        }
+    }
+
+    if (m_build->usesLinker()) {
+        LinkMap linkMap;
+        if (linkMap.parse(m_build->linkMapFile(), &error)) {
+            m_programMap.setLinkMap(linkMap);
+        } else {
+            // Without the map, modules past the first cannot be located, so
+            // breakpoints in them would be armed at the wrong address. Say so
+            // instead of mapping them wrongly.
+            m_log->appendPlainText(QStringLiteral("[link map] ") + error);
+            auto *item = new QTreeWidgetItem(m_problems);
+            item->setText(0, tr("(build)"));
+            item->setText(2, tr("Could not read the link map, so only the first module "
+                                "can be mapped to source: %1").arg(error));
+            item->setForeground(2, QColor(0xc0, 0x20, 0x20));
+        }
+    }
+
+    const QStringList unplaced = m_programMap.unplacedModules();
+    if (!unplaced.isEmpty()) {
+        m_log->appendPlainText(
+            tr("[link map] no placement for: %1").arg(unplaced.join(QLatin1String(", "))));
+    }
+}
+
 void MainWindow::armBreakpoints()
 {
-    const ArmPlan plan = planBreakpoints(m_breakpoints, m_lineMap, m_bases);
+    const ArmPlan plan = planBreakpoints(m_breakpoints, m_programMap);
 
     // Clear before arming. A rebuilt program can occupy different addresses, so
     // leaving old breakpoints in place would silently break on whatever code now
@@ -1161,13 +1230,13 @@ void MainWindow::onStateUpdated(const MachineState &state)
 
 void MainWindow::locationFromPc(quint32 pc)
 {
-    if (!m_bases.isValid() || m_lineMap.isEmpty()) {
+    if (!m_bases.isValid() || m_programMap.isEmpty()) {
         m_editor->clearCurrentExecutionLine();
         return;
     }
 
     LineMap::Address address;
-    if (!m_lineMap.lineFor(pc, m_bases, &address)) {
+    if (!m_programMap.lineFor(pc, &address)) {
         m_editor->clearCurrentExecutionLine();
         return;
     }

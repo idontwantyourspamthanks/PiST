@@ -7,6 +7,7 @@
 #include "build/Diagnostic.h"
 #include "debug/Breakpoint.h"
 #include "build/LineMap.h"
+#include "build/ProgramLineMap.h"
 #include "emu/HatariProbe.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
@@ -98,6 +99,10 @@ private:
     void onDebuggerStopped();
     void armBreakpoints();
 
+    /// Rebuild the program's source mapping from the listings this build
+    /// produced, and load the linker's placement map when there was a link.
+    void rebuildProgramMap();
+
     /// Fold the addresses the ArmPlan resolved back into the stored breakpoint
     /// list, so the panel shows where each one actually landed.
     QList<Breakpoint> mergeResolved(const ArmPlan &plan) const;
@@ -124,7 +129,9 @@ private:
     QLabel *m_statusToolchain = nullptr;
     QLabel *m_statusEmulator = nullptr;
 
-    LineMap m_lineMap;
+    /// Source mapping for the whole program. Replaces a single LineMap because a
+    /// linked program has one listing per module, each needing its own base.
+    ProgramLineMap m_programMap;
     LineMap::SectionBases m_bases;
 
     /// Breakpoints are stored per file:line, never per address: the program is

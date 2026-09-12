@@ -77,28 +77,59 @@ jobs:
           cp vasm/vasmm68k_mot "$HOME/.local/bin/"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Install the emulator
+      # Build the Hatari we actually support, rather than taking whatever the
+      # distribution ships. Ubuntu 24.04 packages 2.4.1 and 22.04 ships 2.3.1,
+      # while this project is developed and verified against 2.6.1 — and the
+      # difference is not cosmetic: running the suite against 2.4.1 produced
+      # truncated debugger responses and four failures that do not reproduce on
+      # 2.6.1 at all. Testing a version nobody will use is worse than useless,
+      # because the failures are noise and the passes are meaningless.
+      #
+      # This is also the build we intend to bundle in release archives, so the
+      # path is worth having proven. Pinned by checksum: an upstream change should
+      # fail loudly rather than quietly alter what is tested.
+      - name: Build Hatari
         if: matrix.emulator
         shell: bash
         run: |
           set -euo pipefail
+          HATARI_URL=https://github.com/hatari/hatari/archive/refs/tags/v2.6.1.tar.gz
+          HATARI_SHA256=75f09c8deddb511b8c1574b84c507743097db9abc6edbb078f942efa8677547e
+          curl -fsSL -o hatari.tar.gz "$HATARI_URL"
+          echo "$HATARI_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$HATARI_SHA256  hatari.tar.gz" | sha256sum -c -
+          tar xzf hatari.tar.gz
+
           if [ "${{ runner.os }}" = "Linux" ]; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq hatari xvfb
+            # libreadline-dev matters: with it, Hatari's debugger reads commands
+            # through readline and prints its prompt to stdout. Without it, the
+            # build falls back to fgets and prints the prompt to stderr, which is
+            # a different transport path entirely — so the dependency is part of
+            # what is being tested, not an incidental.
+            sudo apt-get install -y -qq libsdl2-dev libpng-dev zlib1g-dev libreadline-dev
           else
-            brew install hatari
+            brew install sdl2 libpng
           fi
-          # `hatari --version | head -1` fails the step under `set -o pipefail`:
-          # Hatari prints several lines, head exits after one, and the resulting
-          # SIGPIPE makes Hatari's exit status non-zero. Check presence with
-          # command -v, which is what actually matters, and print the version
-          # without a pipe that can be cut short.
-          command -v hatari
-          hatari --version 2>&1 | sed -n '1p' || true
+
+          cmake -S hatari-2.6.1 -B hatari-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build hatari-build --parallel
+
+          mkdir -p "$HOME/.local/bin"
+          find hatari-build -name hatari -type f -executable -exec cp {} "$HOME/.local/bin/hatari" \;
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # A free ROM so the emulator suites have something to boot. Pinned by
       # checksum for the same reason vasm is: an upstream change should fail
       # loudly rather than silently altering what is tested.
+      - name: Verify the emulator build
+        if: matrix.emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v hatari
+          hatari --version 2>&1 | sed -n '1p' || true
+
       - name: Fetch a ROM
         if: matrix.emulator
         shell: bash

@@ -80,6 +80,20 @@ TOS ROMs         /usr/share/hatari/TOS*.img   supplied by the distro package
 | CLI equivalent | *none* | `--symload <mode>` |
 | `bt` / backtrace | absent | present |
 | `echo` in a `--parse` file | **aborts the emulator** — `assert(s2 < s1)` at `str.c:240` | fixed: `assert(s2 <= s1)` at `str.c:256` |
+| Debugger transport | works | **truncated responses, four suite failures** — see below |
+
+**The suite does not work against Hatari 2.4.1**, which is what Ubuntu 24.04
+packages. Register dumps come back as a single line with the `SR=` line missing,
+so registers never become valid and every test that reads them fails. Ubuntu
+22.04 ships 2.3.1, so no distribution package is a supported version: CI builds
+**2.6.1 from a pinned source tarball** and tests that. This is the same
+conclusion the release packaging reached for vasm, and the same one that argues
+for bundling Hatari rather than relying on the user's copy.
+
+`libreadline-dev` is part of the tested configuration, not an incidental: with it
+Hatari's debugger prints its prompt to stdout, without it the build falls back to
+`fgets` and prints to stderr. Those are different transport paths, so the
+dependency changes what is under test.
 
 The `echo` abort is triggered by any argument containing no backslash escape, because
 `DebugUI_Echo` calls `Str_UnEscape` on every argument. **Never put `echo` in a bootstrap script.**

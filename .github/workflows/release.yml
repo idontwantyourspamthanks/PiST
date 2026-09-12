@@ -308,13 +308,20 @@ jobs:
             echo "ERROR: no emulator inside the AppImage"
             exit 1
           fi
+          # Asserted on the output rather than the exit status, because Hatari
+          # exits 1 from --version while printing a perfectly good banner (it
+          # reports the version and then fails its own "no ROM specified" path).
+          # An emulator that cannot load its libraries produces a dynamic-linker
+          # error and no banner at all, so the banner is the signal that matters;
+          # `&& exit 1` here would have failed a working build.
           echo "--- bundled hatari --version ---"
-          if ! verify-appimage/squashfs-root/usr/bin/hatari --version > hatari-version.txt 2>&1; then
+          verify-appimage/squashfs-root/usr/bin/hatari --version > hatari-version.txt 2>&1 || true
+          sed -n '1,3p' hatari-version.txt
+          if ! grep -qE 'Hatari v[0-9]+\.[0-9]+' hatari-version.txt; then
             echo "ERROR: the bundled emulator does not start. Output was:"
             cat hatari-version.txt
             exit 1
           fi
-          sed -n '1,3p' hatari-version.txt
 
           # The libraries linuxdeploy must be bundling, because a desktop without
           # them exists. SDL2 in particular is not universally installed, whereas

@@ -102,14 +102,24 @@ jobs:
           # assertion that failed. Without this a red run is undiagnosable.
           echo
           echo "### direct test runs (ctest output was empty)"
+          # -perm is not meaningful for Git-bash `find` on Windows, so match by
+          # name and filter out anything that is not a runnable file.
+          found=0
           while IFS= read -r exe; do
+            [ -f "$exe" ] || continue
             case "$exe" in
-              *.o|*.obj|*.pdb|*.ilk) continue ;;
+              *.o|*.obj|*.pdb|*.ilk|*.cmake|*autogen*|*.tlog|*.log) continue ;;
             esac
+            found=1
             echo
             echo "--- $exe ---"
             "$exe" 2>&1 | tail -40 || true
-          done < <(find build -type f -name 'tst_*' -perm -u+x | sort)
+          done < <(find build -type f \( -name 'tst_*' -o -name 'tst_*.exe' \) | sort)
+
+          if [ "$found" = 0 ]; then
+            echo "### no test binaries matched; build tree:"
+            find build -maxdepth 2 -name 'tst_*' | head -20
+          fi
           exit 1
 
       - name: Report test summary

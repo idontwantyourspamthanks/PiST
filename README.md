@@ -8,9 +8,14 @@ Write 68000 assembly, assemble it, run it in an emulator, and debug it — witho
 editor. `PiST` bundles the pieces that are otherwise scattered across a text editor, a build
 script, a terminal, a debugger and an emulator, and presents them as one tool.
 
-> **Status: early.** Phase 0 (the spike) is complete and working end to end. The IDE is usable for
-> assembling, running and debugging a single-file program, but most of the interface described
-> below does not exist yet. See [docs/PLAN.md](docs/PLAN.md) for the full design and roadmap.
+> **Status: early, and usable.** The full loop works — write, assemble, run under Hatari, and
+> debug with breakpoints, stepping, registers, memory and disassembly, with the editor following
+> the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
+> RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
+>
+> What is missing is breadth rather than core function: no installers, no emulator bundled, and
+> the emulator integration itself has only been exercised on Linux — see
+> [Known limitations](#known-limitations). [docs/PLAN.md](docs/PLAN.md) has the full design.
 
 ---
 
@@ -241,6 +246,26 @@ Bundled or invoked third-party components keep their own licences. In particular
 free software (it permits unmodified, non-commercial redistribution, which is why the IDE never
 patches it), and Qt is used under the LGPL. See [docs/PLAN.md](docs/PLAN.md) §7 for the full
 breakdown and the obligations that follow.
+
+## Known limitations
+
+Stated plainly, because an early release should not imply more than it does:
+
+- **The emulator integration has only been exercised on Linux.** CI builds and
+  tests on Windows and macOS, and the path handling, tool discovery and install
+  steps are verified there — but the runners have no Hatari, so assembling *and
+  debugging* on those platforms is untested. Bug reports from real Windows or
+  macOS machines are genuinely useful right now.
+- **Pause, changing breakpoints while running, and swapping disks at runtime do
+  not work on Windows.** Hatari compiles its control channel only on POSIX
+  systems. Breaking at entry, on exceptions, and at source-line breakpoints all
+  work. See [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix.
+- **No installers** — releases are tarballs and zips, not deb/RPM/MSI/dmg.
+- **Hatari is not bundled**, so the emulator must be installed separately.
+- Single-file in practice: multi-file projects work through include paths, but
+  there is no linker step, so `vlink` and separate compilation are not yet
+  supported.
+- The interface is functional rather than polished.
 
 ## Documentation
 

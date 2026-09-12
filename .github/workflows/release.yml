@@ -327,3 +327,30 @@ jobs:
 
             A working emulator (Hatari) is **not** included; install it with your
             package manager, or point PiST at one in Project Settings.
+
+            ### What works
+
+            Write, assemble, run and debug: source-line and conditional
+            breakpoints, stepping, step-over, registers, a memory viewer, and
+            labelled disassembly, with the editor following the program counter.
+            Projects keep their settings — include paths, defines, target CPU,
+            machine, ROM, RAM and disk images — in a small JSON file beside the
+            source.
+
+            ### Known limitations
+
+            - **The emulator integration has only been exercised on Linux.** The
+              CI runs on all three platforms, but the runners have no Hatari, so
+              assembling and debugging on Windows and macOS is untested. Reports
+              from real machines are welcome.
+            - **On Windows**, pausing, changing breakpoints while running, and
+              swapping disks at runtime are unavailable — Hatari compiles its
+              control channel only on POSIX systems. Breakpoints and stepping
+              work regardless.
+            - **No installers**: these are tarballs and zips.
+            - **No linker step**: multi-file builds via include paths work, but
+              separate compilation and vlink are not yet supported.
+            - The interface is functional rather than polished.
+
+            Run `pist --diagnose` to see which assembler, emulator and ROMs PiST
+            can find, and the paths it searched.

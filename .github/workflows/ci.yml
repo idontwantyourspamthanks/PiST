@@ -88,7 +88,13 @@ jobs:
           else
             brew install hatari
           fi
-          hatari --version | head -1
+          # `hatari --version | head -1` fails the step under `set -o pipefail`:
+          # Hatari prints several lines, head exits after one, and the resulting
+          # SIGPIPE makes Hatari's exit status non-zero. Check presence with
+          # command -v, which is what actually matters, and print the version
+          # without a pipe that can be cut short.
+          command -v hatari
+          hatari --version 2>&1 | sed -n '1p' || true
 
       # A free ROM so the emulator suites have something to boot. Pinned by
       # checksum for the same reason vasm is: an upstream change should fail

@@ -662,6 +662,24 @@ load-bearing dependency — which the detection order above already guarantees.
 - End-to-end in `PiST`: `ctest` runs 9 parser tests, 12 ROM-identification tests, and 7
   emulator-integration tests against a real Hatari, all passing
 
+### Verified by CI (executed on real runners)
+
+- **Linux (gcc) builds and tests green** — the only platform previously exercised
+- **MSVC rejects a `class`/`struct` mismatch that Itanium-ABI platforms accept.**
+  Forward-declaring a type as `class` while defining it as `struct` mangles to a
+  different symbol under MSVC (`AEBV` vs `AEBU`), so `EmulatorHost.h`'s forward
+  declaration of `HatariCapabilities` produced an unresolved external on Windows
+  and on Windows only. Linux and macOS link it happily. Any future forward
+  declaration must match its definition's keyword.
+- **`macos-latest` currently resolves to `macos-26-arm64`**, where Apple removed
+  the AGL framework and Qt 6.8's `FindWrapOpenGL.cmake` still names it, so linking
+  fails inside Qt's own configuration. CI pins `macos-15`; testing macOS 26 needs
+  a Qt that no longer references AGL.
+- **vasm publishes no host binaries** — only Amiga-family and Atari targets. It
+  builds from the author's source in seconds with `make CPU=m68k SYNTAX=mot`
+  (verified; tarball sha256 `c84b2de1...`), and does not implement `--version`,
+  printing its banner when invoked with no arguments instead.
+
 ### Verified by reading source (not executed)
 
 - Absence of a GDB stub and memory watchpoints upstream

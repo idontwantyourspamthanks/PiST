@@ -28,8 +28,13 @@ jobs:
           - name: Linux (gcc)
             os: ubuntu-latest
             vasm: true
+          # Pinned rather than macos-latest: that currently resolves to
+          # macos-26, where Apple removed the AGL framework and Qt 6.8 still
+          # references it, so linking fails inside Qt's own CMake config. Pinning
+          # keeps a working signal; testing macOS 26 needs a Qt whose
+          # FindWrapOpenGL.cmake no longer names AGL.
           - name: macOS (clang)
-            os: macos-latest
+            os: macos-15
             vasm: true
           - name: Windows (MSVC)
             os: windows-latest

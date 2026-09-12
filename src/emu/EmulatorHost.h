@@ -21,7 +21,11 @@ class QTimer;
 
 namespace pist {
 
-class HatariCapabilities;
+// Must be `struct` here to match its definition (emu/HatariProbe.h). MSVC
+// mangles a class-typed reference differently from a struct-typed one, so a
+// mismatch produces an unresolved symbol on Windows while the Itanium ABI used
+// elsewhere links it happily.
+struct HatariCapabilities;
 
 /// Owns one Hatari process and the debug channels attached to it.
 ///

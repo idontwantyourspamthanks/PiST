@@ -63,7 +63,12 @@ public:
 
     /// Queue a debugger command. Delivered over stdin, so it works while the
     /// debugger is stopped. A `commandFinished` signal follows.
-    void command(const QString &command);
+    ///
+    /// The dump routing is per-command, not global, so a memory dump and a stack
+    /// dump queued back-to-back each reach the right listener: dumpAddress and
+    /// stackDump identify a `memdump` for routing to memoryDumpReady or
+    /// stackDumpReady rather than commandFinished alone.
+    void command(const QString &command, quint32 dumpAddress = 0, bool stackDump = false);
 
     void step();     // `s`
     void stepOver(); // `n`
@@ -88,6 +93,11 @@ public:
     /// via commandFinished; the raw text is also parsed into memoryDumpReady.
     void requestMemoryDump(quint32 address, int length);
 
+    /// Request a memory dump of the stack (at the stack pointer). Routed to
+    /// stackDumpReady instead of memoryDumpReady, so the stack view and the
+    /// memory view do not clobber each other when both refresh on a stop.
+    void requestStackDump(quint32 address, int length);
+
     /// Read all registers into the host's cached state.
     void dumpRegisters();
 
@@ -98,6 +108,9 @@ public:
 signals:
     /// A `memdump` response, with the command it answered.
     void memoryDumpReady(quint32 address, const QString &response);
+
+    /// A stack `memdump` response, routed separately from the memory view's.
+    void stackDumpReady(quint32 address, const QString &response);
 
     void runningChanged(bool running);
     void stoppedChanged(bool stopped);
@@ -117,6 +130,11 @@ private:
         QString text;
         QString response;
         QByteArray raw;
+        /// For a `memdump` command: the address it dumps, and whether it is a
+        /// stack dump (routed to stackDumpReady) or a memory-view dump. Carried
+        /// per command so a queue of mixed dumps routes each correctly.
+        quint32 dumpAddress = 0;
+        bool stackDump = false;
     };
 
     void dispatchNext();
@@ -176,7 +194,6 @@ private:
 
     /// Address of the most recent memdump request, so its response can be
     /// reported back with the address it came from.
-    quint32 m_pendingDumpAddress = 0;
 
     MachineState m_state;
     bool m_stopped = false;

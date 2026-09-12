@@ -11,13 +11,16 @@
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
 #include "debug/Breakpoint.h"
+#include "debug/Watchpoint.h"
 #include "ui/BreakpointPanel.h"
 #include "ui/DisassemblyView.h"
 #include "ui/EmulatorDisplayWidget.h"
 #include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
 #include "ui/MemoryView.h"
+#include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
+#include "ui/StackView.h"
 #include "ui/RegistersView.h"
 
 #include <QAction>
@@ -36,6 +39,7 @@
 #include <QMessageBox>
 #include <QGuiApplication>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QSettings>
@@ -105,6 +109,13 @@ MainWindow::MainWindow(QWidget *parent)
             [this](quint32, const QString &response) {
                 if (m_memory)
                     m_memory->applyDump(response);
+            });
+    // `info <subject>` responses feed the hardware view. Routed by command text:
+    // `info basepage` is part of the normal refresh and must not land here.
+    connect(m_host, &EmulatorHost::commandFinished, this,
+            [this](const QString &command, const QString &response) {
+                if (m_hardware && command == QLatin1String("info ") + m_hardware->subject())
+                    m_hardware->setInfo(response);
             });
     connect(m_host, &EmulatorHost::embeddedSizeChanged, this,
             [this](int, int) {
@@ -233,6 +244,9 @@ void MainWindow::createActions()
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     connect(m_actClearBreakpoints, &QAction::triggered, this, &MainWindow::clearAllBreakpoints);
 
+    m_actAddWatchpoint = new QAction(tr("Add &watchpoint…"), this);
+    connect(m_actAddWatchpoint, &QAction::triggered, this, &MainWindow::addWatchpoint);
+
     m_actResume = new QAction(tr("&Continue"), this);
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
     m_actResume->setEnabled(false);
@@ -276,6 +290,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStepOver);
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
+    runMenu->addAction(m_actAddWatchpoint);
 }
 
 void MainWindow::createDocks()
@@ -314,6 +329,13 @@ void MainWindow::createDocks()
                 this, &MainWindow::goToBreakpoint);
         connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
                 this, &MainWindow::clearAllBreakpoints);
+        connect(m_breakpointPanel, &BreakpointPanel::watchpointRemoveRequested,
+                this, &MainWindow::removeWatchpoint);
+        connect(m_breakpointPanel, &BreakpointPanel::watchpointActivated,
+                this, [this](quint32 address) {
+                    if (m_memory)
+                        m_memory->goToAddress(address);
+                });
         return dock;
     }());
 
@@ -333,6 +355,36 @@ void MainWindow::createDocks()
         m_memory = new MemoryView(dock);
         dock->setWidget(m_memory);
         connect(m_memory, &MemoryView::dumpRequested, m_host, &EmulatorHost::requestMemoryDump);
+        return dock;
+    }());
+
+    // The call stack: dumped at the stack pointer each stop, with likely return
+    // addresses marked. Routed over its own channel so it never clobbers the
+    // memory view's dumps.
+    addDockWidget(Qt::RightDockWidgetArea, [this] {
+        auto *dock = new QDockWidget(tr("Stack"), this);
+        m_stack = new StackView(dock);
+        dock->setWidget(m_stack);
+        connect(m_host, &EmulatorHost::stackDumpReady, this,
+                [this](quint32 sp, const QString &response) {
+                    if (m_stack)
+                        m_stack->setStackDump(sp, response, m_lastState.textBase,
+                                              m_lastState.dataBase);
+                });
+        return dock;
+    }());
+
+    // Hardware state (shifter, MFP, sound, ...) from Hatari's `info` commands,
+    // refreshed on each stop. Read-only; the subject is selectable.
+    addDockWidget(Qt::RightDockWidgetArea, [this] {
+        auto *dock = new QDockWidget(tr("Hardware"), this);
+        m_hardware = new HardwareView(dock);
+        dock->setWidget(m_hardware);
+        connect(m_hardware, &HardwareView::subjectChanged, this,
+                [this](const QString &subject) {
+                    if (m_host->isRunning())
+                        m_host->command(QStringLiteral("info ") + subject);
+                });
         return dock;
     }());
 
@@ -1108,6 +1160,11 @@ void MainWindow::armBreakpoints()
     for (const QString &command : plan.commands)
         m_host->armBreakpoint(command);
 
+    // Watchpoints arm alongside the source breakpoints. They are address-based,
+    // so unlike source lines they are valid before the program even starts.
+    for (const Watchpoint &wp : m_watchpoints)
+        m_host->armBreakpoint(wp.command());
+
     for (const QString &label : plan.unresolved) {
         m_log->appendPlainText(
             tr("[breakpoints] %1 has no address (it emits no code or data)").arg(label));
@@ -1125,7 +1182,65 @@ void MainWindow::armBreakpoints()
     if (m_breakpointPanel) {
         m_breakpointPanel->setResolvable(true);
         m_breakpointPanel->setBreakpoints(mergeResolved(plan));
+        m_breakpointPanel->setWatchpoints(m_watchpoints);
     }
+}
+
+void MainWindow::addWatchpoint()
+{
+    bool accepted = false;
+    const QString text = QInputDialog::getText(
+        this, tr("Add watchpoint"),
+        tr("Address to watch (hex), with optional .b/.w/.l width:"),
+        QLineEdit::Normal, QString(), &accepted);
+    if (!accepted)
+        return;
+
+    QString error;
+    if (!addWatchpointAddress(text, &error))
+        QMessageBox::warning(this, tr("Add watchpoint"), error);
+}
+
+bool MainWindow::addWatchpointAddress(const QString &text, QString *error)
+{
+    // A watchpoint breaks when the value at an address changes. Hatari has no
+    // data watchpoints, so it is armed as a self-inequality breakpoint, which is
+    // the debugger's change-tracking (see debug/Watchpoint.h). Width defaults to
+    // word; a trailing b/w/l overrides it.
+    static const QRegularExpression re(
+        QStringLiteral("^\\s*(?:\\$|0x)?([0-9a-fA-F]+)(?:\\.(b|w|l))?\\s*$"));
+    const auto match = re.match(text);
+    if (!match.hasMatch()) {
+        if (error)
+            *error = tr("Could not read an address from '%1'.").arg(text);
+        return false;
+    }
+
+    Watchpoint wp;
+    wp.address = match.captured(1).toUInt(nullptr, 16);
+    if (!match.captured(2).isEmpty())
+        wp.width = match.captured(2).at(0).toLatin1();
+
+    if (wp.address == 0) {
+        if (error)
+            *error = tr("Address 0 is not a useful thing to watch.");
+        return false;
+    }
+
+    m_watchpoints.append(wp);
+    m_log->appendPlainText(tr("[watchpoint] %1").arg(wp.label()));
+    // Re-arm so it takes effect now if a session is already stopped, or on the
+    // next run otherwise.
+    armBreakpoints();
+    return true;
+}
+
+void MainWindow::removeWatchpoint(int index)
+{
+    if (index < 0 || index >= m_watchpoints.size())
+        return;
+    m_watchpoints.removeAt(index);
+    armBreakpoints();
 }
 
 QList<Breakpoint> MainWindow::mergeResolved(const ArmPlan &plan) const
@@ -1291,6 +1406,15 @@ void MainWindow::onStateUpdated(const MachineState &state)
     // already requested the dump it needs.
     if (m_memory && !navigated)
         m_memory->refresh();
+
+    // Re-dump the stack too: it changes on every call, return, push and pop, so
+    // like the memory view it is only meaningful if it tracks the machine.
+    if (m_stack && state.regs.valid)
+        m_host->requestStackDump(state.regs.a[7], 96);
+
+    // Refresh the hardware registers as well.
+    if (m_hardware)
+        m_host->command(QStringLiteral("info ") + m_hardware->subject());
 
     locationFromPc(state.pc);
 }

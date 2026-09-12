@@ -49,6 +49,7 @@ qt_add_executable(pist
 
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
     src/build/LineMap.cpp
     src/build/LineMap.h
     src/build/LinkMap.cpp
@@ -90,8 +91,12 @@ qt_add_executable(pist
     src/ui/EmbedX11.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
+    src/ui/HardwareView.cpp
+    src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/StackView.cpp
+    src/ui/StackView.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
 )
@@ -174,6 +179,7 @@ qt_add_executable(tst_parsers
 
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
 )
 target_include_directories(tst_parsers PRIVATE src)
 target_link_libraries(tst_parsers PRIVATE Qt6::Test)
@@ -215,6 +221,7 @@ qt_add_executable(tst_debug
     src/emu/TosRom.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
     src/build/LineMap.cpp
     src/build/LineMap.h
     src/build/LinkMap.cpp
@@ -290,8 +297,12 @@ qt_add_executable(tst_gui
     src/ui/FileBrowser.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
+    src/ui/HardwareView.cpp
+    src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/StackView.cpp
+    src/ui/StackView.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
     src/project/ProjectSettings.cpp
@@ -311,6 +322,7 @@ qt_add_executable(tst_gui
     src/build/ProgramLineMap.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
     src/emu/HatariProbe.cpp
@@ -362,8 +374,12 @@ qt_add_executable(tst_remotecontrol
     src/ui/EmbedX11.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
+    src/ui/HardwareView.cpp
+    src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/StackView.cpp
+    src/ui/StackView.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
     src/project/ProjectSettings.cpp
@@ -383,6 +399,7 @@ qt_add_executable(tst_remotecontrol
     src/build/ProgramLineMap.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
     src/emu/HatariProbe.cpp
@@ -423,6 +440,7 @@ qt_add_executable(tst_emulatorhost
     src/build/Diagnostic.h
     src/debug/Breakpoint.cpp
     src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
     src/emu/HatariProbe.cpp

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "debug/Breakpoint.h"
+#include "debug/Watchpoint.h"
 
 #include <QList>
 #include <QWidget>
@@ -29,6 +30,10 @@ public:
 
     void setBreakpoints(const QList<Breakpoint> &breakpoints);
 
+    /// Watchpoints are address-based rather than source-line, so they are
+    /// listed separately, below the breakpoints, but armed and cleared with them.
+    void setWatchpoints(const QList<Watchpoint> &watchpoints);
+
     /// Report whether the session has run far enough to resolve addresses.
     void setResolvable(bool resolvable);
 
@@ -37,10 +42,16 @@ signals:
     void removeRequested(const QString &file, int line);
     void clearRequested();
 
+    /// A watchpoint row was double-clicked (to navigate memory to it), or its
+    /// removal was requested, by index into the watchpoint list.
+    void watchpointActivated(quint32 address);
+    void watchpointRemoveRequested(int index);
+
 private:
     void refresh();
 
     QList<Breakpoint> m_breakpoints;
+    QList<Watchpoint> m_watchpoints;
     bool m_resolvable = false;
     QTableWidget *m_table = nullptr;
     QPushButton *m_clearButton = nullptr;

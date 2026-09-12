@@ -32,6 +32,7 @@ private slots:
     void consoleReturnsTextAndTerminator();
     void partialLineIsBuffered();
     void screenshotWithoutDisplayFailsGracefully();
+    void watchpointCommandValidatesAddress();
     void buildRespondsWhenFinished();
 };
 
@@ -167,6 +168,22 @@ void TstRemoteControl::screenshotWithoutDisplayFailsGracefully()
     // failure rather than crash or hang.
     const QString reply = roundTrip(s.client, "screenshot /tmp/pist-rc-test.png");
     QVERIFY(!reply.isEmpty());
+}
+
+void TstRemoteControl::watchpointCommandValidatesAddress()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // A valid address is accepted; the arming itself is best-effort with no
+    // session, so this pins the validation, not the emulator.
+    QCOMPARE(roundTrip(s.client, "watchpoint $12345"), QStringLiteral("ok"));
+    QCOMPARE(roundTrip(s.client, "watchpoint 4ba.l"), QStringLiteral("ok"));
+
+    // Bad input is an error, not a silent no-op.
+    QVERIFY(roundTrip(s.client, "watchpoint notanaddress").startsWith(QStringLiteral("error")));
+    QVERIFY(roundTrip(s.client, "watchpoint 0").startsWith(QStringLiteral("error")));
 }
 
 void TstRemoteControl::buildRespondsWhenFinished()

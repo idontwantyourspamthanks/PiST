@@ -61,6 +61,7 @@ private slots:
 
     void debuggerStopsAtProgramEntry();
     void registersRoundTrip();
+    void stackDumpRoutesSeparatelyFromMemoryDump();
     void basepageReportsProgramSections();
     void disassemblyIsLabelled();
     void steppingAdvancesPc();
@@ -229,6 +230,43 @@ void TstEmulatorHost::registersRoundTrip()
     QVERIFY2(response.contains(QLatin1String("SR=")),
              qPrintable("register dump missing SR: " + response.left(300)));
     QVERIFY(response.contains(QLatin1String("D0")));
+
+    host.stop();
+}
+
+void TstEmulatorHost::stackDumpRoutesSeparatelyFromMemoryDump()
+{
+    // The stack view and the memory view both refresh on a stop, so their dumps
+    // must be routed to different signals — a stack dump landing in
+    // memoryDumpReady would make the memory view show the stack. The routing
+    // travels with the queued command (src/emu/EmulatorHost.h Pending), so a
+    // memory dump and a stack dump back-to-back each reach the right listener.
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/stackroute");
+    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy stackSpy(&host, &EmulatorHost::stackDumpReady);
+    QSignalSpy memSpy(&host, &EmulatorHost::memoryDumpReady);
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(15000), "debugger never stopped");
+
+    host.requestStackDump(0x10000, 64);
+    QVERIFY2(stackSpy.wait(15000), "no stackDumpReady");
+
+    const QList<QVariant> args = stackSpy.first();
+    QCOMPARE(args.at(0).toUInt(), 0x10000u);
+    // The memory view's channel must not have fired for a stack dump.
+    QVERIFY2(memSpy.isEmpty(), "stack dump leaked into memoryDumpReady");
 
     host.stop();
 }

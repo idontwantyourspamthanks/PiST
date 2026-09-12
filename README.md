@@ -13,8 +13,8 @@ editor. `PiST` bundles the pieces that are otherwise scattered across a text edi
 script, a terminal, a debugger and an emulator, and presents them as one tool.
 
 > **Status: early, and usable.** The full loop works — write, assemble, run under Hatari, and
-> debug with breakpoints, stepping, registers, memory and disassembly, with the editor following
-> the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
+> debug with breakpoints, stepping, registers, memory, disassembly, watchpoints, a stack
+> view and hardware registers, with the editor following the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
 > What is missing is breadth rather than core function: no installers, and the emulator ships only
@@ -37,8 +37,13 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
-- **Debug** with breakpoints, single-step, step-over, registers, memory and labelled disassembly —
-  and the editor following the program counter as you step
+- **Debug** with breakpoints, single-step, step-over, registers, memory and labelled
+  disassembly — and the editor following the program counter as you step
+  - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
+    armed as change-tracking breakpoints), settable from Run ▸ Add watchpoint or the remote control
+  - a **stack view** of the values at the stack pointer, with likely return addresses marked
+  - a **hardware registers** view of the shifter, MFP, ACIA/IKBD, sound, blitter and more, from
+    Hatari's `info` commands
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing

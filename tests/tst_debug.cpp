@@ -7,6 +7,7 @@
 // emulator.
 
 #include "debug/Breakpoint.h"
+#include "debug/Watchpoint.h"
 #include "build/LineMap.h"
 #include "emu/MemoryDump.h"
 #include "project/ProjectSettings.h"
@@ -83,6 +84,13 @@ private slots:
     void readsBigEndianLong();
     void rejectsOutOfRangeLong();
     void classifiesPointerValues();
+
+    // Watchpoints: Hatari has no data watchpoints, so they are self-inequality
+    // breakpoints, and the exact command text is what makes the change-tracking
+    // fire. Pin it so a drift in the format cannot silently stop them working.
+    void watchpointCommandIsSelfInequality();
+    void watchpointWidthsFormatCorrectly();
+    void watchpointLabelShowsAddressAndWidth();
 
     // paths
     void outputPathsDeriveFromSource();
@@ -362,6 +370,35 @@ void TstDebug::classifiesPointerValues()
     // The highest even address the bus can reach, and a normal program pointer.
     QVERIFY(looksLikeAddress(0x00FFFFFEu));
     QVERIFY(looksLikeAddress(0x00012596u));
+}
+
+void TstDebug::watchpointCommandIsSelfInequality()
+{
+    Watchpoint wp;
+    wp.address = 0x12345;
+    wp.width = 'w';
+    // The whole mechanism depends on this exact form: a self-inequality the
+    // debugger's change-tracking reads as "fire when it changes".
+    QCOMPARE(wp.command(), QStringLiteral("b ($12345).w ! ($12345).w"));
+}
+
+void TstDebug::watchpointWidthsFormatCorrectly()
+{
+    Watchpoint wp;
+    wp.address = 0x4ba;
+    for (const char *width : {"b", "w", "l"}) {
+        wp.width = width[0];
+        QVERIFY(wp.command().contains(QStringLiteral("($4ba).%1").arg(width[0])));
+    }
+}
+
+void TstDebug::watchpointLabelShowsAddressAndWidth()
+{
+    Watchpoint wp;
+    wp.address = 0xff8201;
+    wp.width = 'b';
+    QVERIFY(wp.label().contains(QStringLiteral("ff8201")));
+    QVERIFY(wp.label().contains(QStringLiteral("b")));
 }
 
 QTEST_MAIN(TstDebug)

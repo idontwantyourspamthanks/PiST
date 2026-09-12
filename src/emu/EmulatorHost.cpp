@@ -410,7 +410,7 @@ void EmulatorHost::handleStdoutData(const QByteArray &data)
     }
 }
 
-void EmulatorHost::command(const QString &commandText)
+void EmulatorHost::command(const QString &commandText, quint32 dumpAddress, bool stackDump)
 {
     if (!isRunning()) {
         emit errorOccurred(tr("No emulator session is running."));
@@ -418,6 +418,8 @@ void EmulatorHost::command(const QString &commandText)
     }
     Pending p;
     p.text = commandText;
+    p.dumpAddress = dumpAddress;
+    p.stackDump = stackDump;
     m_queue.enqueue(p);
     dispatchNext();
 }
@@ -545,8 +547,12 @@ void EmulatorHost::completeCurrent()
         parseBasepage(response);
     else if (commandText.startsWith(QLatin1Char('d')))
         parseDisassembly(response);
-    else if (commandText.startsWith(QLatin1Char('m')) && commandText.contains(QLatin1Char(' ')))
-        emit memoryDumpReady(m_pendingDumpAddress, response);
+    else if (commandText.startsWith(QLatin1Char('m')) && commandText.contains(QLatin1Char(' '))) {
+        if (m_current.stackDump)
+            emit stackDumpReady(m_current.dumpAddress, response);
+        else
+            emit memoryDumpReady(m_current.dumpAddress, response);
+    }
 
     m_haveCurrent = false;
     const QString text = m_current.text;
@@ -604,8 +610,15 @@ void EmulatorHost::requestMemoryDump(quint32 address, int length)
     const QString cmd = QStringLiteral("m $%1 %2")
                             .arg(address, 0, 16)
                             .arg(length);
-    m_pendingDumpAddress = address;
-    command(cmd);
+    command(cmd, address, false);
+}
+
+void EmulatorHost::requestStackDump(quint32 address, int length)
+{
+    const QString cmd = QStringLiteral("m $%1 %2")
+                            .arg(address, 0, 16)
+                            .arg(length);
+    command(cmd, address, true);
 }
 
 void EmulatorHost::dumpRegisters()

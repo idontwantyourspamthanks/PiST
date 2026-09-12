@@ -6,6 +6,7 @@
 
 #include "build/Diagnostic.h"
 #include "debug/Breakpoint.h"
+#include "debug/Watchpoint.h"
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
 #include "emu/HatariProbe.h"
@@ -34,6 +35,8 @@ class EmulatorHost;
 class FileBrowser;
 class MemoryView;
 class RegistersView;
+class StackView;
+class HardwareView;
 class EmulatorDisplayWidget;
 
 class MainWindow : public QMainWindow
@@ -89,6 +92,14 @@ private slots:
     void toggleBreakpointAtLine(int line);
     void editBreakpointCondition(int line);
     void clearAllBreakpoints();
+    void addWatchpoint();
+    void removeWatchpoint(int index);
+
+public:
+    /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
+    /// Separated from the dialog so the remote-control interface and tests can use
+    /// it without a prompt. Returns false and sets error on a bad address.
+    bool addWatchpointAddress(const QString &text, QString *error);
 
 private:
     void createActions();
@@ -163,6 +174,8 @@ private:
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
+    StackView *m_stack = nullptr;
+    HardwareView *m_hardware = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
     QPlainTextEdit *m_log = nullptr;
@@ -180,6 +193,10 @@ private:
     /// Breakpoints are stored per file:line, never per address: the program is
     /// relocated by GEMDOS on every run (docs/PLAN.md §5 rule 6).
     QList<Breakpoint> m_breakpoints;
+
+    /// Address watchpoints: break when a memory value changes (see
+    /// debug/Watchpoint.h). Armed and cleared alongside the source breakpoints.
+    QList<Watchpoint> m_watchpoints;
 
     /// Set once the entry stop has been handled for the current session, so the
     /// arming sequence runs exactly once.
@@ -212,6 +229,7 @@ private:
     QAction *m_actStepOver = nullptr;
     QAction *m_actResume = nullptr;
     QAction *m_actClearBreakpoints = nullptr;
+    QAction *m_actAddWatchpoint = nullptr;
 };
 
 } // namespace pist

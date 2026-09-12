@@ -152,6 +152,14 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
                                   Q_ARG(int, arg.toInt()));
         reply(client, QStringLiteral("ok"));
 
+    } else if (cmd == QLatin1String("watchpoint")) {
+        // Watchpoint breaks when the value at an address changes.
+        QString error;
+        if (m_window->addWatchpointAddress(arg, &error))
+            reply(client, QStringLiteral("ok"));
+        else
+            reply(client, QStringLiteral("error ") + error);
+
     } else if (cmd == QLatin1String("screenshot")) {
         const QString path = arg.isEmpty() ? QStringLiteral("/tmp/pist-screenshot.png") : arg;
         // Captured through XGetImage (src/ui/EmbedX11.cpp), because
@@ -184,6 +192,7 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "stepover         step over a subroutine\n"
             "continue         resume execution\n"
             "breakpoint <n>   toggle a breakpoint at source line n\n"
+            "watchpoint <a>   break when the value at address <a> changes (optional .b/.w/.l)\n"
             "screenshot <f>   save the window to <f> (default /tmp/pist-screenshot.png)\n"
             "console          the build & debug console text\n"
             "state            registers and PC\n"

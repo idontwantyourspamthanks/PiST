@@ -81,6 +81,29 @@ TOS ROMs         /usr/share/hatari/TOS*.img   supplied by the distro package
 | `bt` / backtrace | absent | present |
 | `echo` in a `--parse` file | **aborts the emulator** — `assert(s2 < s1)` at `str.c:240` | fixed: `assert(s2 <= s1)` at `str.c:256` |
 | Debugger transport | works | **truncated responses, four suite failures** — see below |
+| ROM discovery | — | **the bundled ROM was invisible** — see below |
+
+**Bundling exposed a ROM-discovery bug that was already there.** Every release
+archive shipped its EmuTOS ROM in `share/emutos`, and `tosSearchPaths()` never
+searched there — the string did not appear in the file. So on any machine without
+the `hatari` package the bundled ROM was invisible and Run/debug were dead on
+first launch. It survived because the release verification set `PIST_TOS_DIR`,
+which short-circuits the discovery logic being tested. The fix walks up from the
+executable for `share/emutos` and `share/hatari`, and the walk is exposed as
+`paths::bundledDataSearchPaths()` so a test can drive it. The AppImage verification
+now runs with `PIST_TOS_DIR` pointedly unset.
+
+**Bundling is also where two packaging faults were caught:**
+
+- Naming only `pist` with linuxdeploy's `-e` meant the bundled Hatari arrived
+  without SDL2, libreadline or libpng and could not start. Both executables are
+  named now.
+- The reverse mistake — force-copying every library `ldd` reports missing —
+  copies glibc-coupled libraries from the build host. A `libtinfo` taken from a
+  development machine demanded `GLIBC_2.42` on a 2.39 system. linuxdeploy's
+  exclusion of the X11/Wayland/ALSA set is deliberate and correct, and it is left
+  alone: every desktop has those, and testing in a headless container that lacks
+  them proves less than it appears to.
 
 **The suite does not work against Hatari 2.4.1**, which is what Ubuntu 24.04
 packages. Register dumps come back as a single line with the `SR=` line missing,

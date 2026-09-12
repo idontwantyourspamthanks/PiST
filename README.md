@@ -167,6 +167,10 @@ with a process error.
 
 ## Platform support
 
+Every platform is built and tested on real runners by CI: **Linux, macOS and
+Windows all compile warning-free and pass the full test suite**, and all three
+install cleanly. See the badge in the Actions tab for the current state.
+
 All three targets build and run a full assemble → run → debug session. One feature differs, because
 of an upstream Hatari limitation rather than anything in `PiST`:
 

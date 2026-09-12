@@ -664,6 +664,22 @@ load-bearing dependency — which the detection order above already guarantees.
 
 ### Verified by CI (executed on real runners)
 
+**Current status: Linux, macOS and Windows all build, pass every suite, and
+install cleanly.** This is the first genuine cross-platform evidence in the
+project; everything before it was either Linux-only or read from source.
+
+- **gcc, clang and MSVC all compile the tree with no warnings**, and all six test
+  suites pass on each. The tests that need Hatari or a TOS ROM report as *skipped*,
+  never as passed, so a green run does not overstate what was verified.
+- **`cmake --install` works on all three**, and the installed binary starts from a
+  staged prefix — which is what `CMAKE_INSTALL_RPATH_USE_LINK_PATH` provides. That
+  is the honest minimum for a non-bundled install; a self-contained macOS/Windows
+  bundle (macdeployqt, windeployqt) is still open.
+- **The Windows control-socket path is exercised**: `runsWithoutControlSocket`
+  runs a full session with no socket configured, which is precisely the Windows
+  configuration, since Hatari does not compile that option there.
+
+
 - **Linux (gcc) builds and tests green** — the only platform previously exercised
 - **MSVC rejects a `class`/`struct` mismatch that Itanium-ABI platforms accept.**
   Forward-declaring a type as `class` while defining it as `struct` mangles to a
@@ -675,6 +691,18 @@ load-bearing dependency — which the detection order above already guarantees.
   the AGL framework and Qt 6.8's `FindWrapOpenGL.cmake` still names it, so linking
   fails inside Qt's own configuration. CI pins `macos-15`; testing macOS 26 needs
   a Qt that no longer references AGL.
+- **`qt_add_executable` marks targets GUI-subsystem on Windows**, which detaches
+  stdout, so a failing test reported *no output at all*. Test targets are now
+  explicitly console applications.
+- **A bundled tool cannot be found by its bare name on Windows.** Looking for
+  `vasmm68k_mot` beside `pist.exe` misses `vasmm68k_mot.exe`, so a Windows release
+  bundle would have appeared to ship no assembler. Discovery goes through
+  `QStandardPaths::findExecutable` with explicit directories, which applies the
+  platform's own executable-name rules.
+- **Three tests encoded POSIX assumptions rather than behaviour**: hardcoded
+  `/home/...` paths (not absolute on Windows — no drive) and a `chmod +x` fixture
+  (Windows decides executability from the suffix). All three failed on Windows for
+  reasons unrelated to the code under test.
 - **vasm publishes no host binaries** — only Amiga-family and Atari targets. It
   builds from the author's source in seconds with `make CPU=m68k SYNTAX=mot`
   (verified; tarball sha256 `c84b2de1...`), and does not implement `--version`,

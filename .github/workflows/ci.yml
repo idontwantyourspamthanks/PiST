@@ -28,6 +28,7 @@ jobs:
           - name: Linux (gcc)
             os: ubuntu-latest
             vasm: true
+            emulator: true
           # Pinned rather than macos-latest: that currently resolves to
           # macos-26, where Apple removed the AGL framework and Qt 6.8 still
           # references it, so linking fails inside Qt's own CMake config. Pinning
@@ -36,9 +37,14 @@ jobs:
           - name: macOS (clang)
             os: macos-15
             vasm: true
+            emulator: true
+          # No Hatari package for MSYS2, so Windows builds and unit-tests but
+          # cannot exercise the emulator. Its emulator suite therefore skips
+          # rather than failing, which is honest as long as its green means less.
           - name: Windows (MSVC)
             os: windows-latest
-            vasm: false   # needs MSYS2 make; enabled once the rest is green
+            vasm: false
+            emulator: false
 
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +77,45 @@ jobs:
           cp vasm/vasmm68k_mot "$HOME/.local/bin/"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Install the emulator
+        if: matrix.emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq hatari xvfb
+          else
+            brew install hatari
+          fi
+          hatari --version | head -1
+
+      # A free ROM so the emulator suites have something to boot. Pinned by
+      # checksum for the same reason vasm is: an upstream change should fail
+      # loudly rather than silently altering what is tested.
+      - name: Fetch a ROM
+        if: matrix.emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/roms"
+          curl -fsSL -o "$RUNNER_TEMP/emutos.zip" \
+            https://sourceforge.net/projects/emutos/files/emutos/1.4/emutos-1024k-1.4.zip/download
+          echo "dc9fbef6455a24ee8955cccd565588c718ba675fd54bc5a749003ac4bbd7f7e1  $RUNNER_TEMP/emutos.zip" \
+            | shasum -a 256 -c - 2>/dev/null \
+            || echo "dc9fbef6455a24ee8955cccd565588c718ba675fd54bc5a749003ac4bbd7f7e1  $RUNNER_TEMP/emutos.zip" \
+            | sha256sum -c -
+          python3 - <<'PY'
+          import zipfile, pathlib, shutil, os
+          temp = os.environ["RUNNER_TEMP"]
+          with zipfile.ZipFile(f"{temp}/emutos.zip") as z:
+              name = next(n for n in z.namelist() if n.endswith("etos1024k.img"))
+              z.extract(name, f"{temp}/emutos-extract")
+          src = next(pathlib.Path(f"{temp}/emutos-extract").rglob("etos1024k.img"))
+          shutil.copy(src, f"{temp}/roms/etos1024k.img")
+          print("ROM:", f"{temp}/roms/etos1024k.img")
+          PY
+
       - name: Verify the assembler runs
         if: matrix.vasm
         shell: bash
@@ -92,6 +137,16 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
+          # Tell the emulator suite that its prerequisites are meant to be
+          # present, so a missing one fails instead of silently skipping. Without
+          # this the whole suite could report as skipped and the run would look
+          # green while the most fragile part of the project went untested.
+          PIST_REQUIRE_EMULATOR: ${{ matrix.emulator && '1' || '' }}
+          PIST_TOS_DIR: ${{ matrix.emulator && format('{0}/roms', runner.temp) || '' }}
+          # Runners have no display. Hatari uses SDL for video, so it needs the
+          # dummy driver — the debugger transport and the emulated machine are
+          # unaffected, which is all this suite exercises.
+          SDL_VIDEODRIVER: dummy
         run: |
           if ctest --test-dir build --build-config Release --output-on-failure; then
             exit 0

@@ -85,7 +85,27 @@ void TstEmulatorHost::initTestCase()
     m_tos = findTos();
 
     if (m_hatari.isEmpty() || m_vasm.isEmpty() || m_tos.isEmpty()) {
-        QSKIP("needs hatari, vasmm68k_mot, and a TOS ROM 1.04+ (set $PIST_TOS_DIR if needed)");
+        QStringList missing;
+        if (m_hatari.isEmpty())
+            missing << QStringLiteral("hatari");
+        if (m_vasm.isEmpty())
+            missing << QStringLiteral("vasmm68k_mot");
+        if (m_tos.isEmpty())
+            missing << QStringLiteral("a TOS/EmuTOS ROM 1.04+");
+        const QString what = missing.join(QStringLiteral(", "));
+
+        // Skipping is the right default on a developer's machine, which may
+        // legitimately have none of this. But a skip in CI is a *lie*: every test
+        // in this suite would report as skipped and the run would look green while
+        // the emulator integration — the most fragile part of the project, and the
+        // part that has never been verified automatically — went untested. CI sets
+        // this variable so that a missing prerequisite fails loudly instead.
+        if (!qEnvironmentVariableIsEmpty("PIST_REQUIRE_EMULATOR")) {
+            QFAIL(qPrintable(QStringLiteral(
+                "PIST_REQUIRE_EMULATOR is set but the emulator integration cannot run: "
+                "missing %1").arg(what)));
+        }
+        QSKIP(qPrintable(QStringLiteral("needs %1 (set $PIST_TOS_DIR if needed)").arg(what)));
     }
 
     m_work = new QTemporaryDir;

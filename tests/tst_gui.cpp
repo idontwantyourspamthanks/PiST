@@ -45,6 +45,7 @@ private slots:
     void floppyImagesReachTheCommandLine();
     void fileBrowserShowsTheProjectDirectory();
     void editorTracksUnsavedChanges();
+    void diagnoseReportsToolsAndRoms();
 
 private:
     QString m_vasm;
@@ -299,6 +300,45 @@ void TstGui::editorTracksUnsavedChanges()
     // An id in the title with the modified marker is how Qt shows unsaved state.
     QVERIFY2(window.windowTitle().contains(QLatin1String("[*]")),
              qPrintable("title must carry the modified placeholder: " + window.windowTitle()));
+}
+
+// `--diagnose` is what release packaging uses to prove an archive resolves the
+// assembler it carries, so the option has to be dependable. Run the built binary
+// and check that it reports something for each section.
+void TstGui::diagnoseReportsToolsAndRoms()
+{
+    // The test executable is not pist, so locate the application binary beside
+    // it — the same directory CMake puts them both in.
+    QString app = QCoreApplication::applicationDirPath() + QStringLiteral("/pist");
+#ifdef Q_OS_WIN
+    app += QStringLiteral(".exe");
+#endif
+    if (!QFileInfo::exists(app))
+        QSKIP("pist binary not found next to the test executable");
+
+    QProcess process;
+    process.start(app, {QStringLiteral("--diagnose")});
+    QVERIFY(process.waitForStarted(5000));
+    QVERIFY(process.waitForFinished(15000));
+
+    const QString output = QString::fromUtf8(process.readAllStandardOutput())
+                         + QString::fromUtf8(process.readAllStandardError());
+
+    QVERIFY2(process.exitCode() == 0, qPrintable("diagnose failed: " + output));
+    QVERIFY2(output.contains(QLatin1String("Assembler")), qPrintable(output));
+    QVERIFY2(output.contains(QLatin1String("Emulator")), qPrintable(output));
+    QVERIFY2(output.contains(QLatin1String("TOS ROMs found")), qPrintable(output));
+    QVERIFY2(output.contains(QLatin1String("Search paths")), qPrintable(output));
+
+    // It must name a path or say NOT FOUND — never leave the section blank, which
+    // would make a packaging check pass vacuously.
+    const QStringList lines = output.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        if (line.startsWith(QLatin1String("Assembler (")))
+            QVERIFY2(line.contains(QLatin1String("NOT FOUND"))
+                         || line.contains(QLatin1Char('/')) || line.contains(QLatin1Char('\\')),
+                     qPrintable("no assembler path or NOT FOUND: " + line));
+    }
 }
 
 QTEST_MAIN(TstGui)

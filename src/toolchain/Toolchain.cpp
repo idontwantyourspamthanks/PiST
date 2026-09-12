@@ -133,12 +133,14 @@ ToolInfo findEmulator(const QString &overridePath)
 
 QString suggestedInstallDir()
 {
-    // A per-user data location rather than a system one, so no elevation is needed
-    // and the app stays usable from a plain unpacked archive.
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    // GenericDataLocation rather than AppLocalDataLocation: the latter is
+    // <org>/<app>, and since both are "PiST" it yields ~/.local/share/PiST/PiST.
+    // This gives ~/.local/share/PiST/tools, which also matches where the
+    // per-user tools are documented to live.
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
     if (base.isEmpty())
-        base = QDir::homePath() + QStringLiteral("/.pist");
-    return base + QStringLiteral("/tools");
+        base = QDir::homePath() + QStringLiteral("/.local/share");
+    return base + QStringLiteral("/PiST/tools");
 }
 
 QString assemblerInstallHint()

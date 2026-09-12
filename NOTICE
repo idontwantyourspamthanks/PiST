@@ -10,16 +10,36 @@ write their configuration files. That separation is deliberate and is what keeps
 the licensing straightforward (see docs/PLAN.md §7).
 
 
-Runtime dependencies (invoked as subprocesses, not distributed here)
----------------------------------------------------------------------
+Runtime dependencies (invoked as subprocesses)
+----------------------------------------------
 
 vasmm68k_mot — the assembler
     Copyright (c) 2002-2026 Volker Barthelmann.
     NOT free software. Its terms permit redistribution *without modification*
     and use for non-commercial purposes; commercial use requires the author's
-    written consent except for the M68k/AmigaOS case. PiST therefore never
-    patches it and never commits it to this repository.
+    written consent except for the M68k/AmigaOS case.
     Source and licence: http://sun.hasenbraten.de/vasm/
+
+    Redistribution: release archives of PiST *do* include a vasm binary, compiled
+    by the release workflow from the author's unmodified source tarball, pinned by
+    checksum. The basis for this is the permission above: redistribution without
+    modification, for non-commercial use. PiST is free software under the GPL and
+    is not sold. Note that no binaries are published by the author for host
+    platforms at all — only Amiga-family and Atari builds exist — so compiling it
+    is the only way to ship a working assembler, and shipping one is the
+    difference between an IDE that runs on first launch and one that does not.
+
+    Two commitments follow from that basis, and both are enforced by tooling
+    rather than convention:
+      - the binary is NEVER patched or modified. PiST drives vasm purely through
+        command-line arguments.
+      - it is NEVER committed to the PiST source repository, which stays entirely
+        free software. It is produced at release time only.
+
+    If you are building PiST for commercial distribution, the permission above
+    does not extend to you: supply your own assembler, or obtain the author's
+    consent. PiST supports an explicit assembler path in Project Settings for
+    exactly this reason.
 
 hatari — the emulator
     GNU General Public License, version 2 or later. Hatari's own readme states
@@ -28,10 +48,17 @@ hatari — the emulator
     https://www.hatari-emu.org/
 
 A TOS ROM image is also required. Original Atari TOS images remain copyrighted
-and are never distributed with PiST; the user supplies one. The ROM's version is
+and are NEVER distributed with PiST; the user supplies one. The ROM's version is
 read from the image header, and TOS 1.04 or later is required for the
-GEMDOS-hard-disk run path. EmuTOS (GPLv2) is a free alternative.
-    https://emutos.sourceforge.net/
+GEMDOS-hard-disk run path.
+
+EmuTOS is bundled instead, so that a fresh install runs:
+    EmuTOS 1.4, the 1024k emulator image (etos1024k.img),
+    GNU General Public License version 2.
+    One image covers ST through Falcon and is the same build Hatari ships.
+    Verified to autostart a program from the GEMDOS hard disk, which is what the
+    Run and debug path requires.
+    Source: https://emutos.sourceforge.net/
 
 
 Build and link dependencies

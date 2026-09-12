@@ -1,0 +1,288 @@
+name: Release
+
+# Produces shippable archives containing PiST, the assembler, and a free ROM, so
+# that a fresh download runs without the user installing anything.
+#
+# The assembler is bundled because vasm publishes no binaries for host platforms
+# at all — only Amiga-family and Atari builds — so it has to be compiled here. Its
+# licence permits redistribution unmodified for non-commercial use; see NOTICE.
+# It is never patched: PiST drives it purely through command-line arguments.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VASM_URL: http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+  VASM_SHA256: c84b2de1cbb87831795fe64a85c5d9a7002a766e3a7c30b0a2d7d5e99d878f49
+  # EmuTOS 1.4, the 1024k emulator build: one image that works on ST through
+  # Falcon, and the same one Hatari itself ships. Verified to autostart a GEMDOS
+  # HD program, which is what the run-and-debug path needs.
+  EMUTOS_URL: https://sourceforge.net/projects/emutos/files/emutos/1.4/emutos-1024k-1.4.zip/download
+  EMUTOS_SHA256: dc9fbef6455a24ee8955cccd565588c718ba675fd54bc5a749003ac4bbd7f7e1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the assembler.
+  #
+  # The Windows build is cross-compiled here with mingw-w64 rather than built on a
+  # Windows runner with MSYS2: it is one plain-C program with no platform API
+  # beyond stdio, and a cross-built PE is then *run natively* by the Windows
+  # release job, which verifies it more directly than building it there would.
+  # macOS is built natively, since cross-compiling to Mach-O from Linux needs an
+  # SDK we cannot ship here.
+  # ---------------------------------------------------------------------------
+  vasm-linux-windows:
+    name: vasm (linux + windows)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install mingw-w64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+
+      - name: Fetch and verify vasm source
+        run: |
+          set -euo pipefail
+          curl -fsSL -o vasm.tar.gz "$VASM_URL"
+          echo "$VASM_SHA256  vasm.tar.gz" | sha256sum -c -
+          tar xzf vasm.tar.gz
+
+      - name: Build for Linux
+        run: make -C vasm CPU=m68k SYNTAX=mot
+
+      - name: Build for Windows
+        run: |
+          set -euo pipefail
+          cp -r vasm vasm-win
+          make -C vasm-win CPU=m68k SYNTAX=mot CC=x86_64-w64-mingw32-gcc
+          file vasm-win/vasmm68k_mot.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vasm-linux
+          path: vasm/vasmm68k_mot
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vasm-windows
+          path: vasm-win/vasmm68k_mot.exe
+          if-no-files-found: error
+
+  vasm-macos:
+    name: vasm (macos)
+    runs-on: macos-15
+    steps:
+      - name: Fetch and verify vasm source
+        run: |
+          set -euo pipefail
+          curl -fsSL -o vasm.tar.gz "$VASM_URL"
+          echo "$VASM_SHA256  vasm.tar.gz" | shasum -a 256 -c -
+          tar xzf vasm.tar.gz
+
+      - name: Build
+        run: make -C vasm CPU=m68k SYNTAX=mot
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vasm-macos
+          path: vasm/vasmm68k_mot
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Build PiST, assemble the archive, and verify it before it is published.
+  # ---------------------------------------------------------------------------
+  package:
+    name: package (${{ matrix.name }})
+    needs: [vasm-linux-windows, vasm-macos]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            vasm_artifact: vasm-linux
+            deployed: false
+          - name: macos-arm64
+            os: macos-15
+            vasm_artifact: vasm-macos
+            deployed: true
+          - name: windows-x86_64
+            os: windows-latest
+            vasm_artifact: vasm-windows
+            deployed: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.vasm_artifact }}
+          path: bundle/bin
+
+      - name: Fetch and verify EmuTOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o emutos.zip "$EMUTOS_URL"
+          echo "$EMUTOS_SHA256  emutos.zip" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$EMUTOS_SHA256  emutos.zip" | sha256sum -c -
+          python3 - <<'PY'
+          import zipfile, pathlib, shutil
+          with zipfile.ZipFile("emutos.zip") as z:
+              name = next(n for n in z.namelist() if n.endswith("etos1024k.img"))
+              z.extract(name, "emutos-extract")
+          dest = pathlib.Path("bundle/share/emutos")
+          dest.mkdir(parents=True, exist_ok=True)
+          src = next(pathlib.Path("emutos-extract").rglob("etos1024k.img"))
+          shutil.copy(src, dest / "etos1024k.img")
+          print("ROM:", dest / "etos1024k.img")
+          PY
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel
+
+      # Deploy the Qt runtime so the archive runs on a machine without Qt
+      # installed. Without this the binary links against the Qt it was built with
+      # and fails to start elsewhere — the same failure the CI install step hit
+      # on macOS as "Library not loaded: @rpath/QtWidgets.framework/...".
+      - name: Deploy Qt runtime (macOS)
+        if: matrix.deployed && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/bin
+          cp build/pist bundle/bin/
+          macdeployqt bundle/bin/pist -always-overwrite
+
+      - name: Deploy Qt runtime (Windows)
+        if: matrix.deployed && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/bin
+          cp build/Release/pist.exe bundle/bin/
+          windeployqt --release --no-translations bundle/bin/pist.exe
+
+      - name: Copy binary (Linux, uses system Qt)
+        if: '!matrix.deployed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/bin
+          cp build/pist bundle/bin/
+
+      - name: Add documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/share/doc/pist
+          cp LICENSE NOTICE README.md bundle/share/doc/pist/
+
+      # The point of the exercise: prove the packaged archive resolves the
+      # assembler *it* carries, rather than one on the machine building it.
+      - name: Verify the bundle resolves its own tools
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PIST_TOS_DIR: ${{ github.workspace }}/bundle/share/emutos
+        run: |
+          set -euo pipefail
+          BIN=bundle/bin/pist
+          [ -f "$BIN" ] || BIN="$BIN.exe"
+          echo "--- $BIN --diagnose ---"
+          "$BIN" --diagnose | tee diagnose.txt
+
+          echo
+          echo "Asserting the archive is self-sufficient..."
+          bindir="$(cd bundle/bin && pwd)"
+
+          # The assembler reported must be the one travelling in this archive,
+          # not one that happens to be installed on the build machine.
+          if ! grep -F "Assembler (vasmm68k_mot): $bindir" diagnose.txt > /dev/null; then
+            echo "ERROR: the assembler resolved is not the bundled one"
+            grep -F 'Assembler' diagnose.txt || true
+            exit 1
+          fi
+
+          # And the ROM it carries must be recognised and usable: one that cannot
+          # autostart would break the Run path, so it is not enough that a file
+          # was copied in.
+          if ! grep -q 'EmuTOS' diagnose.txt; then
+            echo "ERROR: the bundled ROM was not found"
+            exit 1
+          fi
+          if grep -q 'cannot autostart' diagnose.txt; then
+            echo "ERROR: the bundled ROM cannot autostart a program"
+            exit 1
+          fi
+          echo "OK: bundled assembler and ROM both resolved"
+
+      - name: Write build metadata
+        shell: bash
+        run: |
+          {
+            echo "PiST ${{ github.ref_name }} (${{ matrix.name }})"
+            echo "built from ${{ github.sha }}"
+            echo
+            cat diagnose.txt
+          } > bundle/BUILD-INFO.txt
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ github.ref_name }}"
+          [ -n "$V" ] || V="dev"
+          NAME="pist-$V-${{ matrix.name }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "$NAME.zip" ./bundle/* > /dev/null
+            echo "ASSET=$NAME.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$NAME.tar.gz" bundle
+            echo "ASSET=$NAME.tar.gz" >> "$GITHUB_ENV"
+          fi
+          ls -l "$NAME".*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-archive
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: true
+          body: |
+            PiST — an IDE for Atari ST assembly development.
+
+            Each archive contains PiST, the `vasmm68k_mot` assembler, and an
+            EmuTOS ROM, so it runs without installing anything else.
+
+            **Assembler:** vasm is not free software. It is redistributed
+            unmodified and for non-commercial use, which its licence permits; see
+            `share/doc/pist/NOTICE`. PiST never patches it.
+
+            **ROM:** EmuTOS 1.4 (GPLv2), a free TOS replacement. Original Atari
+            TOS images are copyrighted and are not included — supply your own in
+            Project Settings if you need one.
+
+            A working emulator (Hatari) is **not** included; install it with your
+            package manager, or point PiST at one in Project Settings.

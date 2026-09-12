@@ -251,6 +251,11 @@ qt_add_executable(tst_gui
 )
 target_include_directories(tst_gui PRIVATE src)
 target_link_libraries(tst_gui PRIVATE Qt6::Test Qt6::Widgets Qt6::Network)
+
+# The diagnose test runs the application binary, so it must exist first — without
+# this it would skip silently in a parallel build, and a skipped test reads as a
+# pass in the summary.
+add_dependencies(tst_gui pist)
 add_test(NAME gui COMMAND tst_gui)
 set_tests_properties(gui PROPERTIES TIMEOUT 180)
 

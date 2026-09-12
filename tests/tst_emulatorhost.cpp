@@ -43,7 +43,7 @@ QString findTos()
     // here would make the only end-to-end emulator test skip on macOS and
     // Windows, which are two of the three target platforms.
     const QList<TosRom> roms = findTosRoms();
-    const TosRom chosen = selectPreferredRom(roms);
+    const TosRom chosen = selectPreferredRom(roms, Machine::St);
     if (chosen.path.isEmpty() || !chosen.supportsAutostart())
         return {};
     return chosen.path;
@@ -67,6 +67,7 @@ private slots:
     void breaksInOnIllegalInstruction();
     void doesNotBreakInOnNormalRun();
     void sourceLineBreakpointFiresAndResolvesBack();
+    void floppyIsMountedInTheEmulator();
 
 private:
     QString m_hatari;
@@ -558,6 +559,53 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     QCOMPARE(back.line, 5);
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));
+
+    host.stop();
+}
+
+// The command line carrying --disk-a is not proof the disk mounted: Hatari
+// validates images and can reject one. Assert on its own log line instead.
+void TstEmulatorHost::floppyIsMountedInTheEmulator()
+{
+    // A blank 720K DOS-format image, written here rather than committed as a
+    // binary fixture.
+    const QString image = m_sourceDir + QStringLiteral("/blank.st");
+    QFile img(image);
+    QVERIFY(img.open(QIODevice::WriteOnly));
+    QByteArray data(737280, '\0');
+    data[0] = static_cast<char>(0x60);
+    data[1] = static_cast<char>(0x1c);
+    img.write(data);
+    img.close();
+    QVERIFY(QFileInfo::exists(image));
+
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/floppy");
+    config.gemdosDir = m_sourceDir;
+    config.floppyImages = {image};
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    QStringList log;
+    connect(&host, &EmulatorHost::logLine, this,
+            [&log](const QString &line) { log.append(line); });
+
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "no entry stop");
+
+    // Hatari reports each inserted image; a rejected one produces a WARN instead.
+    bool inserted = false;
+    for (const QString &line : log) {
+        if (line.contains(QLatin1String("Inserted disk")))
+            inserted = true;
+    }
+    QVERIFY2(inserted, qPrintable("the floppy was not mounted:\n" + log.join(QLatin1Char('\n'))));
 
     host.stop();
 }

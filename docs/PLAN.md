@@ -359,6 +359,11 @@ These are the operational constraints the launch builder must encode.
    | 1.06 | *"TOS versions 1.06 and 1.62 are for Atari STE only"* → **switches to STE** | accepted |
    | 1.62 | same → **switches to STE** | accepted |
 
+   Note that **both 1.06 and 1.62 are STe ROMs** — 1.62 is the later release and fixes a
+   number of bugs, so it is the better default when both are present. An STe cannot run an
+   ST-only ROM (1.00–1.04) at all, which is why ROM selection is machine-aware rather than
+   "first usable file in the directory".
+
    Two consequences for the setup UI, which must not be two independent dropdowns:
    - a machine/ROM pair can be **invalid**, and Hatari resolves it by silently overriding the
      requested machine (logging an `ERROR` line the IDE should surface);
@@ -472,6 +477,20 @@ current source line update as `s`/`n`/`c` are issued.
 
 **Acceptance:** a user can create a project, choose a machine and ROM, build, run, and quit, with no
 writes to any real `hatari.cfg`.
+
+**Status: complete.** Delivered as:
+
+- `ProjectSettings` persisted to a `.pistproject` JSON file beside the source, auto-discovered on
+  open, with recent paths in `QSettings`. Never touches `hatari.cfg` (§5 rule 7)
+- `SettingsDialog` (Build and Emulator tabs): include paths, defines, CPU, extra assembler args;
+  machine, TOS ROM, monitor, RAM, hard disk, floppy A/B, extra emulator args
+- `Machine` models the machine/ROM pairing, so a project cannot silently be handed a ROM Hatari
+  will reject, and ROM selection prefers the newest compatible version
+- File browser and dirty-tracking with save prompts
+- Session directories are cleaned up rather than accumulating one per run
+
+Deliberately deferred: a ROM SHA-256 known-good table and EmuTOS shipping (§7 packaging), and
+multi-file/vlink builds. Floppy *authoring* remains out of scope.
 
 ### Phase 2 — full debug UI on the native backend
 

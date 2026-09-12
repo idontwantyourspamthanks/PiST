@@ -45,6 +45,10 @@ qt_add_executable(pist
     src/emu/Paths.h
     src/emu/SessionConfig.cpp
     src/emu/SessionConfig.h
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
     src/emu/TosRom.cpp
     src/emu/TosRom.h
 
@@ -56,8 +60,12 @@ qt_add_executable(pist
     src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/SettingsDialog.cpp
+    src/ui/SettingsDialog.h
 )
 
 target_include_directories(pist PRIVATE src)
@@ -95,6 +103,10 @@ add_test(NAME parsers COMMAND tst_parsers)
 # autostart guard cannot be skipped by an unusual filename.
 qt_add_executable(tst_tosrom
     tests/tst_tosrom.cpp
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
     src/emu/TosRom.cpp
     src/emu/TosRom.h
     src/emu/Paths.cpp
@@ -119,6 +131,22 @@ target_include_directories(tst_debug PRIVATE src)
 target_link_libraries(tst_debug PRIVATE Qt6::Test)
 add_test(NAME debug COMMAND tst_debug)
 
+# Project settings persistence.
+qt_add_executable(tst_settings
+    tests/tst_settings.cpp
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+)
+target_include_directories(tst_settings PRIVATE src)
+target_link_libraries(tst_settings PRIVATE Qt6::Test)
+add_test(NAME settings COMMAND tst_settings)
+
 # GUI-level: constructs MainWindow and verifies the line map against a real
 # vasm listing, covering the PC <-> source-line claim end to end.
 qt_add_executable(tst_gui
@@ -133,8 +161,18 @@ qt_add_executable(tst_gui
     src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
+    src/ui/FileBrowser.cpp
+    src/ui/FileBrowser.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/SettingsDialog.cpp
+    src/ui/SettingsDialog.h
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
     src/editor/CodeEditor.cpp
     src/editor/CodeEditor.h
     src/editor/AsmHighlighter.cpp
@@ -157,6 +195,10 @@ qt_add_executable(tst_gui
     src/emu/Paths.h
     src/emu/SessionConfig.cpp
     src/emu/SessionConfig.h
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
     src/emu/TosRom.cpp
     src/emu/TosRom.h
 )
@@ -181,6 +223,10 @@ qt_add_executable(tst_emulatorhost
     src/emu/Paths.h
     src/emu/SessionConfig.cpp
     src/emu/SessionConfig.h
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
     src/emu/TosRom.cpp
     src/emu/TosRom.h
     src/emu/MachineState.h

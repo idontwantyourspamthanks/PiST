@@ -10,6 +10,7 @@
 #include "emu/HatariProbe.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
+#include "project/ProjectSettings.h"
 
 #include <QMainWindow>
 #include <QString>
@@ -29,6 +30,7 @@ class CodeEditor;
 class BreakpointPanel;
 class DisassemblyView;
 class EmulatorHost;
+class FileBrowser;
 class MemoryView;
 class RegistersView;
 
@@ -40,11 +42,23 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+public slots:
+    /// Open a source file by path, without a dialog. Used for the command line
+    /// and for anything that already knows what it wants to open.
+    void openPath(const QString &path);
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void openFile();
     void saveFile();
+    void openProject();
+    void saveProject();
+    void editSettings();
     void build();
     void run();
+    void launchEmulator();
     void stopSession();
     void step();
     void stepOver();
@@ -58,9 +72,22 @@ private slots:
 
 private:
     void createActions();
+    void createMenus();
     void createDocks();
     void createToolBar();
     void createStatusBar();
+
+    /// Load the project settings that sit beside a source file, if any.
+    void loadProjectForSource(const QString &sourcePath);
+
+    /// Update the title and the Save action to reflect the modified state.
+    void updateModifiedState();
+
+    /// Ask to save when there is unsaved work. Returns false if the user
+    /// cancelled, in which case the caller must abandon its action.
+    bool maybeSave();
+
+    void openRecentSource();
 
     void onBuildFinished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void onStateUpdated(const pist::MachineState &state);
@@ -89,6 +116,7 @@ private:
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
+    FileBrowser *m_fileBrowser = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QTabWidget *m_bottomTabs = nullptr;
@@ -107,7 +135,24 @@ private:
     /// arming sequence runs exactly once.
     bool m_sessionArmed = false;
 
+    /// Set by Run, consumed by onBuildFinished. Needed because the build is
+    /// asynchronous: the launch has to wait for it, not run alongside it.
+    bool m_launchAfterBuild = false;
+
+    /// Session directory of the current (or most recent) run, so it can be
+    /// removed when the session ends instead of accumulating in the temp
+    /// location. See paths::removeSessionDir.
+    QString m_currentSessionDir;
+
+    /// Project configuration. Persisted to a `.pistproject` file beside the
+    /// source, so settings travel with the project (docs/PLAN.md §5 rule 7 —
+    /// never via a user's hatari.cfg).
+    ProjectSettings m_settings;
+
     QAction *m_actOpen = nullptr;
+    QAction *m_actOpenProject = nullptr;
+    QAction *m_actSaveProject = nullptr;
+    QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;
     QAction *m_actBuild = nullptr;
     QAction *m_actRun = nullptr;

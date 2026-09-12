@@ -23,6 +23,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 ```
 
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line
+- **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
+  monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
 - **Debug** with breakpoints, single-step, step-over, registers, memory and labelled disassembly —

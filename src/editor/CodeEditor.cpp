@@ -74,6 +74,9 @@ CodeEditor::CodeEditor(QWidget *parent)
     connect(this, &QPlainTextEdit::updateRequest, this, &CodeEditor::updateLineNumberArea);
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, &CodeEditor::onCursorPositionChanged);
 
+    connect(document(), &QTextDocument::modificationChanged, this,
+            &CodeEditor::modificationChanged);
+
     updateLineNumberAreaWidth(0);
 }
 
@@ -277,6 +280,11 @@ bool CodeEditor::saveFile(const QString &path)
 bool CodeEditor::isModifiedSinceLoad() const
 {
     return document()->isModified();
+}
+
+QString CodeEditor::displayName() const
+{
+    return m_filePath.isEmpty() ? QStringLiteral("untitled") : QFileInfo(m_filePath).fileName();
 }
 
 } // namespace pist

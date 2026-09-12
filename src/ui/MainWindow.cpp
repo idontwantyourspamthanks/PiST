@@ -12,17 +12,23 @@
 #include "debug/Breakpoint.h"
 #include "ui/BreakpointPanel.h"
 #include "ui/DisassemblyView.h"
+#include "ui/FileBrowser.h"
 #include "ui/MemoryView.h"
+#include "ui/SettingsDialog.h"
 #include "ui/RegistersView.h"
 
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenuBar>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -86,6 +92,11 @@ MainWindow::MainWindow(QWidget *parent)
                     m_memory->applyDump(response);
             });
 
+    // The title carries the modified marker, so the user can always tell whether
+    // work is unsaved without looking for a toolbar state.
+    connect(m_editor, &CodeEditor::modificationChanged, this,
+            [this](bool) { updateModifiedState(); });
+
     connect(m_editor, &CodeEditor::gutterClicked, this, [this](int line, Qt::MouseButton button) {
         if (button == Qt::LeftButton)
             toggleBreakpointAtLine(line);
@@ -121,16 +132,27 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     createActions();
+    createMenus();
     createDocks();
     createToolBar();
     createStatusBar();
+
+    // Sessions left by a crash or a kill, once they are old enough that no live
+    // instance could still own them.
+    paths::pruneStaleSessions();
+
+    // Reopen where the user left off when nothing was passed on the command line.
+    QTimer::singleShot(0, this, [this] {
+        if (m_editor->filePath().isEmpty())
+            openRecentSource();
+    });
 
     m_caps = probeHatari(findHatari());
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     m_statusEmulator->setText(m_caps.summary());
 
-    setWindowTitle(tr("PiST — Atari ST assembly IDE"));
+    updateModifiedState();
     resize(1280, 860);
 }
 
@@ -145,6 +167,16 @@ void MainWindow::createActions()
     m_actSave = new QAction(tr("&Save"), this);
     m_actSave->setShortcut(QKeySequence::Save);
     connect(m_actSave, &QAction::triggered, this, &MainWindow::saveFile);
+
+    m_actOpenProject = new QAction(tr("Open &Project…"), this);
+    connect(m_actOpenProject, &QAction::triggered, this, &MainWindow::openProject);
+
+    m_actSaveProject = new QAction(tr("&Save Project"), this);
+    connect(m_actSaveProject, &QAction::triggered, this, &MainWindow::saveProject);
+
+    m_actSettings = new QAction(tr("Project &Settings…"), this);
+    m_actSettings->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    connect(m_actSettings, &QAction::triggered, this, &MainWindow::editSettings);
 
     m_actBuild = new QAction(tr("&Build"), this);
     m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
@@ -178,8 +210,47 @@ void MainWindow::createActions()
     connect(m_actResume, &QAction::triggered, this, &MainWindow::resume);
 }
 
+void MainWindow::createMenus()
+{
+    auto *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(m_actOpen);
+    fileMenu->addAction(m_actSave);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_actOpenProject);
+    fileMenu->addAction(m_actSaveProject);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_actSettings);
+    fileMenu->addSeparator();
+    // Explicit QAction rather than the deprecated combined overload.
+    auto *quit = new QAction(tr("E&xit"), this);
+    quit->setShortcut(QKeySequence::Quit);
+    connect(quit, &QAction::triggered, this, &QWidget::close);
+    fileMenu->addAction(quit);
+
+    auto *runMenu = menuBar()->addMenu(tr("&Run"));
+    runMenu->addAction(m_actBuild);
+    runMenu->addAction(m_actRun);
+    runMenu->addAction(m_actStop);
+    runMenu->addSeparator();
+    runMenu->addAction(m_actResume);
+    runMenu->addAction(m_actStep);
+    runMenu->addAction(m_actStepOver);
+    runMenu->addSeparator();
+    runMenu->addAction(m_actClearBreakpoints);
+}
+
 void MainWindow::createDocks()
 {
+    addDockWidget(Qt::LeftDockWidgetArea, [this] {
+        auto *dock = new QDockWidget(tr("Project files"), this);
+        m_fileBrowser = new FileBrowser(dock);
+        dock->setWidget(m_fileBrowser);
+        // Opening from the browser goes through the same path as the menu, so the
+        // unsaved-changes prompt and project discovery behave identically.
+        connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
+        return dock;
+    }());
+
     addDockWidget(Qt::RightDockWidgetArea, [this] {
         auto *dock = new QDockWidget(tr("Registers"), this);
         m_registers = new RegistersView(dock);
@@ -245,6 +316,7 @@ void MainWindow::createToolBar()
     bar->setObjectName(QStringLiteral("mainToolBar"));
     bar->addAction(m_actOpen);
     bar->addAction(m_actSave);
+    bar->addAction(m_actSettings);
     bar->addSeparator();
     bar->addAction(m_actBuild);
     bar->addAction(m_actRun);
@@ -271,13 +343,81 @@ QString MainWindow::makeSessionDir()
     // socket, and an isolated Hatari config. It must be short on Unix, because
     // the socket path has to fit in sockaddr_un::sun_path (108 bytes on Linux).
     // Windows uses named pipes and has no equivalent limit.
+    // Starting a new session supersedes the previous one, so drop it now rather
+    // than leaving a directory (and its config tree) behind on every run.
+    if (!m_currentSessionDir.isEmpty()) {
+        paths::removeSessionDir(m_currentSessionDir);
+        m_currentSessionDir.clear();
+    }
+
     static int counter = 0;
     const QString dir = paths::sessionBaseDir()
                       + QStringLiteral("/%1-%2")
                             .arg(QCoreApplication::applicationPid())
                             .arg(++counter);
     QDir().mkpath(dir);
+    m_currentSessionDir = dir;
     return dir;
+}
+
+void MainWindow::updateModifiedState()
+{
+    const QString name = m_editor->displayName();
+    const bool modified = m_editor->isModifiedSinceLoad();
+
+    // The "[*]" placeholder is replaced by Qt when windowModified is set, which
+    // is the platform-correct way to show an unsaved document.
+    setWindowTitle(tr("%1[*] — PiST").arg(name));
+    setWindowModified(modified);
+
+    if (m_actSave)
+        m_actSave->setEnabled(modified);
+}
+
+bool MainWindow::maybeSave()
+{
+    if (!m_editor->isModifiedSinceLoad())
+        return true;
+
+    const auto answer = QMessageBox::warning(
+        this, tr("Unsaved changes"),
+        tr("%1 has unsaved changes.\n\nSave before continuing?")
+            .arg(m_editor->displayName()),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Discard)
+        return true;
+
+    // Save: to the existing path when there is one, otherwise ask for one.
+    if (m_editor->filePath().isEmpty()) {
+        const QString path = QFileDialog::getSaveFileName(
+            this, tr("Save assembly source"), QString(),
+            tr("Assembly sources (*.s *.S *.asm)"));
+        if (path.isEmpty())
+            return false;
+        if (!m_editor->saveFile(path)) {
+            QMessageBox::critical(this, tr("Save"), tr("Could not write %1").arg(path));
+            return false;
+        }
+    } else if (!m_editor->saveFile(m_editor->filePath())) {
+        QMessageBox::critical(this, tr("Save"),
+                              tr("Could not write %1").arg(m_editor->filePath()));
+        return false;
+    }
+
+    updateModifiedState();
+    return true;
+}
+
+void MainWindow::openRecentSource()
+{
+    // Offered when there is nothing open, so a restart lands somewhere useful
+    // rather than on an empty editor.
+    const QString last = settings::lastSourcePath();
+    if (!last.isEmpty() && QFileInfo::exists(last))
+        openPath(last);
 }
 
 void MainWindow::openFile()
@@ -287,8 +427,149 @@ void MainWindow::openFile()
         tr("Assembly sources (*.s *.S *.asm *.x68);;All files (*)"));
     if (path.isEmpty())
         return;
-    if (m_editor->loadFile(path))
-        statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
+    openPath(path);
+}
+
+void MainWindow::openPath(const QString &path)
+{
+    if (path.isEmpty())
+        return;
+
+    // Replacing the current document would discard unsaved work.
+    if (!maybeSave())
+        return;
+
+    if (!m_editor->loadFile(path)) {
+        QMessageBox::warning(this, tr("Open"),
+                             tr("Could not open %1").arg(path));
+        return;
+    }
+
+    statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
+    loadProjectForSource(path);
+    updateModifiedState();
+
+    if (m_fileBrowser)
+        m_fileBrowser->showFor(path);
+}
+
+void MainWindow::openProject()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open project"), QString(),
+        tr("PiST projects (*%1);;All files (*)")
+            .arg(QLatin1String(settings::kProjectSuffix)));
+    if (path.isEmpty())
+        return;
+
+    ProjectSettings loaded;
+    QString error;
+    if (!settings::load(&loaded, path, &error)) {
+        QMessageBox::critical(this, tr("Open project"), error);
+        return;
+    }
+
+    // The source path is not stored in the file — it is implied by the project
+    // file's location — so derive it and load it.
+    QString source = settings::lastSourcePath();
+    const QString implied = path.left(path.size() - QLatin1String(settings::kProjectSuffix).size())
+                          + QStringLiteral(".s");
+    if (QFileInfo::exists(implied))
+        source = implied;
+    else if (!source.isEmpty() && !QFileInfo::exists(source))
+        source.clear();
+
+    if (!source.isEmpty()) {
+        loaded.sourceFile = source;
+        m_editor->loadFile(source);
+    }
+
+    m_settings = loaded;
+    settings::rememberLastProject(path, source);
+    statusBar()->showMessage(tr("Opened project %1").arg(QFileInfo(path).fileName()), 5000);
+    m_log->appendPlainText(tr("[project] loaded %1").arg(path));
+}
+
+void MainWindow::saveProject()
+{
+    if (m_editor->filePath().isEmpty()) {
+        QMessageBox::information(this, tr("Save project"),
+                                 tr("Open an assembly source file first."));
+        return;
+    }
+
+    m_settings.sourceFile = m_editor->filePath();
+    const QString path = settings::projectFileFor(m_editor->filePath());
+
+    QString error;
+    if (!settings::save(m_settings, path, &error)) {
+        QMessageBox::critical(this, tr("Save project"), error);
+        return;
+    }
+
+    settings::rememberLastProject(path, m_editor->filePath());
+    statusBar()->showMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 5000);
+    m_log->appendPlainText(tr("[project] saved %1").arg(path));
+}
+
+void MainWindow::editSettings()
+{
+    SettingsDialog dialog(m_settings, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_settings = dialog.settings();
+
+    // Persist immediately when the project is already known, so a settings change
+    // is not lost if the session is closed without an explicit save.
+    if (!m_editor->filePath().isEmpty()) {
+        m_settings.sourceFile = m_editor->filePath();
+        const QString path = settings::projectFileFor(m_editor->filePath());
+        QString error;
+        if (settings::save(m_settings, path, &error))
+            settings::rememberLastProject(path, m_editor->filePath());
+        else
+            m_log->appendPlainText(QStringLiteral("[project] ") + error);
+    }
+
+    statusBar()->showMessage(
+        tr("Settings updated: %1, %2, %3 MiB")
+            .arg(machineDisplayName(m_settings.machine), m_settings.monitor)
+            .arg(m_settings.memSizeMiB),
+        5000);
+}
+
+void MainWindow::loadProjectForSource(const QString &sourcePath)
+{
+    if (sourcePath.isEmpty())
+        return;
+
+    const QString projectPath = settings::projectFileFor(sourcePath);
+    if (!QFileInfo::exists(projectPath)) {
+        // No project file: keep the current settings but point them at the new
+        // source, so Build uses the source the user just opened.
+        m_settings.sourceFile = sourcePath;
+        return;
+    }
+
+    ProjectSettings loaded;
+    QString error;
+    if (!settings::load(&loaded, projectPath, &error)) {
+        m_log->appendPlainText(tr("[project] %1").arg(error));
+        m_settings.sourceFile = sourcePath;
+        return;
+    }
+
+    loaded.sourceFile = sourcePath;
+    m_settings = loaded;
+
+    settings::rememberLastProject(projectPath, sourcePath);
+    m_log->appendPlainText(tr("[project] loaded %1").arg(projectPath));
+    statusBar()->showMessage(
+        tr("Project settings: %1, %2, %3 MiB")
+            .arg(machineDisplayName(m_settings.machine), m_settings.monitor)
+            .arg(m_settings.memSizeMiB),
+        6000);
 }
 
 void MainWindow::saveFile()
@@ -303,6 +584,7 @@ void MainWindow::saveFile()
     } else {
         m_editor->saveFile(m_editor->filePath());
     }
+    updateModifiedState();
 }
 
 void MainWindow::build()
@@ -326,6 +608,15 @@ void MainWindow::build()
     m_build->setSourceFile(info.absoluteFilePath());
     m_build->setOutputFile(outPath);
     m_build->setListingFile(listPath);
+
+    // Everything else comes from the project settings. Before this existed the
+    // include/define/cpu setters were never called, so a multi-file project
+    // could not be built at all.
+    m_build->setIncludePaths(m_settings.includePaths);
+    m_build->setDefines(m_settings.defines);
+    m_build->setCpu(m_settings.cpu);
+    m_build->setExtraArgs(m_settings.extraBuildArgs);
+
     m_build->build();
 }
 
@@ -333,8 +624,13 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
 {
     QString error;
     if (success && m_lineMap.parseListing(m_build->listingFile(), &error)) {
+        // This counts source *files* contributing to the listing, not lines. The
+        // two differ by orders of magnitude for a real project, so naming it
+        // correctly matters (a multi-file build reports 2, not the 2000+ lines).
+        const int files = m_lineMap.sourceFiles().size();
         statusBar()->showMessage(
-            tr("Build succeeded — %1 source lines mapped").arg(m_lineMap.sourceFiles().size()),
+            files == 1 ? tr("Build succeeded — 1 source file mapped")
+                       : tr("Build succeeded — %1 source files mapped").arg(files),
             5000);
     } else if (!error.isEmpty()) {
         m_log->appendPlainText(QStringLiteral("[line map] ") + error);
@@ -363,6 +659,15 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
     m_log->appendPlainText(success ? tr("Build succeeded.")
                                    : tr("Build failed with %1 diagnostic(s).")
                                          .arg(diagnostics.size()));
+
+    // Run was requested: continue now that the build has actually finished.
+    if (m_launchAfterBuild) {
+        m_launchAfterBuild = false;
+        if (success)
+            launchEmulator();
+        else
+            m_log->appendPlainText(tr("[run] build failed, so nothing was launched"));
+    }
 }
 
 void MainWindow::run()
@@ -374,10 +679,18 @@ void MainWindow::run()
 
     // Always rebuild before running: this keeps the listing in step with the
     // binary, which is what the line map depends on.
+    //
+    // The launch cannot happen here. build() starts the assembler asynchronously
+    // and returns immediately, so anything after it would run while the build was
+    // still in flight — and a "is the build running?" guard here is always true,
+    // which silently turned the whole launch path into dead code. The launch is
+    // chained onto build completion instead, via onBuildFinished.
+    m_launchAfterBuild = true;
     build();
-    if (m_build->isRunning())
-        return;
+}
 
+void MainWindow::launchEmulator()
+{
     const QFileInfo info(m_editor->filePath());
     const QString prg = info.absolutePath() + QDir::separator()
                       + info.completeBaseName() + QStringLiteral(".prg");
@@ -394,6 +707,19 @@ void MainWindow::run()
     config.programPath = prg;
     config.sessionDir = sessionDir;
     config.gemdosDir = info.absolutePath();
+
+    config.machine = machineCliName(m_settings.machine);
+    config.monitor = m_settings.monitor;
+    config.memSizeMiB = m_settings.memSizeMiB;
+    config.extraArgs = m_settings.extraEmulatorArgs;
+    if (!m_settings.hardDiskImage.isEmpty()) {
+        // ACSI is the safe default: it exists on every ST-family machine, unlike
+        // IDE which is STe-and-later only.
+        config.acsiImage = m_settings.hardDiskImage;
+        config.acsiId = 0;
+    }
+
+    config.floppyImages = m_settings.floppyImages;
 
     // The control socket is compiled into Hatari only under
     // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
@@ -423,7 +749,29 @@ void MainWindow::run()
     // alphabetically first image would select TOS 1.02 and produce a session
     // that never reaches the entry breakpoint (docs/PLAN.md §5 rule 3).
     const QList<TosRom> roms = findTosRoms();
-    const TosRom rom = selectPreferredRom(roms);
+
+    // An explicitly configured ROM wins; otherwise pick the best for the machine.
+    // Choosing for the machine matters because the machines accept different TOS
+    // versions outright: an STe needs 1.06 or 1.62, and would otherwise be handed
+    // a 1.04 that Hatari rejects.
+    TosRom rom;
+    if (!m_settings.tosPath.isEmpty()) {
+        for (const TosRom &candidate : roms) {
+            if (candidate.path == m_settings.tosPath) {
+                rom = candidate;
+                break;
+            }
+        }
+        if (rom.path.isEmpty()) {
+            QMessageBox::warning(
+                this, tr("Run"),
+                tr("The configured TOS ROM is missing:\n\n%1\n\nFalling back to the best "
+                   "ROM for the %2.")
+                    .arg(m_settings.tosPath, machineDisplayName(m_settings.machine)));
+        }
+    }
+    if (rom.path.isEmpty())
+        rom = selectPreferredRom(roms, m_settings.machine);
     if (rom.path.isEmpty()) {
         const QStringList searched = paths::tosSearchPaths();
         QMessageBox::critical(
@@ -494,6 +842,28 @@ void MainWindow::run()
 void MainWindow::stopSession()
 {
     m_host->stop();
+
+    if (!m_currentSessionDir.isEmpty()) {
+        paths::removeSessionDir(m_currentSessionDir);
+        m_currentSessionDir.clear();
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!maybeSave()) {
+        event->ignore();
+        return;
+    }
+
+    // Leaving this to the age-based prune would mean a directory survives every
+    // ordinary quit, not just a crash.
+    m_host->stop();
+    if (!m_currentSessionDir.isEmpty()) {
+        paths::removeSessionDir(m_currentSessionDir);
+        m_currentSessionDir.clear();
+    }
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::step()

@@ -11,11 +11,16 @@
 // here rather than assumed.
 
 #include "editor/CodeEditor.h"
+#include "emu/EmulatorHost.h"
+#include "emu/Paths.h"
+#include "emu/TosRom.h"
+#include "ui/FileBrowser.h"
 #include "ui/MainWindow.h"
 
 #include <QDir>
 #include <QFileInfo>
 #include <QProcess>
+#include <QTreeView>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -31,6 +36,15 @@ private slots:
     void windowConstructs();
     void assemblesAndMapsLines();
     void editorShowsExecutionLineAndBreakpoints();
+
+    /// Run must eventually start an emulator session — and must do so *after* the
+    /// asynchronous build finishes, not alongside it.
+    void runStartsAnEmulatorSession();
+
+    /// Floppy images reach the emulator command line.
+    void floppyImagesReachTheCommandLine();
+    void fileBrowserShowsTheProjectDirectory();
+    void editorTracksUnsavedChanges();
 
 private:
     QString m_vasm;
@@ -141,6 +155,150 @@ void TstGui::editorShowsExecutionLineAndBreakpoints()
     QCOMPARE(editor->breakpointLines(), QList<int>({2, 3}));
     editor->setBreakpointLines({});
     QVERIFY(editor->breakpointLines().isEmpty());
+}
+
+// The regression this guards: Run called build() (asynchronous) and then checked
+// whether a build was in flight, which is always true immediately after starting
+// one — so the entire emulator-launch path was unreachable dead code and Run
+// appeared to "just build".
+void TstGui::runStartsAnEmulatorSession()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        QSKIP("needs hatari");
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    // A program that assembles cleanly and spins, so the session stops at entry.
+    const QString source = m_work->path() + QStringLiteral("/run.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    // A project file with no include paths, so no modal dialog can interrupt.
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY2(host, "MainWindow must own an EmulatorHost");
+    QVERIFY(!host->isRunning());
+
+    window.openPath(source);
+    QCOMPARE(window.windowTitle().contains(QLatin1String("PiST")), true);
+
+    QSignalSpy runningSpy(host, &EmulatorHost::runningChanged);
+
+    // Invoke Run exactly as the toolbar action does.
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    // The emulator must come up without further interaction. The build runs first,
+    // so allow for it.
+    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+
+    // ...and it must be a real session, not just a spawned process.
+    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
+    QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
+             "the emulator started but never reached the debugger");
+
+    host->stop();
+}
+
+// Floppy drives are the last emulator feature that had no UI. Verify the
+// configured images actually reach `--disk-a`/`--disk-b`, since a dialog field
+// that never reaches the command line is the failure mode this project has hit
+// before (BuildService's include paths, and the run path itself).
+void TstGui::floppyImagesReachTheCommandLine()
+{
+    SessionConfig config;
+    config.hatariPath = QStringLiteral("hatari");
+    config.programPath = QStringLiteral("/tmp/prog.prg");
+    config.floppyImages = {QStringLiteral("/disks/boot.st"),
+                           QStringLiteral("/disks/data.st")};
+
+    const QStringList argv = config.toArgv();
+    const QString joined = argv.join(QLatin1Char(' '));
+
+    QVERIFY2(joined.contains(QLatin1String("--disk-a /disks/boot.st")), qPrintable(joined));
+    QVERIFY2(joined.contains(QLatin1String("--disk-b /disks/data.st")), qPrintable(joined));
+
+    // A user might also supply only a disk for A:, which must not emit a bare
+    // --disk-b with nothing after it.
+    SessionConfig onlyA;
+    onlyA.hatariPath = QStringLiteral("hatari");
+    onlyA.programPath = QStringLiteral("/tmp/prog.prg");
+    onlyA.floppyImages = {QStringLiteral("/disks/boot.st"), QString()};
+    const QString joinedA = onlyA.toArgv().join(QLatin1Char(' '));
+    QVERIFY(joinedA.contains(QLatin1String("--disk-a")));
+    QVERIFY2(!joinedA.contains(QLatin1String("--disk-b")), qPrintable(joinedA));
+}
+
+void TstGui::fileBrowserShowsTheProjectDirectory()
+{
+    // A project directory with a couple of files, so the browser has something to
+    // root itself in.
+    const QString dir = m_work->path() + QStringLiteral("/browse");
+    QVERIFY(QDir().mkpath(dir));
+    const QString src = dir + QStringLiteral("/prog.s");
+    QFile f(src);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write("\tnop\n");
+    f.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY2(browser, "MainWindow must own a FileBrowser");
+
+    // Opening a file must point the browser at that file's directory, so the
+    // browser and the editor never disagree about which project is open.
+    window.openPath(src);
+
+    auto *view = browser->findChild<QTreeView *>();
+    QVERIFY(view);
+    QVERIFY2(view->model(), "the browser must have a model");
+    const QString rootPath = view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString();
+    QCOMPARE(rootPath, dir);
+
+    // The file being edited is the selected entry.
+    const QString selected = view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString();
+    QCOMPARE(selected, src);
+}
+
+// The editor's modified state drives the window title and the save prompt, and
+// until now isModifiedSinceLoad() was never called from anywhere.
+void TstGui::editorTracksUnsavedChanges()
+{
+    MainWindow window;
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    editor->setPlainText(QStringLiteral("\tnop\n"));
+    editor->document()->setModified(false);
+    QVERIFY(!editor->isModifiedSinceLoad());
+
+    editor->insertPlainText(QStringLiteral("\trts\n"));
+    QVERIFY2(editor->isModifiedSinceLoad(),
+             "editing must mark the document modified, or the save prompt never fires");
+
+    editor->document()->setModified(false);
+    QVERIFY(!editor->isModifiedSinceLoad());
+
+    // An id in the title with the modified marker is how Qt shows unsaved state.
+    QVERIFY2(window.windowTitle().contains(QLatin1String("[*]")),
+             qPrintable("title must carry the modified placeholder: " + window.windowTitle()));
 }
 
 QTEST_MAIN(TstGui)

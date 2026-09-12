@@ -94,6 +94,20 @@ target_link_libraries(pist PRIVATE
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
+# Deploy the Qt runtime alongside the binary: platform plugins, TLS backends and
+# the other dlopened pieces Qt needs at run time. Qt finds these itself, so
+# without them an installed or bundled binary starts and then fails to create a
+# window — the failure mode that produced "Library not loaded" on macOS and blank
+# platform plugin errors elsewhere. Qt 6.5+ provides this; older Qt needs
+# windeployqt/macdeployqt/manual copies instead.
+if(QT_VERSION VERSION_GREATER_EQUAL 6.5)
+    qt_generate_deploy_app_script(
+        TARGET pist
+        OUTPUT_SCRIPT qt_deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR)
+    install(SCRIPT ${qt_deploy_script})
+endif()
+
 if(APPLE)
     # A GUI application on macOS belongs in a bundle: it is what macdeployqt
     # operates on, carries the icon and Info.plist, and is what a user drags to

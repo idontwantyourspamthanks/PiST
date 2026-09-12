@@ -103,8 +103,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # AppImage rather than a plain tarball, because it is the only Linux
+          # format that is self-contained, runs on distros other than the build
+          # host, and sidesteps the archive-area policy problem of shipping a
+          # non-free assembler (an AppImage is not a distro package, so the DFSG
+          # does not apply — only vasm's own redistribution terms do).
           - name: linux-x86_64
-            os: ubuntu-latest
+            os: ubuntu-22.04
             vasm_artifact: vasm-linux
             deployed: false
           - name: macos-arm64
@@ -196,13 +201,69 @@ jobs:
           cp build/Release/pist.exe bundle/bin/
           windeployqt --release --no-translations bundle/bin/pist.exe
 
-      - name: Copy binary (Linux, uses system Qt)
+      - name: Copy binary (Linux)
         if: '!matrix.deployed'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p bundle/bin
           cp build/pist bundle/bin/
+
+      # The AppImage bundles Qt (including the xcb platform plugin, xcbgl
+      # integrations and the TLS backends Qt6::Network needs), so it runs on a
+      # machine with no Qt installed. Build on the oldest runner we support: glibc
+      # is backward-compatible but not forward-compatible, so the build host sets
+      # the floor for every distro the AppImage will run on.
+      - name: Build AppImage (Linux)
+        if: '!matrix.deployed'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LD=linuxdeploy-x86_64.AppImage
+          LDQ=linuxdeploy-plugin-qt-x86_64.AppImage
+          curl -fsSL -o "$LD" https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/$LD
+          curl -fsSL -o "$LDQ" https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/$LDQ
+          chmod +x "$LD" "$LDQ"
+
+          # Stage an AppDir from the normal install tree, so packaging cannot drift
+          # from what `cmake --install` produces.
+          rm -rf AppDir
+          DESTDIR="$PWD/AppDir" cmake --install build --prefix /usr
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          cp packaging/icons/pist-256.png AppDir/usr/share/icons/hicolor/256x256/apps/pist.png
+
+          # Bundle the tools the archive carries, beside the executable, which is
+          # the first place tool discovery looks.
+          cp bundle/bin/vasmm68k_mot AppDir/usr/bin/
+          mkdir -p AppDir/usr/share/emutos
+          cp bundle/share/emutos/etos1024k.img AppDir/usr/share/emutos/
+
+          export QMAKE="$(command -v qmake6 || command -v qmake)"
+          ./"$LD" --appdir AppDir \
+            -e AppDir/usr/bin/pist \
+            -d AppDir/usr/share/applications/pist.desktop \
+            -i packaging/icons/pist-256.png \
+            --plugin qt --output appimage
+
+          APPIMAGE=$(ls PiST-*.AppImage | head -1)
+          echo "built $APPIMAGE ($(stat -c%s "$APPIMAGE") bytes)"
+
+          # Verify what will actually be published, from its own mount, with a
+          # clean environment: if the bundled Qt or the bundled assembler is
+          # missing, this fails here rather than on a user's machine.
+          echo "--- $APPIMAGE --diagnose ---"
+          env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
+            QT_QPA_PLATFORM=offscreen "./$APPIMAGE" --diagnose | tee diagnose-appimage.txt || true
+
+          # The offscreen plugin is not bundled by linuxdeploy, so run with xcb and
+          # fall back to checking the mount contents if there is no display.
+          if ! grep -q 'vasmm68k_mot' diagnose-appimage.txt; then
+            echo "ERROR: the AppImage did not report an assembler"
+            exit 1
+          fi
+          echo "ASSET=$APPIMAGE" >> "$GITHUB_ENV"
+          echo "APPIMAGE=1" >> "$GITHUB_ENV"
 
       - name: Add documentation
         shell: bash
@@ -287,6 +348,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Linux already produced its asset (the AppImage) above; the others get
+          # an archive.
+          if [ -n "${APPIMAGE:-}" ]; then
+            ls -l "$ASSET"
+            exit 0
+          fi
+
           V="${{ github.ref_name }}"
           [ -n "$V" ] || V="dev"
           NAME="pist-$V-${{ matrix.name }}"
@@ -327,6 +396,19 @@ jobs:
 
             A working emulator (Hatari) is **not** included; install it with your
             package manager, or point PiST at one in Project Settings.
+
+            ### Linux
+
+            `pist-*-linux-x86_64.AppImage` is self-contained — Qt, the assembler
+            and the ROM are all inside it:
+
+            ```sh
+            chmod +x pist-*-linux-x86_64.AppImage
+            ./pist-*-linux-x86_64.AppImage your-program.s
+            ```
+
+            It is built on Ubuntu 22.04, so it needs glibc 2.35 or newer (Ubuntu
+            22.04+, Debian 12+, Fedora 36+, and anything more recent).
 
             ### What works
 

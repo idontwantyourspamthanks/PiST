@@ -219,17 +219,32 @@ void TstDebug::refusesAddressPastTheEndOfItsSection()
 // hazard: a change to one would silently break Run, or worse, run a stale binary.
 void TstDebug::outputPathsDeriveFromSource()
 {
-    const settings::OutputPaths paths =
-        settings::outputPathsFor(QStringLiteral("/home/x/proj/main.s"));
-    QCOMPARE(paths.program, QStringLiteral("/home/x/proj/main.prg"));
-    QCOMPARE(paths.listing, QStringLiteral("/home/x/proj/main.lst"));
-    QCOMPARE(paths.project, QStringLiteral("/home/x/proj/main.pistproject"));
+    // Built from a real path in the temp directory rather than a hardcoded POSIX
+    // one: "/home/x/proj/main.s" is not an absolute path on Windows (it has no
+    // drive), so expectations written that way fail there for reasons that have
+    // nothing to do with the behaviour under test.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("main.s"));
+
+    const settings::OutputPaths paths = settings::outputPathsFor(source);
+    QVERIFY(paths.isValid());
+
+    // The outputs are siblings of the source, with the expected suffixes.
+    const QFileInfo sourceInfo(source);
+    for (const QString &derived : {paths.program, paths.listing, paths.project}) {
+        QVERIFY2(QFileInfo(derived).isAbsolute(), qPrintable(derived));
+        QCOMPARE(QFileInfo(derived).absolutePath(), sourceInfo.absolutePath());
+    }
+    QCOMPARE(QFileInfo(paths.program).fileName(), QStringLiteral("main.prg"));
+    QCOMPARE(QFileInfo(paths.listing).fileName(), QStringLiteral("main.lst"));
+    QCOMPARE(QFileInfo(paths.project).fileName(), QStringLiteral("main.pistproject"));
 
     // A source with dots in the name keeps only the final extension stripped, so
     // the program path cannot collide with a differently-named sibling.
     const settings::OutputPaths dotted =
-        settings::outputPathsFor(QStringLiteral("/home/x/proj/game.v2.s"));
-    QCOMPARE(dotted.program, QStringLiteral("/home/x/proj/game.v2.prg"));
+        settings::outputPathsFor(dir.filePath(QStringLiteral("game.v2.s")));
+    QCOMPARE(QFileInfo(dotted.program).fileName(), QStringLiteral("game.v2.prg"));
 
     QVERIFY(!settings::outputPathsFor(QString()).isValid());
 }

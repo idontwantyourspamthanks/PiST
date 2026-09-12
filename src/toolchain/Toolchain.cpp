@@ -68,24 +68,24 @@ ToolInfo locate(const QString &program, const QString &overridePath)
         return info;
     }
 
-    // 2. Beside the application, which is how release bundles are laid out.
-    const QString beside = QCoreApplication::applicationDirPath()
-                         + QLatin1Char('/') + program;
-    if (QFileInfo(beside).isExecutable()) {
+    // 2. Beside the application (release bundles), then the per-user tools
+    //    directory a fetch would populate.
+    //
+    //    findExecutable is used with explicit directories rather than a direct
+    //    QFileInfo check, because it applies the platform's own notion of an
+    //    executable name: on Windows that includes the `.exe` suffix, so a
+    //    bundled `vasmm68k_mot.exe` is found where a bare `vasmm68k_mot` lookup
+    //    would silently miss it.
+    const QStringList preferred = {QCoreApplication::applicationDirPath(),
+                                   suggestedInstallDir()};
+    const QString beside = QStandardPaths::findExecutable(program, preferred);
+    if (!beside.isEmpty()) {
         info.path = beside;
         info.version = probeVersion(info.path);
         return info;
     }
 
-    // 3. The suggested install directory, where a first-run fetch would place it.
-    const QString installed = suggestedInstallDir() + QLatin1Char('/') + program;
-    if (QFileInfo(installed).isExecutable()) {
-        info.path = installed;
-        info.version = probeVersion(info.path);
-        return info;
-    }
-
-    // 4. The system search path.
+    // 3. The system search path.
     const QString onPath = QStandardPaths::findExecutable(program);
     if (!onPath.isEmpty()) {
         info.path = onPath;

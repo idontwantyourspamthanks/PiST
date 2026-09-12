@@ -231,7 +231,15 @@ void TstSettings::explicitPathWinsOverDiscovery()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
+
+    // Windows decides executability from the file's suffix, not its permission
+    // bits, so a bare `vasmm68k_mot` is not an executable there. Use the
+    // platform's own name for one.
+#ifdef Q_OS_WIN
+    const QString fake = dir.filePath(QStringLiteral("vasmm68k_mot.exe"));
+#else
     const QString fake = dir.filePath(QStringLiteral("vasmm68k_mot"));
+#endif
 
     QFile f(fake);
     QVERIFY(f.open(QIODevice::WriteOnly));
@@ -239,6 +247,7 @@ void TstSettings::explicitPathWinsOverDiscovery()
     f.close();
     QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
                              | QFileDevice::ExeOwner));
+    QVERIFY2(QFileInfo(fake).isExecutable(), "the fixture must look executable");
 
     const ToolInfo info = toolchain::findAssembler(fake);
     QVERIFY(info.found());

@@ -286,3 +286,12 @@ target_include_directories(tst_emulatorhost PRIVATE src)
 target_link_libraries(tst_emulatorhost PRIVATE Qt6::Test Qt6::Network)
 add_test(NAME emulatorhost COMMAND tst_emulatorhost)
 set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
+
+# Test binaries must be console applications on Windows. qt_add_executable marks
+# them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
+# nothing at all, making a red run on Windows undiagnosable.
+foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost)
+    if(TARGET ${test_target})
+        set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
+    endif()
+endforeach()

@@ -143,12 +143,19 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          # The installed location differs per platform: macOS gets an application
+          # bundle (its executable lives inside Contents/MacOS), unlike the plain
+          # bin/ layout elsewhere. Missing this made the install check fail on
+          # macOS alone after the bundle change.
           BIN="$GITHUB_WORKSPACE/stage/bin/pist"
           [ -f "$BIN" ] || BIN="$BIN.exe"
+          [ -f "$BIN" ] || BIN="$GITHUB_WORKSPACE/stage/pist.app/Contents/MacOS/pist"
           if [ ! -f "$BIN" ]; then
             echo "no installed binary found; staged tree:"
             find "$GITHUB_WORKSPACE/stage" -type f | sort
             exit 1
           fi
+          echo "using $BIN"
           "$BIN" --version
+          "$BIN" --diagnose
           ls "$GITHUB_WORKSPACE/stage/share/doc/pist"

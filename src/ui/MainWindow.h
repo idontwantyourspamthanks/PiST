@@ -154,6 +154,14 @@ private:
     /// in sockaddr_un::sun_path.
     QString makeSessionDir();
 
+    /// Create a dock with the shared Photoshop-style setup: movable, floatable,
+    /// closable, and a stable objectName for layout persistence.
+    QDockWidget *makeDock(const QString &title, const QString &objectName, QWidget *widget);
+
+    /// Restore the factory dock layout (the default tab groupings), discarding
+    /// the user's current arrangement. Invoked from the View menu.
+    void resetToDefaultLayout();
+
     CodeEditor *m_editor = nullptr;
     BuildService *m_build = nullptr;
 
@@ -168,6 +176,14 @@ private:
 
     /// The embedded/separate display preference. Persisted via QSettings.
     bool m_embeddedDisplay = false;
+
+    /// The factory dock arrangement, captured after the default tab groupings are
+    /// applied, so "Reset layout" can restore it. Saved/restored via QSettings.
+    QByteArray m_defaultLayoutState;
+
+    /// The View menu, kept so the per-dock show/hide actions can be appended once
+    /// the docks exist (menus are created before docks).
+    class QMenu *m_viewMenu = nullptr;
     EmulatorHost *m_host = nullptr;
     HatariCapabilities m_caps;
 

@@ -277,8 +277,8 @@ void MainWindow::createMenus()
     connect(quit, &QAction::triggered, this, &QWidget::close);
     fileMenu->addAction(quit);
 
-    auto *viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->addAction(m_actEmbedDisplay);
+    m_viewMenu = menuBar()->addMenu(tr("&View"));
+    m_viewMenu->addAction(m_actEmbedDisplay);
 
     auto *runMenu = menuBar()->addMenu(tr("&Run"));
     runMenu->addAction(m_actBuild);
@@ -293,111 +293,97 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actAddWatchpoint);
 }
 
+QDockWidget *MainWindow::makeDock(const QString &title, const QString &objectName, QWidget *widget)
+{
+    auto *dock = new QDockWidget(title, this);
+    // A stable objectName is what saveState/restoreState keys the arrangement on.
+    dock->setObjectName(objectName);
+    // Photoshop-style: the user can drag a dock between areas, tear it off into
+    // a floating window, or close it (and re-show it from the View menu).
+    dock->setFeatures(QDockWidget::DockWidgetMovable
+                      | QDockWidget::DockWidgetFloatable
+                      | QDockWidget::DockWidgetClosable);
+    dock->setWidget(widget);
+    return dock;
+}
+
 void MainWindow::createDocks()
 {
-    addDockWidget(Qt::LeftDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Project files"), this);
-        m_fileBrowser = new FileBrowser(dock);
-        dock->setWidget(m_fileBrowser);
-        // Opening from the browser goes through the same path as the menu, so the
-        // unsaved-changes prompt and project discovery behave identically.
-        connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
-        return dock;
-    }());
+    // Photoshop-style panels: any dock can be nested beside another in an area,
+    // and any dock can be dragged onto another to tab them together. The default
+    // arrangement below groups the debug views, and the whole arrangement is
+    // persisted and restored across runs.
+    setDockNestingEnabled(true);
+    setObjectName(QStringLiteral("mainWindow"));
 
-    addDockWidget(Qt::RightDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Registers"), this);
-        m_registers = new RegistersView(dock);
-        dock->setWidget(m_registers);
-        return dock;
-    }());
+    QList<QDockWidget *> debugTabs;
 
-    addDockWidget(Qt::RightDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Disassembly"), this);
-        m_disassembly = new DisassemblyView(dock);
-        dock->setWidget(m_disassembly);
-        return dock;
-    }());
+    // --- left: project navigation --------------------------------------------
+    m_fileBrowser = new FileBrowser(this);
+    addDockWidget(Qt::LeftDockWidgetArea,
+                  makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
+    connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
 
-    addDockWidget(Qt::RightDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Breakpoints"), this);
-        m_breakpointPanel = new BreakpointPanel(dock);
-        dock->setWidget(m_breakpointPanel);
-        connect(m_breakpointPanel, &BreakpointPanel::removeRequested,
-                this, &MainWindow::removeBreakpoint);
-        connect(m_breakpointPanel, &BreakpointPanel::breakpointActivated,
-                this, &MainWindow::goToBreakpoint);
-        connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
-                this, &MainWindow::clearAllBreakpoints);
-        connect(m_breakpointPanel, &BreakpointPanel::watchpointRemoveRequested,
-                this, &MainWindow::removeWatchpoint);
-        connect(m_breakpointPanel, &BreakpointPanel::watchpointActivated,
-                this, [this](quint32 address) {
-                    if (m_memory)
-                        m_memory->goToAddress(address);
-                });
-        return dock;
-    }());
+    // --- right, top: the emulator display, which wants to be prominent --------
+    // It lives in a dock shown only when the embedded-display option is on; in
+    // separate-window mode it is hidden and the widget is unused.
+    m_display = new EmulatorDisplayWidget(this);
+    m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
+    m_displayDock->setVisible(m_embeddedDisplay);
+    addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
 
-    // The embedded display lives in a dock that is shown only when the option
-    // is on; in separate-window mode it is hidden and the widget is unused.
-    addDockWidget(Qt::RightDockWidgetArea, [this] {
-        m_displayDock = new QDockWidget(tr("Emulator"), this);
-        m_displayDock->setObjectName(QStringLiteral("emulatorDisplayDock"));
-        m_display = new EmulatorDisplayWidget(m_displayDock);
-        m_displayDock->setWidget(m_display);
-        m_displayDock->setVisible(m_embeddedDisplay);
-        return m_displayDock;
-    }());
+    // --- right, below the display: the debug views, tabbed together -----------
+    m_registers = new RegistersView(this);
+    m_disassembly = new DisassemblyView(this);
+    m_stack = new StackView(this);
+    m_hardware = new HardwareView(this);
+    m_breakpointPanel = new BreakpointPanel(this);
 
-    addDockWidget(Qt::BottomDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Memory"), this);
-        m_memory = new MemoryView(dock);
-        dock->setWidget(m_memory);
-        connect(m_memory, &MemoryView::dumpRequested, m_host, &EmulatorHost::requestMemoryDump);
-        return dock;
-    }());
+    debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
+              << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
+              << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
+              << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
+              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel);
 
-    // The call stack: dumped at the stack pointer each stop, with likely return
-    // addresses marked. Routed over its own channel so it never clobbers the
-    // memory view's dumps.
-    addDockWidget(Qt::RightDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Stack"), this);
-        m_stack = new StackView(dock);
-        dock->setWidget(m_stack);
-        connect(m_host, &EmulatorHost::stackDumpReady, this,
-                [this](quint32 sp, const QString &response) {
-                    if (!m_stack)
-                        return;
-                    // The annotation needs the *text* extent, not the data base.
-                    // With no data section (or one that does not follow text) the
-                    // data base gives an empty range and every return address
-                    // silently goes unmarked, so take the extent from the
-                    // listings and fall back to the old bound when the map has
-                    // none (docs/code-review-glm-001.md, P3).
-                    const quint32 textEnd = m_programMap.textEnd();
-                    m_stack->setStackDump(sp, response, m_lastState.textBase,
-                                          textEnd ? textEnd : m_lastState.dataBase);
-                });
-        return dock;
-    }());
+    addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
+    for (int i = 1; i < debugTabs.size(); ++i)
+        tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
 
-    // Hardware state (shifter, MFP, sound, ...) from Hatari's `info` commands,
-    // refreshed on each stop. Read-only; the subject is selectable.
-    addDockWidget(Qt::RightDockWidgetArea, [this] {
-        auto *dock = new QDockWidget(tr("Hardware"), this);
-        m_hardware = new HardwareView(dock);
-        dock->setWidget(m_hardware);
-        connect(m_hardware, &HardwareView::subjectChanged, this,
-                [this](const QString &subject) {
-                    if (m_host->isRunning())
-                        m_host->command(QStringLiteral("info ") + subject);
-                });
-        return dock;
-    }());
+    connect(m_breakpointPanel, &BreakpointPanel::removeRequested,
+            this, &MainWindow::removeBreakpoint);
+    connect(m_breakpointPanel, &BreakpointPanel::breakpointActivated,
+            this, &MainWindow::goToBreakpoint);
+    connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
+            this, &MainWindow::clearAllBreakpoints);
+    connect(m_breakpointPanel, &BreakpointPanel::watchpointRemoveRequested,
+            this, &MainWindow::removeWatchpoint);
+    connect(m_breakpointPanel, &BreakpointPanel::watchpointActivated,
+            this, [this](quint32 address) {
+                if (m_memory)
+                    m_memory->goToAddress(address);
+            });
+    connect(m_host, &EmulatorHost::stackDumpReady, this,
+            [this](quint32 sp, const QString &response) {
+                if (!m_stack)
+                    return;
+                // The annotation needs the *text* extent, not the data base.
+                // With no data section (or one that does not follow text) the
+                // data base gives an empty range and every return address
+                // silently goes unmarked, so take the extent from the
+                // listings and fall back to the old bound when the map has
+                // none (docs/code-review-glm-001.md, P3).
+                const quint32 textEnd = m_programMap.textEnd();
+                m_stack->setStackDump(sp, response, m_lastState.textBase,
+                                      textEnd ? textEnd : m_lastState.dataBase);
+            });
+    connect(m_hardware, &HardwareView::subjectChanged, this,
+            [this](const QString &subject) {
+                if (m_host->isRunning())
+                    m_host->command(QStringLiteral("info ") + subject);
+            });
 
+    // --- bottom: output console and memory, tabbed ----------------------------
     m_bottomTabs = new QTabWidget(this);
-
     m_problems = new QTreeWidget(m_bottomTabs);
     m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message")});
     m_problems->header()->setStretchLastSection(true);
@@ -415,9 +401,55 @@ void MainWindow::createDocks()
     m_log->setFont(mono);
     m_bottomTabs->addTab(m_log, tr("Build & debug console"));
 
-    auto *dock = new QDockWidget(tr("Output"), this);
-    dock->setWidget(m_bottomTabs);
-    addDockWidget(Qt::BottomDockWidgetArea, dock);
+    m_memory = new MemoryView(this);
+    auto *outputDock = makeDock(tr("Output"), QStringLiteral("outputDock"), m_bottomTabs);
+    auto *memoryDock = makeDock(tr("Memory"), QStringLiteral("memoryDock"), m_memory);
+    connect(m_memory, &MemoryView::dumpRequested, m_host, &EmulatorHost::requestMemoryDump);
+
+    addDockWidget(Qt::BottomDockWidgetArea, outputDock);
+    tabifyDockWidget(outputDock, memoryDock);
+
+    // --- default arrangement captured, then the user's arrangement restored ---
+    // The View menu gets one show/hide action per dock, plus a way back to the
+    // default layout. Built here rather than in createMenus because the docks do
+    // not exist yet when the menus are made.
+    if (m_viewMenu) {
+        m_viewMenu->addSeparator();
+        const QList<QDockWidget *> allDocks = {
+            outputDock, memoryDock, m_displayDock,
+            debugTabs.first(), debugTabs.at(1), debugTabs.at(2), debugTabs.at(3), debugTabs.at(4),
+            qobject_cast<QDockWidget *>(m_fileBrowser->parentWidget())
+        };
+        for (QDockWidget *dock : allDocks) {
+            if (dock)
+                m_viewMenu->addAction(dock->toggleViewAction());
+        }
+        m_viewMenu->addSeparator();
+        m_viewMenu->addAction(tr("Reset layout"), this, &MainWindow::resetToDefaultLayout);
+    }
+
+    // The factory arrangement, so Reset layout has something to return to.
+    m_defaultLayoutState = saveState();
+
+    // Restore the user's own arrangement, if any; the default above is what a
+    // first run gets.
+    const QByteArray saved =
+        QSettings().value(QStringLiteral("layout/state")).toByteArray();
+    if (!saved.isEmpty())
+        restoreState(saved);
+
+    // The embedded-display toggle owns the Emulator dock's visibility, so it is
+    // applied after any restored layout, which would otherwise override it.
+    m_displayDock->setVisible(m_embeddedDisplay);
+}
+
+void MainWindow::resetToDefaultLayout()
+{
+    if (m_defaultLayoutState.isEmpty())
+        return;
+    restoreState(m_defaultLayoutState);
+    // Keep the toggle authoritative over the Emulator dock's visibility.
+    m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::createToolBar()
@@ -1056,6 +1088,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+
+    // The panel arrangement persists across runs, so a layout the user has
+    // arranged to taste is there next time (docs/FUTURE.md §7).
+    QSettings().setValue(QStringLiteral("layout/state"), saveState());
 
     // Leaving this to the age-based prune would mean a directory survives every
     // ordinary quit, not just a crash.

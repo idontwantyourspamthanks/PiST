@@ -18,6 +18,7 @@
 #include "ui/MainWindow.h"
 
 #include <QDir>
+#include <QDockWidget>
 #include <QFileInfo>
 #include <QProcess>
 #include <QTreeView>
@@ -41,6 +42,7 @@ private slots:
     /// asynchronous build finishes, not alongside it.
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
+    void dockLayoutPersistsAcrossRestart();
 
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
@@ -286,6 +288,32 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
     QTRY_VERIFY_WITH_TIMEOUT(editor->currentExecutionLine() == 3, 30000);
 
     host->stop();
+}
+
+// The panel arrangement is Photoshop-style: docks are movable/floatable/
+// closable, and the whole arrangement persists across runs. Prove the round-trip
+// without relying on a mouse: change a dock's visibility in one window, save the
+// state, and confirm a fresh window restores exactly that.
+void TstGui::dockLayoutPersistsAcrossRestart()
+{
+    QByteArray state;
+    {
+        MainWindow window;
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
+        QVERIFY2(dock, "the Registers dock must have a stable objectName for saveState");
+        dock->setVisible(false);
+        state = window.saveState();
+        QVERIFY(!state.isEmpty());
+    }
+    {
+        MainWindow window;
+        QVERIFY(window.restoreState(state));
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
+        QVERIFY(dock);
+        // The hidden Registers dock must come back hidden: the user's arrangement
+        // survived the save/restore cycle that closeEvent and the constructor use.
+        QVERIFY2(!dock->isVisibleTo(&window), "hidden dock did not persist as hidden");
+    }
 }
 
 // Floppy drives are the last emulator feature that had no UI. Verify the

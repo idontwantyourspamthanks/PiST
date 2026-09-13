@@ -184,14 +184,13 @@ that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.
 
 ## 7. Panel aesthetics: tabs and movable panels
 
-**Status:** not started. The debug panes are fixed dock widgets today.
-
-The goal is Photoshop-style management: any panel can be a tab within any other panel's dock, and
-panels can be dragged between docks and regrouped to taste. QMainWindow's dock system supports most
-of this (tabifyDockWidget, setDockNestingEnabled, movable/floatable docks) — the work is turning it
-on sensibly, choosing sane default groupings, and persisting the layout (QSettings saveState/
-restoreState) so a user's arrangement survives restarts. Largely a matter of enabling and wiring
-existing Qt dock behaviour rather than building a layout engine.
+**Status:** delivered. Every dock is movable, floatable and closable, docks nest and tab within an
+area, and the whole arrangement persists across runs (QSettings saveState/restoreState, round-trip
+pinned by tst_gui::dockLayoutPersistsAcrossRestart). The default arrangement groups the debug views
+(Registers/Disassembly/Stack/Hardware/Breakpoints) into one tabbed panel with the Emulator display
+prominent above it, and Output/Memory tabbed at the bottom. The View menu lists every dock for
+show/hide and has a Reset layout action. Remaining polish would be layout presets and a nicer
+first-run default size balance, not the mechanism itself.
 
 ---
 

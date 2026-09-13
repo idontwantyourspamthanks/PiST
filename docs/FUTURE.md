@@ -159,3 +159,57 @@ Original TOS ROMs stay user-supplied, always.
 The pieces that do not exist yet: a first-run setup flow, a checksum-pinned download for the
 platforms that do not bundle a tool, per-platform installers, and the dependency-notice generation
 that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.
+
+---
+
+## 6. Debug surface depth: editing, multiple panes, history, step-back, pause hint
+
+**Status:** not started. Natural next layer on the debug views that exist now.
+
+- **Register and memory editing.** Registers and the memory view are read-only today; an assembly
+  developer wants to poke a value and keep going. Hatari's debugger supports it (`r d0 <val>`,
+  `memwrite`), so this is UI work, not a transport problem. Needs care around when writes are legal
+  (stopped only) and how an edit invalidates the disassembly/memory views.
+- **Multiple memory panes.** One memory view today; watching two regions at once (a struct and the
+  hardware registers, say) is a common need. Mostly a matter of letting the dump channels be
+  addressed per-pane rather than one shared memoryDumpReady.
+- **PC history and step-back.** A short ring of recent PCs, and stepping backward. Hatari has no
+  reverse execution, so step-back would be reconstructive (restart + replay to just before) or a
+  recorded history to navigate, not true reverse.
+- **Pause hint on the embedded display.** When the debugger is stopped the embedded panel renders
+  no frames and shows whatever was last drawn (or black), which reads as a freeze. A visible
+  "paused" affordance would stop it being mistaken for a crash.
+
+---
+
+## 7. Panel aesthetics: tabs and movable panels
+
+**Status:** not started. The debug panes are fixed dock widgets today.
+
+The goal is Photoshop-style management: any panel can be a tab within any other panel's dock, and
+panels can be dragged between docks and regrouped to taste. QMainWindow's dock system supports most
+of this (tabifyDockWidget, setDockNestingEnabled, movable/floatable docks) — the work is turning it
+on sensibly, choosing sane default groupings, and persisting the layout (QSettings saveState/
+restoreState) so a user's arrangement survives restarts. Largely a matter of enabling and wiring
+existing Qt dock behaviour rather than building a layout engine.
+
+---
+
+## 8. Emulator window resize correctness
+
+**Status:** open bug, reported by a user. The embedded display does not track the dock cleanly: the
+video stays the same size, so shrinking the dock pushes it out of view and expanding leaves ghost
+trails. The fit-on-resize path (resize the reparented SDL window to fill the container, letting
+Hatari rescale) needs to actually track the container and force a clean repaint, with no clipping
+on shrink and no artifacts on grow.
+
+---
+
+## 9. LLM integration: chat sidebar, autocomplete, suggestions
+
+**Status:** roadmap, deliberately unstarted. An agent-facing assistant built into the IDE: a chat
+sidebar, inline autocomplete, and edit/refactor suggestions, against a configurable **endpoint and
+API key** (so the user picks the provider/model rather than the IDE hard-coding one). Fits the
+existing remote-control surface (the assistant can drive the IDE through it) and the project's
+"hooks for agents" direction. Needs a settings page for endpoint/key/model, a sidebar panel, and a
+clear line on what context is sent (open file, project, build errors) and what is not.

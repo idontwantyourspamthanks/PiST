@@ -15,6 +15,7 @@
 
 #include "build/LineMap.h"
 #include "debug/Breakpoint.h"
+#include "debug/Watchpoint.h"
 #include "emu/EmulatorHost.h"
 #include "emu/HatariProbe.h"
 #include "emu/SessionConfig.h"
@@ -69,6 +70,7 @@ private slots:
     void breaksInOnIllegalInstruction();
     void doesNotBreakInOnNormalRun();
     void sourceLineBreakpointFiresAndResolvesBack();
+    void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
 
 private:
@@ -654,6 +656,170 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     QCOMPARE(back.line, 5);
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));
+
+    host.stop();
+}
+
+// The project's only data-watch mechanism is the self-inequality condition
+// `($addr).w ! ($addr).w` (debug/Watchpoint.h). The debugger substitutes the
+// right side with the value it reads when the command is parsed and then fires
+// when the two differ — breakcond.c marks an identical-sides inequality as
+// "track value changes" (BreakCond_CheckTracking/BreakCond_UpdateTracked), so it
+// fires once per change, not once per instruction. Both halves of that contract
+// are asserted here against the real emulator, because until they are the
+// premise is only ever string-tested (tst_remotecontrol pins the input
+// validation) and no emulator test arms a watchpoint at all.
+void TstEmulatorHost::watchpointFiresOnChangeAndNotOnSameValue()
+{
+    // Layout, by source line (the assertions below name these lines):
+    //   3  lea    val(pc),a0
+    //   4  move.w #$1111,(a0)   different value: 0 -> $1111, must stop
+    //   5  move.w #$1111,(a0)   same value: must NOT stop
+    //   6  lea    val2(pc),a1
+    //   7  move.w #$2222,(a1)   a second watch's change, which bounds the run
+    //   8  spin: bra.s spin
+    //  10  val:  dc.w 0
+    //  11  val2: dc.w 0
+    // Both words are loaded as 0 from the .prg, so the store on line 4 is a
+    // genuine change and the one on line 5 is not, deterministically.
+    const QString source = m_sourceDir + QStringLiteral("/watch.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\n"
+              "\tlea\tval(pc),a0\n"
+              "\tmove.w\t#$1111,(a0)\n"
+              "\tmove.w\t#$1111,(a0)\n"
+              "\tlea\tval2(pc),a1\n"
+              "\tmove.w\t#$2222,(a1)\n"
+              "spin:\tbra.s\tspin\n"
+              "\teven\n"
+              "val:\tdc.w\t0\n"
+              "val2:\tdc.w\t0\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    const QString prg = m_sourceDir + QStringLiteral("/watch.prg");
+    const QString listing = m_sourceDir + QStringLiteral("/watch.lst");
+    QProcess vasm;
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"),
+                        QStringLiteral("-L"), listing, QStringLiteral("-o"), prg, source});
+    QVERIFY(vasm.waitForFinished(20000));
+    QCOMPARE(vasm.exitCode(), 0);
+
+    ProgramLineMap map;
+    QString mapError;
+    QVERIFY2(map.addModule(source, prg, listing, &mapError), qPrintable(mapError));
+
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = prg;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/watch");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &s) { last = s; });
+
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "no entry stop");
+
+    // Phase two of the attach: load symbols and read the live section bases. The
+    // watched words live in the program's text section, so the listing's offsets
+    // plus the live text base give the addresses the watches need.
+    host.command(QStringLiteral("symbols prg"));
+    QVERIFY(finished.wait(15000));
+    finished.clear();
+    host.command(QStringLiteral("info basepage"));
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.hasBases(), 5000);
+    finished.clear();
+
+    LineMap::SectionBases bases;
+    bases.text = last.textBase;
+    bases.data = last.dataBase;
+    bases.bss = last.bssBase;
+    map.setLiveBases(bases);
+
+    quint32 addrA = 0;    // line 4: changes val
+    quint32 addrB = 0;    // line 5: writes the same value
+    quint32 addrC = 0;    // line 7: changes val2
+    quint32 addrSpin = 0; // line 8
+    quint32 valAddr = 0;  // line 10
+    quint32 val2Addr = 0; // line 11
+    QVERIFY2(map.addressFor(source, 4, &addrA), "no address for the first store");
+    QVERIFY2(map.addressFor(source, 5, &addrB), "no address for the same-value store");
+    QVERIFY2(map.addressFor(source, 7, &addrC), "no address for the val2 store");
+    QVERIFY2(map.addressFor(source, 8, &addrSpin), "no address for the idle loop");
+    QVERIFY2(map.addressFor(source, 10, &valAddr), "no address for val");
+    QVERIFY2(map.addressFor(source, 11, &val2Addr), "no address for val2");
+    // A guard on the fixture's shape: if the program drifts, the stops below
+    // could be attributed to the wrong instruction and pass by accident.
+    QVERIFY2(valAddr % 2 == 0, "a .w watch needs an even address");
+    QVERIFY2(addrA < addrB && addrB < addrC && addrC < addrSpin && addrSpin < valAddr,
+             "the fixture's layout is not what the assertions assume");
+
+    // Arm exactly as the IDE does: a Watchpoint rendered into its `b` command.
+    Watchpoint valWatch;
+    valWatch.address = valAddr;
+    host.armBreakpoint(valWatch.command());
+    QVERIFY2(finished.wait(15000), "no response to the val watchpoint");
+    const QString valArm = finished.takeFirst().at(1).toString();
+    QVERIFY2(valArm.contains(QLatin1String("breakpoint"), Qt::CaseInsensitive),
+             qPrintable("the watchpoint was not accepted: " + valArm.left(300)));
+
+    // A second watch, on the word the program changes next. It exists so the
+    // same-value case is bounded by a real stop rather than a timeout: the
+    // second run must reach it.
+    Watchpoint val2Watch;
+    val2Watch.address = val2Addr;
+    host.armBreakpoint(val2Watch.command());
+    QVERIFY2(finished.wait(15000), "no response to the val2 watchpoint");
+    const QString val2Arm = finished.takeFirst().at(1).toString();
+    QVERIFY2(val2Arm.contains(QLatin1String("breakpoint"), Qt::CaseInsensitive),
+             qPrintable("the second watchpoint was not accepted: " + val2Arm.left(300)));
+    finished.clear();
+
+    // First run: the store on line 4 changes val, so the machine must stop.
+    // Hatari evaluates conditional breakpoints after each instruction
+    // (debugcpu.c DebugCpu_Check), so the stop reports the PC of the *next*
+    // instruction — line 5, immediately after the storing one.
+    host.resume();
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
+    last = MachineState();
+    host.command(QStringLiteral("r"));
+    QVERIFY2(finished.wait(15000), "no response to 'r' after the watchpoint hit");
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+    QVERIFY2(last.pc == addrB,
+             qPrintable(QStringLiteral("the changed value did not stop the machine at the "
+                                       "instruction after the store: pc=$%1, expected $%2 "
+                                       "(the store is at $%3)")
+                            .arg(last.pc, 0, 16).arg(addrB, 0, 16).arg(addrA, 0, 16)));
+
+    // Second run: the store on line 5 writes the same value, so it must not stop
+    // — the next stop has to be the val2 watch' change on line 7, reported at the
+    // loop on line 8. A stop at addrB would mean the same value re-fired; one at
+    // addrC would mean the same-value write itself fired.
+    host.resume();
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
+    last = MachineState();
+    host.command(QStringLiteral("r"));
+    QVERIFY2(finished.wait(15000), "no response to 'r' after the second stop");
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+    QVERIFY2(last.pc == addrSpin,
+             qPrintable(QStringLiteral("a write of the same value stopped the machine: pc=$%1, "
+                                       "expected $%2 (the same-value store is at $%3)")
+                            .arg(last.pc, 0, 16).arg(addrSpin, 0, 16).arg(addrB, 0, 16)));
 
     host.stop();
 }

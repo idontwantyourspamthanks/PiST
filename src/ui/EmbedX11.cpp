@@ -84,9 +84,11 @@ QImage captureWindowImage(quintptr windowId)
 
 
 
-void fitEmbeddedWindowToContainer(quintptr windowId)
+void resizeEmbeddedChild(quintptr windowId, int x, int y, int width, int height)
 {
 #if defined(PIST_HAVE_X11)
+    if (width <= 0 || height <= 0)
+        return;
     auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
     if (!x11)
         return;
@@ -94,24 +96,24 @@ void fitEmbeddedWindowToContainer(quintptr windowId)
     if (!display)
         return;
 
-    const Window window = static_cast<Window>(windowId);
-    XWindowAttributes attrs;
-    if (!XGetWindowAttributes(display, window, &attrs)
-        || attrs.width <= 0 || attrs.height <= 0)
-        return;
-
     Window root = 0, parent = 0, *children = nullptr;
     unsigned int count = 0;
-    if (XQueryTree(display, window, &root, &parent, &children, &count) && children) {
+    if (XQueryTree(display, static_cast<Window>(windowId), &root, &parent,
+                   &children, &count)
+        && children) {
         for (unsigned int i = 0; i < count; ++i)
-            XMoveResizeWindow(display, children[i], 0, 0,
-                              static_cast<unsigned>(attrs.width),
-                              static_cast<unsigned>(attrs.height));
+            XMoveResizeWindow(display, children[i], x, y,
+                              static_cast<unsigned>(width),
+                              static_cast<unsigned>(height));
         XFree(children);
     }
     XFlush(display);
 #else
     Q_UNUSED(windowId);
+    Q_UNUSED(x);
+    Q_UNUSED(y);
+    Q_UNUSED(width);
+    Q_UNUSED(height);
 #endif
 }
 

@@ -203,8 +203,10 @@ void MemoryView::applyDump(const QString &response)
     }
 
     m_table->resizeColumnsToContents();
+    // The bytes actually shown: the final row may be short, so
+    // `rows.size() * kRowBytes` overstates the dump.
     m_status->setText(tr("%1 bytes from $%2")
-                          .arg(rows.size() * kRowBytes)
+                          .arg(static_cast<int>(m_bytes.size()))
                           .arg(hex8(m_base)));
 }
 

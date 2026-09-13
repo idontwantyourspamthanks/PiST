@@ -26,8 +26,8 @@ public:
 
 public slots:
     /// Populate from a `memdump` response taken at the stack pointer. The text
-    /// segment runs from textBase to textEnd (the data base), so values inside
-    /// it can be marked as likely return addresses.
+    /// segment runs from textBase to textEnd, so values inside it can be marked
+    /// as likely return addresses.
     void setStackDump(quint32 sp, const QString &response,
                       quint32 textBase, quint32 textEnd);
 

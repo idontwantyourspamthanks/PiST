@@ -29,14 +29,21 @@ class EmulatorDisplayWidget : public QWidget
 public:
     explicit EmulatorDisplayWidget(QWidget *parent = nullptr);
 
+    /// A plain QWidget has an invalid sizeHint, which makes a dock size it to its
+    /// minimum instead of a usable video size — which is why the display was
+    /// stuck small with dead space around it. Offer the ST low-res size doubled.
+    QSize sizeHint() const override;
+
 public slots:
-    /// Show the embedded window and make it fill this widget. Called when the
-    /// emulator reports its video size, which happens right after the reparent.
+    /// Record the emulator's native video size, which drives the aspect-preserved
+    /// fit. Called when the emulator reports it, right after the reparent.
+    void setVideoSize(int width, int height);
+
+    /// Show the embedded window and fit it within this widget.
     void showEmbedded();
 
-    /// Resize the embedded window to fill this widget. Hatari rescales its
-    /// renderer to fit, exactly as it does when its own window is resized by
-    /// hand. Called on embed-size and whenever the dock changes size.
+    /// Fit the embedded window within this widget, preserving the video's aspect
+    /// ratio and centring it (letterbox) rather than squashing it to fill.
     void fitEmbedded();
 
 protected:
@@ -45,6 +52,9 @@ protected:
 private:
     class QTimer *m_settleTimer = nullptr;
     int m_settleTicks = 0;
+    /// The emulator's native video size, for the aspect-preserved fit.
+    int m_videoW = 0;
+    int m_videoH = 0;
 };
 
 } // namespace pist

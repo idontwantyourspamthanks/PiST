@@ -22,14 +22,14 @@ namespace pist {
 /// X11 only; a no-op when PiST was built without X11 or is running off it.
 void mapEmbeddedWindowChildren(quintptr windowId);
 
-/// Resize the emulator's window to fill the container's ACTUAL current size, read
-/// from the X server rather than from the widget. This matters because the
-/// container is a native window in a dock, and its Qt size() can lag the size the
-/// dock has given the underlying X11 window — so fitting from size() sometimes
-/// uses a stale, too-small value and the video ends up with dead space around it.
+/// Resize the emulator's window to a given size, positioned at the container's
+/// origin. The size comes from the widget's current Qt geometry, which is the
+/// size the dock has actually allocated — fitting from the container's X11 window
+/// instead would use whatever size that window happened to be created at, which
+/// can be stale and larger than the dock, pushing the video out of view.
 ///
 /// X11 only; a no-op when PiST was built without X11 or is running off it.
-void fitEmbeddedWindowToContainer(quintptr windowId);
+void resizeEmbeddedChild(quintptr windowId, int x, int y, int width, int height);
 
 /// Capture the visible contents of a native window, including any reparented
 /// foreign children (the embedded emulator's SDL window).

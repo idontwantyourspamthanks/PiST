@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Regression tests for the two parsers whose correctness the IDE depends on:
-// vasm diagnostics and the listing line map. Both formats were captured from
-// real vasm 2.0f output.
+// Regression tests for the parsers whose correctness the IDE depends on: vasm
+// and vlink diagnostics and the listing line map. The formats were captured from
+// real vasm 2.0f / vlink 0.18a output.
 
+#include "build/BuildService.h"
 #include "build/Diagnostic.h"
 #include "build/LineMap.h"
+#include "build/ProgramLineMap.h"
 
 #include <QDir>
 #include <QFile>
@@ -23,7 +25,11 @@ private slots:
     void diagnosticShapes_data();
     void diagnosticShapes();
 
+    void linkerDiagnosticShapes_data();
+    void linkerDiagnosticShapes();
+
     void lineMapMapsLinesToOffsets();
+    void programMapTextExtent();
     void lineMapResolvesAgainstLiveBases();
     void lineMapRejectsUnknownLine();
     void lineMapMatchesAbsoluteListingPaths();
@@ -83,6 +89,68 @@ void TstParsers::diagnosticShapes()
     QCOMPARE(d.file, file);
 }
 
+// vlink's two diagnostic shapes. The severity word must survive parsing: it was
+// once matched only to be discarded, which made `captured(1)` the numeric code
+// and recorded every located warning as an error (docs/code-review-glm-001.md,
+// P3). The located-warning row is the case that was missing.
+void TstParsers::linkerDiagnosticShapes_data()
+{
+    QTest::addColumn<QString>("line");
+    QTest::addColumn<int>("severity");
+    QTest::addColumn<int>("code");
+    QTest::addColumn<QString>("objectFile");
+    QTest::addColumn<QString>("section");
+    QTest::addColumn<uint>("offset");
+    QTest::addColumn<QString>("message");
+
+    QTest::newRow("located-error")
+        << QStringLiteral("Error 36: main.o (CODE+0x4): Reference to undefined symbol helper.")
+        << int(Diagnostic::Error) << 36 << QStringLiteral("main.o") << QStringLiteral("CODE")
+        << 0x4u << QStringLiteral("Reference to undefined symbol helper.");
+    QTest::newRow("located-warning")
+        << QStringLiteral("Warning 1013: main.o (CODE+0x4): 8bit code reference to "
+                          "`helper' (value to write: 0x12596) out of range")
+        << int(Diagnostic::Warning) << 1013 << QStringLiteral("main.o") << QStringLiteral("CODE")
+        << 0x4u
+        << QStringLiteral("8bit code reference to `helper' (value to write: 0x12596) out of "
+                          "range");
+    QTest::newRow("unlocated-warning")
+        << QStringLiteral("Warning 122: Relocation table format not supported by selected "
+                          "output format - reverting to ataritos's standard.")
+        << int(Diagnostic::Warning) << 122 << QString() << QString() << 0u
+        << QStringLiteral("Relocation table format not supported by selected output format - "
+                          "reverting to ataritos's standard.");
+    QTest::newRow("unlocated-fatal")
+        << QStringLiteral("Fatal error 9: Invalid target format \"atari\".")
+        << int(Diagnostic::Error) << 9 << QString() << QString() << 0u
+        << QStringLiteral("Invalid target format \"atari\".");
+}
+
+void TstParsers::linkerDiagnosticShapes()
+{
+    QFETCH(QString, line);
+    QFETCH(int, severity);
+    QFETCH(int, code);
+    QFETCH(QString, objectFile);
+    QFETCH(QString, section);
+    QFETCH(uint, offset);
+    QFETCH(QString, message);
+
+    Diagnostic d;
+    QVERIFY2(parseLinkerDiagnostic(line, &d), qPrintable("not a diagnostic: " + line));
+    QCOMPARE(int(d.severity), severity);
+    QCOMPARE(d.code, code);
+    QCOMPARE(d.objectFile, objectFile);
+    QCOMPARE(d.section, section);
+    QCOMPARE(d.sectionOffset, quint32(offset));
+    QCOMPARE(d.message, message);
+    QCOMPARE(d.hasObjectOffset, !objectFile.isEmpty());
+
+    // Ordinary linker chatter must be reported verbatim by the caller instead.
+    Diagnostic ignored;
+    QVERIFY(!parseLinkerDiagnostic(QStringLiteral("Aborting."), &ignored));
+}
+
 static QString writeListing(QTemporaryDir &dir)
 {
     // Verbatim structure of `vasmm68k_mot -L`, including the section table.
@@ -136,6 +204,34 @@ void TstParsers::lineMapMapsLinesToOffsets()
 
     // Line 1 emitted nothing, so it has no address.
     QVERIFY(!map.addressFor(QStringLiteral("ok.s"), 1, bases, &addr));
+}
+
+// The stack view's "return address?" mark needs the program's text end, not the
+// data base. With no data section an empty range silently drops every return
+// address, so the extent comes from the listing's own `(start-end)` header
+// (docs/code-review-glm-001.md, P3).
+void TstParsers::programMapTextExtent()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    ProgramLineMap program;
+    QVERIFY(program.addModule(QStringLiteral("ok.s"), QStringLiteral("ok.o"),
+                              writeListing(dir), nullptr));
+
+    // No live bases: there is no address to report yet.
+    QCOMPARE(program.textEnd(), 0u);
+
+    LineMap::SectionBases live;
+    live.text = 0x12596;
+    live.data = 0x125ac;
+    live.bss = 0x125b0;
+    program.setLiveBases(live);
+
+    // The fixture's text is (0-E), so the extent is base + 0xE — neither the data
+    // base (which only accidentally works when data follows text) nor the last
+    // entry's offset.
+    QCOMPARE(program.textEnd(), 0x12596u + 0xEu);
 }
 
 void TstParsers::lineMapResolvesAgainstLiveBases()

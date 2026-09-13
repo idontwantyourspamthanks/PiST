@@ -175,6 +175,8 @@ qt_add_executable(tst_parsers
     src/build/LinkMap.h
     src/build/ProgramLineMap.cpp
     src/build/ProgramLineMap.h
+    src/build/BuildService.cpp
+    src/build/BuildService.h
     src/build/Diagnostic.h
 
     src/debug/Breakpoint.cpp
@@ -224,10 +226,6 @@ qt_add_executable(tst_debug
     src/debug/Watchpoint.h
     src/build/LineMap.cpp
     src/build/LineMap.h
-    src/build/LinkMap.cpp
-    src/build/LinkMap.h
-    src/build/ProgramLineMap.cpp
-    src/build/ProgramLineMap.h
     src/build/Diagnostic.h
     src/emu/MemoryDump.cpp
     src/emu/MemoryDump.h
@@ -260,8 +258,6 @@ qt_add_executable(tst_settings
     src/toolchain/Toolchain.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
-    src/toolchain/Toolchain.cpp
-    src/toolchain/Toolchain.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -283,18 +279,12 @@ qt_add_executable(tst_gui
     src/ui/RegistersView.h
     src/ui/BreakpointPanel.cpp
     src/ui/BreakpointPanel.h
-    src/ui/BreakpointPanel.cpp
-    src/ui/BreakpointPanel.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
     src/ui/EmulatorDisplayWidget.cpp
     src/ui/EmulatorDisplayWidget.h
     src/ui/EmbedX11.cpp
     src/ui/EmbedX11.h
-    src/ui/FileBrowser.cpp
-    src/ui/FileBrowser.h
-    src/ui/FileBrowser.cpp
-    src/ui/FileBrowser.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
     src/ui/HardwareView.cpp
@@ -469,7 +459,7 @@ set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 # Test binaries must be console applications on Windows. qt_add_executable marks
 # them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
 # nothing at all, making a red run on Windows undiagnosable.
-foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link)
+foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

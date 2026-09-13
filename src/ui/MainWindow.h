@@ -138,9 +138,6 @@ private:
     QList<Breakpoint> mergeResolved(const ArmPlan &plan) const;
     void refreshBreakpointMarkers();
 
-    /// Per-session working directory, kept short so the control socket path fits
-    /// in sockaddr_un::sun_path.
-
     /// Whether the emulator's display can be embedded in this session: it needs
     /// PiST to be an X11 (xcb) client, and the control socket that carries the
     /// video-size report. When false the option is disabled and the emulator
@@ -152,6 +149,9 @@ private:
     /// application setting, because it is a view choice, not a project one.
     void setDisplayEmbedded(bool on);
     void updateEmbedActionState();
+
+    /// Per-session working directory, kept short so the control socket path fits
+    /// in sockaddr_un::sun_path.
     QString makeSessionDir();
 
     CodeEditor *m_editor = nullptr;
@@ -201,6 +201,11 @@ private:
     /// Set once the entry stop has been handled for the current session, so the
     /// arming sequence runs exactly once.
     bool m_sessionArmed = false;
+
+    /// Set once breakpoints have been armed against the live bases this session.
+    /// Arming has to wait for the basepage response (not a timer, which always
+    /// loses that race), so this guards doing it exactly once, when they arrive.
+    bool m_breakpointsArmedThisSession = false;
 
     /// Set by Run, consumed by onBuildFinished. Needed because the build is
     /// asynchronous: the launch has to wait for it, not run alongside it.

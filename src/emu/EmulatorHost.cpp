@@ -273,12 +273,16 @@ void EmulatorHost::closeSocketServer()
         QLocalServer::removeServer(m_config.controlSocketPath);
 }
 
-bool EmulatorHost::start(const SessionConfig &config, QString *error)
+// Every per-session framing field is reset here rather than in start(), so the
+// next session cannot inherit the previous one's state. The fields that were
+// missed before each corrupt framing in its own way: a stale m_owedPrompts
+// swallows that many real prompts of the new session, a stale
+// m_stderrAtDispatch larger than the fresh stderr buffer hides the prompt on
+// builds that write it to stderr (Windows), a partial m_socketBuffer is
+// concatenated with the first new size report, and a pending settle fires into
+// the new session (docs/code-review-glm-001.md §P2).
+void EmulatorHost::resetTransport()
 {
-    stop();
-    m_config = config;
-    m_state = MachineState();
-    m_stopped = false;
     m_queue.clear();
     m_haveCurrent = false;
     m_current = Pending();
@@ -287,6 +291,21 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     m_awaitingEntryPrompt = false;
     m_stdoutLoggedChars = 0;
     m_stdoutText.clear();
+    m_owedPrompts = 0;
+    m_stderrBuffer.clear();
+    m_stderrAtDispatch = 0;
+    m_socketBuffer.clear();
+    m_commandTimeout->stop();
+    m_settleTimer->stop();
+}
+
+bool EmulatorHost::start(const SessionConfig &config, QString *error)
+{
+    stop();
+    m_config = config;
+    m_state = MachineState();
+    m_stopped = false;
+    resetTransport();
 
     if (!paths::ensureDirectory(config.sessionDir, error))
         return false;
@@ -360,10 +379,21 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
 
 void EmulatorHost::stop()
 {
+    // Captured before the teardown, and from our own state rather than from the
+    // process: the process may already be dead, and it is exactly that case
+    // (plus the finished handler having been disconnected below) in which the
+    // session end would otherwise go unreported.
+    const bool hadSession = m_process != nullptr || m_stopped;
+
     m_queue.clear();
     m_haveCurrent = false;
+    m_stopped = false;
     if (m_commandTimeout)
         m_commandTimeout->stop();
+    // A pending settle must not fire into the next session. Harmless today only
+    // because completeCurrent checks m_haveCurrent.
+    if (m_settleTimer)
+        m_settleTimer->stop();
 
     if (m_process) {
         m_process->disconnect(this);
@@ -375,6 +405,16 @@ void EmulatorHost::stop()
         m_process = nullptr;
     }
     closeSocketServer();
+
+    // `finished` is the only other emitter, and it is disconnected above, so a
+    // manual stop would otherwise leave the UI showing "Stopped in debugger"
+    // with step/continue still enabled, and never tell remote-control clients
+    // the session ended (MainWindow's runningChanged handler). Both are state
+    // signals, so repeating them for an already-dead process is harmless.
+    if (hadSession) {
+        emit stoppedChanged(false);
+        emit runningChanged(false);
+    }
 }
 
 void EmulatorHost::handleStdoutData(const QByteArray &data)
@@ -410,18 +450,32 @@ void EmulatorHost::handleStdoutData(const QByteArray &data)
     }
 }
 
-void EmulatorHost::command(const QString &commandText, quint32 dumpAddress, bool stackDump)
+void EmulatorHost::enqueue(Pending pending)
 {
     if (!isRunning()) {
         emit errorOccurred(tr("No emulator session is running."));
         return;
     }
+    m_queue.enqueue(pending);
+    dispatchNext();
+}
+
+void EmulatorHost::command(const QString &commandText, quint32 dumpAddress, bool stackDump)
+{
     Pending p;
     p.text = commandText;
     p.dumpAddress = dumpAddress;
     p.stackDump = stackDump;
-    m_queue.enqueue(p);
-    dispatchNext();
+    enqueue(p);
+}
+
+void EmulatorHost::enqueueSnapshotCommand(const QString &command, bool last)
+{
+    Pending p;
+    p.text = command;
+    p.batchMember = true;
+    p.batchEnd = last;
+    enqueue(p);
 }
 
 void EmulatorHost::dispatchNext()
@@ -541,18 +595,29 @@ void EmulatorHost::completeCurrent()
     const QString response = m_current.raw.trimmed();
     m_current.response = response;
 
-    if (commandText == QLatin1String("r"))
+    bool parsedState = false;
+    if (commandText == QLatin1String("r")) {
         parseRegisters(response);
-    else if (commandText == QLatin1String("info basepage"))
+        parsedState = true;
+    } else if (commandText == QLatin1String("info basepage")) {
         parseBasepage(response);
-    else if (commandText.startsWith(QLatin1Char('d')))
+        parsedState = true;
+    } else if (commandText.startsWith(QLatin1Char('d'))) {
         parseDisassembly(response);
-    else if (commandText.startsWith(QLatin1Char('m')) && commandText.contains(QLatin1Char(' '))) {
+        parsedState = true;
+    } else if (commandText.startsWith(QLatin1Char('m')) && commandText.contains(QLatin1Char(' '))) {
         if (m_current.stackDump)
             emit stackDumpReady(m_current.dumpAddress, response);
         else
             emit memoryDumpReady(m_current.dumpAddress, response);
     }
+
+    // The parse functions only fill m_state. Emission is decided here because
+    // it is a property of the batch, not of one response: a snapshot queued by
+    // refresh() is incomplete until its last command has been parsed, while a
+    // standalone state command still reports an update of its own.
+    if (parsedState && (!m_current.batchMember || m_current.batchEnd))
+        emit stateUpdated(m_state);
 
     m_haveCurrent = false;
     const QString text = m_current.text;
@@ -576,6 +641,19 @@ void EmulatorHost::resume()
 {
     if (!m_process || m_process->state() != QProcess::Running)
         return;
+
+    // Discard any command still queued or in flight. Once the machine resumes,
+    // the state it was querying has moved on, and a response captured before the
+    // resume is stale. Left in place, an in-flight command swallows the next
+    // stop's prompt — completing with a stale response instead of that stop
+    // being detected as an entry. The next stop refreshes everything fresh, so
+    // nothing useful is lost.
+    m_queue.clear();
+    m_haveCurrent = false;
+    m_current = Pending();
+    m_commandTimeout->stop();
+    m_settleTimer->stop();
+
     m_stopped = false;
     emit stoppedChanged(false);
     m_process->write("c\n");
@@ -583,9 +661,14 @@ void EmulatorHost::resume()
 
 void EmulatorHost::refresh()
 {
-    command(QStringLiteral("r"));
-    command(QStringLiteral("info basepage"));
-    command(QStringLiteral("d"));
+    // The three responses each fill a different part of MachineState, so they
+    // are queued as one batch: stateUpdated fires once, after the disassembly —
+    // the last of the three — has been parsed, and carries the complete state.
+    // One emission per response made every listener react three times and queue
+    // three copies of the memory, stack and hardware refresh.
+    enqueueSnapshotCommand(QStringLiteral("r"), false);
+    enqueueSnapshotCommand(QStringLiteral("info basepage"), false);
+    enqueueSnapshotCommand(QStringLiteral("d"), true);
 }
 
 void EmulatorHost::clearBreakpoints()
@@ -820,8 +903,8 @@ void EmulatorHost::parseRegisters(const QString &response)
         }
         m_state.regs.valid = true;
     }
-
-    emit stateUpdated(m_state);
+    // No emission here: completeCurrent owns it, so a refresh batch reports
+    // once with the complete snapshot.
 }
 
 void EmulatorHost::parseBasepage(const QString &response)
@@ -838,7 +921,7 @@ void EmulatorHost::parseBasepage(const QString &response)
         else if (what == QLatin1String("BSS segment"))
             m_state.bssBase = value;
     }
-    emit stateUpdated(m_state);
+    // Emission is completeCurrent's, so a refresh batch reports once.
 }
 
 void EmulatorHost::parseDisassembly(const QString &response)
@@ -871,8 +954,7 @@ void EmulatorHost::parseDisassembly(const QString &response)
         dl.isCurrentPc = (dl.address == m_state.pc);
         m_state.disassembly.append(dl);
     }
-
-    emit stateUpdated(m_state);
+    // Emission is completeCurrent's, so a refresh batch reports once.
 }
 
 } // namespace pist

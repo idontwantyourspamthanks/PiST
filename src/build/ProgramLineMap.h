@@ -74,6 +74,11 @@ public:
     /// Modules the linker map had no placement for, so they cannot be mapped.
     QStringList unplacedModules() const;
 
+    /// Exclusive end address of the program's text, across every placed module,
+    /// once the live bases are known. Zero until then, or when no listing
+    /// recorded a text extent.
+    quint32 textEnd() const;
+
     /// Resolve a module and section offset to a source line.
     ///
     /// The linker reports errors as `main.o (CODE+0x4): ...` — a module and an

@@ -76,6 +76,11 @@ public:
     /// Section base for a listing section name ("text", "data", "bss").
     static quint32 baseForSection(const QString &section, const SectionBases &bases);
 
+    /// Exclusive end offset of the listing's text section, from the `(start-end)`
+    /// header — zero when the listing recorded no extent for it. The offset is
+    /// relative to the section base, like every other offset in the listing.
+    quint32 textEnd() const;
+
     /// Whether a source path recorded in a listing refers to `queried`.
     ///
     /// vasm writes the source path exactly as it was given on the command line,

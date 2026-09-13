@@ -15,6 +15,13 @@ class QProcess;
 
 namespace pist {
 
+/// Parse one line of vlink's output into a diagnostic.
+///
+/// vlink emits two shapes: a located form naming a module and a section offset
+/// (`Error 36: main.o (CODE+0x4): ...`) and a plain form carrying only the code.
+/// Returns false when the line is neither, so the caller can log it verbatim.
+bool parseLinkerDiagnostic(const QString &line, Diagnostic *diagnostic);
+
 /// Drives `vasmm68k_mot` as a subprocess and turns its stderr into diagnostics.
 ///
 /// The assembler is never modified or linked against: everything is expressed
@@ -121,7 +128,6 @@ private:
     QList<Diagnostic> m_diagnostics;
     QList<Step> m_steps;
     int m_nextStep = 0;
-    bool m_running = false;
     QStringList m_listingFiles;
     QStringList m_objectFiles;
     bool m_sawFailure = false;

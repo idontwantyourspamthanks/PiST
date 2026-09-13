@@ -148,6 +148,17 @@ quint32 LineMap::baseForSection(const QString &section, const SectionBases &base
     return 0;
 }
 
+quint32 LineMap::textEnd() const
+{
+    quint32 end = 0;
+    for (auto it = m_sectionEnds.constBegin(); it != m_sectionEnds.constEnd(); ++it) {
+        const QString name = it.key().toLower();
+        if (name == QLatin1String("text") || name == QLatin1String("code"))
+            end = qMax(end, it.value());
+    }
+    return end;
+}
+
 bool LineMap::addressFor(const QString &file, int line, const SectionBases &bases,
                          quint32 *address) const
 {

@@ -40,6 +40,7 @@ private slots:
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
     void runStartsAnEmulatorSession();
+    void breakpointSetBeforeRunFiresAndEditorFollows();
 
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
@@ -214,6 +215,75 @@ void TstGui::runStartsAnEmulatorSession()
     QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
     QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
              "the emulator started but never reached the debugger");
+
+    host->stop();
+}
+
+// The core debug-loop regression: a breakpoint set before Run must fire, and the
+// editor must follow the program counter to it. This is the one test that would
+// have caught the bug where the arming chain and the live-base wiring were both
+// missing — every component passed its own test while the loop as a whole did
+// nothing (docs/code-review-glm-001.md P1).
+void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        QSKIP("needs hatari");
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    // A program that spins, with the loop body on line 3, so a breakpoint there
+    // fires the moment it resumes past the entry stop.
+    const QString source = m_work->path() + QStringLiteral("/bp.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#0,d0\n"       // line 2
+              "loop:\taddq.w\t#1,d0\n"        // line 3  <- breakpoint
+              "\tbra.s\tloop\n"               // line 4
+              "\teven\n"                       // line 5
+              "\tend\n");                      // line 6
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY2(host, "MainWindow must own an EmulatorHost");
+    QVERIFY2(editor, "MainWindow must own a CodeEditor");
+
+    window.openPath(source);
+
+    // Set the breakpoint BEFORE Run, exactly as a gutter click does.
+    QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine",
+                                      Qt::DirectConnection, Q_ARG(int, 3)));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    // Wait for the entry stop, which arms the breakpoint as the live bases
+    // arrive. (The attach emits more than one stop signal, so a stop *count* is
+    // not a reliable thing to wait on — the editor's position is the real one.)
+    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
+    QTRY_VERIFY_WITH_TIMEOUT(stoppedSpy.count() >= 1, 30000);
+    QTest::qWait(800);   // let the post-entry arm complete before resuming
+
+    // Resume; the breakpoint at line 3 must fire, and the editor must follow the
+    // PC to it — the behaviour the README and demo promise. Waiting on the
+    // editor reaching line 3 proves both at once, and is immune to the attach's
+    // multiple stop signals.
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(editor->currentExecutionLine() == 3, 30000);
 
     host->stop();
 }

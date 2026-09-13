@@ -30,10 +30,8 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
-#include <QMenuBar>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -118,12 +116,14 @@ MainWindow::MainWindow(QWidget *parent)
                     m_hardware->setInfo(response);
             });
     connect(m_host, &EmulatorHost::embeddedSizeChanged, this,
-            [this](int, int) {
+            [this](int width, int height) {
                 if (!m_display)
                     return;
                 // The size report arrives right after the reparent, and Hatari
-                // never maps the SDL window it created hidden, so show it now
-                // and make it fill the dock — otherwise the display stays black.
+                // never maps the SDL window it created hidden, so show it now —
+                // otherwise the display stays black. The reported size is the
+                // video's native resolution, which the fit uses to keep aspect.
+                m_display->setVideoSize(width, height);
                 m_display->showEmbedded();
             });
 
@@ -367,9 +367,17 @@ void MainWindow::createDocks()
         dock->setWidget(m_stack);
         connect(m_host, &EmulatorHost::stackDumpReady, this,
                 [this](quint32 sp, const QString &response) {
-                    if (m_stack)
-                        m_stack->setStackDump(sp, response, m_lastState.textBase,
-                                              m_lastState.dataBase);
+                    if (!m_stack)
+                        return;
+                    // The annotation needs the *text* extent, not the data base.
+                    // With no data section (or one that does not follow text) the
+                    // data base gives an empty range and every return address
+                    // silently goes unmarked, so take the extent from the
+                    // listings and fall back to the old bound when the map has
+                    // none (docs/code-review-glm-001.md, P3).
+                    const quint32 textEnd = m_programMap.textEnd();
+                    m_stack->setStackDump(sp, response, m_lastState.textBase,
+                                          textEnd ? textEnd : m_lastState.dataBase);
                 });
         return dock;
     }());
@@ -576,11 +584,16 @@ void MainWindow::openProject()
     }
 
     // The source path is not stored in the file — it is implied by the project
-    // file's location — so derive it and load it.
+    // file's location — so derive it and load it. Picking a file through the
+    // "All files" filter gives a name without the suffix, and truncating that
+    // blindly would produce an arbitrary path.
     QString source = settings::lastSourcePath();
-    const QString implied = path.left(path.size() - QLatin1String(settings::kProjectSuffix).size())
-                          + QStringLiteral(".s");
-    if (QFileInfo::exists(implied))
+    QString implied;
+    if (path.endsWith(QLatin1String(settings::kProjectSuffix), Qt::CaseInsensitive)) {
+        implied = path.left(path.size() - QLatin1String(settings::kProjectSuffix).size())
+                + QStringLiteral(".s");
+    }
+    if (!implied.isEmpty() && QFileInfo::exists(implied))
         source = implied;
     else if (!source.isEmpty() && !QFileInfo::exists(source))
         source.clear();
@@ -1015,6 +1028,7 @@ void MainWindow::launchEmulator()
     // A new session relocates the program, so previously resolved addresses are
     // meaningless and arming must happen again after the next entry stop.
     m_sessionArmed = false;
+    m_breakpointsArmedThisSession = false;
     m_bases = LineMap::SectionBases();
 
     m_host->setCapabilities(m_caps);
@@ -1055,15 +1069,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::step()
 {
+    // The stop this produces refreshes the state via onDebuggerStopped.
     m_host->step();
-    // Registers and disassembly must be re-read after the step completes.
-    m_host->refresh();
 }
 
 void MainWindow::stepOver()
 {
     m_host->stepOver();
-    m_host->refresh();
 }
 
 void MainWindow::resume()
@@ -1073,8 +1085,14 @@ void MainWindow::resume()
 
 void MainWindow::onDebuggerStopped()
 {
-    if (m_sessionArmed)
+    // Every stop refreshes the views and the editor's execution line, so the
+    // display always shows where the machine actually stopped — on a step, on a
+    // breakpoint, or on an exception. The entry stop additionally runs the
+    // two-phase attach below, once per session.
+    if (m_sessionArmed) {
+        m_host->refresh();
         return;
+    }
     m_sessionArmed = true;
 
     // The two-phase attach, in order. The program's load address is only known
@@ -1091,16 +1109,8 @@ void MainWindow::onDebuggerStopped()
     m_host->command(QStringLiteral("info basepage"));
     m_host->dumpRegisters();
     m_host->command(QStringLiteral("d"));
-
-    // Arming is chained after those commands complete, because it needs the
-    // section bases they report.
-    QTimer::singleShot(0, this, [this] {
-        if (m_bases.isValid())
-            armBreakpoints();
-        else
-            m_log->appendPlainText(
-                tr("[breakpoints] no program base page yet; breakpoints will arm on the next stop"));
-    });
+    // Arming happens in onStateUpdated, when the bases those commands report
+    // actually arrive — not here, where they have not been read yet.
 }
 
 void MainWindow::rebuildProgramMap()
@@ -1150,6 +1160,7 @@ void MainWindow::rebuildProgramMap()
 
 void MainWindow::armBreakpoints()
 {
+    m_breakpointsArmedThisSession = true;
     const ArmPlan plan = planBreakpoints(m_breakpoints, m_programMap);
 
     // Clear before arming. A rebuilt program can occupy different addresses, so
@@ -1230,8 +1241,14 @@ bool MainWindow::addWatchpointAddress(const QString &text, QString *error)
     m_watchpoints.append(wp);
     m_log->appendPlainText(tr("[watchpoint] %1").arg(wp.label()));
     // Re-arm so it takes effect now if a session is already stopped, or on the
-    // next run otherwise.
-    armBreakpoints();
+    // next run otherwise. Without a session there is nothing to arm, and
+    // `EmulatorHost::command` would log "No emulator session is running" once per
+    // command, so just show it and let the next Run arm it.
+    if (m_host->isRunning()) {
+        armBreakpoints();
+    } else if (m_breakpointPanel) {
+        m_breakpointPanel->setWatchpoints(m_watchpoints);
+    }
     return true;
 }
 
@@ -1288,6 +1305,11 @@ void MainWindow::toggleBreakpointAtLine(int line)
 
     const QString file = QFileInfo(m_editor->filePath()).fileName();
 
+    // Breakpoints are keyed by base name, so two modules linked from different
+    // directories under the same file name (`util.s`) collide here and in the
+    // gutter. Re-keying on the full path is a larger change (the panel, the
+    // listings and the linker map all identify modules the same way); until then
+    // this is the documented limitation.
     auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
                            [&](const Breakpoint &bp) {
                                return bp.line == line && bp.file == file;
@@ -1337,21 +1359,15 @@ void MainWindow::editBreakpointCondition(int line)
         return;
 
     const QString file = QFileInfo(m_editor->filePath()).fileName();
-    auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
-                           [&](const Breakpoint &bp) {
-                               return bp.line == line && bp.file == file;
-                           });
-    if (it == m_breakpoints.end()) {
-        // Nothing to edit yet, so create one first rather than silently doing
-        // nothing on a right-click at an empty line.
-        toggleBreakpointAtLine(line);
-        it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
-                          [&](const Breakpoint &bp) {
-                              return bp.line == line && bp.file == file;
-                          });
-        if (it == m_breakpoints.end())
-            return;
-    }
+    auto findBreakpoint = [&] {
+        return std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
+                            [&](const Breakpoint &bp) {
+                                return bp.line == line && bp.file == file;
+                            });
+    };
+
+    auto it = findBreakpoint();
+    const bool existed = it != m_breakpoints.end();
 
     bool accepted = false;
     const QString condition = QInputDialog::getText(
@@ -1361,9 +1377,18 @@ void MainWindow::editBreakpointCondition(int line)
            "for example:  d0 = $1234   or   (buf) = $ff")
             .arg(file)
             .arg(line),
-        QLineEdit::Normal, it->condition, &accepted);
+        QLineEdit::Normal, existed ? it->condition : QString(), &accepted);
     if (!accepted)
         return;
+
+    if (!existed) {
+        // Nothing to edit on an empty line: create the breakpoint only now the
+        // dialog was accepted, so cancelling does not leave a condition-less one
+        // behind.
+        m_breakpoints.append(Breakpoint{file, line, QString(), true, 0, false});
+        it = findBreakpoint();
+        refreshBreakpointMarkers();
+    }
 
     it->condition = condition.trimmed();
     if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
@@ -1391,6 +1416,18 @@ void MainWindow::onStateUpdated(const MachineState &state)
         m_bases.text = state.textBase;
         m_bases.data = state.dataBase;
         m_bases.bss = state.bssBase;
+
+        // Hand the live bases to the program map. Without this, lineFor and
+        // addressFor return false forever: no breakpoint ever resolves, and the
+        // editor never follows the program counter (docs/code-review-glm-001.md
+        // P1 root cause B).
+        m_programMap.setLiveBases(m_bases);
+
+        // Arm breakpoints when the bases they resolve against actually arrive —
+        // here, where they are set — not on a zero-delay timer that always fires
+        // before the basepage response does (P1 root cause A).
+        if (m_sessionArmed && !m_breakpointsArmedThisSession)
+            armBreakpoints();
 
         // Point the memory pane at the program's own data on the first stop.
         // Its previous address is meaningless across sessions.

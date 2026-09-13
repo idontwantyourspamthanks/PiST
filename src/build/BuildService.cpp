@@ -34,14 +34,53 @@ const QRegularExpression &unlocatedRe()
 
 Diagnostic::Severity severityFrom(const QString &word)
 {
-    if (word.startsWith(QLatin1String("fatal")))
-        return Diagnostic::Error;
-    if (word == QLatin1String("warning"))
-        return Diagnostic::Warning;
-    return Diagnostic::Error;
+    // vasm writes `error`/`warning`/`fatal error` and vlink writes
+    // `Error`/`Warning`/`Fatal error`; only the warning case changes severity.
+    return word.compare(QLatin1String("warning"), Qt::CaseInsensitive) == 0
+               ? Diagnostic::Warning
+               : Diagnostic::Error;
 }
 
 } // namespace
+
+bool parseLinkerDiagnostic(const QString &line, Diagnostic *diagnostic)
+{
+    // `main.o (CODE+0x4): Reference to undefined symbol helper.`
+    //
+    // The linker names a module and a section offset rather than a source line,
+    // so the offset is recorded and turned into a line later, once the listings
+    // are known. That is what lets a link error point at the offending line.
+    //
+    // The severity word is *captured*: matching it only to discard it made
+    // `captured(1)` the numeric code, so every located warning was recorded as an
+    // error (docs/code-review-glm-001.md, P3).
+    static const QRegularExpression locatedRe(QStringLiteral(
+        R"(^(Fatal error|Error|Warning) (\d+):\s*(?!\s)(?:([^\s:]+)\s+)?\((\w+)\+0x([0-9A-Fa-f]+)\):\s*(.*)$)"));
+    static const QRegularExpression plainRe(QStringLiteral(
+        R"(^(Fatal error|Error|Warning) (\d+):\s*(.*)$)"));
+
+    const auto located = locatedRe.match(line);
+    if (located.hasMatch() && !located.captured(3).isEmpty()) {
+        diagnostic->severity = severityFrom(located.captured(1));
+        diagnostic->code = located.captured(2).toInt();
+        diagnostic->objectFile = located.captured(3);
+        diagnostic->section = located.captured(4);
+        diagnostic->sectionOffset = located.captured(5).toUInt(nullptr, 16);
+        diagnostic->hasObjectOffset = true;
+        diagnostic->message = located.captured(6).trimmed();
+        return true;
+    }
+
+    const auto plain = plainRe.match(line);
+    if (plain.hasMatch()) {
+        diagnostic->severity = severityFrom(plain.captured(1));
+        diagnostic->code = plain.captured(2).toInt();
+        diagnostic->message = plain.captured(3).trimmed();
+        return true;
+    }
+
+    return false;
+}
 
 BuildService::BuildService(QObject *parent)
     : QObject(parent)
@@ -325,41 +364,8 @@ void BuildService::handleStderrLine(const QString &line)
 
 void BuildService::handleLinkerLine(const QString &line)
 {
-    // `main.o (CODE+0x4): Reference to undefined symbol helper.`
-    //
-    // The linker names a module and a section offset rather than a source line,
-    // so the offset is recorded and turned into a line later, once the listings
-    // are known. That is what lets a link error point at the offending line.
-    static const QRegularExpression locatedRe(QStringLiteral(
-        R"(^(?:Fatal error|Error|Warning) (\d+):\s*(?!\s)(?:([^\s:]+)\s+)?\((\w+)\+0x([0-9A-Fa-f]+)\):\s*(.*)$)"));
-    static const QRegularExpression plainRe(QStringLiteral(
-        R"(^(Fatal error|Error|Warning) (\d+):\s*(.*)$)"));
-
-    const auto located = locatedRe.match(line);
-    if (located.hasMatch() && !located.captured(2).isEmpty()) {
-        Diagnostic d;
-        d.severity = located.captured(1).startsWith(QLatin1String("Warning"))
-                         ? Diagnostic::Warning
-                         : Diagnostic::Error;
-        d.code = located.captured(1).toInt();
-        d.objectFile = located.captured(2);
-        d.section = located.captured(3);
-        d.sectionOffset = located.captured(4).toUInt(nullptr, 16);
-        d.hasObjectOffset = true;
-        d.message = located.captured(5).trimmed();
-        m_diagnostics.append(d);
-        emit outputLine(line);
-        return;
-    }
-
-    const auto plain = plainRe.match(line);
-    if (plain.hasMatch()) {
-        Diagnostic d;
-        d.severity = plain.captured(1).startsWith(QLatin1String("Warning"))
-                         ? Diagnostic::Warning
-                         : Diagnostic::Error;
-        d.code = plain.captured(2).toInt();
-        d.message = plain.captured(3).trimmed();
+    Diagnostic d;
+    if (parseLinkerDiagnostic(line, &d)) {
         m_diagnostics.append(d);
         emit outputLine(line);
         return;

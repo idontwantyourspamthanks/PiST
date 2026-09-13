@@ -111,6 +111,22 @@ QStringList ProgramLineMap::unplacedModules() const
     return unplaced;
 }
 
+quint32 ProgramLineMap::textEnd() const
+{
+    quint32 end = 0;
+    for (const Module &module : m_modules) {
+        if (!module.placed || module.bases.text == 0)
+            continue;
+        // A module placed by the linker starts where the map puts it, and its
+        // listing's extent is relative to that start.
+        const quint32 span = module.lines.textEnd();
+        if (span == 0)
+            continue;
+        end = qMax(end, module.bases.text + span);
+    }
+    return end;
+}
+
 bool ProgramLineMap::addressFor(const QString &file, int line, quint32 *address) const
 {
     if (!m_resolved)

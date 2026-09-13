@@ -115,6 +115,11 @@ signals:
     void runningChanged(bool running);
     void stoppedChanged(bool stopped);
     void commandFinished(const QString &command, const QString &response);
+
+    /// One complete snapshot per state batch, not one per response: a batch
+    /// queued by refresh() is only complete once its last command has been
+    /// parsed, so a listener reacts (and re-queues its own follow-up commands)
+    /// once per stop instead of once per debugger response.
     void stateUpdated(const pist::MachineState &state);
     void logLine(const QString &line);
     void errorOccurred(const QString &message);
@@ -135,10 +140,32 @@ private:
         /// per command so a queue of mixed dumps routes each correctly.
         quint32 dumpAddress = 0;
         bool stackDump = false;
+
+        /// Part of a state snapshot queued by refresh(). The responses of a
+        /// batch each fill one part of MachineState, so only its last command
+        /// emits stateUpdated (with the complete snapshot); the earlier members
+        /// must not. A standalone state command emits its own update.
+        bool batchMember = false;
+        /// The last command of a state snapshot batch: its parsed response
+        /// emits the single stateUpdated for the whole batch.
+        bool batchEnd = false;
     };
 
     void dispatchNext();
     void completeCurrent();
+
+    /// Core of command(): report a missing session, then queue and dispatch.
+    /// Split out so a refresh batch shares the same guard and reporting rather
+    /// than duplicating it.
+    void enqueue(Pending pending);
+
+    /// Queue one command of a state snapshot. See Pending::batchMember.
+    void enqueueSnapshotCommand(const QString &command, bool last);
+
+    /// Reset every per-session framing field. Called from start(), so a second
+    /// session on the same host cannot inherit the first one's queue, buffers,
+    /// owed prompts or pending timers (docs/code-review-glm-001.md §P2).
+    void resetTransport();
     void onPrompt();
     void onCommandTimeout();
     void handleStderrLine(const QString &line);

@@ -113,6 +113,11 @@ target_link_libraries(pist PRIVATE
 if(X11_FOUND)
     target_compile_definitions(pist PRIVATE PIST_HAVE_X11)
     target_link_libraries(pist PRIVATE X11::X11)
+    # X Shape (libXext) makes the embedded video input-transparent mid-drag.
+    if(TARGET X11::Xext)
+        target_compile_definitions(pist PRIVATE PIST_HAVE_XEXT)
+        target_link_libraries(pist PRIVATE X11::Xext)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -419,6 +424,10 @@ target_link_libraries(tst_remotecontrol PRIVATE Qt6::Test Qt6::Widgets Qt6::Netw
 if(X11_FOUND)
     target_compile_definitions(tst_remotecontrol PRIVATE PIST_HAVE_X11)
     target_link_libraries(tst_remotecontrol PRIVATE X11::X11)
+    if(TARGET X11::Xext)
+        target_compile_definitions(tst_remotecontrol PRIVATE PIST_HAVE_XEXT)
+        target_link_libraries(tst_remotecontrol PRIVATE X11::Xext)
+    endif()
 endif()
 add_dependencies(tst_remotecontrol pist)
 add_test(NAME remotecontrol COMMAND tst_remotecontrol)

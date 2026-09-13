@@ -9,6 +9,9 @@
 #if defined(PIST_HAVE_X11)
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#if defined(PIST_HAVE_XEXT)
+#include <X11/extensions/shape.h>
+#endif
 #endif
 
 namespace pist {
@@ -143,4 +146,49 @@ bool embeddedContainerSize(quintptr windowId, int *width, int *height)
 #endif
 }
 
+
+void setEmbeddedChildrenInputTransparent(quintptr windowId, bool transparent)
+{
+#if defined(PIST_HAVE_XEXT)
+    auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    if (!x11)
+        return;
+    Display *display = x11->display();
+    if (!display)
+        return;
+
+    Window root = 0, parent = 0, *children = nullptr;
+    unsigned int count = 0;
+    if (XQueryTree(display, static_cast<Window>(windowId), &root, &parent,
+                   &children, &count)
+        && children) {
+        for (unsigned int i = 0; i < count; ++i) {
+            const Window child = children[i];
+            if (transparent) {
+                // An empty input region: pointer events over the video fall
+                // through to the Qt container, so a crossing drag keeps
+                // tracking instead of being swallowed by the foreign window.
+                XShapeCombineRectangles(display, child, ShapeInput, 0, 0,
+                                        nullptr, 0, ShapeSet, Unsorted);
+            } else {
+                // Restore the default: the whole window accepts input again.
+                XWindowAttributes attrs;
+                if (XGetWindowAttributes(display, child, &attrs)
+                    && attrs.width > 0 && attrs.height > 0) {
+                    XRectangle full{0, 0,
+                                    static_cast<unsigned short>(attrs.width),
+                                    static_cast<unsigned short>(attrs.height)};
+                    XShapeCombineRectangles(display, child, ShapeInput, 0, 0,
+                                            &full, 1, ShapeSet, Unsorted);
+                }
+            }
+        }
+        XFree(children);
+    }
+    XFlush(display);
+#else
+    Q_UNUSED(windowId);
+    Q_UNUSED(transparent);
+#endif
+}
 } // namespace pist

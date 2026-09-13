@@ -36,6 +36,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QGuiApplication>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
@@ -43,6 +44,7 @@
 #include <QStandardPaths>
 #include <QSettings>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QInputDialog>
@@ -345,32 +347,79 @@ void MainWindow::showDockMoveMenu(QDockWidget *dock, const QPoint &globalPos)
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    // Rearranging panels has two gestures over the same targets — the dock tab
+    // bars and the painted title bars:
+    //   right-click -> offer a "Move to ..." menu, so moving a panel is a
+    //                  discoverable choice rather than a hidden drag, and
+    //   left-press  -> the possible start of a native drag; make the embedded
+    //                  video input-transparent until the release, so the drag
+    //                  keeps tracking when the cursor crosses the video.
+    const QEvent::Type type = event->type();
+    if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease)
+        return QMainWindow::eventFilter(watched, event);
 
-    // A right-click on a dock's title bar offers a "Move to" menu, so moving a
-    // panel between areas is discoverable instead of depending on finding the
-    // drag gesture. The title bar is the natural place; a right-click inside a
-    // dock's content is consumed by the view and never reaches the dock, so the
-    // filter walks up from the clicked widget to its dock and checks the click
-    // is in the title-bar strip at the top.
-    if (event->type() == QEvent::MouseButtonPress) {
-        auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::RightButton) {
-            auto *w = qobject_cast<QWidget *>(watched);
-            auto *dock = w ? qobject_cast<QDockWidget *>(w) : nullptr;
-            while (!dock && w) {
-                w = w->parentWidget();
-                dock = qobject_cast<QDockWidget *>(w);
-            }
-            if (dock) {
-                const QPoint topLeft = dock->mapToGlobal(QPoint(0, 0));
-                if (me->globalPosition().toPoint().y() - topLeft.y() <= 30) {
-                    showDockMoveMenu(dock, me->globalPosition().toPoint());
-                    return true;
-                }
-            }
+    auto *me = static_cast<QMouseEvent *>(event);
+
+    // Any release ends a possible drag, restoring the video's input region.
+    if (type == QEvent::MouseButtonRelease) {
+        setDragVideoPassthrough(false);
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    auto *w = qobject_cast<QWidget *>(watched);
+    QDockWidget *dock = w ? dockAtPress(w, me->globalPosition().toPoint()) : nullptr;
+    if (!dock)
+        return QMainWindow::eventFilter(watched, event);
+
+    if (me->button() == Qt::RightButton) {
+        showDockMoveMenu(dock, me->globalPosition().toPoint());
+        return true;
+    }
+    if (me->button() == Qt::LeftButton)
+        setDragVideoPassthrough(true);
+    return QMainWindow::eventFilter(watched, event);
+}
+
+QDockWidget *MainWindow::dockAtPress(QWidget *pressed, const QPoint &globalPos)
+{
+    // A tab of a tabbed dock group. The tab bar belongs to the dock area, not
+    // to the dock, so the dock is found by matching the tab's text to a dock's
+    // title. A tab bar owning no dock's title is a content tab widget (the
+    // Output pane's Problems/console tabs), not a dock group, and is ignored.
+    if (auto *tabBar = qobject_cast<QTabBar *>(pressed)) {
+        const int index = tabBar->tabAt(tabBar->mapFromGlobal(globalPos));
+        if (index < 0)
+            return nullptr;
+        const QString title = tabBar->tabText(index);
+        for (QDockWidget *dock : findChildren<QDockWidget *>())
+            if (dock->windowTitle() == title)
+                return dock;
+        return nullptr;
+    }
+
+    // A painted title bar: the press is inside a dock but outside its content
+    // widget. (The default title bar is drawn by the dock itself, so there is
+    // no title-bar child widget to walk up to.)
+    for (QWidget *p = pressed; p; p = p->parentWidget()) {
+        if (auto *dock = qobject_cast<QDockWidget *>(p)) {
+            QWidget *content = dock->widget();
+            const bool onContent = content
+                && (pressed == content || content->isAncestorOf(pressed));
+            return onContent ? nullptr : dock;
         }
     }
-    return QMainWindow::eventFilter(watched, event);
+    return nullptr;
+}
+
+void MainWindow::setDragVideoPassthrough(bool on)
+{
+    if (on == m_dragVideoPassthrough)
+        return;
+    m_dragVideoPassthrough = on;
+    // Only meaningful while the emulator is embedded and on screen; without an
+    // embedded child the helper simply finds no window to reshape.
+    if (m_embeddedDisplay && m_display)
+        setEmbeddedChildrenInputTransparent(m_display->winId(), on);
 }
 
 void MainWindow::createDocks()

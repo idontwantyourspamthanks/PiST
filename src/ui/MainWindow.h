@@ -83,6 +83,18 @@ protected:
 private:
     void showDockMoveMenu(QDockWidget *dock, const QPoint &globalPos);
 
+    /// The dock a title-bar/tab press targets, or null when the press is on a
+    /// dock's content (or on no dock). The default title bar is painted by the
+    /// dock rather than being a child widget, and a tabbed dock has no title
+    /// bar at all, so this matches a dock tab's text to a title and treats a
+    /// press inside a dock but outside its content as a title-bar press.
+    QDockWidget *dockAtPress(QWidget *pressed, const QPoint &globalPos);
+
+    /// While a title-bar/tab drag may be in progress, make the embedded
+    /// emulator's foreign window input-transparent so the drag keeps tracking
+    /// across the video; restore it when the press is released.
+    void setDragVideoPassthrough(bool on);
+
 private slots:
     void openFile();
     void saveFile();
@@ -199,6 +211,10 @@ private:
 
     /// The embedded/separate display preference. Persisted via QSettings.
     bool m_embeddedDisplay = false;
+
+    /// True while the embedded video is input-transparent for an in-progress
+    /// title-bar/tab drag, so the restore only runs once and only when needed.
+    bool m_dragVideoPassthrough = false;
 
     /// The factory dock arrangement, captured after the default tab groupings are
     /// applied, so "Reset layout" can restore it. Saved/restored via QSettings.

@@ -22,6 +22,7 @@
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QMenu>
+#include <QTabBar>
 #include <QProcess>
 #include <QTreeView>
 #include <QStandardPaths>
@@ -45,7 +46,9 @@ private slots:
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
     void dockLayoutPersistsAcrossRestart();
-    void dockMoveMenuMovesDockBetweenAreas();
+    void dockTabMoveMenuMovesDockBetweenAreas();
+    void dockTitleBarMoveMenuMovesDock();
+    void titleBarLeftPressIsNotConsumed();
     void memoryPanesAreIndependent();
 
     /// Floppy images reach the emulator command line.
@@ -299,11 +302,43 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
 // without relying on a mouse: change a dock's visibility in one window, save the
 // state, and confirm a fresh window restores exactly that.
 
-// Right-clicking a dock's title bar offers a "Move to" menu (so moving a panel is
-// discoverable, not dependent on finding the drag gesture); choosing an entry
-// re-docks the panel in that area. The synthesized press goes through
-// QApplication::notify, which is what the app-level event filter listens on.
-void TstGui::dockMoveMenuMovesDockBetweenAreas()
+// The dock "Move to" menu is a non-modal popup; find it among the top-levels.
+static QMenu *findDockMoveMenu()
+{
+    for (QWidget *w : QApplication::topLevelWidgets())
+        if (auto *m = qobject_cast<QMenu *>(w))
+            if (m->objectName() == QLatin1String("dockMoveMenu"))
+                return m;
+    return nullptr;
+}
+
+static QAction *menuAction(QMenu *menu, const char *text)
+{
+    for (QAction *a : menu->actions())
+        if (a->text() == QLatin1String(text))
+            return a;
+    return nullptr;
+}
+
+// The tab bar of a tabbed dock group showing the given tab (a QMainWindowTabBar,
+// not a content QTabWidget's tab bar), located by the dock's title.
+static QTabBar *findDockTabBar(QWidget *root, const QString &tabText, int *index)
+{
+    for (QTabBar *tb : root->findChildren<QTabBar *>())
+        for (int i = 0; i < tb->count(); ++i)
+            if (tb->tabText(i) == tabText) {
+                *index = i;
+                return tb;
+            }
+    return nullptr;
+}
+
+// Right-clicking a dock's *tab* in a tabbed group offers the "Move to" menu;
+// choosing an entry re-docks that panel. This is the case the first version
+// missed: a tabbed dock has no title bar, and its tab belongs to the dock area,
+// not the dock. The synthesized press goes through QApplication::notify, which
+// is what the app-level event filter listens on.
+void TstGui::dockTabMoveMenuMovesDockBetweenAreas()
 {
     MainWindow window;
     window.show();
@@ -315,32 +350,97 @@ void TstGui::dockMoveMenuMovesDockBetweenAreas()
     // observable change.
     QVERIFY(window.dockWidgetArea(dock) != Qt::LeftDockWidgetArea);
 
-    // Press-only (no release) so the popup that appears doesn't have an item
-    // under the cursor get triggered by the release half of a click.
-    QMouseEvent press(QEvent::MouseButtonPress, QPointF(15, 8),
-                      dock->mapToGlobal(QPoint(15, 8)),
+    int index = -1;
+    QTabBar *tabBar = findDockTabBar(&window, dock->windowTitle(), &index);
+    QVERIFY2(tabBar, "the memory dock is tabbed, so its tab must exist");
+    QVERIFY(index >= 0);
+
+    // Press-only on the tab (no release) so the popup that appears doesn't have
+    // an item under the cursor get triggered by a click's release half.
+    const QPoint pos = tabBar->tabRect(index).center();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), tabBar->mapToGlobal(pos),
                       Qt::RightButton, Qt::RightButton, Qt::NoModifier);
-    QApplication::sendEvent(dock, &press);
+    QApplication::sendEvent(tabBar, &press);
     QCoreApplication::processEvents();
 
-    QMenu *menu = nullptr;
-    for (QWidget *w : QApplication::topLevelWidgets())
-        if ((menu = qobject_cast<QMenu *>(w))
-            && menu->objectName() == QLatin1String("dockMoveMenu"))
-            break;
-    QVERIFY2(menu, "right-clicking a dock title bar must offer the move menu");
+    QMenu *menu = findDockMoveMenu();
+    QVERIFY2(menu, "right-clicking a dock tab must offer the move menu");
     QVERIFY(menu->isVisible());
-
-    QAction *toLeft = nullptr;
-    for (QAction *a : menu->actions())
-        if (a->text() == QLatin1String("Move to left")) {
-            toLeft = a;
-            break;
-        }
+    QAction *toLeft = menuAction(menu, "Move to left");
     QVERIFY(toLeft);
     toLeft->trigger();  // fires the move; the popup closes itself
     QCoreApplication::processEvents();
     QCOMPARE(window.dockWidgetArea(dock), Qt::LeftDockWidgetArea);
+}
+
+// Right-clicking a non-tabbed dock's painted title bar offers the same menu.
+void TstGui::dockTitleBarMoveMenuMovesDock()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    // The project-files dock sits alone in the left area, so it has a painted
+    // title bar rather than a tab.
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    QVERIFY(dock);
+    QVERIFY(window.tabifiedDockWidgets(dock).isEmpty());
+    QVERIFY(window.dockWidgetArea(dock) != Qt::BottomDockWidgetArea);
+
+    // The title bar is the strip above the content; press near the top-centre.
+    const QPoint pos(dock->width() / 2, 5);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), dock->mapToGlobal(pos),
+                      Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+    QApplication::sendEvent(dock, &press);
+    QCoreApplication::processEvents();
+
+    QMenu *menu = findDockMoveMenu();
+    QVERIFY2(menu, "right-clicking a dock title bar must offer the move menu");
+    QVERIFY(menu->isVisible());
+    QAction *toBottom = menuAction(menu, "Move to bottom");
+    QVERIFY(toBottom);
+    toBottom->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(window.dockWidgetArea(dock), Qt::BottomDockWidgetArea);
+}
+
+// A left-press on a title bar must pass through the app-level event filter to
+// the dock, or native dragging could never start. The filter now also hooks the
+// left-press (to arm the video pass-through), so this pins that it does not
+// *consume* the press. (A full synthetic drag is not testable offscreen: the
+// transient floating window a cross-area drag creates crashes the offscreen
+// platform's backing-store teardown, so drag itself is verified on a real
+// display instead.)
+void TstGui::titleBarLeftPressIsNotConsumed()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    QVERIFY(dock);
+
+    // A spy recording whether the dock itself receives the press. App-level
+    // filters run before the target's own filters, so if the app filter
+    // consumed the press this would never fire.
+    struct Spy : QObject {
+        int presses = 0;
+        bool eventFilter(QObject *, QEvent *e) override {
+            if (e->type() == QEvent::MouseButtonPress)
+                ++presses;
+            return false;
+        }
+    } spy;
+    dock->installEventFilter(&spy);
+
+    const QPoint pos(dock->width() / 2, 5);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), dock->mapToGlobal(pos),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(dock, &press);
+    QCoreApplication::processEvents();
+
+    dock->removeEventFilter(&spy);
+    QCOMPARE(spy.presses, 1);
 }
 
 void TstGui::dockLayoutPersistsAcrossRestart()

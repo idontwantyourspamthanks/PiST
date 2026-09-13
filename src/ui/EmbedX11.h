@@ -34,6 +34,19 @@ bool embeddedContainerSize(quintptr windowId, int *width, int *height);
 /// Resize/position the emulator's window within the container.
 void resizeEmbeddedChild(quintptr windowId, int x, int y, int width, int height);
 
+/// Give the embedded emulator's window an empty input region, or restore it.
+///
+/// A reparented foreign window consumes the pointer events that land on it, so
+/// a dock drag that crosses the emulator video stops tracking: Qt never sees
+/// the motion or the release. Emptying the child's input region for the
+/// duration of the drag lets those events fall through to the Qt container, so
+/// the drag keeps tracking and drops where the cursor is; the region is then
+/// restored so the emulator accepts input again.
+///
+/// X11 only; a no-op when PiST was built without the X Shape extension or is
+/// running off X11.
+void setEmbeddedChildrenInputTransparent(quintptr windowId, bool transparent);
+
 /// Capture the visible contents of a native window, including any reparented
 /// foreign children (the embedded emulator's SDL window).
 ///

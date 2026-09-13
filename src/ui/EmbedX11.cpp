@@ -117,4 +117,30 @@ void resizeEmbeddedChild(quintptr windowId, int x, int y, int width, int height)
 #endif
 }
 
+
+bool embeddedContainerSize(quintptr windowId, int *width, int *height)
+{
+#if defined(PIST_HAVE_X11)
+    auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    if (!x11)
+        return false;
+    Display *display = x11->display();
+    if (!display)
+        return false;
+
+    XWindowAttributes attrs;
+    if (!XGetWindowAttributes(display, static_cast<Window>(windowId), &attrs)
+        || attrs.width <= 0 || attrs.height <= 0)
+        return false;
+    *width = attrs.width;
+    *height = attrs.height;
+    return true;
+#else
+    Q_UNUSED(windowId);
+    Q_UNUSED(width);
+    Q_UNUSED(height);
+    return false;
+#endif
+}
+
 } // namespace pist

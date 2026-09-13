@@ -74,7 +74,14 @@ void EmulatorDisplayWidget::showEmbedded()
 
 void EmulatorDisplayWidget::fitEmbedded()
 {
-    const int w = width(), h = height();
+    // Fit against the container's real on-screen size, not Qt geometry: for a
+    // native dock widget the two can disagree, and fitting against a stale small
+    // Qt size is what left the video small and top-left in a large dock.
+    int w = 0, h = 0;
+    if (!embeddedContainerSize(winId(), &w, &h) || w <= 0 || h <= 0) {
+        w = width();
+        h = height();
+    }
     if (w <= 0 || h <= 0)
         return;
 
@@ -90,9 +97,6 @@ void EmulatorDisplayWidget::fitEmbedded()
     const int x = (w - fitW) / 2;
     const int y = (h - fitH) / 2;
 
-    // Fit to the widget's current Qt geometry — the size the dock has actually
-    // allocated. The container's X11 window can hold a stale, larger size from
-    // when it was created, and fitting to that pushes the video out of the dock.
     resizeEmbeddedChild(winId(), x, y, fitW, fitH);
 }
 

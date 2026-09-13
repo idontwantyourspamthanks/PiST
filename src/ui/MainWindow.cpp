@@ -323,6 +323,16 @@ QDockWidget *MainWindow::makeDock(const QString &title, const QString &objectNam
                       | QDockWidget::DockWidgetFloatable
                       | QDockWidget::DockWidgetClosable);
     dock->setWidget(widget);
+
+    // Advertise the drag surface: an open-hand cursor over the title bar. The
+    // title bar is painted by the dock itself — there is no title-bar child
+    // widget — so the dock's own cursor is what shows over it. Cursors inherit
+    // from parent to child, so the content is given an explicit arrow to stop
+    // the hand leaking into the panel's body (text views keep their own I-beam,
+    // which they set on their viewport, overriding this).
+    dock->setCursor(Qt::OpenHandCursor);
+    widget->setCursor(Qt::ArrowCursor);
+
     return dock;
 }
 
@@ -354,6 +364,18 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     //                  video input-transparent until the release, so the drag
     //                  keeps tracking when the cursor crosses the video.
     const QEvent::Type type = event->type();
+
+    // A dock tab group's tab bar gets an open-hand cursor to advertise that a
+    // tab can be dragged to rearrange it or tear the panel out. Only the dock
+    // tab bars (QMainWindowTabBar) — not a content QTabWidget's tab bar.
+    if (type == QEvent::Show || type == QEvent::Enter) {
+        if (auto *tabBar = qobject_cast<QTabBar *>(watched);
+            tabBar
+            && QLatin1String(tabBar->metaObject()->className())
+                   == QLatin1String("QMainWindowTabBar"))
+            tabBar->setCursor(Qt::OpenHandCursor);
+        return QMainWindow::eventFilter(watched, event);
+    }
     if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease)
         return QMainWindow::eventFilter(watched, event);
 

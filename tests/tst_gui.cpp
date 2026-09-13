@@ -50,6 +50,7 @@ private slots:
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
     void bottomPanelsAreMovableDocks();
+    void dragSurfacesAdvertiseHandCursor();
     void memoryPanesAreIndependent();
 
     /// Floppy images reach the emulator command line.
@@ -483,6 +484,33 @@ void TstGui::bottomPanelsAreMovableDocks()
     QCoreApplication::processEvents();
     QCOMPARE(window.dockWidgetArea(console), Qt::RightDockWidgetArea);
     QVERIFY(!window.tabifiedDockWidgets(console).contains(problems));
+}
+
+
+// Drag surfaces advertise themselves with a cursor: an open hand over a dock's
+// title bar and over a dock tab. The dock's *content* keeps the arrow (the hand
+// must not inherit into the panel body).
+void TstGui::dragSurfacesAdvertiseHandCursor()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QCoreApplication::processEvents();
+
+    // Title bar: the dock carries the open-hand cursor (its title bar is painted
+    // by the dock, so the dock's cursor is what shows over it).
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("memoryDock"));
+    QVERIFY(dock);
+    QCOMPARE(dock->cursor().shape(), Qt::OpenHandCursor);
+    // The panel body stays an arrow, so the hand doesn't leak into it.
+    QVERIFY(dock->widget());
+    QCOMPARE(dock->widget()->cursor().shape(), Qt::ArrowCursor);
+
+    // Tab: the dock tab bar carries the open hand too.
+    int index = -1;
+    QTabBar *tabBar = findDockTabBar(&window, dock->windowTitle(), &index);
+    QVERIFY2(tabBar, "the memory dock is tabbed, so its tab bar must exist");
+    QCOMPARE(tabBar->cursor().shape(), Qt::OpenHandCursor);
 }
 
 void TstGui::dockLayoutPersistsAcrossRestart()

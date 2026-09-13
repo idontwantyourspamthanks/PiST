@@ -47,8 +47,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   - a **hardware registers** view of the shifter, MFP, ACIA/IKBD, sound, blitter and more, from
     Hatari's `info` commands
   - a **PC history** view of how the machine reached the current stop
-- **Movable, tabbed debug panels** — arrange the views and the emulator display however you like
-  (drag a title bar or tab, or right-click one for a "Move to" menu); the layout persists
+- **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
+  a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
+  to rearrange), or right-click for a "Move to" menu. The layout persists.
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing

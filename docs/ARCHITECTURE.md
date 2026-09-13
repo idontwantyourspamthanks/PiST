@@ -186,10 +186,14 @@ through `makeDock()` (movable/floatable/closable + a stable `objectName`). The d
 tab group; Problems, the Build & debug console and the memory panes are ordinary docks tabbed
 together in the bottom area (each a real dock, so they drag and move like any other panel). The
 factory arrangement is captured with `saveState()`, the user's restored from `QSettings`, and
-re-saved on close. The event filter offers a "Move to" menu on a right-click of a dock **tab**
-(matched to a dock by title) or **title bar** (a press inside a dock but outside its content), and
-arms the drag video pass-through on a left-press. See README §Emulator embedding and the commit
-history for why the tab matching is done by title.
+re-saved on close. Drag surfaces advertise themselves with an open-hand cursor: `makeDock()` sets it
+on the dock (whose painted title bar is its own region) and gives the content an explicit arrow so
+the hand does not inherit into the panel body, and the event filter sets it on each dock tab bar
+(a `QMainWindowTabBar`, distinguished from a content `QTabWidget`'s bar by class name). The event
+filter offers a "Move to" menu on a right-click of a dock **tab** (matched to a dock by title) or
+**title bar** (a press inside a dock but outside its content), and arms the drag video pass-through
+on a left-press. See README §Emulator embedding and the commit history for why the tab matching is
+done by title.
 
 ### Remote control
 

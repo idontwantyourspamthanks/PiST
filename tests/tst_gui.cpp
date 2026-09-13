@@ -21,6 +21,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFileInfo>
+#include <QMenu>
 #include <QProcess>
 #include <QTreeView>
 #include <QStandardPaths>
@@ -44,6 +45,7 @@ private slots:
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
     void dockLayoutPersistsAcrossRestart();
+    void dockMoveMenuMovesDockBetweenAreas();
     void memoryPanesAreIndependent();
 
     /// Floppy images reach the emulator command line.
@@ -296,6 +298,51 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
 // closable, and the whole arrangement persists across runs. Prove the round-trip
 // without relying on a mouse: change a dock's visibility in one window, save the
 // state, and confirm a fresh window restores exactly that.
+
+// Right-clicking a dock's title bar offers a "Move to" menu (so moving a panel is
+// discoverable, not dependent on finding the drag gesture); choosing an entry
+// re-docks the panel in that area. The synthesized press goes through
+// QApplication::notify, which is what the app-level event filter listens on.
+void TstGui::dockMoveMenuMovesDockBetweenAreas()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("memoryDock"));
+    QVERIFY(dock);
+    // The memory dock starts tabbed in the bottom area, so moving it left is an
+    // observable change.
+    QVERIFY(window.dockWidgetArea(dock) != Qt::LeftDockWidgetArea);
+
+    // Press-only (no release) so the popup that appears doesn't have an item
+    // under the cursor get triggered by the release half of a click.
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(15, 8),
+                      dock->mapToGlobal(QPoint(15, 8)),
+                      Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+    QApplication::sendEvent(dock, &press);
+    QCoreApplication::processEvents();
+
+    QMenu *menu = nullptr;
+    for (QWidget *w : QApplication::topLevelWidgets())
+        if ((menu = qobject_cast<QMenu *>(w))
+            && menu->objectName() == QLatin1String("dockMoveMenu"))
+            break;
+    QVERIFY2(menu, "right-clicking a dock title bar must offer the move menu");
+    QVERIFY(menu->isVisible());
+
+    QAction *toLeft = nullptr;
+    for (QAction *a : menu->actions())
+        if (a->text() == QLatin1String("Move to left")) {
+            toLeft = a;
+            break;
+        }
+    QVERIFY(toLeft);
+    toLeft->trigger();  // fires the move; the popup closes itself
+    QCoreApplication::processEvents();
+    QCOMPARE(window.dockWidgetArea(dock), Qt::LeftDockWidgetArea);
+}
+
 void TstGui::dockLayoutPersistsAcrossRestart()
 {
     QByteArray state;

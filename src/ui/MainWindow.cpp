@@ -325,6 +325,54 @@ QDockWidget *MainWindow::makeDock(const QString &title, const QString &objectNam
     return dock;
 }
 
+void MainWindow::showDockMoveMenu(QDockWidget *dock, const QPoint &globalPos)
+{
+    // Non-modal (popup) rather than exec(), so a test can drive it without a
+    // nested event loop, and so it composes with the rest of the UI.
+    auto *menu = new QMenu(dock);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    menu->setObjectName(QStringLiteral("dockMoveMenu"));
+    menu->addAction(tr("Move to left"), this,
+                    [this, dock] { addDockWidget(Qt::LeftDockWidgetArea, dock); });
+    menu->addAction(tr("Move to right"), this,
+                    [this, dock] { addDockWidget(Qt::RightDockWidgetArea, dock); });
+    menu->addAction(tr("Move to bottom"), this,
+                    [this, dock] { addDockWidget(Qt::BottomDockWidgetArea, dock); });
+    menu->addSeparator();
+    menu->addAction(tr("Float"), this, [dock] { dock->setFloating(true); });
+    menu->popup(globalPos);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+
+    // A right-click on a dock's title bar offers a "Move to" menu, so moving a
+    // panel between areas is discoverable instead of depending on finding the
+    // drag gesture. The title bar is the natural place; a right-click inside a
+    // dock's content is consumed by the view and never reaches the dock, so the
+    // filter walks up from the clicked widget to its dock and checks the click
+    // is in the title-bar strip at the top.
+    if (event->type() == QEvent::MouseButtonPress) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::RightButton) {
+            auto *w = qobject_cast<QWidget *>(watched);
+            auto *dock = w ? qobject_cast<QDockWidget *>(w) : nullptr;
+            while (!dock && w) {
+                w = w->parentWidget();
+                dock = qobject_cast<QDockWidget *>(w);
+            }
+            if (dock) {
+                const QPoint topLeft = dock->mapToGlobal(QPoint(0, 0));
+                if (me->globalPosition().toPoint().y() - topLeft.y() <= 30) {
+                    showDockMoveMenu(dock, me->globalPosition().toPoint());
+                    return true;
+                }
+            }
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
 void MainWindow::createDocks()
 {
     // Photoshop-style panels: any dock can be nested beside another in an area,
@@ -332,6 +380,7 @@ void MainWindow::createDocks()
     // arrangement below groups the debug views, and the whole arrangement is
     // persisted and restored across runs.
     setDockNestingEnabled(true);
+    qApp->installEventFilter(this);
     setObjectName(QStringLiteral("mainWindow"));
 
     QList<QDockWidget *> debugTabs;

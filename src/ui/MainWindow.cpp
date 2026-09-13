@@ -376,6 +376,15 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             tabBar->setCursor(Qt::OpenHandCursor);
         return QMainWindow::eventFilter(watched, event);
     }
+
+    // Column headers are left-aligned everywhere: a stretched column's title
+    // should hug its content, not float centred in the middle of a wide column
+    // (which is what put "Instruction" far from the instructions).
+    if (type == QEvent::Polish) {
+        if (auto *header = qobject_cast<QHeaderView *>(watched))
+            header->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        return QMainWindow::eventFilter(watched, event);
+    }
     if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease)
         return QMainWindow::eventFilter(watched, event);
 

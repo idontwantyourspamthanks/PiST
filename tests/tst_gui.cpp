@@ -22,7 +22,9 @@
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QMenu>
+#include <QHeaderView>
 #include <QTabBar>
+#include <QTableWidget>
 #include <QProcess>
 #include <QTreeView>
 #include <QStandardPaths>
@@ -51,6 +53,7 @@ private slots:
     void titleBarLeftPressIsNotConsumed();
     void bottomPanelsAreMovableDocks();
     void dragSurfacesAdvertiseHandCursor();
+    void columnHeadersAreLeftAligned();
     void memoryPanesAreIndependent();
 
     /// Floppy images reach the emulator command line.
@@ -511,6 +514,28 @@ void TstGui::dragSurfacesAdvertiseHandCursor()
     QTabBar *tabBar = findDockTabBar(&window, dock->windowTitle(), &index);
     QVERIFY2(tabBar, "the memory dock is tabbed, so its tab bar must exist");
     QCOMPARE(tabBar->cursor().shape(), Qt::OpenHandCursor);
+}
+
+
+// A stretched column's header must be left-aligned so its title sits over the
+// content rather than centred in a wide column. Enforced globally by the app
+// event filter polishing every QHeaderView; check it landed on the table views.
+void TstGui::columnHeadersAreLeftAligned()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QCoreApplication::processEvents();
+
+    int checked = 0;
+    for (QTableWidget *table : window.findChildren<QTableWidget *>()) {
+        QHeaderView *h = table->horizontalHeader();
+        if (!h->isVisibleTo(&window))
+            continue;  // e.g. MemoryView hides its header
+        QCOMPARE(h->defaultAlignment(), Qt::AlignLeft | Qt::AlignVCenter);
+        ++checked;
+    }
+    QVERIFY2(checked >= 3, "expected several visible table headers to check");
 }
 
 void TstGui::dockLayoutPersistsAcrossRestart()

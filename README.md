@@ -39,11 +39,16 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
 - **Debug** with breakpoints, single-step, step-over, registers, memory and labelled
   disassembly — and the editor following the program counter as you step
+  - **edit registers and memory** while stopped — poke a value and keep debugging
+  - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
     armed as change-tracking breakpoints), settable from Run ▸ Add watchpoint or the remote control
   - a **stack view** of the values at the stack pointer, with likely return addresses marked
   - a **hardware registers** view of the shifter, MFP, ACIA/IKBD, sound, blitter and more, from
     Hatari's `info` commands
+  - a **PC history** view of how the machine reached the current stop
+- **Movable, tabbed debug panels** — arrange the views and the emulator display however you like
+  (drag a title bar or tab, or right-click one for a "Move to" menu); the layout persists
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
@@ -84,14 +89,14 @@ clean, and means a newer (or a user-supplied) toolchain just works.
 │         ▲                ▲           └──────▲───────┘                │
 │         │                │                  │                        │
 │         │           ┌────┴─────┐      ┌─────┴──────┐                 │
-│         │           │ Build    │      │ Debug      │                 │
-│         │           │ Service  │      │ Client     │                 │
+│         │           │ Build    │      │ Emulator   │                 │
+│         │           │ Service  │      │ Host       │                 │
 │         │           └────┬─────┘      └─────┬──────┘                 │
 │         │                │                  │                        │
-│         │           ┌────┴─────┐      ┌─────┴──────┐                 │
-│         └───────────│ LineMap  │      │ Emulator   │                 │
-│           (PC↔line) │ (-L lst) │      │ Host       │                 │
-│                     └──────────┘      └─────┬──────┘                 │
+│         │           ┌────┴─────┐            │                        │
+│         └───────────│ LineMap  │            │                        │
+│           (PC↔line) │ (-L lst) │            │                        │
+│                     └──────────┘            │                        │
 └─────────────────────────────────────────────┼────────────────────────┘
                                               │
                           ┌───────────────────┴────────────────────┐
@@ -130,12 +135,17 @@ test caught it. `docs/PLAN.md` §3.3 and §5 record them in full, along with the
 
 | Path | Contents |
 |---|---|
-| `src/editor/` | Editor widget and the m68k syntax highlighter |
-| `src/build/` | `BuildService` (drives vasm) and `LineMap` (listing → line/address map) |
-| `src/emu/` | `EmulatorHost`, session configuration, capability probing, ROM discovery |
-| `src/ui/` | Main window and debug panels |
-| `tests/` | Parser unit tests and emulator integration tests |
-| `docs/` | Design documents |
+| `src/main.cpp` | Entry point: platform pinning, `--diagnose`, `--control-port`, the single `MainWindow` |
+| `src/ui/` | `MainWindow` (the shell) and every debug panel; X11 display embedding (`EmbedX11`, `EmulatorDisplayWidget`) |
+| `src/editor/` | `CodeEditor` (gutter, execution line, error markers) and `AsmHighlighter` (m68k Motorola syntax) |
+| `src/build/` | `BuildService` (drives vasm/vlink), `Diagnostic`, and the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` |
+| `src/emu/` | `EmulatorHost` (the Hatari subprocess + debug transport), `SessionConfig`, `HatariProbe`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
+| `src/debug/` | `Breakpoint` (file:line model + arming plan) and `Watchpoint` |
+| `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE |
+| `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON |
+| `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari |
+| `tests/` | Parser unit tests and the offscreen GUI/emulator integration tests |
+| `docs/` | Design documents — [PLAN](docs/PLAN.md), the [codebase guide](docs/ARCHITECTURE.md), [FUTURE](docs/FUTURE.md) |
 
 ## Building
 
@@ -301,6 +311,10 @@ run                build and start the emulator; the reply arrives when it is ru
 stop               stop the emulator session
 step / stepover / continue
 breakpoint <n>     toggle a breakpoint at source line n
+watchpoint <addr>  break when the value at an address changes
+setreg <name> <value>   set a register (while stopped)
+setmem <addr> <value>  write a memory byte (while stopped)
+cmd <command>      run an arbitrary Hatari debugger command (block reply)
 screenshot <file>  save the window as a PNG (default /tmp/pist-screenshot.png)
 console            the build & debug console text (block reply)
 state              registers and PC (block reply)
@@ -377,8 +391,10 @@ Stated plainly, because an early release should not imply more than it does:
 
 ## Documentation
 
-- **[docs/PLAN.md](docs/PLAN.md)** — the design document: verified findings, architecture,
-  the launcher rules, roadmap, risk register and licensing analysis
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — a guide to the codebase: the module map, the
+  build/run/debug flows, the hard-won invariants, and how to extend it. Start here to change code.
+- **[docs/PLAN.md](docs/PLAN.md)** — the design document: verified findings, architecture
+  rationale, the launcher rules, roadmap, risk register and licensing analysis
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and the starting point for
   each item (notably: a portable emulator control channel, which is what Windows is missing)
 - **[NOTICE](NOTICE)** — third-party components and the licence obligations that follow from them

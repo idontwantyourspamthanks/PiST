@@ -164,15 +164,15 @@ that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.
 
 ## 6. Debug surface depth: editing, multiple panes, history, step-back, pause hint
 
-**Status:** not started. Natural next layer on the debug views that exist now.
+**Status:** mostly delivered — register/memory editing, multiple memory panes, PC history and the
+pause hint are in; only step-back is not, and the analysis below records why it is not merely
+unbuilt.
 
-- **Register and memory editing.** Registers and the memory view are read-only today; an assembly
-  developer wants to poke a value and keep going. Hatari's debugger supports it (`r d0 <val>`,
-  `memwrite`), so this is UI work, not a transport problem. Needs care around when writes are legal
-  (stopped only) and how an edit invalidates the disassembly/memory views.
-- **Multiple memory panes.** One memory view today; watching two regions at once (a struct and the
-  hardware registers, say) is a common need. Mostly a matter of letting the dump channels be
-  addressed per-pane rather than one shared memoryDumpReady.
+- **Register and memory editing.** Delivered. Registers and memory are editable while stopped
+  (`r d0 <val>`, `memwrite`), gated on the stop state, and the views refresh after a write because
+  Hatari prints nothing on success.
+- **Multiple memory panes.** Delivered. `MainWindow::addMemoryPane()` adds panes, each routed by an
+  integer tag so concurrent dumps reach the right pane rather than sharing one `memoryDumpReady`.
 - **PC history and step-back.** The PC-history view is delivered (Hatari's `history` command,
   refreshed on each stop). True step-back was attempted and is documented here because it is *not*
   simply unbuilt: the only mechanism Hatari offers, `statesave`/`stateload`, restores by resetting
@@ -184,9 +184,8 @@ that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.
   stateload. Real step-back would need either upstream Hatari support for a non-destructive
   restore, or a record/replay mechanism (relaunch + step forward N times), the latter being slow
   and state-lossy.
-- **Pause hint on the embedded display.** When the debugger is stopped the embedded panel renders
-  no frames and shows whatever was last drawn (or black), which reads as a freeze. A visible
-  "paused" affordance would stop it being mistaken for a crash.
+- **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
+  the debugger is stopped, so a frozen frame is not mistaken for a crash.
 
 ---
 
@@ -197,18 +196,19 @@ area, and the whole arrangement persists across runs (QSettings saveState/restor
 pinned by tst_gui::dockLayoutPersistsAcrossRestart). The default arrangement groups the debug views
 (Registers/Disassembly/Stack/Hardware/Breakpoints) into one tabbed panel with the Emulator display
 prominent above it, and Output/Memory tabbed at the bottom. The View menu lists every dock for
-show/hide and has a Reset layout action. Remaining polish would be layout presets and a nicer
-first-run default size balance, not the mechanism itself.
-
+show/hide and has a Reset layout action. Moving a panel is discoverable: right-click any dock tab
+or title bar for a "Move to left / right / bottom / Float" menu, and drags track across the
+embedded video (the foreign SDL window is made input-transparent mid-drag). Remaining polish would
+be layout presets and a nicer first-run default size balance, not the mechanism itself.
 ---
 
 ## 8. Emulator window resize correctness
 
-**Status:** open bug, reported by a user. The embedded display does not track the dock cleanly: the
-video stays the same size, so shrinking the dock pushes it out of view and expanding leaves ghost
-trails. The fit-on-resize path (resize the reparented SDL window to fill the container, letting
-Hatari rescale) needs to actually track the container and force a clean repaint, with no clipping
-on shrink and no artifacts on grow.
+**Status:** fixed. The embedded display tracks the dock: on the reported video size it maps the
+hidden SDL child and fits it to the container's *real* X11 size (`embeddedContainerSize`, not Qt's
+geometry, which can disagree for a native dock), aspect-preserved and centred, with a settle timer
+to re-fit after launch. Shrinking no longer clips and expanding no longer leaves the video small
+and top-left.
 
 ---
 
@@ -220,3 +220,61 @@ API key** (so the user picks the provider/model rather than the IDE hard-coding 
 existing remote-control surface (the assistant can drive the IDE through it) and the project's
 "hooks for agents" direction. Needs a settings page for endpoint/key/model, a sidebar panel, and a
 clear line on what context is sent (open file, project, build errors) and what is not.
+
+---
+
+## 10. Scripted memory editing on pause (user scripts driven by the debugger)
+
+**Status:** not started. **Related:** the remote-control socket (already scripts memory edits from
+outside; README §Remote control) and the LLM assistant (#9), which is a different agent-facing
+surface.
+
+### The idea
+
+Let a user supply a script — in a language to be decided — that runs when the debugger pauses (at a
+breakpoint, a watchpoint, or any stop), can inspect and edit memory and registers, and can choose
+to continue. Uses: automated patching mid-session, fault injection, drive-by test harnesses that
+poke inputs and assert on state, trainers/cheats, and dynamic analysis (log every write to a
+region). It is the emulator-scripting model that FCEUX, VBA, Mesen and BizHawk standardised on Lua,
+applied to this IDE's debug loop — the script lives *outside* the compiled program, so users extend
+behaviour without rebuilding.
+
+### What already exists
+
+Most of the machinery is here, which is why this is a *glue* feature rather than new plumbing:
+
+- Memory and register writes while stopped already work (`MainWindow::setMemoryByte` → `memwrite`,
+  `setRegister` → `r <reg> <val>`), gated on the stop state, and the views refresh after a write.
+- The trigger already exists: `EmulatorHost::stoppedChanged(true)` fires on every stop, and
+  breakpoints/watchpoints are already resolved to addresses by `planBreakpoints()`.
+- The remote-control socket already exposes `setmem`, `setreg`, `cmd` and `state`, so an *external*
+  program can already do scripted memory edits while stopped today. What it lacks is a *push*: the
+  protocol is request/response, so an external script must poll `state` to notice a stop, and there
+  is no way to say "run this when we break."
+
+### The two decisions
+
+- **Language.** Lua is the natural fit: tiny, MIT-licensed, trivially embeddable, and the
+  established standard for emulator scripting. The zero-third-party-dependency option is Qt's own
+  `QJSEngine` (JavaScript), at the cost of pulling in the QtQml module. An embedded Python is
+  heavier and complicates packaging. Record the choice here once made.
+- **Trigger and API shape.** Run on *every* stop, or only on named/tagged breakpoints? The API
+  should stay small: `readmem(addr, len)`, `writemem(addr, value)`, `readreg(name)`,
+  `writereg(name, value)`, `continue()`, maybe `log(msg)`. A script runs to completion while the
+  transport is stopped; its writes are ordinary debugger commands, which are legal then.
+
+### Why it isn't done now
+
+- It is a convenience/trigger layer over capability that mostly exists (the remote socket), so it
+  blocks no one who is willing to drive the socket and poll.
+- The language choice and the API surface deserve a decision, and an embedded-language dependency
+  (if Lua) has to be carried on all three platforms.
+
+### How to start
+
+A minimal v0 needs no new *transport*: on `stoppedChanged(true)`, evaluate a configured script file
+with an API object backed by the existing `setMemoryByte` / `setRegister` / `debugCommand` slots.
+Vendor Lua if the embedded-language route is taken (small, and the BizHawk/Mesen precedent makes the
+API shape familiar); use `QJSEngine` if zero added dependency is preferred. Either way, document the
+script API in README and add an integration test that stops at a line and asserts a scripted write
+landed.

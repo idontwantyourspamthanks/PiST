@@ -7,6 +7,11 @@
 real Hatari 2.6.1 + vasm 1.x + vlink, 30.7 s); wrote and executed a reproduction test for the
 top finding; verified a fix for it on a patched copy outside the repository.
 
+
+> **Status: the findings below are addressed.** P1 (breakpoints arming / editor following the PC),
+> the P2 items (session-state reset, Stop leaving the UI stale, redundant view refreshes) and the P3
+> items were fixed in `f5086d4` ("code review P1–P3 fixes"); the roadmap they prompted is tracked in
+> [FUTURE.md](FUTURE.md). This document is kept as the record of the review, not as a live issue list.
 ---
 
 ## Summary

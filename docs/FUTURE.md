@@ -173,9 +173,17 @@ that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.
 - **Multiple memory panes.** One memory view today; watching two regions at once (a struct and the
   hardware registers, say) is a common need. Mostly a matter of letting the dump channels be
   addressed per-pane rather than one shared memoryDumpReady.
-- **PC history and step-back.** A short ring of recent PCs, and stepping backward. Hatari has no
-  reverse execution, so step-back would be reconstructive (restart + replay to just before) or a
-  recorded history to navigate, not true reverse.
+- **PC history and step-back.** The PC-history view is delivered (Hatari's `history` command,
+  refreshed on each stop). True step-back was attempted and is documented here because it is *not*
+  simply unbuilt: the only mechanism Hatari offers, `statesave`/`stateload`, restores by resetting
+  the machine into a *running* state and completing the restore on the next CPU instruction
+  (`m68k_go`, `UAE_Set_State_Restore` + `SPCFLAG_MODE_CHANGE`). Verified against 2.6.1: after a
+  `stateload` the machine runs forward and never returns to a debugger prompt, which is
+  fundamentally incompatible with this IDE's prompt-framed debug transport — the whole debugger is
+  built on "stopped at a prompt". So a clean "stop at the previous state" cannot be built on
+  stateload. Real step-back would need either upstream Hatari support for a non-destructive
+  restore, or a record/replay mechanism (relaunch + step forward N times), the latter being slow
+  and state-lossy.
 - **Pause hint on the embedded display.** When the debugger is stopped the embedded panel renders
   no frames and shows whatever was last drawn (or black), which reads as a freeze. A visible
   "paused" affordance would stop it being mistaken for a crash.

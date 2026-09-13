@@ -18,6 +18,7 @@
 #include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
 #include "ui/MemoryView.h"
+#include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
 #include "ui/StackView.h"
@@ -104,9 +105,10 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     connect(m_host, &EmulatorHost::memoryDumpReady, this,
-            [this](quint32, const QString &response) {
-                if (m_memory)
-                    m_memory->applyDump(response);
+            [this](quint32, const QString &response, int tag) {
+                // Route the dump to the pane that asked for it, by tag.
+                if (auto *view = m_memoryPanes.value(tag, nullptr))
+                    view->applyDump(response);
             });
     // `info <subject>` responses feed the hardware view. Routed by command text:
     // `info basepage` is part of the normal refresh and must not land here.
@@ -114,6 +116,12 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const QString &command, const QString &response) {
                 if (m_hardware && command == QLatin1String("info ") + m_hardware->subject())
                     m_hardware->setInfo(response);
+                else if (m_pcHistory && command.startsWith(QLatin1String("history ")))
+                    m_pcHistory->setHistory(response);
+                if (!m_pendingDebugCommand.isEmpty() && command == m_pendingDebugCommand) {
+                    m_pendingDebugCommand.clear();
+                    emit debugCommandFinished(command, response);
+                }
             });
     connect(m_host, &EmulatorHost::embeddedSizeChanged, this,
             [this](int width, int height) {
@@ -166,6 +174,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_actStepOver->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
         m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
+        // The embedded panel renders no frames while stopped, so tell it to show
+        // its paused hint rather than look frozen.
+        if (m_display)
+            m_display->setPaused(stopped);
+        // Registers are only writable while stopped, through the debugger.
+        if (m_registers)
+            m_registers->setEditingEnabled(stopped);
+        if (m_memory)
+            m_memory->setEditingEnabled(stopped);
         if (stopped)
             onDebuggerStopped();
     });
@@ -251,6 +268,7 @@ void MainWindow::createActions()
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
     m_actResume->setEnabled(false);
     connect(m_actResume, &QAction::triggered, this, &MainWindow::resume);
+
 
     // Checked state mirrors the persisted preference; the enabled state is set
     // later, once the emulator's capabilities are known.
@@ -339,10 +357,12 @@ void MainWindow::createDocks()
     m_hardware = new HardwareView(this);
     m_breakpointPanel = new BreakpointPanel(this);
 
+    m_pcHistory = new PcHistoryView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
               << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
+              << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel);
 
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
@@ -382,6 +402,18 @@ void MainWindow::createDocks()
                     m_host->command(QStringLiteral("info ") + subject);
             });
 
+    // A register edit becomes a debugger write: `r <reg>=<value>` (the '=' is
+    // mandatory in Hatari, and it prints nothing on success). Only sent when
+    // stopped, which is when editing is enabled anyway.
+    connect(m_registers, &RegistersView::registerEdited, this,
+            [this](const QString &regName, quint32 value) {
+                setRegister(regName, value);
+            });
+    connect(m_memory, &MemoryView::memoryEdited, this,
+            [this](quint32 address, quint32 value) {
+                setMemoryByte(address, value);
+            });
+
     // --- bottom: output console and memory, tabbed ----------------------------
     m_bottomTabs = new QTabWidget(this);
     m_problems = new QTreeWidget(m_bottomTabs);
@@ -401,13 +433,12 @@ void MainWindow::createDocks()
     m_log->setFont(mono);
     m_bottomTabs->addTab(m_log, tr("Build & debug console"));
 
-    m_memory = new MemoryView(this);
     auto *outputDock = makeDock(tr("Output"), QStringLiteral("outputDock"), m_bottomTabs);
-    auto *memoryDock = makeDock(tr("Memory"), QStringLiteral("memoryDock"), m_memory);
-    connect(m_memory, &MemoryView::dumpRequested, m_host, &EmulatorHost::requestMemoryDump);
-
     addDockWidget(Qt::BottomDockWidgetArea, outputDock);
-    tabifyDockWidget(outputDock, memoryDock);
+
+    // The first memory pane (tag 0) is the base dock the others tab with; more
+    // can be added from its "+" button.
+    addMemoryPane();
 
     // --- default arrangement captured, then the user's arrangement restored ---
     // The View menu gets one show/hide action per dock, plus a way back to the
@@ -416,7 +447,7 @@ void MainWindow::createDocks()
     if (m_viewMenu) {
         m_viewMenu->addSeparator();
         const QList<QDockWidget *> allDocks = {
-            outputDock, memoryDock, m_displayDock,
+            outputDock, m_memoryDock, m_displayDock,
             debugTabs.first(), debugTabs.at(1), debugTabs.at(2), debugTabs.at(3), debugTabs.at(4),
             qobject_cast<QDockWidget *>(m_fileBrowser->parentWidget())
         };
@@ -441,6 +472,52 @@ void MainWindow::createDocks()
     // The embedded-display toggle owns the Emulator dock's visibility, so it is
     // applied after any restored layout, which would otherwise override it.
     m_displayDock->setVisible(m_embeddedDisplay);
+}
+
+void MainWindow::addMemoryPane(quint32 initialAddress)
+{
+    const int tag = m_nextMemoryTag++;
+    auto *view = new MemoryView(this);
+    m_memoryPanes.insert(tag, view);
+
+    // The first pane keeps the plain "Memory" title and the m_memory pointer
+    // (the auto-refresh and first-stop navigation use it), and its dock is the
+    // base the others tab with. Later panes are numbered and tab onto it.
+    const bool first = (tag == 0);
+    auto *dock = makeDock(first ? tr("Memory") : tr("Memory %1").arg(tag + 1),
+                          first ? QStringLiteral("memoryDock")
+                                : QStringLiteral("memoryDock%1").arg(tag),
+                          view);
+    if (first) {
+        m_memory = view;
+        m_memoryDock = dock;
+        addDockWidget(Qt::BottomDockWidgetArea, dock);
+        // Tab the base memory dock with Output so the bottom area stays grouped.
+        if (auto *out = findChild<QDockWidget *>(QStringLiteral("outputDock")))
+            tabifyDockWidget(out, dock);
+    }
+
+    // Route this pane's requests with its tag, so its dumps come back to it and
+    // not to a sibling pane watching a different region.
+    connect(view, &MemoryView::dumpRequested, this,
+            [this, tag](quint32 address, int length) {
+                m_host->requestMemoryDump(address, length, tag);
+            });
+    connect(view, &MemoryView::memoryEdited, this,
+            [this](quint32 address, quint32 value) { setMemoryByte(address, value); });
+    connect(view, &MemoryView::addPaneRequested, this, [this] { addMemoryPane(); });
+
+    // Later panes tab onto the base memory dock.
+    if (!first)
+        tabifyDockWidget(m_memoryDock, dock);
+
+    view->setEditingEnabled(m_host->isStopped());
+    if (m_host->isStopped()) {
+        if (initialAddress)
+            view->goToAddress(initialAddress);
+        else
+            view->refresh();
+    }
 }
 
 void MainWindow::resetToDefaultLayout()
@@ -1105,13 +1182,18 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::step()
 {
-    // The stop this produces refreshes the state via onDebuggerStopped.
+    // A plain step is not a running->stopped transition, so stoppedChanged does
+    // not fire and onDebuggerStopped is never called — the refresh has to be
+    // explicit or nothing updates (registers, disassembly, the editor, and the
+    // step-back snapshot all depend on it).
     m_host->step();
+    m_host->refresh();
 }
 
 void MainWindow::stepOver()
 {
     m_host->stepOver();
+    m_host->refresh();
 }
 
 void MainWindow::resume()
@@ -1246,6 +1328,43 @@ void MainWindow::addWatchpoint()
     QString error;
     if (!addWatchpointAddress(text, &error))
         QMessageBox::warning(this, tr("Add watchpoint"), error);
+}
+
+void MainWindow::debugCommand(const QString &command)
+{
+    // Route through the host; the response comes back on debugCommandFinished,
+    // which is just the host's commandFinished re-emitted for the socket.
+    m_pendingDebugCommand = command;
+    m_host->command(command);
+}
+
+bool MainWindow::setMemoryByte(quint32 address, quint32 value)
+{
+    if (!m_host->isStopped()) {
+        m_log->appendPlainText(tr("[edit] memory can only be changed while stopped"));
+        return false;
+    }
+    // `w b <addr> <value>` writes one byte; silent on success, so refresh the
+    // view to show it.
+    m_host->command(QStringLiteral("w b $%1 $%2")
+                        .arg(address, 0, 16)
+                        .arg(value, 0, 16));
+    if (m_memory)
+        m_memory->refresh();
+    return true;
+}
+
+bool MainWindow::setRegister(const QString &regName, quint32 value)
+{
+    if (!m_host->isStopped()) {
+        m_log->appendPlainText(tr("[edit] registers can only be changed while stopped"));
+        return false;
+    }
+    // The '=' is mandatory in Hatari's register-set syntax, and a successful set
+    // prints nothing — so refresh to show the new value.
+    m_host->command(QStringLiteral("r %1=$%2").arg(regName).arg(value, 0, 16));
+    m_host->refresh();
+    return true;
 }
 
 bool MainWindow::addWatchpointAddress(const QString &text, QString *error)
@@ -1488,6 +1607,10 @@ void MainWindow::onStateUpdated(const MachineState &state)
     // Refresh the hardware registers as well.
     if (m_hardware)
         m_host->command(QStringLiteral("info ") + m_hardware->subject());
+
+    // And the execution path that led here.
+    if (m_pcHistory)
+        m_host->command(QStringLiteral("history 16"));
 
     locationFromPc(state.pc);
 }

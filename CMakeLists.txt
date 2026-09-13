@@ -95,6 +95,8 @@ qt_add_executable(pist
     src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/PcHistoryView.cpp
+    src/ui/PcHistoryView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp
@@ -291,6 +293,8 @@ qt_add_executable(tst_gui
     src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/PcHistoryView.cpp
+    src/ui/PcHistoryView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp
@@ -368,6 +372,8 @@ qt_add_executable(tst_remotecontrol
     src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/PcHistoryView.cpp
+    src/ui/PcHistoryView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp

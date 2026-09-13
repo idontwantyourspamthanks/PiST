@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace pist {
@@ -50,13 +51,21 @@ MemoryView::MemoryView(QWidget *parent)
     controls->addWidget(m_status);
     controls->addStretch(1);
 
+    // Open another memory pane, so two regions can be watched at once.
+    auto *addPane = new QToolButton(this);
+    addPane->setText(QStringLiteral("+"));
+    addPane->setToolTip(tr("Open another memory pane"));
+    addPane->setAutoRaise(true);
+    connect(addPane, &QToolButton::clicked, this, [this] { emit addPaneRequested(); });
+    controls->addWidget(addPane);
+
     layout->addLayout(controls);
 
     m_table = new QTableWidget(kRows, kFirstByteColumn + kRowBytes + 1, this);
     m_table->verticalHeader()->setVisible(false);
     m_table->horizontalHeader()->setVisible(false);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setSelectionMode(QAbstractItemView::NoSelection);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setShowGrid(false);
     m_table->setFocusPolicy(Qt::NoFocus);
     m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
@@ -69,6 +78,7 @@ MemoryView::MemoryView(QWidget *parent)
 
     connect(m_addressEdit, &QLineEdit::returnPressed, this, &MemoryView::onAddressEntered);
     connect(m_table, &QTableWidget::cellDoubleClicked, this, &MemoryView::onCellDoubleClicked);
+    connect(m_table, &QTableWidget::itemChanged, this, &MemoryView::onByteEdited);
 }
 
 quint32 MemoryView::currentAddress() const
@@ -123,14 +133,20 @@ void MemoryView::onCellDoubleClicked(int row, int column)
     offset -= offset % 2;
 
     const quint32 value = readLongBE(m_bytes, offset);
-    if (looksLikeAddress(value))
+    if (looksLikeAddress(value)) {
         goToAddress(value);
-    // Anything that cannot be an address is ignored outright: following a data
-    // value or a null would be a surprising jump with no way to predict it.
+        return;
+    }
+    // Not an address: edit the byte in place. Addresses follow; data edits.
+    if (m_editingEnabled) {
+        if (auto *item = m_table->item(row, column))
+            m_table->editItem(item);
+    }
 }
 
 void MemoryView::clear()
 {
+    m_table->blockSignals(true);
     for (int r = 0; r < m_table->rowCount(); ++r) {
         for (int c = 0; c < m_table->columnCount(); ++c) {
             if (auto *item = m_table->item(r, c))
@@ -139,6 +155,7 @@ void MemoryView::clear()
                 m_table->setItem(r, c, new QTableWidgetItem(QString()));
         }
     }
+    m_table->blockSignals(false);
 }
 
 void MemoryView::applyDump(const QString &response)
@@ -208,6 +225,40 @@ void MemoryView::applyDump(const QString &response)
     m_status->setText(tr("%1 bytes from $%2")
                           .arg(static_cast<int>(m_bytes.size()))
                           .arg(hex8(m_base)));
+}
+
+void MemoryView::setEditingEnabled(bool enabled)
+{
+    m_editingEnabled = enabled;
+    m_table->setEditTriggers(enabled ? QAbstractItemView::EditKeyPressed
+                                     : QAbstractItemView::NoEditTriggers);
+}
+
+void MemoryView::onByteEdited(QTableWidgetItem *item)
+{
+    if (!m_editingEnabled || !item)
+        return;
+    const int row = item->row();
+    const int column = item->column();
+    if (column < kFirstByteColumn || column >= kFirstByteColumn + kRowBytes)
+        return; // address or ASCII column — not a writable byte
+
+    // Parse the committed byte as hex; reject anything that is not 1-2 digits.
+    const QString text = item->text().trimmed();
+    bool ok = false;
+    const quint32 value = text.toUInt(&ok, 16);
+    if (!ok || text.length() > 2 || value > 0xff) {
+        // Restore the shown byte on bad input.
+        m_table->blockSignals(true);
+        const int offset = row * kRowBytes + (column - kFirstByteColumn);
+        const quint32 current = offset < m_bytes.size() ? quint8(m_bytes.at(offset)) : 0;
+        item->setText(QStringLiteral("%1").arg(current, 2, 16, QLatin1Char('0')).toUpper());
+        m_table->blockSignals(false);
+        return;
+    }
+
+    const quint32 address = m_base + row * kRowBytes + (column - kFirstByteColumn);
+    emit memoryEdited(address, value);
 }
 
 } // namespace pist

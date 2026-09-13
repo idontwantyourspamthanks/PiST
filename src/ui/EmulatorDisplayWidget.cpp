@@ -7,6 +7,7 @@
 #include "ui/EmbedX11.h"
 
 #include <QPalette>
+#include <QPainter>
 #include <QResizeEvent>
 #include <QTimer>
 
@@ -95,6 +96,14 @@ void EmulatorDisplayWidget::fitEmbedded()
     resizeEmbeddedChild(winId(), x, y, fitW, fitH);
 }
 
+void EmulatorDisplayWidget::setPaused(bool paused)
+{
+    if (m_paused == paused)
+        return;
+    m_paused = paused;
+    update();
+}
+
 void EmulatorDisplayWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
@@ -102,5 +111,35 @@ void EmulatorDisplayWidget::resizeEvent(QResizeEvent *event)
     // rescales its renderer to match, as it does for a hand-resized window.
     fitEmbedded();
 }
+
+void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
+{
+    QWidget::paintEvent(event);
+    if (!m_paused)
+        return;
+
+    // A small badge, top-right, that stays out of the video's way but makes the
+    // stopped state unmistakable. Semi-transparent so the last frame still shows
+    // through beneath it.
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    const QString text = tr("Paused");
+    QFont f = p.font();
+    f.setBold(true);
+    p.setFont(f);
+    const QFontMetrics fm(f);
+    const int padX = 10, padY = 6;
+    const QRect textRect = fm.boundingRect(text);
+    const QRect badge(width() - textRect.width() - padX * 2 - 8, 8,
+                      textRect.width() + padX * 2, textRect.height() + padY * 2);
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, 170));
+    p.drawRoundedRect(badge, 4, 4);
+    p.setPen(QColor(230, 230, 230));
+    p.drawText(badge, Qt::AlignCenter, text);
+}
+
 
 } // namespace pist

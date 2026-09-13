@@ -46,8 +46,14 @@ public slots:
     /// ratio and centring it (letterbox) rather than squashing it to fill.
     void fitEmbedded();
 
+    /// Show or hide the "paused" hint. The embedded panel renders no frames
+    /// while the debugger is stopped, which on its own reads as a crash; a small
+    /// badge makes the stopped state legible instead.
+    void setPaused(bool paused);
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
 
 private:
     class QTimer *m_settleTimer = nullptr;
@@ -55,6 +61,8 @@ private:
     /// The emulator's native video size, for the aspect-preserved fit.
     int m_videoW = 0;
     int m_videoH = 0;
+    /// Whether the debugger is stopped (drives the paused hint).
+    bool m_paused = false;
 };
 
 } // namespace pist

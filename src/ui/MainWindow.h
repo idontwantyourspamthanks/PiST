@@ -52,6 +52,9 @@ public slots:
     /// and for anything that already knows what it wants to open.
     void openPath(const QString &path);
 
+    /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
+    void addMemoryPane(quint32 initialAddress = 0);
+
     /// The build & debug console contents, for scripted verification.
     QString debugConsoleText() const;
 
@@ -69,6 +72,9 @@ signals:
     /// can answer `run` when the session is actually up rather than merely
     /// requested.
     void sessionRunningChanged(bool running);
+
+    /// A response to an arbitrary debugger command sent via debugCommand.
+    void debugCommandFinished(const QString &command, const QString &response);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -96,6 +102,19 @@ private slots:
     void removeWatchpoint(int index);
 
 public:
+    /// Write a memory byte through the debugger (`w b <addr>=<value>`), when
+    /// stopped. Shared by the memory view's editing and the remote `setmem`.
+    bool setMemoryByte(quint32 address, quint32 value);
+
+    /// Send an arbitrary debugger command (for the remote `cmd`). The response
+    /// arrives via debugCommandFinished.
+    void debugCommand(const QString &command);
+
+    /// Write a register through the debugger (`r <reg>=<value>`), when stopped.
+    /// Shared by the register view's editing and the remote-control `setreg`
+    /// command. Returns false (and logs) when the machine is not stopped.
+    bool setRegister(const QString &regName, quint32 value);
+
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use
     /// it without a prompt. Returns false and sets error on a bad address.
@@ -190,7 +209,16 @@ private:
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
+
+    /// Every open memory pane, keyed by the dump-routing tag each one carries, so
+    /// a dump is routed back to the pane that asked for it. m_memory is the first
+    /// pane (tag 0) and drives the auto-refresh / first-stop navigation.
+    QHash<int, MemoryView *> m_memoryPanes;
+    QDockWidget *m_memoryDock = nullptr;
+    int m_nextMemoryTag = 0;
+
     StackView *m_stack = nullptr;
+    class PcHistoryView *m_pcHistory = nullptr;
     HardwareView *m_hardware = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
@@ -217,6 +245,11 @@ private:
     /// Set once the entry stop has been handled for the current session, so the
     /// arming sequence runs exactly once.
     bool m_sessionArmed = false;
+
+
+    /// The debugger command a remote `cmd` is waiting on, so its response is
+    /// routed to debugCommandFinished.
+    QString m_pendingDebugCommand;
 
     /// Set once breakpoints have been armed against the live bases this session.
     /// Arming has to wait for the basepage response (not a timer, which always

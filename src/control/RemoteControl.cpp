@@ -23,6 +23,23 @@ namespace {
 // failed rather than left waiting forever. A cold vasm build or a TOS boot is
 // seconds, not minutes.
 constexpr int kOpTimeoutMs = 120000;
+
+/// Parse a value as hexadecimal, tolerating the $ and 0x prefixes Hatari itself
+/// accepts. Bare decimal-looking text is also read as hex, which matches the
+/// debugger's number base.
+bool parseValue(const QString &text, quint32 *out)
+{
+    QString t = text.trimmed();
+    if (t.startsWith(QLatin1Char('$')))
+        t = t.mid(1);
+    if (t.startsWith(QLatin1String("0x"), Qt::CaseInsensitive))
+        t = t.mid(2);
+    bool ok = false;
+    const quint32 v = t.toUInt(&ok, 16);
+    if (ok)
+        *out = v;
+    return ok;
+}
 } // namespace
 
 RemoteControl::RemoteControl(MainWindow *window, QObject *parent)
@@ -135,6 +152,30 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         QMetaObject::invokeMethod(m_window, "stopSession", Qt::DirectConnection);
         reply(client, QStringLiteral("ok"));
 
+    } else if (cmd == QLatin1String("cmd")) {
+        // An arbitrary debugger command, passed through verbatim (e.g. "info mfp").
+        // Only meaningful while stopped. The response comes back as a block.
+        if (line.length() > 4) {
+            const QString dbg = line.mid(4);
+            QEventLoop loop;
+            QTimer timeout;
+            timeout.setSingleShot(true);
+            QString response;
+            QMetaObject::Connection c = connect(m_window, &MainWindow::debugCommandFinished,
+                                                &loop, [&](const QString &, const QString &r) {
+                response = r;
+                loop.quit();
+            });
+            connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+            timeout.start(10000);
+            m_window->debugCommand(dbg);
+            loop.exec();
+            disconnect(c);
+            replyBlock(client, response.isEmpty() ? QStringLiteral("(no response)") : response);
+        } else {
+            reply(client, QStringLiteral("error usage: cmd <debugger command>"));
+        }
+
     } else if (cmd == QLatin1String("step")) {
         QMetaObject::invokeMethod(m_window, "step", Qt::DirectConnection);
         reply(client, QStringLiteral("ok"));
@@ -151,6 +192,28 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         QMetaObject::invokeMethod(m_window, "toggleBreakpointAtLine", Qt::DirectConnection,
                                   Q_ARG(int, arg.toInt()));
         reply(client, QStringLiteral("ok"));
+
+    } else if (cmd == QLatin1String("setreg")) {
+        const QString name = arg.section(QLatin1Char(' '), 0, 0);
+        quint32 value = 0;
+        if (name.isEmpty() || !parseValue(arg.section(QLatin1Char(' '), 1), &value)) {
+            reply(client, QStringLiteral("error usage: setreg <name> <value>"));
+        } else if (m_window->setRegister(name, value)) {
+            reply(client, QStringLiteral("ok"));
+        } else {
+            reply(client, QStringLiteral("error not stopped"));
+        }
+
+    } else if (cmd == QLatin1String("setmem")) {
+        quint32 address = 0, value = 0;
+        if (!parseValue(arg.section(QLatin1Char(' '), 0, 0), &address)
+            || !parseValue(arg.section(QLatin1Char(' '), 1), &value)) {
+            reply(client, QStringLiteral("error usage: setmem <addr> <value>"));
+        } else if (m_window->setMemoryByte(address, value)) {
+            reply(client, QStringLiteral("ok"));
+        } else {
+            reply(client, QStringLiteral("error not stopped"));
+        }
 
     } else if (cmd == QLatin1String("watchpoint")) {
         // Watchpoint breaks when the value at an address changes.
@@ -192,6 +255,8 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "stepover         step over a subroutine\n"
             "continue         resume execution\n"
             "breakpoint <n>   toggle a breakpoint at source line n\n"
+            "setreg <n> <v>   write register <n> to <v> (when stopped)\n"
+            "setmem <a> <v>   write memory byte at <a> to <v> (when stopped)\n"
             "watchpoint <a>   break when the value at address <a> changes (optional .b/.w/.l)\n"
             "screenshot <f>   save the window to <f> (default /tmp/pist-screenshot.png)\n"
             "console          the build & debug console text\n"

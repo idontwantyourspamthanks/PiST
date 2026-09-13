@@ -197,6 +197,10 @@ QString EmulatorHost::writeBootstrapScript(const QString &directory,
     else
         out << "symbols autoload on\n";
 
+    // Track the execution path so the PC-history view has something to show.
+    // `history cpu` starts recording the recent PCs from here on.
+    out << "history cpu\n";
+
     // Stop at program entry. `TEXT` is a Hatari variable rather than a symbol,
     // so this works before any symbol table is loaded; the upper guard keeps it
     // from matching ROM addresses.
@@ -460,12 +464,14 @@ void EmulatorHost::enqueue(Pending pending)
     dispatchNext();
 }
 
-void EmulatorHost::command(const QString &commandText, quint32 dumpAddress, bool stackDump)
+void EmulatorHost::command(const QString &commandText, quint32 dumpAddress, bool stackDump,
+                           int dumpTag)
 {
     Pending p;
     p.text = commandText;
     p.dumpAddress = dumpAddress;
     p.stackDump = stackDump;
+    p.dumpTag = dumpTag;
     enqueue(p);
 }
 
@@ -609,7 +615,7 @@ void EmulatorHost::completeCurrent()
         if (m_current.stackDump)
             emit stackDumpReady(m_current.dumpAddress, response);
         else
-            emit memoryDumpReady(m_current.dumpAddress, response);
+            emit memoryDumpReady(m_current.dumpAddress, response, m_current.dumpTag);
     }
 
     // The parse functions only fill m_state. Emission is decided here because
@@ -684,7 +690,7 @@ void EmulatorHost::armBreakpoint(const QString &condition)
     command(condition);
 }
 
-void EmulatorHost::requestMemoryDump(quint32 address, int length)
+void EmulatorHost::requestMemoryDump(quint32 address, int length, int tag)
 {
     // The address carries a `$` prefix so it is read as hex, but the count is a
     // bare number and the debugger reads that as **decimal**. Verified against
@@ -693,7 +699,7 @@ void EmulatorHost::requestMemoryDump(quint32 address, int length)
     const QString cmd = QStringLiteral("m $%1 %2")
                             .arg(address, 0, 16)
                             .arg(length);
-    command(cmd, address, false);
+    command(cmd, address, false, tag);
 }
 
 void EmulatorHost::requestStackDump(quint32 address, int length)

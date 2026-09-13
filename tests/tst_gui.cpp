@@ -16,6 +16,7 @@
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
 #include "ui/MainWindow.h"
+#include "ui/MemoryView.h"
 
 #include <QDir>
 #include <QDockWidget>
@@ -43,6 +44,7 @@ private slots:
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
     void dockLayoutPersistsAcrossRestart();
+    void memoryPanesAreIndependent();
 
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
@@ -314,6 +316,25 @@ void TstGui::dockLayoutPersistsAcrossRestart()
         // survived the save/restore cycle that closeEvent and the constructor use.
         QVERIFY2(!dock->isVisibleTo(&window), "hidden dock did not persist as hidden");
     }
+}
+
+// Multiple memory panes: each is its own tabbed dock with its own routing tag,
+// so two regions can be watched at once without dumps bleeding between panes.
+void TstGui::memoryPanesAreIndependent()
+{
+    MainWindow window;
+
+    // The first pane exists from construction, in the base "memoryDock".
+    QVERIFY(window.findChild<QDockWidget *>(QStringLiteral("memoryDock")));
+
+    // Adding another pane creates a second, distinctly-named dock.
+    QMetaObject::invokeMethod(&window, "addMemoryPane", Qt::DirectConnection);
+    auto *second = window.findChild<QDockWidget *>(QStringLiteral("memoryDock1"));
+    QVERIFY2(second, "the second memory pane must exist as memoryDock1");
+
+    // And it holds a real MemoryView, not an empty dock.
+    QVERIFY(second->widget() != nullptr);
+    QVERIFY(qobject_cast<MemoryView *>(second->widget()));
 }
 
 // Floppy drives are the last emulator feature that had no UI. Verify the

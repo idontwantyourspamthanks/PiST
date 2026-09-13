@@ -68,7 +68,8 @@ public:
     /// dump queued back-to-back each reach the right listener: dumpAddress and
     /// stackDump identify a `memdump` for routing to memoryDumpReady or
     /// stackDumpReady rather than commandFinished alone.
-    void command(const QString &command, quint32 dumpAddress = 0, bool stackDump = false);
+    void command(const QString &command, quint32 dumpAddress = 0, bool stackDump = false,
+                 int dumpTag = 0);
 
     void step();     // `s`
     void stepOver(); // `n`
@@ -91,7 +92,11 @@ public:
 
     /// Request a memory dump of `length` bytes at `address`. The response arrives
     /// via commandFinished; the raw text is also parsed into memoryDumpReady.
-    void requestMemoryDump(quint32 address, int length);
+    ///
+    /// `tag` identifies which memory pane asked, so several panes can be open at
+    /// once and each dump is routed back to the pane that requested it rather
+    /// than broadcast to all of them.
+    void requestMemoryDump(quint32 address, int length, int tag = 0);
 
     /// Request a memory dump of the stack (at the stack pointer). Routed to
     /// stackDumpReady instead of memoryDumpReady, so the stack view and the
@@ -106,8 +111,9 @@ public:
                                         QString *error);
 
 signals:
-    /// A `memdump` response, with the command it answered.
-    void memoryDumpReady(quint32 address, const QString &response);
+    /// A `memdump` response, with the command it answered and the tag of the
+    /// pane that asked for it.
+    void memoryDumpReady(quint32 address, const QString &response, int tag);
 
     /// A stack `memdump` response, routed separately from the memory view's.
     void stackDumpReady(quint32 address, const QString &response);
@@ -140,6 +146,8 @@ private:
         /// per command so a queue of mixed dumps routes each correctly.
         quint32 dumpAddress = 0;
         bool stackDump = false;
+        /// Which memory pane requested a `memdump`, so it can be routed back.
+        int dumpTag = 0;
 
         /// Part of a state snapshot queued by refresh(). The responses of a
         /// batch each fill one part of MachineState, so only its last command

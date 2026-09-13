@@ -10,6 +10,7 @@
 class QLabel;
 class QLineEdit;
 class QTableWidget;
+class QTableWidgetItem;
 
 namespace pist {
 
@@ -43,19 +44,33 @@ public slots:
     /// Parse a `memdump` response and display it.
     void applyDump(const QString &response);
 
+    /// Whether byte cells can be edited. Only meaningful when the machine is
+    /// stopped — writes go through the debugger.
+    void setEditingEnabled(bool enabled);
+
 signals:
     /// The view wants a dump of `address`, `length` bytes.
     void dumpRequested(quint32 address, int length);
 
+    /// The user committed a new byte value at `address` (a single byte).
+    void memoryEdited(quint32 address, quint32 value);
+
+    /// The user asked for another memory pane (the "+" button).
+    void addPaneRequested();
+
 private slots:
     void onAddressEntered();
     void onCellDoubleClicked(int row, int column);
+    void onByteEdited(QTableWidgetItem *item);
 
 private:
     void clear();
 
     static constexpr int kRowBytes = 16;
     static constexpr int kRows = 16;
+
+    /// Whether byte cells accept edits (gated on the machine being stopped).
+    bool m_editingEnabled = false;
 
     quint32 m_base = 0;
     /// The displayed bytes in memory order, indexed relative to m_base, so a

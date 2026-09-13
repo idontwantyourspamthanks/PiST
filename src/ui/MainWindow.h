@@ -22,7 +22,6 @@ class QDockWidget;
 class QLabel;
 class QPlainTextEdit;
 class QTableWidget;
-class QTabWidget;
 class QTreeWidget;
 
 namespace pist {
@@ -244,7 +243,7 @@ private:
     FileBrowser *m_fileBrowser = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
-    QTabWidget *m_bottomTabs = nullptr;
+    QDockWidget *m_problemsDock = nullptr;
 
     QLabel *m_statusToolchain = nullptr;
     QLabel *m_statusEmulator = nullptr;

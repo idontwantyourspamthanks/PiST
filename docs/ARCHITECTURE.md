@@ -183,7 +183,8 @@ input region so the drag keeps tracking (a foreign window otherwise swallows the
 
 `MainWindow::createDocks()` enables nesting, installs the app-level event filter, and builds docks
 through `makeDock()` (movable/floatable/closable + a stable `objectName`). The debug views are one
-tab group; Output holds a `QTabWidget` of Problems + console; memory panes tab with Output. The
+tab group; Problems, the Build & debug console and the memory panes are ordinary docks tabbed
+together in the bottom area (each a real dock, so they drag and move like any other panel). The
 factory arrangement is captured with `saveState()`, the user's restored from `QSettings`, and
 re-saved on close. The event filter offers a "Move to" menu on a right-click of a dock **tab**
 (matched to a dock by title) or **title bar** (a press inside a dock but outside its content), and

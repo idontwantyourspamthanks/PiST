@@ -49,6 +49,7 @@ private slots:
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
+    void bottomPanelsAreMovableDocks();
     void memoryPanesAreIndependent();
 
     /// Floppy images reach the emulator command line.
@@ -441,6 +442,47 @@ void TstGui::titleBarLeftPressIsNotConsumed()
 
     dock->removeEventFilter(&spy);
     QCOMPARE(spy.presses, 1);
+}
+
+// Problems and the build/debug console are ordinary docks tabbed with Memory in
+// the bottom area — not tabs locked inside a QTabWidget — so they can be moved
+// like every other panel, and other panels can be dragged into the bottom group.
+void TstGui::bottomPanelsAreMovableDocks()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *problems = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"));
+    auto *console = window.findChild<QDockWidget *>(QStringLiteral("consoleDock"));
+    auto *memory = window.findChild<QDockWidget *>(QStringLiteral("memoryDock"));
+    QVERIFY2(problems && console && memory,
+             "Problems, Console and Memory must each be a real dock");
+
+    // All three start tabbed together in the bottom area.
+    QCOMPARE(window.dockWidgetArea(console), Qt::BottomDockWidgetArea);
+    QVERIFY(window.tabifiedDockWidgets(console).contains(problems));
+    QVERIFY(window.tabifiedDockWidgets(console).contains(memory));
+
+    // Right-clicking the console's tab offers the move menu, and moving it to
+    // the right takes it out of the bottom group.
+    int index = -1;
+    QTabBar *tabBar = findDockTabBar(&window, console->windowTitle(), &index);
+    QVERIFY2(tabBar, "the console is tabbed, so its tab must exist");
+    const QPoint pos = tabBar->tabRect(index).center();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), tabBar->mapToGlobal(pos),
+                      Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+    QApplication::sendEvent(tabBar, &press);
+    QCoreApplication::processEvents();
+
+    QMenu *menu = findDockMoveMenu();
+    QVERIFY2(menu, "right-clicking the console tab must offer the move menu");
+    QAction *toRight = menuAction(menu, "Move to right");
+    QVERIFY(toRight);
+    toRight->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(window.dockWidgetArea(console), Qt::RightDockWidgetArea);
+    QVERIFY(!window.tabifiedDockWidgets(console).contains(problems));
 }
 
 void TstGui::dockLayoutPersistsAcrossRestart()

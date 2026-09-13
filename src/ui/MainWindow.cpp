@@ -45,7 +45,6 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabBar>
-#include <QTabWidget>
 #include <QTableWidget>
 #include <QInputDialog>
 #include <QTimer>
@@ -512,9 +511,12 @@ void MainWindow::createDocks()
                 setMemoryByte(address, value);
             });
 
-    // --- bottom: output console and memory, tabbed ----------------------------
-    m_bottomTabs = new QTabWidget(this);
-    m_problems = new QTreeWidget(m_bottomTabs);
+    // --- bottom: problems, console and memory, tabbed -------------------------
+    // Problems and the console are ordinary docks rather than tabs in a
+    // QTabWidget inside one dock, so the bottom area is a normal tab group: you
+    // can drag panels into it and out of it like any other, and the Move-to
+    // menu works on their tabs.
+    m_problems = new QTreeWidget(this);
     m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message")});
     m_problems->header()->setStretchLastSection(true);
     connect(m_problems, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *item, int) {
@@ -522,20 +524,22 @@ void MainWindow::createDocks()
         if (line > 0)
             m_editor->gotoLine(line);
     });
-    m_bottomTabs->addTab(m_problems, tr("Problems"));
 
-    m_log = new QPlainTextEdit(m_bottomTabs);
+    m_log = new QPlainTextEdit(this);
     m_log->setReadOnly(true);
     QFont mono = m_log->font();
     mono.setFamily(QStringLiteral("monospace"));
     m_log->setFont(mono);
-    m_bottomTabs->addTab(m_log, tr("Build & debug console"));
 
-    auto *outputDock = makeDock(tr("Output"), QStringLiteral("outputDock"), m_bottomTabs);
-    addDockWidget(Qt::BottomDockWidgetArea, outputDock);
+    m_problemsDock = makeDock(tr("Problems"), QStringLiteral("problemsDock"), m_problems);
+    addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
+    auto *consoleDock =
+        makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), m_log);
+    addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
+    tabifyDockWidget(m_problemsDock, consoleDock);
 
-    // The first memory pane (tag 0) is the base dock the others tab with; more
-    // can be added from its "+" button.
+    // The first memory pane (tag 0) tabs onto this group; more can be added
+    // from its "+" button.
     addMemoryPane();
 
     // --- default arrangement captured, then the user's arrangement restored ---
@@ -545,7 +549,7 @@ void MainWindow::createDocks()
     if (m_viewMenu) {
         m_viewMenu->addSeparator();
         const QList<QDockWidget *> allDocks = {
-            outputDock, m_memoryDock, m_displayDock,
+            m_problemsDock, consoleDock, m_memoryDock, m_displayDock,
             debugTabs.first(), debugTabs.at(1), debugTabs.at(2), debugTabs.at(3), debugTabs.at(4),
             qobject_cast<QDockWidget *>(m_fileBrowser->parentWidget())
         };
@@ -590,9 +594,8 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
         m_memory = view;
         m_memoryDock = dock;
         addDockWidget(Qt::BottomDockWidgetArea, dock);
-        // Tab the base memory dock with Output so the bottom area stays grouped.
-        if (auto *out = findChild<QDockWidget *>(QStringLiteral("outputDock")))
-            tabifyDockWidget(out, dock);
+        // Tab the base memory dock with Problems/console so the bottom stays one group.
+        tabifyDockWidget(m_problemsDock, dock);
     }
 
     // Route this pane's requests with its tag, so its dumps come back to it and
@@ -1040,8 +1043,12 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
     }
     m_editor->setErrorLines(errorLines);
 
-    if (!success)
-        m_bottomTabs->setCurrentWidget(m_problems);
+    // Surface the Problems pane on failure (raising selects its tab when it is
+    // tabbed with the console/memory).
+    if (!success && m_problemsDock) {
+        m_problemsDock->show();
+        m_problemsDock->raise();
+    }
 
     m_log->appendPlainText(success ? tr("Build succeeded.")
                                    : tr("Build failed with %1 diagnostic(s).")

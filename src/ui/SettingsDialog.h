@@ -34,6 +34,9 @@ class SettingsDialog : public QDialog
 public:
     explicit SettingsDialog(const ProjectSettings &settings, QWidget *parent = nullptr);
 
+
+    /// Persists the application-wide appearance preferences, then accepts.
+    void accept() override;
     ProjectSettings settings() const;
 
 private slots:
@@ -66,6 +69,11 @@ private:
     QSpinBox *m_ram = nullptr;
     QComboBox *m_rom = nullptr;
     QLabel *m_romNote = nullptr;
+
+    // Application-wide appearance preferences (QSettings-backed, not part of
+    // the project file). See the Appearance tab in buildUi().
+    QComboBox *m_theme = nullptr;
+    QSpinBox *m_fontSize = nullptr;
     QLineEdit *m_hardDisk = nullptr;
     QLineEdit *m_floppyA = nullptr;
     QLineEdit *m_floppyB = nullptr;

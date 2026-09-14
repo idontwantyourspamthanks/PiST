@@ -38,6 +38,8 @@ qt_add_executable(pist
     src/editor/AsmHighlighter.cpp
     src/editor/AsmHighlighter.h
     src/editor/CodeEditor.cpp
+    src/ui/Appearance.cpp
+    src/ui/Appearance.h
     src/editor/CodeEditor.h
 
     src/build/BuildService.cpp
@@ -394,6 +396,8 @@ qt_add_executable(tst_gui
     src/editor/CodeEditor.cpp
     src/editor/CodeEditor.h
     src/editor/AsmHighlighter.cpp
+    src/ui/Appearance.cpp
+    src/ui/Appearance.h
     src/editor/AsmHighlighter.h
     src/build/BuildService.cpp
     src/build/FloppyImage.cpp
@@ -484,6 +488,8 @@ qt_add_executable(tst_remotecontrol
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
     src/editor/CodeEditor.cpp
+    src/ui/Appearance.cpp
+    src/ui/Appearance.h
     src/editor/CodeEditor.h
     src/editor/AsmHighlighter.cpp
     src/editor/AsmHighlighter.h

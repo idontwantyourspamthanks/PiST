@@ -31,8 +31,8 @@ Everything else in this document is a consequence of that rule. The debug transp
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | Entry point. Pins `QT_QPA_PLATFORM=xcb` when `DISPLAY` is set (needed for X11 embedding), parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
-| `src/ui/` | `MainWindow` (the application shell) and every debug panel, plus the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`). |
-| `src/editor/` | `CodeEditor` (the editor widget: line-number gutter, breakpoint dots, execution-line highlight, error markers) and `AsmHighlighter` (m68k Motorola syntax). |
+| `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor) and every debug panel, plus the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`) and `Appearance` (the application-wide theme and editor-font preferences in QSettings). |
+| `src/editor/` | `CodeEditor` (the editor widget: line-number gutter, breakpoint dots, execution-line highlight, error markers) and `AsmHighlighter` (m68k Motorola syntax, with light and dark colour sets). |
 | `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (the AUTO-folder FAT12 writer for pre-1.04 TOS). |
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `HatariTextParse` (their shared `d` parser), `SessionConfig` (one session's argv), `HatariProbe` (capability detection), `TosRom` (ROM discovery + version), `Machine` (ST/STe/TT/Falcon model), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |

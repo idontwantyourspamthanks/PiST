@@ -7,6 +7,7 @@
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
 #include "ui/MainWindow.h"
+#include "ui/Appearance.h"
 #include "control/RemoteControl.h"
 
 #include <QApplication>
@@ -117,6 +118,11 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("PiST"));
     QApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     QApplication::setOrganizationName(QStringLiteral("PiST"));
+
+    // Before anything else touches the style: applyTheme() captures the
+    // platform's own style and palette here so the "system" preference can
+    // restore them later.
+    pist::appearance::applyTheme();
 
     QCommandLineParser parser;
     parser.setApplicationDescription(

@@ -25,6 +25,14 @@ public:
     /// Reason the last save failed, for the caller to report.
     QString lastError() const { return m_lastError; }
     QString filePath() const { return m_filePath; }
+
+    /// Re-point the editor at a different path without touching the document
+    /// or its modified state: the file was renamed on disk underneath us.
+    void setFilePath(const QString &path) { m_filePath = path; }
+
+    /// (Re)apply the application font-size preference and theme-driven syntax
+    /// colours. Called by the constructor and whenever the preferences change.
+    void applyFontPreferences();
     bool isModifiedSinceLoad() const;
 
     /// File name only, for the window title.

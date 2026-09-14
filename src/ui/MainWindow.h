@@ -16,6 +16,9 @@
 #include "project/ProjectSettings.h"
 
 #include <QMainWindow>
+
+class QTabWidget;
+
 #include <QString>
 
 class QAction;
@@ -119,6 +122,10 @@ private:
 private slots:
     void openFile();
     void saveFile();
+
+private slots:
+    void onTabChanged(int index);
+    void onTabCloseRequested(int index);
     void openProject();
     void saveProject();
     void editSettings();
@@ -179,9 +186,30 @@ private:
     /// Update the title and the Save action to reflect the modified state.
     void updateModifiedState();
 
-    /// Ask to save when there is unsaved work. Returns false if the user
-    /// cancelled, in which case the caller must abandon its action.
+    /// Ask to save when any open document has unsaved work. Returns false if
+    /// the user cancelled, in which case the caller must abandon its action.
     bool maybeSave();
+
+    /// The single-document form, for closing one tab.
+    bool maybeSaveEditor(CodeEditor *editor);
+
+    /// Create and wire a text-editor tab (the dispatch seam for future
+    /// non-text document kinds), loading `path` into it; empty means a
+    /// pristine tab. Reuses a pristine tab when there is exactly one.
+    /// Returns null when the file could not be loaded.
+    CodeEditor *addEditorTab(const QString &path);
+
+    /// Connect one editor's signals. Runs for every editor tab created.
+    void wireEditor(CodeEditor *editor);
+
+    /// Every open text editor, in tab order.
+    QList<CodeEditor *> openEditors() const;
+
+    /// The open editor showing `path`, or null.
+    CodeEditor *editorForPath(const QString &path) const;
+
+    /// Sync a tab's label with its document's name and modified state.
+    void updateTabTitle(CodeEditor *editor);
 
     void openRecentSource();
 
@@ -227,6 +255,10 @@ private:
     /// the user's current arrangement. Invoked from the View menu.
     void resetToDefaultLayout();
 
+    /// The open documents. m_editor is the *current* text editor and is null
+    /// when the current tab is not a text editor (possible once non-text
+    /// document kinds exist), so every use of it must be guarded.
+    QTabWidget *m_tabs = nullptr;
     CodeEditor *m_editor = nullptr;
     BuildService *m_build = nullptr;
 

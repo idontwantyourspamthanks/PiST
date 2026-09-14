@@ -5,6 +5,8 @@
 #include "ui/SettingsDialog.h"
 
 #include "emu/TosRom.h"
+#include "ui/Appearance.h"
+
 
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -18,6 +20,7 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -87,6 +90,7 @@ void SettingsDialog::buildUi()
     // compilation, so the note explains the ordering rule that TOS imposes.
     m_sources = new QListWidget(buildTab);
     m_sources->setSelectionMode(QAbstractItemView::SingleSelection);
+
     auto *srcButtons = new QHBoxLayout;
     auto *addSrc = new QPushButton(tr("Add file…"), buildTab);
     auto *removeSrc = new QPushButton(tr("Remove"), buildTab);
@@ -255,12 +259,52 @@ void SettingsDialog::buildUi()
 
     tabs->addTab(emuTab, tr("Emulator"));
 
+    // ------------------------------------------------------------ appearance
+    // Application-wide preferences (QSettings), deliberately not part of the
+    // project file: a theme and a font size are the user's taste, not the
+    // project's.
+    auto *appearanceTab = new QWidget(this);
+    auto *appearanceLayout = new QFormLayout(appearanceTab);
+
+    auto *scopeNote = new QLabel(
+        tr("These are application-wide preferences and are not stored in the project file."),
+        appearanceTab);
+    scopeNote->setWordWrap(true);
+    appearanceLayout->addRow(scopeNote);
+
+    m_theme = new QComboBox(appearanceTab);
+    m_theme->addItem(tr("System"), QStringLiteral("system"));
+    m_theme->addItem(tr("Light"), QStringLiteral("light"));
+    m_theme->addItem(tr("Dark"), QStringLiteral("dark"));
+    const int themeIndex = m_theme->findData(appearance::theme());
+    if (themeIndex >= 0)
+        m_theme->setCurrentIndex(themeIndex);
+    appearanceLayout->addRow(tr("Theme:"), m_theme);
+
+    m_fontSize = new QSpinBox(appearanceTab);
+    m_fontSize->setRange(0, 48);
+    m_fontSize->setSpecialValueText(tr("Default"));
+    m_fontSize->setValue(appearance::editorPointSize());
+    appearanceLayout->addRow(tr("Editor font size:"), m_fontSize);
+
+    tabs->addTab(appearanceTab, tr("Appearance"));
+
     layout->addWidget(tabs);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
+}
+
+void SettingsDialog::accept()
+{
+    // Application-wide preferences persist on OK, independently of the
+    // project settings the rest of the dialog edits.
+    QSettings().setValue(QStringLiteral("appearance/theme"),
+                         m_theme->currentData().toString());
+    QSettings().setValue(QStringLiteral("appearance/fontSize"), m_fontSize->value());
+    QDialog::accept();
 }
 
 void SettingsDialog::loadValues(const ProjectSettings &settings)

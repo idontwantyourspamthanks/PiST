@@ -22,6 +22,10 @@ class AsmHighlighter : public QSyntaxHighlighter
 public:
     explicit AsmHighlighter(QTextDocument *document);
 
+    /// Switch between the light-background (default) and dark-background
+    /// colour sets and re-highlight. Driven by the application theme.
+    void setDarkMode(bool dark);
+
 protected:
     void highlightBlock(const QString &text) override;
 
@@ -33,6 +37,8 @@ private:
     };
 
     void buildRules();
+
+    bool m_dark = false;
 
     QVector<Rule> m_rules;
     QTextCharFormat m_labelFormat;

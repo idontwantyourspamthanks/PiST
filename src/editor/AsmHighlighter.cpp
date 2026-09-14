@@ -46,29 +46,49 @@ AsmHighlighter::AsmHighlighter(QTextDocument *document)
     buildRules();
 }
 
+void AsmHighlighter::setDarkMode(bool dark)
+{
+    if (m_dark == dark)
+        return;
+    m_dark = dark;
+    m_rules.clear();
+    buildRules();
+    rehighlight();
+}
+
 void AsmHighlighter::buildRules()
 {
+    // Two colour sets with the same hues: the light set is tuned for a white
+    // editor background, the dark set brightens each for a dark one.
+    const QColor keywordColor   = m_dark ? QColor(0x5c, 0xa8, 0xff) : QColor(0x1f, 0x6f, 0xbf);
+    const QColor registerColor  = m_dark ? QColor(0xc4, 0x8a, 0xf0) : QColor(0x8a, 0x3f, 0xbf);
+    const QColor numberColor    = m_dark ? QColor(0x3f, 0xc8, 0xa8) : QColor(0x0f, 0x7f, 0x5f);
+    const QColor stringColor    = m_dark ? QColor(0xe0, 0x98, 0x60) : QColor(0xa0, 0x50, 0x00);
+    const QColor directiveColor = m_dark ? QColor(0xe0, 0x6c, 0x9a) : QColor(0x9a, 0x35, 0x5f);
+    const QColor labelColor     = m_dark ? QColor(0x3f, 0xc8, 0xc8) : QColor(0x00, 0x6a, 0x6a);
+    const QColor commentColor   = m_dark ? QColor(0x7a, 0x7a, 0x7a) : QColor(0x80, 0x80, 0x80);
+
     QTextCharFormat keyword;
-    keyword.setForeground(QColor(0x1f, 0x6f, 0xbf));
+    keyword.setForeground(keywordColor);
     keyword.setFontWeight(QFont::Bold);
 
     QTextCharFormat registerFmt;
-    registerFmt.setForeground(QColor(0x8a, 0x3f, 0xbf));
+    registerFmt.setForeground(registerColor);
 
     QTextCharFormat number;
-    number.setForeground(QColor(0x0f, 0x7f, 0x5f));
+    number.setForeground(numberColor);
 
     QTextCharFormat string;
-    string.setForeground(QColor(0xa0, 0x50, 0x00));
+    string.setForeground(stringColor);
 
-    m_directiveFormat.setForeground(QColor(0x9a, 0x35, 0x5f));
+    m_directiveFormat.setForeground(directiveColor);
 
     QTextCharFormat label;
-    label.setForeground(QColor(0x00, 0x6a, 0x6a));
+    label.setForeground(labelColor);
     m_labelFormat = label;
 
     QTextCharFormat comment;
-    comment.setForeground(QColor(0x80, 0x80, 0x80));
+    comment.setForeground(commentColor);
     comment.setFontItalic(true);
     m_commentFormat = comment;
 

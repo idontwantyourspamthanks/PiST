@@ -5,6 +5,7 @@
 #include "editor/CodeEditor.h"
 
 #include "editor/AsmHighlighter.h"
+#include "ui/Appearance.h"
 
 #include <QContextMenuEvent>
 #include <QFile>
@@ -60,13 +61,12 @@ private:
 CodeEditor::CodeEditor(QWidget *parent)
     : QPlainTextEdit(parent)
 {
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSize(font.pointSize() + 1);
-    setFont(font);
-    setTabStopDistance(8 * QFontMetricsF(font).horizontalAdvance(QLatin1Char(' ')));
     setLineWrapMode(QPlainTextEdit::NoWrap);
 
     m_highlighter = new AsmHighlighter(document());
+
+    // After the highlighter exists: it also applies the theme's syntax colours.
+    applyFontPreferences();
 
     m_lineNumberArea = new LineNumberArea(this);
 
@@ -78,6 +78,19 @@ CodeEditor::CodeEditor(QWidget *parent)
             &CodeEditor::modificationChanged);
 
     updateLineNumberAreaWidth(0);
+}
+
+void CodeEditor::applyFontPreferences()
+{
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    // 0 means "no preference": keep the historical default of one point over
+    // the platform's fixed font.
+    const int size = appearance::editorPointSize();
+    font.setPointSize(size > 0 ? size : font.pointSize() + 1);
+    setFont(font);
+    setTabStopDistance(8 * QFontMetricsF(font).horizontalAdvance(QLatin1Char(' ')));
+
+    m_highlighter->setDarkMode(appearance::darkModeActive());
 }
 
 int CodeEditor::lineNumberAreaWidth() const

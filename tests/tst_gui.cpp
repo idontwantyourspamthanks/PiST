@@ -18,6 +18,7 @@
 #include "ui/MainWindow.h"
 #include "ui/MemoryView.h"
 #include "ui/SetupDialog.h"
+#include "ui/Appearance.h"
 #include "toolchain/Toolchain.h"
 #include "emu/HrdbBackend.h"
 #include "ui/StackView.h"
@@ -99,6 +100,9 @@ private slots:
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
     void fileBrowserShowsTheProjectDirectory();
+    /// Create/rename/delete through the project files panel, including what
+    /// happens to the open document when its file is renamed or deleted.
+    void fileBrowserFileOperations();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -111,6 +115,12 @@ private slots:
     /// three pieces missing and offer their remedies — the deterministic form
     /// of a first run on a bare machine.
     void setupDialogShowsMissingPieces();
+    /// Font-size and theme preferences take effect on the editor and the
+    /// application palette.
+    void appearancePreferencesApply();
+    /// Documents open in tabs: pristine-tab reuse, raise-not-duplicate, the
+    /// modified marker on the label, and the never-empty invariant.
+    void documentTabsManageOpenFiles();
 
 private:
     QString m_vasm;
@@ -1019,6 +1029,62 @@ void TstGui::fileBrowserShowsTheProjectDirectory()
     QCOMPARE(selected, src);
 }
 
+
+void TstGui::fileBrowserFileOperations()
+{
+    const QString dir = m_work->path() + QStringLiteral("/ops");
+    QVERIFY(QDir().mkpath(dir));
+    const QString src = dir + QStringLiteral("/prog.s");
+    QFile f(src);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write("\tnop\n");
+    f.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(browser && editor);
+    window.openPath(src);
+
+    // Create: lands on disk, refuses duplicates and names with separators.
+    const QString created = browser->createFile(dir, QStringLiteral("new.s"));
+    QCOMPARE(created, dir + QStringLiteral("/new.s"));
+    QVERIFY(QFileInfo::exists(created));
+    QVERIFY(browser->createFile(dir, QStringLiteral("new.s")).isEmpty());
+    QVERIFY(browser->createFile(dir, QStringLiteral("a/b.s")).isEmpty());
+    const QString folder = browser->createFolder(dir, QStringLiteral("sub"));
+    QVERIFY(QFileInfo(folder).isDir());
+
+    // Rename: the file moves on disk and the open document follows it.
+    const QString renamed = dir + QStringLiteral("/renamed.s");
+    QVERIFY(browser->renamePath(src, QStringLiteral("renamed.s")));
+    QVERIFY(!QFileInfo::exists(src));
+    QVERIFY(QFileInfo::exists(renamed));
+    QCOMPARE(editor->filePath(), renamed);
+    // Renaming something else must not touch the document.
+    QVERIFY(browser->renamePath(created, QStringLiteral("other.s")));
+    QCOMPARE(editor->filePath(), renamed);
+
+    // Delete: files and folders go away; an unmodified open document's tab
+    // closes rather than pointing at a ghost.
+    QVERIFY(browser->deletePath(dir + QStringLiteral("/other.s")));
+    QVERIFY(!QFileInfo::exists(dir + QStringLiteral("/other.s")));
+    QVERIFY(!editor->isModifiedSinceLoad());
+    QVERIFY(browser->deletePath(renamed));
+    QVERIFY(!QFileInfo::exists(renamed));
+    // The document's tab closed rather than pointing at a ghost (the widget
+    // itself lingers until the event loop deletes it).
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *open = qobject_cast<CodeEditor *>(tabs->widget(i));
+        QVERIFY(open);
+        QVERIFY(open->filePath() != renamed);
+    }
+    QVERIFY(browser->deletePath(folder));
+    QVERIFY(!QFileInfo(folder).exists());
+}
+
 // The editor's modified state drives the window title and the save prompt, and
 // until now isModifiedSinceLoad() was never called from anywhere.
 void TstGui::editorTracksUnsavedChanges()
@@ -1190,6 +1256,7 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
     const QString fixture = m_work->path() + QLatin1Char('/') + name;
     {
         QFile f(fixture);
+
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("#!/bin/sh\necho fixture\n");
     }
@@ -1204,5 +1271,104 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
     qputenv("PATH", savedPath);
     qputenv("PIST_TOS_DIR", savedTosDir);
 }
+
+void TstGui::appearancePreferencesApply()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("appearance/theme"));
+    settings.remove(QStringLiteral("appearance/fontSize"));
+
+    MainWindow window;
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    // Font size: an explicit value wins over the platform default.
+    const int defaultSize = editor->font().pointSize();
+    settings.setValue(QStringLiteral("appearance/fontSize"), defaultSize + 6);
+    editor->applyFontPreferences();
+    QCOMPARE(editor->font().pointSize(), defaultSize + 6);
+
+    // Theme: dark must measurably darken the application palette and switch
+    // the syntax colours to the dark set; light must undo both.
+    settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("dark"));
+    pist::appearance::applyTheme();
+    editor->applyFontPreferences();
+    QVERIFY(QApplication::palette().color(QPalette::Window).lightness() < 128);
+    QVERIFY(pist::appearance::darkModeActive());
+
+    settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
+    pist::appearance::applyTheme();
+    editor->applyFontPreferences();
+    QVERIFY(QApplication::palette().color(QPalette::Window).lightness() >= 128);
+    QVERIFY(!pist::appearance::darkModeActive());
+
+    // Restore the platform default for the rest of the suite.
+    settings.remove(QStringLiteral("appearance/theme"));
+
+    settings.remove(QStringLiteral("appearance/fontSize"));
+    pist::appearance::applyTheme();
+}
+
+void TstGui::documentTabsManageOpenFiles()
+{
+    const QString dir = m_work->path() + QStringLiteral("/tabs");
+    QVERIFY(QDir().mkpath(dir));
+    const QString a = dir + QStringLiteral("/a.s");
+    const QString b = dir + QStringLiteral("/b.s");
+    for (const QString &path : {a, b}) {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\tnop\n");
+        f.close();
+    }
+
+    MainWindow window;
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY2(tabs, "documents must live in a tab widget");
+
+    // The pristine start tab is reused by the first open rather than stranded.
+    QCOMPARE(tabs->count(), 1);
+    window.openPath(a);
+    QCOMPARE(tabs->count(), 1);
+    auto *editorA = window.findChild<CodeEditor *>();
+    QVERIFY(editorA);
+    QCOMPARE(editorA->filePath(), a);
+
+    window.openPath(b);
+    QCOMPARE(tabs->count(), 2);
+    auto *editorB = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editorB);
+    QCOMPARE(editorB->filePath(), b);
+
+    // Reopening a file raises its tab instead of opening a duplicate.
+    window.openPath(a);
+    QCOMPARE(tabs->count(), 2);
+    QCOMPARE(tabs->currentWidget(), static_cast<QWidget *>(editorA));
+
+    // The label carries the modified marker and drops it when the document is
+    // no longer modified.
+    editorA->insertPlainText(QStringLiteral("\trts\n"));
+    QCOMPARE(tabs->tabText(tabs->indexOf(editorA)), QStringLiteral("a.s *"));
+    editorA->document()->setModified(false);
+    QVERIFY(!tabs->tabText(tabs->indexOf(editorA)).endsWith(QLatin1String(" *")));
+
+    // Closing tabs must never empty the central widget: the last close leaves
+    // a pristine editor behind.
+    bool ok = false;
+    int index = tabs->indexOf(editorA);
+    ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, index));
+    QVERIFY(ok);
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->currentWidget(), static_cast<QWidget *>(editorB));
+
+    index = tabs->indexOf(editorB);
+    ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, index));
+    QVERIFY(ok);
+    QCOMPARE(tabs->count(), 1);
+    auto *pristine = qobject_cast<CodeEditor *>(tabs->widget(0));
+    QVERIFY(pristine);
+    QVERIFY(pristine->filePath().isEmpty());
+}
+
 QTEST_MAIN(TstGui)
 #include "tst_gui.moc"

@@ -8,6 +8,7 @@
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
+#include "ui/Appearance.h"
 #include "build/FloppyImage.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -50,6 +51,7 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabBar>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QInputDialog>
 #include <QTimer>
@@ -65,8 +67,21 @@ namespace {
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    m_editor = new CodeEditor(this);
-    setCentralWidget(m_editor);
+    // Documents live in tabs. The extension-dispatch seam for non-text editors
+    // (an image editor, a music editor, other text kinds) is addEditorTab();
+    // m_editor tracks the current *text* editor and is null when the current
+    // tab is not one, so its uses are guarded accordingly.
+    m_tabs = new QTabWidget(this);
+    m_tabs->setDocumentMode(true);
+    m_tabs->setTabsClosable(true);
+    m_tabs->setMovable(true);
+    setCentralWidget(m_tabs);
+    connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
+    connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
+
+    // Every session starts with one pristine editor tab; opening a file reuses
+    // it while it is still untouched.
+    addEditorTab(QString());
 
     m_build = new BuildService(this);
     connect(m_build, &BuildService::finished, this, &MainWindow::onBuildFinished);
@@ -80,37 +95,6 @@ MainWindow::MainWindow(QWidget *parent)
     // Restore the display preference before any dock is created, so the dock's
     // initial visibility matches it.
     m_embeddedDisplay = QSettings().value(QStringLiteral("display/embedded"), false).toBool();
-
-    // The title carries the modified marker, so the user can always tell whether
-    // work is unsaved without looking for a toolbar state.
-    connect(m_editor, &CodeEditor::modificationChanged, this,
-            [this](bool) { updateModifiedState(); });
-
-    connect(m_editor, &CodeEditor::gutterClicked, this, [this](int line, Qt::MouseButton button) {
-        if (button == Qt::LeftButton)
-            toggleBreakpointAtLine(line);
-        else if (button == Qt::RightButton)
-            editBreakpointCondition(line);
-    });
-    connect(m_editor, &CodeEditor::gutterContextMenuRequested, this,
-            [this](int line, const QPoint &pos) {
-                QMenu menu;
-                const bool hasBreakpoint = std::any_of(
-                    m_breakpoints.cbegin(), m_breakpoints.cend(),
-                    [this, line](const Breakpoint &bp) {
-                        return bp.line == line
-                            && bp.file == QFileInfo(m_editor->filePath()).fileName();
-                    });
-                QAction *toggle = menu.addAction(hasBreakpoint ? tr("Remove breakpoint")
-                                                               : tr("Add breakpoint"));
-                QAction *condition = menu.addAction(tr("Edit condition…"));
-                QAction *chosen = menu.exec(pos);
-                if (chosen == toggle)
-                    toggleBreakpointAtLine(line);
-                else if (chosen == condition)
-                    editBreakpointCondition(line);
-            });
-
 
     createActions();
     createMenus();
@@ -132,6 +116,131 @@ MainWindow::MainWindow(QWidget *parent)
 
     updateModifiedState();
     resize(1280, 860);
+}
+
+CodeEditor *MainWindow::addEditorTab(const QString &path)
+{
+    // A pristine tab (no path, no content, unmodified) is reused rather than
+    // left behind as an empty first tab, matching how editors treat an
+    // untouched "untitled" buffer.
+    if (!path.isEmpty() && m_tabs->count() == 1) {
+        auto *only = qobject_cast<CodeEditor *>(m_tabs->widget(0));
+        if (only && only->filePath().isEmpty() && !only->isModifiedSinceLoad()
+            && only->document()->isEmpty()) {
+            if (!only->loadFile(path)) {
+                QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
+                return nullptr;
+            }
+            updateTabTitle(only);
+            return only;
+        }
+    }
+
+    auto *editor = new CodeEditor(this);
+    wireEditor(editor);
+    if (!path.isEmpty() && !editor->loadFile(path)) {
+        QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
+        editor->deleteLater();
+        return nullptr;
+    }
+    const int index = m_tabs->addTab(editor, editor->displayName());
+    m_tabs->setCurrentIndex(index);
+    updateTabTitle(editor);
+    return editor;
+}
+
+void MainWindow::wireEditor(CodeEditor *editor)
+{
+    // The title carries the modified marker, so the user can always tell
+    // whether work is unsaved without looking for a toolbar state.
+    connect(editor, &CodeEditor::modificationChanged, this, [this, editor](bool) {
+        updateTabTitle(editor);
+        if (editor == m_editor)
+            updateModifiedState();
+    });
+
+    connect(editor, &CodeEditor::gutterClicked, this, [this](int line, Qt::MouseButton button) {
+        if (button == Qt::LeftButton)
+            toggleBreakpointAtLine(line);
+        else if (button == Qt::RightButton)
+            editBreakpointCondition(line);
+    });
+    connect(editor, &CodeEditor::gutterContextMenuRequested, this,
+            [this, editor](int line, const QPoint &pos) {
+                QMenu menu;
+                const bool hasBreakpoint = std::any_of(
+                    m_breakpoints.cbegin(), m_breakpoints.cend(),
+                    [editor, line](const Breakpoint &bp) {
+                        return bp.line == line
+                            && bp.file == QFileInfo(editor->filePath()).fileName();
+                    });
+                QAction *toggle = menu.addAction(hasBreakpoint ? tr("Remove breakpoint")
+                                                               : tr("Add breakpoint"));
+                QAction *condition = menu.addAction(tr("Edit condition…"));
+                QAction *chosen = menu.exec(pos);
+                if (chosen == toggle)
+                    toggleBreakpointAtLine(line);
+                else if (chosen == condition)
+                    editBreakpointCondition(line);
+            });
+}
+
+QList<CodeEditor *> MainWindow::openEditors() const
+{
+    QList<CodeEditor *> editors;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto *editor = qobject_cast<CodeEditor *>(m_tabs->widget(i)))
+            editors.append(editor);
+    return editors;
+}
+
+CodeEditor *MainWindow::editorForPath(const QString &path) const
+{
+    const QFileInfo wanted(path);
+    for (CodeEditor *editor : openEditors())
+        if (QFileInfo(editor->filePath()) == wanted)
+            return editor;
+    return nullptr;
+}
+
+void MainWindow::updateTabTitle(CodeEditor *editor)
+{
+    const int index = m_tabs->indexOf(editor);
+    if (index < 0)
+        return;
+    // Qt has no modified marker for tabs, so carry it in the text.
+    m_tabs->setTabText(index, editor->displayName()
+                           + (editor->isModifiedSinceLoad() ? QStringLiteral(" *") : QString()));
+}
+
+void MainWindow::onTabChanged(int index)
+{
+    m_editor = qobject_cast<CodeEditor *>(m_tabs->widget(index));
+
+    if (m_editor) {
+        // The browser and the breakpoint gutter follow the visible document.
+        if (!m_editor->filePath().isEmpty() && m_fileBrowser)
+            m_fileBrowser->showFor(m_editor->filePath());
+        refreshBreakpointMarkers();
+    }
+    updateModifiedState();
+}
+
+void MainWindow::onTabCloseRequested(int index)
+{
+    auto *editor = qobject_cast<CodeEditor *>(m_tabs->widget(index));
+    if (editor && !maybeSaveEditor(editor))
+        return;
+
+    QWidget *widget = m_tabs->widget(index);
+    m_tabs->removeTab(index);
+    if (widget)
+        widget->deleteLater();
+
+    // There is always at least one tab: closing the last document leaves a
+    // pristine editor rather than an empty central widget.
+    if (m_tabs->count() == 0)
+        addEditorTab(QString());
 }
 
 void MainWindow::refreshToolchain()
@@ -540,6 +649,38 @@ void MainWindow::createDocks()
     addDockWidget(Qt::LeftDockWidgetArea,
                   makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
+    connect(m_fileBrowser, &FileBrowser::pathRenamed, this,
+            [this](const QString &oldPath, const QString &newPath) {
+                // An open document follows its file; breakpoints are file:line
+                // and the file's *content* is unchanged, so they stay valid.
+                for (CodeEditor *editor : openEditors()) {
+                    if (QFileInfo(editor->filePath()) == QFileInfo(oldPath)) {
+                        editor->setFilePath(newPath);
+                        updateTabTitle(editor);
+                        if (QFileInfo(m_settings.sourceFile) == QFileInfo(oldPath))
+                            m_settings.sourceFile = newPath;
+                    }
+                }
+                updateModifiedState();
+            });
+    connect(m_fileBrowser, &FileBrowser::pathDeleted, this,
+            [this](const QString &path) {
+                for (CodeEditor *editor : openEditors()) {
+                    if (QFileInfo(editor->filePath()) != QFileInfo(path))
+                        continue;
+                    if (editor->isModifiedSinceLoad()) {
+                        // The user may still want the content: saving recreates
+                        // the file, which is the least surprising behaviour.
+                        statusBar()->showMessage(
+                            tr("%1 was deleted on disk; your modified copy is still open.")
+                                .arg(QFileInfo(path).fileName()),
+                            8000);
+                    } else {
+                        // Close the tab rather than pointing at a ghost.
+                        onTabCloseRequested(m_tabs->indexOf(editor));
+                    }
+                }
+            });
 
     // --- right, top: the emulator display, which wants to be prominent --------
     // It lives in a dock shown only when the embedded-display option is on; in
@@ -814,12 +955,14 @@ QString MainWindow::makeSessionDir()
 
 void MainWindow::updateModifiedState()
 {
-    const QString name = m_editor->displayName();
-    const bool modified = m_editor->isModifiedSinceLoad();
+    // With no current text editor (possible once non-text tabs exist) the
+    // title falls back to the bare application name and Save has no target.
+    const QString name = m_editor ? m_editor->displayName() : QStringLiteral("PiST");
+    const bool modified = m_editor && m_editor->isModifiedSinceLoad();
 
     // The "[*]" placeholder is replaced by Qt when windowModified is set, which
     // is the platform-correct way to show an unsaved document.
-    setWindowTitle(tr("%1[*] — PiST").arg(name));
+    setWindowTitle(m_editor ? tr("%1[*] — PiST").arg(name) : name);
     setWindowModified(modified);
 
     if (m_actSave)
@@ -828,13 +971,26 @@ void MainWindow::updateModifiedState()
 
 bool MainWindow::maybeSave()
 {
-    if (!m_editor->isModifiedSinceLoad())
+    for (CodeEditor *editor : openEditors()) {
+        // Bring the document being asked about to the front, so the prompt's
+        // context is what the user sees.
+        if (editor->isModifiedSinceLoad())
+            m_tabs->setCurrentWidget(editor);
+        if (!maybeSaveEditor(editor))
+            return false;
+    }
+    return true;
+}
+
+bool MainWindow::maybeSaveEditor(CodeEditor *editor)
+{
+    if (!editor || !editor->isModifiedSinceLoad())
         return true;
 
     const auto answer = QMessageBox::warning(
         this, tr("Unsaved changes"),
         tr("%1 has unsaved changes.\n\nSave before continuing?")
-            .arg(m_editor->displayName()),
+            .arg(editor->displayName()),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
 
     if (answer == QMessageBox::Cancel)
@@ -843,22 +999,23 @@ bool MainWindow::maybeSave()
         return true;
 
     // Save: to the existing path when there is one, otherwise ask for one.
-    if (m_editor->filePath().isEmpty()) {
+    if (editor->filePath().isEmpty()) {
         const QString path = QFileDialog::getSaveFileName(
             this, tr("Save assembly source"), QString(),
             tr("Assembly sources (*.s *.S *.asm)"));
         if (path.isEmpty())
             return false;
-        if (!m_editor->saveFile(path)) {
+        if (!editor->saveFile(path)) {
             QMessageBox::critical(this, tr("Save"), tr("Could not write %1").arg(path));
             return false;
         }
-    } else if (!m_editor->saveFile(m_editor->filePath())) {
+    } else if (!editor->saveFile(editor->filePath())) {
         QMessageBox::critical(this, tr("Save"),
-                              tr("Could not write %1").arg(m_editor->filePath()));
+                              tr("Could not write %1").arg(editor->filePath()));
         return false;
     }
 
+    updateTabTitle(editor);
     updateModifiedState();
     return true;
 }
@@ -887,13 +1044,11 @@ void MainWindow::openPath(const QString &path)
     if (path.isEmpty())
         return;
 
-    // Replacing the current document would discard unsaved work.
-    if (!maybeSave())
-        return;
-
-    if (!m_editor->loadFile(path)) {
-        QMessageBox::warning(this, tr("Open"),
-                             tr("Could not open %1").arg(path));
+    // Already open documents are raised, not reloaded: the user's undo
+    // history and cursor position in the existing tab are kept.
+    if (CodeEditor *open = editorForPath(path)) {
+        m_tabs->setCurrentWidget(open);
+    } else if (!addEditorTab(path)) {
         return;
     }
 
@@ -937,9 +1092,11 @@ void MainWindow::openProject()
         source.clear();
 
     if (!source.isEmpty()) {
-        // Adopting the project's build settings while the *previous* document
-        // stays open would build the old file with the new configuration.
-        if (!m_editor->loadFile(source)) {
+        // The project's source becomes the current document; other tabs stay
+        // open, since they may belong to this project too.
+        if (CodeEditor *open = editorForPath(source)) {
+            m_tabs->setCurrentWidget(open);
+        } else if (!addEditorTab(source)) {
             QMessageBox::critical(this, tr("Open project"),
                                   tr("The project refers to %1, which could not be opened.")
                                       .arg(source));
@@ -984,9 +1141,15 @@ void MainWindow::editSettings()
 
     m_settings = dialog.settings();
 
+    // The dialog persisted the application-wide appearance preferences on
+    // accept; bring them into effect now rather than at next start.
+    appearance::applyTheme();
+    for (CodeEditor *editor : openEditors())
+        editor->applyFontPreferences();
+
     // Persist immediately when the project is already known, so a settings change
     // is not lost if the session is closed without an explicit save.
-    if (!m_editor->filePath().isEmpty()) {
+    if (m_editor && !m_editor->filePath().isEmpty()) {
         m_settings.sourceFile = m_editor->filePath();
         const QString path = settings::projectFileFor(m_editor->filePath());
         QString error;
@@ -1140,7 +1303,7 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
     else if (success)
         statusBar()->showMessage(tr("Build succeeded"), 5000);
 
-    QList<int> errorLines;
+    QHash<CodeEditor *, QList<int>> errorLinesFor;
     for (const Diagnostic &d : diagnostics) {
         // A linker diagnostic names a module and a section offset rather than a
         // line. Turning it into a line here is what makes "undefined symbol" point
@@ -1165,11 +1328,15 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
         if (d.severity == Diagnostic::Error)
             item->setForeground(2, QColor(0xc0, 0x20, 0x20));
 
-        // Only diagnostics belonging to the open file can be marked in its gutter.
-        if (line > 0 && LineMap::sameSource(file, m_editor->filePath()))
-            errorLines.append(line);
+        // Mark the gutter of whichever open editor shows this diagnostic's
+        // file (with several documents open, errors are not all in one file).
+        if (line > 0)
+            for (CodeEditor *editor : openEditors())
+                if (LineMap::sameSource(file, editor->filePath()))
+                    errorLinesFor[editor].append(line);
     }
-    m_editor->setErrorLines(errorLines);
+    for (CodeEditor *editor : openEditors())
+        editor->setErrorLines(errorLinesFor.value(editor));
 
     // Surface the Problems pane on failure (raising selects its tab when it is
     // tabbed with the console/memory).
@@ -1767,13 +1934,15 @@ QList<Breakpoint> MainWindow::mergeResolved(const ArmPlan &plan) const
 
 void MainWindow::refreshBreakpointMarkers()
 {
-    const QString file = QFileInfo(m_editor->filePath()).fileName();
-    QList<int> lines;
-    for (const Breakpoint &bp : m_breakpoints) {
-        if (bp.file == file)
-            lines.append(bp.line);
+    // Every open editor gets the markers for its own file.
+    for (CodeEditor *editor : openEditors()) {
+        const QString file = QFileInfo(editor->filePath()).fileName();
+        QList<int> lines;
+        for (const Breakpoint &bp : m_breakpoints)
+            if (bp.file == file)
+                lines.append(bp.line);
+        editor->setBreakpointLines(lines);
     }
-    m_editor->setBreakpointLines(lines);
 
     if (m_breakpointPanel)
         m_breakpointPanel->setBreakpoints(m_breakpoints);
@@ -1997,27 +2166,37 @@ QString MainWindow::stateSummary() const
 void MainWindow::locationFromPc(quint32 pc)
 {
     if (!m_bases.isValid() || m_programMap.isEmpty()) {
-        m_editor->clearCurrentExecutionLine();
+        if (m_editor)
+            m_editor->clearCurrentExecutionLine();
         return;
     }
 
     LineMap::Address address;
     if (!m_programMap.lineFor(pc, &address)) {
-        m_editor->clearCurrentExecutionLine();
+        if (m_editor)
+            m_editor->clearCurrentExecutionLine();
         return;
     }
 
-    // Only follow the PC into the file that is actually open. The comparison
-    // must be path-tolerant: the listing records whatever path was passed to
-    // vasm (usually absolute), while the editor knows the file it was opened
-    // with (usually just a name).
-    if (!m_editor->filePath().isEmpty()
-        && !LineMap::sameSource(address.file, m_editor->filePath())) {
+    // The editor follows the program counter into whatever file it lands in:
+    // raise the tab showing it, opening one when it is not already open. The
+    // comparison must be path-tolerant: the listing records whatever path was
+    // passed to vasm (usually absolute), while the editor knows the file it
+    // was opened with (usually just a name).
+    CodeEditor *target = nullptr;
+    for (CodeEditor *editor : openEditors())
+        if (LineMap::sameSource(address.file, editor->filePath())) {
+            target = editor;
+            break;
+        }
+    if (!target && QFileInfo::exists(address.file))
+        target = addEditorTab(address.file);
+    if (!target)
         return;
-    }
 
-    m_editor->setCurrentExecutionLine(address.line);
-    m_editor->gotoLine(address.line);
+    m_tabs->setCurrentWidget(target);
+    target->setCurrentExecutionLine(address.line);
+    target->gotoLine(address.line);
 }
 
 } // namespace pist

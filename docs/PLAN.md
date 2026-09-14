@@ -429,6 +429,19 @@ These are the operational constraints the launch builder must encode.
    *"Please use at least TOS v1.04 for the HD directory emulation"*, so this is a hard floor for the
    whole GEMDOS-HD run path, not just autostart.
 
+   **Fallback implemented (2026-09):** a pre-1.04 ROM no longer refuses the run. The IDE writes a
+   per-session 720 KiB FAT12 image (`src/build/FloppyImage.cpp`, geometry pinned against a real
+   `mkfs.vfat` image) containing `AUTO/PROG.PRG` and boots it via `--disk-a` with no positional
+   and no `-d`. Every TOS version executes `AUTO/*.PRG` from the boot floppy, so this works where
+   GEMDOS HD cannot. Two transport details differ on this path:
+   - `--debug` must accompany `--debug-except`: the `autostart` deferral arms the exception mask
+     only on INF load (`src/inffile.c`), and a floppy boot has no virtual INF, so without the
+     startup toggle the mask stays zero and faulting programs never break in. Verified on TOS
+     1.02: an illegal instruction breaks in with `Debugger: *CPU exception*`.
+   - The load address differs (the program lands low, at 0xCC04 on a 1 MiB ST rather than the
+     0x12596 seen under GEMDOS HD), which is exactly why breakpoints stay file:line and resolve
+     only after `info basepage`.
+
    **Machine type and ROM are coupled, and Hatari enforces the pairing by overriding `--machine`.**
    Verified matrix (TOS version × requested machine):
 
@@ -693,12 +706,14 @@ Remaining assessments:
   use is the failure this exists to catch, and it has already caught two real
   packaging defects.
 
-Open: installers (deb, RPM, MSI, dmg) are not produced — the Linux asset is a
-plain AppImage and the others are tarballs/zips. Windows vasm needs mingw-w64,
-which the release workflow provides; the CI workflow does not yet test it there.
-The emulator is bundled only in the Linux AppImage: the macOS and Windows archives
-still document where to get it, and PiST reports it clearly when absent. What
-remains by design is not the absence of Hatari but the relationship to it — PiST
+Open: the emulator is bundled only in the Linux AppImage — the macOS and
+Windows archives still document where to get it, and PiST reports it clearly
+when absent. Installers are now produced: deb and RPM from the Linux release
+job, dmg from the macOS job and MSI from the Windows job, each verified in CI
+by installing or inspecting the package. The Windows vasm (cross-built with
+mingw-w64, as in the release workflow) is exercised natively on the Windows CI
+leg, so the shipping assembler is tested per-PR, not just at release time.
+What remains by design is not the absence of Hatari but the relationship to it — PiST
 never patches it, never links it, and drives it purely through command-line
 arguments as a separate process (see §10), so shipping a copy does not move the
 licence boundary.
@@ -939,7 +954,9 @@ project; everything before it was either Linux-only or read from source.
 2. Reliable `logfile` delimiting under rapid command bursts
 3. Whether the embedded SDL GUI/shortcuts can be disabled so Hatari cannot rewrite config from
    inside the IDE window
-4. Viability of the AUTO-folder / floppy fallback for TOS 1.00/1.02
+4. ~~Viability of the AUTO-folder / floppy fallback for TOS 1.00/1.02~~ — **verified and
+   implemented** (§5 rule 3): TOS 1.02 boots a generated AUTO-folder floppy, the entry breakpoint
+   fires, and with `--debug` arming the mask an illegal instruction breaks in
 5. Windows and macOS behaviour of the embedding paths and `SetParent`
 6. Behaviour of `--control-socket` alternatives on Windows (only stdio is available)
 

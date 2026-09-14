@@ -45,10 +45,16 @@ QStringList SessionConfig::toArgv() const
 
     // `-d <dir>` sets the GEMDOS HD directory. Note that `--gemdos-drive` only
     // assigns a drive *letter* and is not needed for the default (C:); the
-    // directory normally comes from the program positional below.
-    if (!gemdosDir.isEmpty())
+    // directory normally comes from the program positional below. On the
+    // AUTO-folder path GEMDOS HD does not exist (TOS < 1.04 rejects it), so
+    // the floppy replaces both it and the positional.
+    if (!bootFloppyPath.isEmpty()) {
+        argv << QStringLiteral("--disk-a") << bootFloppyPath;
+        if (debugToggle)
+            argv << QStringLiteral("--debug");
+    } else if (!gemdosDir.isEmpty()) {
         argv << QStringLiteral("-d") << gemdosDir;
-
+    }
     if (!bootstrapScriptPath.isEmpty())
         argv << QStringLiteral("--parse") << bootstrapScriptPath;
 
@@ -68,7 +74,9 @@ QStringList SessionConfig::toArgv() const
     // Exactly one positional argument, and it must be the program: this is the
     // only form that both mounts the GEMDOS HD and autostarts the program, which
     // in turn is what makes Hatari load its symbols (docs/PLAN.md §5 rule 1).
-    if (!programPath.isEmpty())
+    // On the AUTO-folder path there is no positional: the program boots from
+    // the floppy (and a positional would wrongly also mount a GEMDOS HD).
+    if (!programPath.isEmpty() && bootFloppyPath.isEmpty())
         argv << programPath;
 
     return argv;

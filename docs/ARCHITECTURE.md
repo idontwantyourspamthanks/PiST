@@ -33,7 +33,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/main.cpp` | Entry point. Pins `QT_QPA_PLATFORM=xcb` when `DISPLAY` is set (needed for X11 embedding), parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
 | `src/ui/` | `MainWindow` (the application shell) and every debug panel, plus the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`). |
 | `src/editor/` | `CodeEditor` (the editor widget: line-number gutter, breakpoint dots, execution-line highlight, error markers) and `AsmHighlighter` (m68k Motorola syntax). |
-| `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), and the line maps — `LineMap`, `LinkMap`, `ProgramLineMap`. |
+| `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (the AUTO-folder FAT12 writer for pre-1.04 TOS). |
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `HatariTextParse` (their shared `d` parser), `SessionConfig` (one session's argv), `HatariProbe` (capability detection), `TosRom` (ROM discovery + version), `Machine` (ST/STe/TT/Falcon model), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
 | `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent. |
@@ -228,7 +228,10 @@ These exist because a test or a real failure caught them. Do not break them.
    flags (`--control-socket`, `--symload`, `--debug-except`) on the probe.
 7. **Never emit `echo` into a Hatari script file** — it aborts Hatari 2.6.1.
 8. **TOS autostart needs ≥ 1.04 read from the image header** (`TosRom`), not the filename. Below
-   that there is no Pexec, no symbols, and the entry breakpoint never fires — the session looks hung.
+   that there is no Pexec, no symbols, and the entry breakpoint never fires on the GEMDOS-HD
+   path — so pre-1.04 (and unverifiable) ROMs take the AUTO-folder fallback instead: a generated
+   FAT12 floppy (`build/FloppyImage.{h,cpp}`) booted via `--disk-a`, with `--debug` added because
+   the `--debug-except` mask only arms on INF load, which a floppy boot never performs.
 9. **Qt's buffer is not the pipe.** Drain emulator output with a `bytesAvailable()` /
    `waitForReadyRead()` loop, not a timer or a single read (the settle timer exists for this reason).
 10. **`memdump` count is decimal, address is hex**: `m $12596 100` returns 100 bytes, not 0x100.

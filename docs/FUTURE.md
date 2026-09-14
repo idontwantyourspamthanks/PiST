@@ -293,3 +293,33 @@ Vendor Lua if the embedded-language route is taken (small, and the BizHawk/Mesen
 API shape familiar); use `QJSEngine` if zero added dependency is preferred. Either way, document the
 script API in README and add an integration test that stops at a line and asserts a scripted write
 landed.
+
+---
+
+## 11. tst_toolfetch on Windows: `vasmTarballBuildsAndInstalls` skipped
+
+**Status:** skipped on Windows (`QSKIP` at the top of the test). **Blocks:** nothing — the
+production path (tarball → make → install) is covered on Linux and macOS.
+
+### What is known
+
+The suite never passed on Windows. Instrumented CI runs (branch `diag/toolfetch-windows`,
+since deleted) established:
+
+1. `installToolBinaryIsFoundByDiscovery` hung 300 s in `QProcess::start` on the suite's
+   shell-script fixture (a non-PE file named `vasmm68k_mot.exe`) — fixed by the PE-magic gate in
+   `probeVersion` (`src/toolchain/Toolchain.cpp`).
+2. The tarball fixture's `cp`/`chmod` recipe could not run under cmd.exe — fixed with
+   `cmake -E copy` and a platform-correct output name.
+3. Every other function in the suite demonstrably *passed* on the Windows runner (breadcrumbs
+   proved completion; a `QVERIFY` failure returns early and would have skipped them).
+
+`vasmTarballBuildsAndInstalls` still fails on the runner afterwards — in 3 s, with no output,
+because ctest on Windows captures nothing from a test process (which is also why the failing
+line is unknowable from here).
+
+### How to start
+
+Run `tst_toolfetch vasmTarballBuildsAndInstalls` on a Windows workstation (or a VM with the
+runner's toolset: Chocolatey GNU make, Git's tar, hostedtoolcache python3). The failure is
+immediate and the test prints normally outside ctest, so one local run shows the line.

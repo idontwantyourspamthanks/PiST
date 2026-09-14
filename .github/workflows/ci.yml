@@ -15,9 +15,41 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Cross-built on Linux with mingw-w64 and *run natively* by the Windows leg
+  # below — exactly how release.yml produces and verifies the PE it ships, so
+  # a per-PR regression in the shipping assembler fails here rather than at
+  # release time.
+  vasm-windows:
+    name: vasm (windows cross-build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install mingw-w64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+
+      - name: Fetch, verify and cross-build vasm
+        run: |
+          set -euo pipefail
+          # Same pinned source as the other legs and the release.
+          VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+          VASM_SHA256=c84b2de1cbb87831795fe64a85c5d9a7002a766e3a7c30b0a2d7d5e99d878f49
+          curl -fsSL -o vasm.tar.gz "$VASM_URL"
+          echo "$VASM_SHA256  vasm.tar.gz" | sha256sum -c -
+          tar xzf vasm.tar.gz
+          make -C vasm CPU=m68k SYNTAX=mot CC=x86_64-w64-mingw32-gcc
+          file vasm/vasmm68k_mot.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vasm-windows-exe
+          path: vasm/vasmm68k_mot.exe
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # Every leg waits for the cross-build: cheap, and it keeps the artifact
+    # available to the Windows leg below.
+    needs: vasm-windows
 
     strategy:
       # A failure on one platform must not hide the others: the whole point is
@@ -50,6 +82,9 @@ jobs:
           - name: Windows (MSVC)
             os: windows-latest
             vasm: false
+            # The shipping Windows assembler (cross-built above) is run
+            # natively here.
+            windowsVasm: true
             emulator: false
 
     steps:
@@ -82,6 +117,27 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           cp vasm/vasmm68k_mot "$HOME/.local/bin/"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The Windows leg runs the shipping assembler natively: a real assembly,
+      # not just a version print, so a broken PE fails here.
+      - name: Download the Windows vasm
+        if: matrix.windowsVasm
+        uses: actions/download-artifact@v4
+        with:
+          name: vasm-windows-exe
+          path: ${{ runner.temp }}/vasm-win
+
+      - name: Verify the Windows vasm assembles
+        if: matrix.windowsVasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="$RUNNER_TEMP/vasm-win/vasmm68k_mot.exe"
+          "$EXE" 2>&1 | head -1
+          printf '\ttext\nstart:\tmove.l\t#1,d0\n\trts\n\tend\n' > smoke.s
+          "$EXE" -quiet -Ftos -o smoke.prg smoke.s
+          # A TOS executable starts with the 0x601A branch magic.
+          test "$(od -An -tx1 -N2 smoke.prg | tr -d ' ')" = "601a"
 
       # Build the pinned Hatari. The rationale for the version, the checksum and
       # the per-platform details lives with the build, in

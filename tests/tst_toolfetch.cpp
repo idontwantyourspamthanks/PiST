@@ -224,9 +224,21 @@ void TstToolFetch::vasmTarballBuildsAndInstalls()
     {
         QFile makefile(srcDir + QStringLiteral("/Makefile"));
         QVERIFY(makefile.open(QIODevice::WriteOnly));
+        // Windows discovery only finds an .exe, so the fixture's output name
+        // follows the platform (a real Windows vasm build produces
+        // vasmm68k_mot.exe the same way). The recipe runs `cmake -E copy`
+        // rather than cp: make's shell on Windows is cmd.exe, which has no
+        // cp, and cmake is present wherever this suite runs. POSIX still
+        // needs the exec bit (findExecutable requires it there; an .exe on
+        // Windows needs none).
+#ifdef Q_OS_WIN
+        makefile.write("vasmm68k_mot.exe: vasmm68k_mot.sh\n"
+                       "\tcmake -E copy vasmm68k_mot.sh vasmm68k_mot.exe\n");
+#else
         makefile.write("vasmm68k_mot: vasmm68k_mot.sh\n"
-                       "\tcp vasmm68k_mot.sh vasmm68k_mot\n"
+                       "\tcmake -E copy vasmm68k_mot.sh vasmm68k_mot\n"
                        "\tchmod +x vasmm68k_mot\n");
+#endif
     }
 
     const QString tarball = m_work.path() + QStringLiteral("/vasm.tar.gz");

@@ -70,3 +70,7 @@ Thumbs.db
 /tmp/
 scratch/
 *.log
+
+# Python bytecode (packaging/collect-notices.py runs in CI)
+__pycache__/
+*.pyc

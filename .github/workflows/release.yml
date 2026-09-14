@@ -440,6 +440,40 @@ jobs:
           echo "ASSET=$APPIMAGE" >> "$GITHUB_ENV"
           echo "APPIMAGE=1" >> "$GITHUB_ENV"
 
+      # Installers from the same staged tree the AppImage carries: the deb/rpm
+      # and the AppImage are byte-identical content — bundled Qt, fork, vasm,
+      # ROM, licences and notices. CPACK_INSTALL_CMAKE_PROJECTS="" suppresses
+      # the project's own install rules so the package holds the staged tree
+      # and nothing else (a naive cpack doubles the payload with both).
+      - name: Build deb and rpm installers (Linux)
+        if: '!matrix.deployed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq rpm
+          V="${{ github.ref_name }}"
+          [ -n "$V" ] || V="dev"
+          COMMON=(-D "CPACK_INSTALLED_DIRECTORIES=AppDir;/"
+                  -D "CPACK_INSTALL_CMAKE_PROJECTS=")
+          cpack -G DEB "${COMMON[@]}" --config build/CPackConfig.cmake \
+            -D CPACK_PACKAGE_FILE_NAME="pist-$V-linux-amd64"
+          cpack -G RPM "${COMMON[@]}" --config build/CPackConfig.cmake \
+            -D CPACK_PACKAGE_FILE_NAME="pist-$V-linux-x86_64"
+
+          # The packages must be self-contained: the packaged pist resolves
+          # its bundled Qt, tools and ROM from the staged tree, not the host.
+          rm -rf debx && mkdir debx
+          dpkg-deb -x "pist-$V-linux-amd64.deb" debx
+          env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
+            xvfb-run -a debx/usr/bin/pist --diagnose > diagnose-deb.txt 2>&1 || true
+          for needle in vasmm68k_mot hatari EmuTOS; do
+            grep -q "debx/usr" diagnose-deb.txt || { echo "ERROR: deb not self-contained ($needle)"; cat diagnose-deb.txt; exit 1; }
+          done
+          rpm -qip "pist-$V-linux-x86_64.rpm" | grep -E "^(Name|Version|License)"
+
+          echo "ASSET_DEB=pist-$V-linux-amd64.deb" >> "$GITHUB_ENV"
+          echo "ASSET_RPM=pist-$V-linux-x86_64.rpm" >> "$GITHUB_ENV"
+
       - name: Add documentation
         shell: bash
         run: |
@@ -565,17 +599,69 @@ jobs:
           fi
           ls -l "$NAME".*
 
+      # The dmg/MSI installers pack the same bundle/ the archives carry, so an
+      # installer and its archive are byte-identical content. The project's own
+      # install rules are suppressed so only the staged tree ships.
+      - name: Build dmg installer (macOS)
+        if: matrix.name == 'macos-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ github.ref_name }}"
+          [ -n "$V" ] || V="dev"
+          cpack -G DragNDrop --config build/CPackConfig.cmake \
+            -D "CPACK_INSTALLED_DIRECTORIES=bundle;/" \
+            -D "CPACK_INSTALL_CMAKE_PROJECTS=" \
+            -D CPACK_PACKAGE_FILE_NAME="PiST-$V-macos-arm64"
+          # Assert the installer carries what the archive has.
+          rm -rf dmgx && mkdir dmgx
+          hdiutil attach -nobrowse -mountpoint dmgx "PiST-$V-macos-arm64.dmg" > /dev/null
+          for f in pist.app/Contents/MacOS/pist share/emutos/etos1024k.img \
+                   share/doc/pist/NOTICE share/doc/pist/licenses/vasm-LICENCE.txt; do
+            [ -e "dmgx/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R dmgx | head -20; hdiutil detach dmgx; exit 1; }
+          done
+          hdiutil detach dmgx > /dev/null
+          echo "ASSET_DMG=PiST-$V-macos-arm64.dmg" >> "$GITHUB_ENV"
+
+      - name: Build MSI installer (Windows)
+        if: matrix.name == 'windows-x86_64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v candle.exe >/dev/null 2>&1; then
+            choco install wixtoolset --version 3.14.1 -y --no-progress
+          fi
+          V="${{ github.ref_name }}"
+          [ -n "$V" ] || V="dev"
+          cpack -G WIX --config build/CPackConfig.cmake \
+            -D "CPACK_INSTALLED_DIRECTORIES=bundle;/" \
+            -D "CPACK_INSTALL_CMAKE_PROJECTS=" \
+            -D CPACK_PACKAGE_FILE_NAME="PiST-$V-windows-x86_64"
+          [ -f "PiST-$V-windows-x86_64.msi" ] \
+            || { echo "ERROR: no MSI produced"; exit 1; }
+          echo "ASSET_MSI=PiST-$V-windows-x86_64.msi" >> "$GITHUB_ENV"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-archive
-          path: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_DEB }}
+            ${{ env.ASSET_RPM }}
+            ${{ env.ASSET_DMG }}
+            ${{ env.ASSET_MSI }}
           if-no-files-found: error
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_DEB }}
+            ${{ env.ASSET_RPM }}
+            ${{ env.ASSET_DMG }}
+            ${{ env.ASSET_MSI }}
           generate_release_notes: true
           body: |
             PiST — an IDE for Atari ST assembly development.

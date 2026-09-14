@@ -177,6 +177,56 @@ if(UNIX AND NOT APPLE)
         RENAME pist.svg)
 endif()
 
+# Relocatable package layout: a staged tree keeps its bundled Qt beside the
+# binary, so an installed package resolves its libraries wherever it lands —
+# /usr, /opt, or a user's home — rather than at the build host's Qt path.
+# (qt_generate_deploy_app_script above places the Qt runtime in lib/.)
+if(UNIX AND NOT APPLE)
+    set_target_properties(pist PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
+
+# ---------------------------------------------------------------------------
+# Packaging (CPack): installers built from the same staged trees the release
+# archives ship, so the installer and the tarball carry identical content —
+# binary, bundled Qt runtime, assembler, emulator, ROM, licences and notices.
+# The generator is chosen at package time (DEB/RPM on Linux, DragNDrop on
+# macOS, WIX on Windows); CPACK_INSTALLED_DIRECTORIES overrides the tree.
+# ---------------------------------------------------------------------------
+set(CPACK_PACKAGE_NAME "pist")
+set(CPACK_PACKAGE_VENDOR "PiST")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "An IDE for Atari ST assembly development")
+set(CPACK_PACKAGE_CONTACT "https://github.com/idontwantyourspamthanks/PiST")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/idontwantyourspamthanks/PiST")
+
+# Debian metadata. No computed shared-library dependencies: the package is
+# self-contained by design (bundled Qt, emulator, assembler, ROM), and a
+# distro Qt may be older than the 6.5 floor — a libqt6 dependency would be
+# wrong here.
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "PiST contributors")
+set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+    "IDE for Atari ST 68000 assembly development: editor, vasm integration,\n"
+    " and debugging under the bundled Hatari emulator (breakpoints, stepping,\n"
+    " registers, memory, disassembly, watchpoints).\n"
+    " Self-contained: Qt runtime, Hatari (hrdb-main fork), vasm and EmuTOS\n"
+    " are included.")
+
+# RPM metadata. No auto-computed requires: same self-contained rationale.
+set(CPACK_RPM_PACKAGE_LICENSE "GPL-2.0-or-later")
+set(CPACK_RPM_PACKAGE_GROUP "Development/Tools")
+set(CPACK_RPM_PACKAGE_AUTOREQPROV OFF)
+
+# A stable upgrade GUID is what lets one PiST MSI replace the previous one
+# rather than installing side by side. Do not change it between releases.
+set(CPACK_WIX_UPGRADE_GUID "7d7f9c1e-8a2b-4f3a-9e5d-1c6b2a0d4e8f")
+
+set(CPACK_DMG_VOLUME_NAME "PiST")
+
+include(CPack)
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------

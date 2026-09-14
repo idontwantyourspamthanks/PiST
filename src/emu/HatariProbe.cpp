@@ -5,6 +5,7 @@
 #include "emu/HatariProbe.h"
 
 #include <QProcess>
+#include <QFile>
 #include <QRegularExpression>
 
 namespace pist {
@@ -20,6 +21,8 @@ QString HatariCapabilities::summary() const
                                : QObject::tr("control socket: NO"));
     if (hasSymbolAutoloadOption)
         notes << QObject::tr("--symload: yes");
+    if (hasHrdb)
+        notes << QObject::tr("remote debug: yes");
     return notes.join(QStringLiteral(" · "));
 }
 
@@ -65,6 +68,30 @@ HatariCapabilities probeHatari(const QString &hatariPath)
         caps.hasSymbolAutoloadOption = help.contains(QLatin1String("--symload"));
         caps.hasDebugExcept = help.contains(QLatin1String("--debug-except"));
         caps.hasParse = help.contains(QLatin1String("--parse"));
+    }
+
+    // The HRDB fork is version-identical to upstream and adds no CLI option,
+    // so it cannot be probed by version or option name. Its listener's banner
+    // string is in the binary and upstream's never is, so scan the content.
+    // Chunked with an overlap window so a large binary is never wholly
+    // resident and a split needle is not missed.
+    if (caps.valid) {
+        const QByteArray needle = QByteArrayLiteral("Remote Debug Listening on port");
+        QFile f(hatariPath);
+        if (f.open(QIODevice::ReadOnly)) {
+            QByteArray tail;
+            for (;;) {
+                const QByteArray read = f.read(1 << 20);
+                if (read.isEmpty())
+                    break;  // EOF
+                const QByteArray chunk = tail + read;
+                if (chunk.contains(needle)) {
+                    caps.hasHrdb = true;
+                    break;
+                }
+                tail = chunk.right(needle.size());
+            }
+        }
     }
 
     return caps;

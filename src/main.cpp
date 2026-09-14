@@ -3,6 +3,7 @@
 // PiST - an IDE for Atari ST assembly development
 
 #include "emu/Paths.h"
+#include "emu/HatariProbe.h"
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
 #include "ui/MainWindow.h"
@@ -67,6 +68,12 @@ int runDiagnose()
         << (emulator.found() ? emulator.path : QStringLiteral("NOT FOUND")) << "\n";
     if (emulator.found() && !emulator.version.isEmpty())
         out << "  version: " << emulator.version << "\n";
+    if (emulator.found()) {
+        // Probe the emulator's capabilities, so a release archive can prove
+        // what its bundled emulator speaks (native prompt framing vs HRDB).
+        const pist::HatariCapabilities caps = pist::probeHatari(emulator.path);
+        out << "  transport: " << (caps.hasHrdb ? "hrdb" : "native") << "\n";
+    }
 
     // ROMs and where they were looked for, since "no ROM" is the most common
     // first-run problem and the search spans several directories.
@@ -142,6 +149,11 @@ int main(int argc, char *argv[])
 
     pist::MainWindow window;
     window.show();
+
+    // First-run convenience: when a required piece (assembler, emulator, ROM)
+    // is missing, offer the guided setup rather than letting the first build
+    // or run fail with it. Queued so the window is up first.
+    QMetaObject::invokeMethod(&window, "showSetupIfNeeded", Qt::QueuedConnection);
 
     // The remote-control interface is strictly opt-in: an IDE that opens a
     // listening socket without being asked would be a surprise. --control-port

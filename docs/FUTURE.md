@@ -7,8 +7,12 @@ records *why* it isn't done, so a future decision has the context rather than ju
 
 ## 1. A portable emulator control channel (upstream `--control-socket` on Windows)
 
-**Status:** not started. **Blocks:** Pause, live breakpoint editing, and runtime disk swapping on
-Windows.
+**Status:** pause is delivered on both transports — natively via `hatari-debug b pc ! 0 :once`
+over the control socket (entering the debugger properly; `hatari-stop` alone only halts the VBL
+loop and wedges the session), and over HRDB's `break` on the fork, which works on Windows too.
+Live breakpoint editing works on both as well. What remains uncovered on Windows: runtime disk
+swapping and `hatari-option` changes. The upstream patch below remains the right route for
+those, and for anyone on stock Hatari.
 
 ### The gap
 
@@ -70,9 +74,9 @@ Two things it must get right:
 
 ### Why it isn't done now
 
-- It requires carrying a **Hatari fork**, with rebase duty against every upstream release. The
-  current design deliberately depends on stock Hatari, which keeps the integration surface small and
-  the licence boundary clean.
+- It requires carrying a **Hatari fork**, with rebase duty against every upstream release. That
+  duty is now carried deliberately: the bundled emulator IS the hrdb-main fork (pause and live
+  breakpoints everywhere, typed framing), with the native backend as the stock-Hatari fallback.
 - It only pays off when someone actually needs Pause or runtime disk swap *on Windows*. The two
   break-ins that matter most for assembly work — program entry, and a program that faulted — are
   already available everywhere via `--parse` and `--debug-except`.
@@ -116,12 +120,21 @@ path for multi-module assembly.
 
 ---
 
-## 3. DSP source-level debugging
+## 3. Falcon DSP support
 
-**Status:** out of scope. Upstream's debugger drives the Falcon DSP with its own commands
-(`dspreg`, `dspmemdump`, `dspbreak`, ...), and the ASM IDE surfaces those, but no portable
-source-level DSP debugging exists: the dgis GDB stub has no DSP support at all, and GDB is
-m68k-only. Anything deeper means going through HRDB or writing Falcon-specific tooling.
+**Status:** deferred — Falcon is out of scope for now. Nothing in the IDE is DSP-aware: the
+plan's Phase 2 DSP panels (registers, memory, breakpoints) were never built, so DSP commands
+are reachable only by sending them verbatim through the remote-control `cmd`; there is no DSP
+UI at all.
+
+When Falcon support returns, the layering is already right: upstream's debugger drives the DSP
+with its own command set (`dspreg`, `dspmemdump`, `dspbreak`, ...), which the native transport
+carries unchanged, so panels are a UI job on top of `EmulatorHost`, not new plumbing. The
+interactive debug console (deferred to after Phase 3) is the natural first surface for them.
+
+*Source-level* DSP debugging remains out of scope entirely: the dgis GDB stub has no DSP support
+at all, and GDB is m68k-only. Anything deeper means going through HRDB or writing
+Falcon-specific tooling.
 
 ---
 
@@ -145,7 +158,9 @@ Do it for macOS polish, not as an architectural simplification.
 ## 5. Packaging and toolchain acquisition
 
 **Status:** partly delivered. Release artefacts already carry the assembler and EmuTOS, and the
-Linux AppImage bundles Hatari 2.6.1 too. First-run setup and installers are still open.
+Linux AppImage bundles the hrdb-main fork of Hatari (2.6.1-based) too. The first-run setup flow is delivered
+(`ui/SetupDialog`: checksum-pinned vasm source build and EmuTOS download, shown when the
+assembler or ROM is missing); installers and Hatari-on-macOS/Windows remain open.
 
 Because `PiST` is free software, vasm's redistribution terms permit bundling it **unmodified** for
 non-commercial use, and EmuTOS can ship as the default ROM — so a one-click install is legally
@@ -156,9 +171,9 @@ package for Windows, and no distribution package is a usable version — Ubuntu 
 24.04 ships 2.4.1, against the 2.6.1 the project is verified on). A source build bundles none of it.
 Original TOS ROMs stay user-supplied, always.
 
-The pieces that do not exist yet: a first-run setup flow, a checksum-pinned download for the
-platforms that do not bundle a tool, per-platform installers, and the dependency-notice generation
-that the LGPL Qt, BSD Capstone and bundled Hatari/Readline obligations require.
+The pieces that do not exist yet: per-platform installers. (The dependency-notice generation is
+delivered as `packaging/collect-notices.py`, which derives the shipped licence texts from each
+archive's actual contents — including whether the bundled Hatari links Capstone.)
 
 ---
 

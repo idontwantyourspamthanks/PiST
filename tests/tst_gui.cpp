@@ -17,10 +17,18 @@
 #include "ui/FileBrowser.h"
 #include "ui/MainWindow.h"
 #include "ui/MemoryView.h"
+#include "ui/SetupDialog.h"
+#include "toolchain/Toolchain.h"
+#include "emu/HrdbBackend.h"
+#include "ui/StackView.h"
+#include "toolchain/ToolFetch.h"
 
 #include <QDir>
+#include <QLineEdit>
 #include <QDockWidget>
 #include <QFileInfo>
+#include <QLabel>
+#include <QPushButton>
 #include <QMenu>
 #include <QHeaderView>
 #include <QTabBar>
@@ -56,11 +64,53 @@ private slots:
     void columnHeadersAreLeftAligned();
     void memoryPanesAreIndependent();
 
+    /// The user's actual HRDB path: project settings pick the fork binary and
+    /// the hrdb transport, Run must swap the backend object, and the session
+    /// must stop at entry — the createBackend/bootstrap/socket-gate chain.
+    void hrdbProjectRunsThroughTheSwapPath();
+
+    /// With no explicit transport setting (the default), the probe of the
+    /// launched binary decides: a fork lands on HRDB with no configuration.
+    void hrdbAutoSelectedFromForkProbe();
+
+    /// A dump applied while editing is enabled (the stopped state) must not
+    /// emit memoryEdited per rewritten cell — each of those is a debugger
+    /// write plus a refresh, so one dump would start an unbounded
+    /// write/refresh storm that destroys any in-progress edit.
+    void dumpRewriteDoesNotEmitEdits();
+
+    /// The positive half of the storm fix: with the rewrite blocked, a real
+    /// user edit must still emit memoryEdited with the right address and
+    /// value. (An over-broad blocker that killed editing would pass the
+    /// negative test and keep the pane uneditable — the reported bug.)
+    void memoryEditEmitsForRealEdit();
+
+    /// The reported bug, end to end against a real emulator: a byte edited in
+    /// the memory view while stopped must survive the follow-up refresh — the
+    /// write/refresh storm was what made the value "return", and exactly one
+    /// debugger write must result from one edit.
+    void memoryEditSurvivesRefreshLive();
+
+    /// Double-clicking a stack row whose value points into text follows the
+    /// value; double-clicking a plain value follows the slot's own address.
+    /// This is the only way off the stack into the memory view.
+    void stackViewDoubleClickFollowsAddress();
+
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
     void fileBrowserShowsTheProjectDirectory();
+    /// A debugger command typed into the console's entry line must be sent
+    /// through the backend and its response appended to the console log.
+    void consoleCommandRoundTrips();
     void editorTracksUnsavedChanges();
     void diagnoseReportsToolsAndRoms();
+    /// The claim the first-run flow rests on: a tool the setup dialog just
+    /// installed takes effect in the open window without a restart.
+    void setupInstallTakesEffectWithoutRestart();
+    /// With every discovery input stripped, the setup dialog must report all
+    /// three pieces missing and offer their remedies — the deterministic form
+    /// of a first run on a bare machine.
+    void setupDialogShowsMissingPieces();
 
 private:
     QString m_vasm;
@@ -231,6 +281,281 @@ void TstGui::runStartsAnEmulatorSession()
              "the emulator started but never reached the debugger");
 
     host->stop();
+}
+
+void TstGui::hrdbProjectRunsThroughTheSwapPath()
+{
+    const QString fork = qEnvironmentVariable("PIST_HRDB_HATARI");
+    if (fork.isEmpty() || !QFileInfo::exists(fork)) {
+        if (!qEnvironmentVariableIsEmpty("PIST_REQUIRE_EMULATOR"))
+            QFAIL("PIST_REQUIRE_EMULATOR is set but no fork is at $PIST_HRDB_HATARI");
+        QSKIP("needs the hrdb-main Hatari fork ($PIST_HRDB_HATARI)");
+    }
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    const QString source = m_work->path() + QStringLiteral("/hrdb.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    settings.hatariPath = fork;
+    settings.debugBackend = QStringLiteral("hrdb");
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.openPath(source);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    // The backend object is swapped at launch, so find it after.
+    HrdbBackend *backend = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((backend = window.findChild<HrdbBackend *>()) != nullptr
+                                 && backend->isRunning(), 30000);
+    QTRY_VERIFY_WITH_TIMEOUT(backend->isStopped(), 30000);
+    backend->stop();
+}
+
+void TstGui::hrdbAutoSelectedFromForkProbe()
+{
+    const QString fork = qEnvironmentVariable("PIST_HRDB_HATARI");
+    if (fork.isEmpty() || !QFileInfo::exists(fork)) {
+        if (!qEnvironmentVariableIsEmpty("PIST_REQUIRE_EMULATOR"))
+            QFAIL("PIST_REQUIRE_EMULATOR is set but no fork is at $PIST_HRDB_HATARI");
+        QSKIP("needs the hrdb-main Hatari fork ($PIST_HRDB_HATARI)");
+    }
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    const QString source = m_work->path() + QStringLiteral("/auto.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    settings.hatariPath = fork;
+    // No debugBackend: the default "auto" must follow the probed capability.
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    HrdbBackend *backend = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((backend = window.findChild<HrdbBackend *>()) != nullptr
+
+                                 && backend->isRunning(), 30000);
+    QTRY_VERIFY_WITH_TIMEOUT(backend->isStopped(), 30000);
+    backend->stop();
+}
+
+void TstGui::dumpRewriteDoesNotEmitEdits()
+{
+    MemoryView view;
+    QSignalSpy edits(&view, &MemoryView::memoryEdited);
+
+    // Dumps whose first row is not the view's base are discarded as stale, so
+    // the fixture is labelled for the base goToAddress aligns to.
+    view.goToAddress(0x12590);
+    const QString dump = QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"
+        "000125a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n");
+
+    // Editing disabled: baseline, no signals either way.
+    view.applyDump(dump);
+    QCOMPARE(edits.size(), 0);
+
+    // Editing enabled (the stopped state, when a user edit can be in flight):
+    // the rewrite must still emit nothing — the bytes were not user edits.
+    view.setEditingEnabled(true);
+
+    view.applyDump(dump);
+    QCOMPARE(edits.size(), 0);
+}
+void TstGui::memoryEditEmitsForRealEdit()
+{
+    MemoryView view;
+    view.resize(800, 400);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    view.setEditingEnabled(true);
+
+    // Navigate before dumping: applyDump discards a dump whose first row is
+    // not the view's base, and goToAddress is what sets it. The base aligns
+    // down to 0x12590, so the fixture is labelled for that.
+    view.goToAddress(0x12596);
+    const QString dump = QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"
+        "000125a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n");
+    view.applyDump(dump);
+
+    QSignalSpy edits(&view, &MemoryView::memoryEdited);
+    auto *table = view.findChild<QTableWidget *>();
+    QVERIFY(table);
+
+    // Commit a valid edit on byte 1 (row 0). goToAddress aligns the window
+    // down to 0x12590, so byte 1 is at $12591.
+    auto *item = table->item(0, 1 + 1);  // address column + byte 1
+    QVERIFY(item);
+    table->editItem(item);
+    auto *editor = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    QVERIFY2(editor, "editItem must open an editor");
+    editor->setText(QStringLiteral("ab"));
+    QTest::keyClick(editor, Qt::Key_Tab);
+
+    QCOMPARE(edits.size(), 1);
+    QCOMPARE(edits.first().at(0).toUInt(), 0x12591u);
+    QCOMPARE(edits.first().at(1).toUInt(), 0xabu);
+    // A double-click on a cell whose 4-byte window looks like an address must
+    // EDIT, not navigate — pointer-following is Alt+double-click. Use bytes
+    // 00 01 25 96 (an address-like long) in row 1's first long position by
+    // re-dumping a window that has them.
+    QSignalSpy nav(&view, &MemoryView::dumpRequested);
+    view.applyDump(QStringLiteral(
+        "00012590: 00 01 25 96 70 01 61 04 74 03 60 fe 72 02 4e 75  ....p.a.t.`.r.Nu\n"));
+    emit table->cellDoubleClicked(0, 1 + 1);
+    QVERIFY2(qobject_cast<QLineEdit *>(QApplication::focusWidget()),
+             "double-click on an address-like cell must open the editor");
+    // Abandon that editor so it cannot commit on teardown.
+    if (auto *ed = qobject_cast<QLineEdit *>(QApplication::focusWidget()))
+        QTest::keyClick(ed, Qt::Key_Escape);
+}
+
+void TstGui::memoryEditSurvivesRefreshLive()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        QSKIP("needs hatari");
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    const QString source = m_work->path() + QStringLiteral("/edit.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
+
+    // The memory pane auto-navigates to the program on the first stop. Edit
+    // the first byte of the first row.
+    auto *view = window.findChild<MemoryView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->currentAddress() != 0, 10000);
+
+    auto *table = view->findChild<QTableWidget *>();
+    QVERIFY(table);
+    // The navigation emits dumpRequested; the dump arrives asynchronously, so
+    // the item fetch must be re-evaluated inside the wait.
+    QTableWidgetItem *item = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((item = table->item(0, 1)) && !item->text().isEmpty(), 10000);
+
+    QSignalSpy edits(view, &MemoryView::memoryEdited);
+    const QString original = item->text();
+    const QString replacement = (original == QLatin1String("70")) ? QStringLiteral("71")
+                                                                  : QStringLiteral("70");
+    table->editItem(item);
+    auto *editor = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    QVERIFY2(editor, "editItem must open an editor");
+    editor->setText(replacement);
+    QTest::keyClick(editor, Qt::Key_Tab);
+
+    QCOMPARE(edits.size(), 1);
+
+    // The user's bug: the value "returned" after the write's follow-up
+    // refresh. Wait for the refresh to land and require the new value to
+    // still be displayed.
+    QTRY_COMPARE_WITH_TIMEOUT(table->item(0, 1)->text(), replacement.toUpper(), 10000);
+    QTest::qWait(500);  // let any storm fire
+    QCOMPARE(table->item(0, 1)->text(), replacement.toUpper());
+    QCOMPARE(edits.size(), 1);
+
+    host->stop();
+}
+
+void TstGui::stackViewDoubleClickFollowsAddress()
+{
+    StackView view;
+    view.resize(480, 400);
+    view.show();
+
+    // Two longs at SP 0x1000: 0x00012596 (inside the text range, so a likely
+    // return address) and 0x43 (plain data — odd, so not address-like).
+    view.setStackDump(0x1000,
+                      QStringLiteral("00001000: 00 01 25 96 00 00 00 43 00 00 00 00 00 00 00 00\n"),
+                      0x12500, 0x12600);
+
+    QSignalSpy spy(&view, &StackView::addressActivated);
+    auto *table = view.findChild<QTableWidget *>();
+    QVERIFY(table);
+
+    // Drive the table's cellDoubleClicked directly: synthetic double-clicks
+    // (QTest::mouseDClick and bare sendEvent alike) do not reach the view's
+    // handler offscreen, and the gesture→signal delivery is Qt's contract —
+    // ours is the row→address mapping, which is what this pins.
+    emit table->cellDoubleClicked(0, 1);
+    QCOMPARE(spy.size(), 1);
+    QCOMPARE(spy.first().at(0).toUInt(), 0x12596u);
+
+    spy.clear();
+    emit table->cellDoubleClicked(1, 1);
+    QCOMPARE(spy.size(), 1);
+    QCOMPARE(spy.first().at(0).toUInt(), 0x1004u);
 }
 
 // The core debug-loop regression: a breakpoint set before Run must fire, and the
@@ -538,6 +863,61 @@ void TstGui::columnHeadersAreLeftAligned()
     QVERIFY2(checked >= 3, "expected several visible table headers to check");
 }
 
+void TstGui::consoleCommandRoundTrips()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        QSKIP("needs hatari");
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    const QString source = m_work->path() + QStringLiteral("/console.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
+
+    // Type the command into the actual entry widget: a dead input line (never
+    // enabled, or a broken returnPressed wiring) fails here rather than
+    // passing on a direct call to the slot.
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    QTRY_VERIFY_WITH_TIMEOUT(input->isEnabled(), 5000);
+    input->setText(QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Return);
+
+    // The register dump for the typed `r` must land in the console log, after
+    // its echo.
+    QTRY_VERIFY_WITH_TIMEOUT(window.debugConsoleText().contains(QLatin1String("> r"))
+                                 && window.debugConsoleText().contains(QLatin1String("D0")),
+                             10000);
+    host->stop();
+}
+
 void TstGui::dockLayoutPersistsAcrossRestart()
 {
     QByteArray state;
@@ -717,5 +1097,112 @@ void TstGui::diagnoseReportsToolsAndRoms()
     }
 }
 
+void TstGui::setupDialogShowsMissingPieces()
+{
+    // Strip PATH and PIST_TOS_DIR so the missing-state is identical on every
+    // machine, and redirect QStandardPaths so a previously fetched tool in the
+    // real per-user directory cannot leak in. All three are restored so later
+    // tests in this process are unaffected.
+    const QByteArray savedPath = qgetenv("PATH");
+    const QByteArray savedTosDir = qgetenv("PIST_TOS_DIR");
+    qputenv("PATH", "");
+    qputenv("PIST_TOS_DIR", "");
+    QStandardPaths::setTestModeEnabled(true);
+
+    // Other suites' fixtures may have left an "installed" fake tool or ROM in
+    // the shared test-mode data root; clear both so missing really is missing.
+    // Below setTestModeEnabled deliberately: only with it on do these resolve
+    // to the test-mode locations — above it they would name the real per-user
+    // directories and delete a user's genuinely fetched tools.
+    QDir(toolchain::suggestedInstallDir()).removeRecursively();
+    QDir(paths::suggestedRomDir()).removeRecursively();
+
+    // The dismissal flag follows QSettings into the shared test-mode root, so
+    // a previous run's flag would make this order-dependent; clear exactly the
+    // key the production code reads.
+    QSettings().remove(SetupDialog::dismissalKey());
+
+    {
+        SetupDialog dialog;
+        QVERIFY(SetupDialog::anythingMissing());
+
+        auto *vasmStatus = dialog.findChild<QLabel *>(QStringLiteral("vasmStatus"));
+        auto *vasmButton = dialog.findChild<QPushButton *>(QStringLiteral("vasmFetchButton"));
+        auto *emuStatus = dialog.findChild<QLabel *>(QStringLiteral("emulatorStatus"));
+        auto *romStatus = dialog.findChild<QLabel *>(QStringLiteral("romStatus"));
+        auto *romButton = dialog.findChild<QPushButton *>(QStringLiteral("romFetchButton"));
+        QVERIFY(vasmStatus && vasmButton && emuStatus && romStatus && romButton);
+        QVERIFY(emuStatus->text().startsWith(QLatin1String("Not found")));
+
+        // A system Hatari package ships ROMs under /usr/share/hatari, which no
+        // environment strip can hide (Qt's test mode only redirects user
+        // locations), so both row states are pinned conditionally.
+        if (findTosRoms().isEmpty()) {
+            QVERIFY(romStatus->text().startsWith(QLatin1String("None found")));
+            QVERIFY(romButton->isVisibleTo(&dialog));
+            QVERIFY(romButton->isEnabled());
+        } else {
+            QVERIFY(romStatus->text().startsWith(QLatin1String("Found")));
+            QVERIFY(!romButton->isVisibleTo(&dialog));
+        }
+        QVERIFY(vasmStatus->text().startsWith(QLatin1String("Not found")));
+
+        // The vasm fetch button stays disabled here because the stripped PATH
+        // also hides make/cc, and offering a build that cannot run would be
+        // the bug.
+        QVERIFY(vasmButton->isVisibleTo(&dialog));
+        QVERIFY(!vasmButton->isEnabled());
+
+        // Unprompted startup shows it while anything is missing, exactly once:
+        // any close records the dismissal and it never opens unprompted again.
+        QVERIFY(SetupDialog::shouldPromptAtStartup());
+        dialog.done(0);
+        QVERIFY(!SetupDialog::shouldPromptAtStartup());
+    }
+
+    QStandardPaths::setTestModeEnabled(false);
+    qputenv("PATH", savedPath);
+    qputenv("PIST_TOS_DIR", savedTosDir);
+}
+
+
+void TstGui::setupInstallTakesEffectWithoutRestart()
+{
+    // Same stripped, test-mode environment as setupDialogShowsMissingPieces.
+    const QByteArray savedPath = qgetenv("PATH");
+    const QByteArray savedTosDir = qgetenv("PIST_TOS_DIR");
+    qputenv("PATH", "");
+    qputenv("PIST_TOS_DIR", "");
+    QStandardPaths::setTestModeEnabled(true);
+    QDir(toolchain::suggestedInstallDir()).removeRecursively();
+    QDir(paths::suggestedRomDir()).removeRecursively();
+
+    MainWindow window;
+    QCOMPARE(window.assemblerPath(), QStringLiteral("vasmm68k_mot"));
+
+    // What the setup dialog's vasm fetch leaves behind, with the build faked:
+    // an executable in the per-user tools directory discovery searches.
+#ifdef Q_OS_WIN
+    const QString name = QStringLiteral("vasmm68k_mot.exe");
+#else
+    const QString name = QStringLiteral("vasmm68k_mot");
+#endif
+    const QString fixture = m_work->path() + QLatin1Char('/') + name;
+    {
+        QFile f(fixture);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("#!/bin/sh\necho fixture\n");
+    }
+    QString error;
+    const QString installed = toolchain::installToolBinary(fixture, &error);
+    QVERIFY2(!installed.isEmpty(), qPrintable(error));
+
+    window.refreshToolchain();
+    QCOMPARE(QDir::cleanPath(window.assemblerPath()), QDir::cleanPath(installed));
+
+    QStandardPaths::setTestModeEnabled(false);
+    qputenv("PATH", savedPath);
+    qputenv("PIST_TOS_DIR", savedTosDir);
+}
 QTEST_MAIN(TstGui)
 #include "tst_gui.moc"

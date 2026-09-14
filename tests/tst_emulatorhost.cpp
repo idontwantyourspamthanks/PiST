@@ -72,6 +72,10 @@ private slots:
     void sourceLineBreakpointFiresAndResolvesBack();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
+    /// Pause must enter the debugger on a running program (a hatari-debug
+    /// one-shot breakpoint over the control socket), not merely halt the VBL
+    /// loop — hatari-stop alone would wedge the session with no prompt.
+    void pauseStopsARunningProgram();
 
 private:
     QString m_hatari;
@@ -657,6 +661,46 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));
 
+    host.stop();
+}
+
+void TstEmulatorHost::pauseStopsARunningProgram()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    QVERIFY(caps.valid);
+    if (!caps.hasControlSocket)
+        QSKIP("pause needs the control socket");
+
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/s-pause");
+    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps,
+                                                                    nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+
+    QVERIFY(host.start(config, nullptr));
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
+
+    // The program loops forever (loop: bra.s loop). Resume, then pause: the
+    // machine must end up stopped in the debugger again, with a readable PC.
+    host.resume();
+    QVERIFY(!host.isStopped());
+    host.pause();
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 10000);
+
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &s) { last = s; });
+    host.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 10000);
+    QVERIFY(last.pc != 0);
     host.stop();
 }
 

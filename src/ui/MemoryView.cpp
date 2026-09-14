@@ -6,6 +6,7 @@
 
 #include "emu/MemoryDump.h"
 
+#include <QApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -66,6 +67,7 @@ MemoryView::MemoryView(QWidget *parent)
     m_table->horizontalHeader()->setVisible(false);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setToolTip(tr("Double-click a byte to edit it; Alt+double-click follows a pointer."));
     m_table->setShowGrid(false);
     m_table->setFocusPolicy(Qt::NoFocus);
     m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
@@ -113,6 +115,10 @@ void MemoryView::goToAddress(quint32 address)
     // Align down so rows line up, which is what makes the display readable.
     m_base = address - (address % kRowBytes);
     m_addressEdit->setText(hex8(m_base));
+    // The old region's bytes must not survive under the new base: until the
+    // fresh dump arrives, blank beats wrong — and a discarded stale dump
+    // (applyDump refuses one not starting at m_base) leaves exactly this.
+    clear();
     emit dumpRequested(m_base, kRowBytes * kRows);
 }
 
@@ -123,7 +129,6 @@ void MemoryView::refresh()
 
 void MemoryView::onCellDoubleClicked(int row, int column)
 {
-    // Double-click, not single: a single click must stay free to select a cell.
     if (column < kFirstByteColumn || column >= kFirstByteColumn + kRowBytes)
         return;
 
@@ -131,13 +136,17 @@ void MemoryView::onCellDoubleClicked(int row, int column)
     // is the only alignment the 68000 itself would use for a long access.
     int offset = row * kRowBytes + (column - kFirstByteColumn);
     offset -= offset % 2;
-
     const quint32 value = readLongBE(m_bytes, offset);
-    if (looksLikeAddress(value)) {
+    // Pointer-following is Alt+double-click: most byte cells sit inside a
+    // 4-byte window that looks like an address (any code address, most
+    // counters), so letting a plain double-click navigate made most of the
+    // table uneditable — it navigated instead of editing. (Ctrl+double-click
+    // would be macOS's secondary-click gesture and might never arrive.)
+    if ((QApplication::keyboardModifiers() & Qt::AltModifier)
+        && looksLikeAddress(value)) {
         goToAddress(value);
         return;
     }
-    // Not an address: edit the byte in place. Addresses follow; data edits.
     if (m_editingEnabled) {
         if (auto *item = m_table->item(row, column))
             m_table->editItem(item);
@@ -146,7 +155,13 @@ void MemoryView::onCellDoubleClicked(int row, int column)
 
 void MemoryView::clear()
 {
-    m_table->blockSignals(true);
+    // Self-contained: blanking the table must never fire itemChanged, whether
+    // called from applyDump's rewrite or goToAddress's navigation — each blank
+    // would be read by onByteEdited as an invalid user edit and restored from
+    // the backing store, resurrecting the OLD region's bytes under the new
+    // base. QSignalBlocker composes correctly under an outer blocker; a raw
+    // blockSignals pair does not.
+    const QSignalBlocker blocker(m_table);
     for (int r = 0; r < m_table->rowCount(); ++r) {
         for (int c = 0; c < m_table->columnCount(); ++c) {
             if (auto *item = m_table->item(r, c))
@@ -155,7 +170,10 @@ void MemoryView::clear()
                 m_table->setItem(r, c, new QTableWidgetItem(QString()));
         }
     }
-    m_table->blockSignals(false);
+    // The backing store must go too: onByteEdited's invalid-commit restore and
+    // the Alt+double-click pointer-follow both read it.
+    m_bytes.clear();
+    m_status->clear();
 }
 
 void MemoryView::applyDump(const QString &response)
@@ -166,6 +184,20 @@ void MemoryView::applyDump(const QString &response)
         return;
     }
 
+    // A dump whose first row is not the current base is stale — requested
+    // before the latest navigation. Discarding it keeps the display, the
+    // status text and the edit-write addresses all on m_base; showing it would
+    // display one region while an edit wrote to another.
+    if (rows.first().address != m_base)
+        return;
+
+    // Programmatic rewrites are not user edits: with editing enabled (the
+    // stopped state), every setText would otherwise fire itemChanged →
+    // onByteEdited → memoryEdited, and each of those is a debugger write plus
+    // a refresh — one dump would start an unbounded write/refresh storm that
+    // steamrollers any in-progress edit. Block for the whole rewrite, not
+    // just the clear.
+    const QSignalBlocker blocker(m_table);
     clear();
     m_table->setRowCount(kRows);
     m_bytes.clear();
@@ -219,8 +251,6 @@ void MemoryView::applyDump(const QString &response)
         }
     }
 
-    m_table->resizeColumnsToContents();
-    // The bytes actually shown: the final row may be short, so
     // `rows.size() * kRowBytes` overstates the dump.
     m_status->setText(tr("%1 bytes from $%2")
                           .arg(static_cast<int>(m_bytes.size()))
@@ -232,6 +262,9 @@ void MemoryView::setEditingEnabled(bool enabled)
     m_editingEnabled = enabled;
     m_table->setEditTriggers(enabled ? QAbstractItemView::EditKeyPressed
                                      : QAbstractItemView::NoEditTriggers);
+    // An editable pane must be focusable: NoFocus would keep F2 and the
+    // in-place editor from ever receiving keys.
+    m_table->setFocusPolicy(enabled ? Qt::StrongFocus : Qt::NoFocus);
 }
 
 void MemoryView::onByteEdited(QTableWidgetItem *item)
@@ -249,11 +282,10 @@ void MemoryView::onByteEdited(QTableWidgetItem *item)
     const quint32 value = text.toUInt(&ok, 16);
     if (!ok || text.length() > 2 || value > 0xff) {
         // Restore the shown byte on bad input.
-        m_table->blockSignals(true);
+        const QSignalBlocker blocker(m_table);
         const int offset = row * kRowBytes + (column - kFirstByteColumn);
         const quint32 current = offset < m_bytes.size() ? quint8(m_bytes.at(offset)) : 0;
         item->setText(QStringLiteral("%1").arg(current, 2, 16, QLatin1Char('0')).toUpper());
-        m_table->blockSignals(false);
         return;
     }
 

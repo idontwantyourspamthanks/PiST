@@ -3,7 +3,8 @@
 Cross-platform (Linux, Windows, macOS) Qt6 IDE for developing m68k assembly for the Atari ST/STE,
 with an embedded Hatari emulator and integrated debugging.
 
-**Status:** design phase complete. Phase 0 ready to build.
+**Status:** Phases 0–3 delivered (Falcon/DSP deferred, docs/FUTURE.md §3); Phase 4 substantially
+complete (installers open).
 **Project licence:** GPL-2.0-or-later (see §10) — free software, contributions welcome.
 **Baseline verified against:** Hatari 2.6.1 (Ubuntu build) + vasm 2.0f, on Linux x86-64.
 
@@ -177,10 +178,12 @@ compiled in (audited in §10). Two things nonetheless keep it a subprocess:
 In-process libretro remains possible for macOS later — the `libretro/hatari` core is a fork of
 exactly the tree audited in §10, so the same GPLv2 conveyance condition applies.
 
-**No Hatari fork for the MVP.** The full debug loop — breakpoints, single-step, step-over, continue,
-registers, memory, labelled disassembly, live-relocated symbols, DSP — works on **stock** Hatari.
-A fork is only needed for typed framing and memory watchpoints; that is deferred behind
-`IDebugBackend`.
+**The bundled emulator is the hrdb-main fork** (upstream 2.6.1 plus the remote-debug listener).
+The full debug loop also works on stock Hatari via the native backend; the fork adds typed
+framing, pause-while-running, and a Windows-capable control path. The fork is bundled
+unmodified from a checksum-pinned commit and driven as a subprocess, so the licence boundary
+is unchanged (§10). A user-supplied stock Hatari still works — the probe selects the native
+backend for it.
 
 **Loopback TCP is a Phase-3 option, not a Phase-0 requirement.** HRDB (`tattlemuss/hatari`,
 branch `hrdb-main`, TCP 56001, protocol `0x100a`) provides typed request/response framing, full
@@ -580,6 +583,19 @@ multi-file/vlink builds. Floppy *authoring* remains out of scope.
 **Acceptance:** a conditional breakpoint set from the UI fires; a register can be edited; stepping
 follows the source line; step-over correctly clears a subroutine.
 
+**Status: complete for ST/STE; Falcon deferred.** Delivered on `EmulatorHost` driving stock
+Hatari over the three-channel transport (§3.3): gutter breakpoints with editable conditions
+(ANDed with the PC test — the only watchpoint mechanism upstream, also surfaced separately as
+`Watchpoint`), source-line breakpoints resolved through `ProgramLineMap`, editable registers,
+tagged multi-pane memory views, symbol-labelled disassembly, PC history, and stack and hardware
+panels. Two items are deliberately not done:
+
+- **DSP panels (Falcon).** Deferred — Falcon is out of scope for now; see `docs/FUTURE.md` §3.
+  The "debug console" ships as an interactive entry line on the build/debug console dock; it is
+  also the natural first surface for DSP commands when Falcon support lands.
+- **`IDebugBackend` interface.** Delivered with Phase 3, when a second implementation existed
+  to justify it.
+
 ### Phase 3 — optional backends
 
 - `HrdbBackend` over TCP for hardware register reads
@@ -589,6 +605,58 @@ follows the source line; step-over correctly clears a subroutine.
   Hatari; see §10)
 
 None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
+
+**Status: `IDebugBackend` and `HrdbBackend` delivered; the rest assessed below.**
+
+Delivered:
+
+- `emu/DebugBackend.h` — the `IDebugBackend` interface, extracted from `EmulatorHost`'s
+  existing public surface (nothing speculative), plus `pause()`. `EmulatorHost` (native) and
+  `HrdbBackend` both implement it; MainWindow holds the interface and swaps backends at launch
+  when the project's `debugBackend` setting requires it (default `auto`: the probe decides).
+- `emu/HrdbBackend` — the HRDB protocol (TCP 56001, 0x100a) end to end: entry stop via the
+  bootstrap parse file (airtight; a socket-armed entry bp races TOS boot), registers and live
+  TEXT/DATA/BSS bases from typed `regs`, memory dumps (uuencoded payload, rendered as upstream
+  `m` text so the views parse it unchanged), breakpoints/watchpoints (`bp` takes the same
+  BreakCond expressions), step, client-synthesized step-over, pause-while-running, and text
+  commands via `console` with the response captured from the process's stderr (the fork flushes
+  before its OK). Verified live by `tst_hrdb` (gated on `$PIST_HRDB_HATARI`, which CI provides)
+  and by the `tst_gui` transport-swap and auto-probe cases.
+- `pause()` also works on the **native** backend: `hatari-debug b pc ! 0 :once` over the
+  control socket enters the debugger at the next instruction (`hatari-stop` alone would only
+  halt the VBL loop — no prompt, wedged session). Pinned by
+  `tst_emulatorhost::pauseStopsARunningProgram`, which exposed a real transport race: when the
+  2-byte stdout prompt outran the stderr entry banner, `m_awaitingEntryPrompt` went stale and
+  swallowed the *next* stop's prompt. Fixed in `EmulatorHost::handleStderrLine`; this would
+  eventually have bitten any fast second stop, not just pause.
+
+**Selection cannot be probed by version or option** — the fork is version-identical and adds no
+CLI option — so it is probed by binary *content* (the HRDB banner string,
+`HatariCapabilities::hasHrdb`), and a per-project setting (`auto`/`native`/`hrdb`) overrides the
+probe. A forced mismatch (native on the fork, HRDB on stock) is refused at launch with the
+reason named — the fork's stdin debugger is dead once its listener binds, and stock Hatari has
+no listener (§9).
+
+**Boundary, updated:** the fork is the **bundled** emulator in the Linux AppImage, installed as
+`hatari` — one emulator per install; the probe selects HRDB for it automatically. The licence
+analysis is unchanged (GPL-2.0-or-later, built unmodified from a checksum-pinned source — the
+pinned fork commit, which the NOTICE source offer names). The one structural constraint: port
+56001 is fixed, so one HRDB session at a time per machine — the connect watchdog names it if
+another client holds the port.
+
+**Spike record** (protocol facts behind the delivered backend, §9 has the ledger entry). The
+fork builds unmodified and round-trips live.
+
+Remaining assessments:
+
+- **GDB-stub backend** (`dgis/hatari`): not needed. Its one unique capability was memory
+  watchpoints, delivered in Phase 2 via self-inequality conditional breakpoints on stock
+  Hatari; HRDB covers the rest of its ground with typed framing and DSP support.
+- **libretro in-process core for macOS**: unchanged — licence-compatible, deferred for macOS
+  polish; see `docs/FUTURE.md` §4.
+- **Windows control channel**: HRDB supersedes it for pause/live breakpoints (works over TCP
+  everywhere). Runtime disk swapping and `hatari-option` changes remain native-socket-only;
+  the upstream-patch route in `docs/FUTURE.md` §1 stays for those.
 
 ### Phase 4 — packaging
 
@@ -609,11 +677,12 @@ None of Phase 3 changes the UI if `IDebugBackend` is designed correctly.
   carrying PiST, a vasm compiled from the author's unmodified source (pinned by
   sha256), and EmuTOS 1.4 (GPLv2) as a working default ROM, plus the licence and
   notices. Qt is deployed with macdeployqt/windeployqt on macOS and Windows, and
-  the **Linux AppImage additionally bundles Hatari 2.6.1**, built from a
-  checksum-pinned upstream tarball by the same action CI uses (see §2.4 for why no
-  distribution package will do). The macOS and Windows archives still do not
-  bundle it. No PiST source change was needed: tool discovery already looks beside
-  the executable first, so the bundled copy is found on its own.
+  the **Linux AppImage additionally bundles Hatari**, built from the pinned
+  hrdb-main fork commit (upstream 2.6.1 plus the remote-debug listener) by the
+  same action CI uses (see §2.4 for why no distribution package will do). The
+  macOS and Windows archives still do not bundle it. No PiST source change was
+  needed: tool discovery already looks beside the executable first, so the
+  bundled copy is found on its own.
 - **Verified end to end from a downloaded archive**: the shipped assembler builds
   a program, the shipped EmuTOS boots it, the program produces its output, and the
   debugger attaches with symbols loaded. Not a claim about the packaging — an
@@ -634,7 +703,14 @@ never patches it, never links it, and drives it purely through command-line
 arguments as a separate process (see §10), so shipping a copy does not move the
 licence boundary.
 
-- Dynamic Qt linking (LGPLv3 relink obligation), dependency notices
+Delivered since: the **first-run setup flow** — a startup dialog offering the
+checksum-pinned vasm source build and EmuTOS download, with the destination
+directories now part of tool and ROM discovery (§7, "First run" row).
+
+- Dynamic Qt linking (LGPLv3 relink obligation) — **dependency notices delivered**:
+  `packaging/collect-notices.py` generates each archive's `licenses/` set and
+  `THIRD-PARTY.txt` from the artifact's real contents, asserted in the release
+  verification steps
 - vasm **detect-and-use**, bundled only in the release artefacts (see §7)
 - Installers per platform
 
@@ -645,7 +721,7 @@ licence boundary.
 | Component | License | Can we ship it? | Boundary |
 |---|---|---|---|
 | **PiST** (this project) | GPL-2.0-or-later | — | Chosen for compatibility with the emulator ecosystem; see §10 |
-| Hatari | GPL-2.0-or-later, with an explicit statement that static **or dynamic** linking makes a combined work | Yes | **Separate process/binary**, bundled in the Linux AppImage only, built unmodified from a checksum-pinned upstream tarball. Isolated in `EmulatorHost` so the boundary stays auditable; see §10 |
+| Hatari | GPL-2.0-or-later, with an explicit statement that static **or dynamic** linking makes a combined work | Yes | **Separate process/binary**, bundled in the Linux AppImage only, built unmodified from a checksum-pinned tarball (the hrdb-main fork commit). Isolated in `IDebugBackend`'s implementations so the boundary stays auditable; see §10 |
 | GNU Readline (linked by the bundled Hatari) | GPL-3.0-or-later | Yes | Redistributed unmodified with the Linux AppImage as a Hatari dependency; ship its licence text |
 | libretro Hatari core | GPL-2.0-or-later (identical `readme.txt` blob to upstream) | Yes | Same; `dlopen` does not escape the GPL |
 | libretro API header | MIT-style, per-file | Yes | Preserve notice |
@@ -666,8 +742,8 @@ terms of every component permit bundling:
   constraint is that the bundled binary must be byte-for-byte upstream's, so **the IDE must never
   patch vasm**; behaviours we need are obtained by command-line flags only.
 - **Hatari** — GPL-2.0-or-later. Bundled in the Linux AppImage as a separate executable (mere
-  aggregation): built unmodified from a checksum-pinned upstream tarball, never patched. GNU
-  Readline, which that build links, travels with it.
+  aggregation): built unmodified from the checksum-pinned fork commit (upstream 2.6.1 plus the
+  remote-debug listener), never patched. GNU Readline, which that build links, travels with it.
 
 Two distribution rules follow from this:
 
@@ -683,13 +759,12 @@ launched as a separate process, with command-line arguments only, never patched 
 ### Toolchain acquisition
 
 Where each component comes from, kept deliberately separate from the source tree:
-
 | Context | vasm | Hatari |
 |---|---|---|
-| **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; built from a checksum-pinned upstream tarball at packaging and CI time |
-| **Release artifacts** (Linux AppImage; Windows/macOS bundles) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage only; the Windows/macOS archives leave it to the user, since there is no MSYS2 Hatari package for Windows |
+| **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; built from the checksum-pinned fork commit at packaging and CI time |
+| **Release artifacts** (Linux AppImage; Windows/macOS bundles) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage — and the bundled build is the **hrdb-main fork** (upstream 2.6.1 + the remote-debug listener), built unmodified from a checksum-pinned commit tarball; the probe selects HRDB for it automatically. The Windows/macOS archives leave the emulator to the user, since there is no MSYS2 Hatari package for Windows |
 | **Linux distro package** | Optional dependency; the distro's `vasm` package is used if present | Not usable as supplied: 22.04 ships 2.3.1 and 24.04 ships 2.4.1, below the 2.6.1 the IDE is verified against (§2.4) |
-| **First run without a toolchain** | Offer a guided fetch of the author's official archive, verifying a pinned checksum. This is a *convenience*, never a silent download | Reported with an install hint; the Linux AppImage needs none |
+| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the Linux AppImage needs none. The unprompted startup prompt fires whenever *any* piece is missing — including the emulator, which is the only gap on the macOS/Windows archives — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
 
 This yields one-click setup on Linux — and on macOS and Windows for everything but the emulator —
 without placing non-free bytes in the repository, and without ever breaching vasm's no-modification
@@ -717,7 +792,7 @@ load-bearing dependency — which the detection order above already guarantees.
 | macOS cannot embed a foreign window | Medium | Detached-window mode; in-process core as a later option |
 | Wayland lacks foreign-window support | Low | XWayland via `QT_QPA_PLATFORM=xcb` |
 | Embedded SDL GUI can save over the user's real `hatari.cfg` | Low | Isolated config dir makes this harmless |
-| Maintaining a Hatari fork (only if Phase 3 proceeds) | Medium | Keep the patch minimal; upstream accepts patches via the `hatari-devel` mailing list, not GitHub PRs |
+| The bundled emulator is a Hatari fork (hrdb-main), which may lag upstream releases | Medium | The fork is upstream 2.6.1 plus one self-contained file (`remotedebug.c`), pinned by commit and checksum; CI builds and tests it every run. If it goes unmaintained, the native backend against stock Hatari remains the fallback, and rebasing the listener is a bounded job |
 
 ---
 
@@ -770,6 +845,37 @@ load-bearing dependency — which the detection order above already guarantees.
   the program is executed
 - End-to-end in `PiST`: `ctest` runs 9 parser tests, 12 ROM-identification tests, and 7
   emulator-integration tests against a real Hatari, all passing
+
+- **HRDB (fork `tattlemuss/hatari` hrdb-main, built unmodified, driven live):**
+  the listener is unconditional on TCP 56001; on connect it sends
+  `!connected\x010x100A\x00` then `!config`/`!status`/`!symbols` notifications. Commands are
+  ASCII terminated by `0x00`; replies are `0x01`-separated fields, `0x00`-terminated, and
+  `OK…`/`NG <code>`; async `!`-prefixed notifications (`!status` carries running/stopped and
+  PC) share the stream and must be demultiplexed by prefix. `regs` returns name/value pairs
+  **including the live TEXT/DATA/BSS bases** (the `info basepage` equivalent, with no parsing
+  of its text table); `mem <hex-addr> <hex-count>` (bare hex, no `$`/`0x`) returns the bytes
+  **uuencoded** (4 printable chars per 3 bytes, so NUL never appears and the `0x00` framing is
+  safe), zero-padded in the final group; `bp <expr>` goes to `BreakCond_Command`, so our
+  `b pc = …` breakpoint planning — and the self-inequality watchpoints — port unchanged;
+  `break` pauses a *running* emulation on every platform (serviced at the VBL); `step`/`run`
+  work. `console <cmd>` runs any debugui command but returns only OK — its output goes to the
+  process's stderr (debugOutput and the disassembler's TraceFile both default there), flushed
+  before the OK, so the response is the stderr tail drained at the OK
+- **The fork's stdin debugger is dead, whether or not a client is attached**:
+  `RemoteDebug_Init` registers `RemoteDebug_BreakLoop` whenever the listener binds, and
+  `DebugUI()` then routes every break through it instead of the console loop. The entry banner
+  and symbol autoload still print, which made a no-client session *look* like stdin framing
+  worked — but a typed `r` produced no dump, because stdin is never read. Consequence: the fork
+  cannot serve the native transport, and a forced mismatch is refused at launch
+- **A stdout prompt can outrun the stderr entry banner** (2 bytes vs a multi-KB dump; the pipes
+  have no ordering): when it did, `m_awaitingEntryPrompt` was armed after its prompt had already
+  been consumed, and the *next* stop's prompt was swallowed as "the entry prompt" — the session
+  never reported stopped again. Found by the native pause test; fixed by not arming the flag
+  when the banner arrives with `m_stopped` already set
+- **Native pause works via the debugger, not the pause command**: `hatari-debug b pc ! 0 :once`
+  over the control socket enters the debugger at the next instruction. `hatari-stop` only halts
+  the VBL loop — no prompt ever arrives and the session wedges. BreakCond operators are the
+  single characters `= ! < >` (no `<>` form)
 
 ### Verified by CI (executed on real runners)
 

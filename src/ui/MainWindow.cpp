@@ -7,6 +7,7 @@
 #include "build/BuildService.h"
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
+#include "emu/DebugBackend.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
@@ -21,6 +22,7 @@
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
+#include "ui/SetupDialog.h"
 #include "ui/StackView.h"
 #include "ui/RegistersView.h"
 
@@ -33,6 +35,7 @@
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -41,6 +44,7 @@
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QProcess>
+#include <QVBoxLayout>
 #include <QStandardPaths>
 #include <QSettings>
 #include <QStatusBar>
@@ -64,77 +68,13 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(m_editor);
 
     m_build = new BuildService(this);
-    // Resolve the assembler through the toolchain locator, which searches beside
-    // the app and in a per-user tools directory before PATH. Previously this fell
-    // back to a bare name, so a missing vasm surfaced as a late process-start
-    // failure rather than an early, actionable message.
-    const ToolInfo assembler = toolchain::findAssembler();
-    m_build->setAssemblerPath(assembler.found() ? assembler.path
-                                                : QStringLiteral("vasmm68k_mot"));
     connect(m_build, &BuildService::finished, this, &MainWindow::onBuildFinished);
     connect(m_build, &BuildService::outputLine, this, [this](const QString &line) {
         m_log->appendPlainText(line);
     });
 
-    m_host = new EmulatorHost(this);
-    connect(m_host, &EmulatorHost::stateUpdated, this, &MainWindow::onStateUpdated);
-    connect(m_host, &EmulatorHost::logLine, this, [this](const QString &line) {
-        m_log->appendPlainText(line);
-    });
-    // Emulator errors are reported in the log *and* the status bar. Log-only was
-    // the previous behaviour, and the log is a bottom-dock tab that is not always
-    // visible, so a failed launch looked like a normal window.
-    connect(m_host, &EmulatorHost::errorOccurred, this, [this](const QString &message) {
-        m_log->appendPlainText(QStringLiteral("[error] ") + message);
-        statusBar()->showMessage(message, 15000);
-    });
-
-    // Without this the status bar kept saying "Running" after Hatari had died,
-    // because only stoppedChanged was connected. A dead emulator looked live and
-    // step/continue stayed enabled.
-    connect(m_host, &EmulatorHost::runningChanged, this, [this](bool running) {
-        emit sessionRunningChanged(running);
-        if (running)
-            return;
-        m_statusEmulator->setText(m_caps.valid ? m_caps.summary() : tr("Not running"));
-        if (m_sessionArmed) {
-            m_sessionArmed = false;
-            if (m_actStep) m_actStep->setEnabled(false);
-            if (m_actStepOver) m_actStepOver->setEnabled(false);
-            if (m_actResume) m_actResume->setEnabled(false);
-            m_log->appendPlainText(tr("[session] emulator is no longer running"));
-        }
-    });
-    connect(m_host, &EmulatorHost::memoryDumpReady, this,
-            [this](quint32, const QString &response, int tag) {
-                // Route the dump to the pane that asked for it, by tag.
-                if (auto *view = m_memoryPanes.value(tag, nullptr))
-                    view->applyDump(response);
-            });
-    // `info <subject>` responses feed the hardware view. Routed by command text:
-    // `info basepage` is part of the normal refresh and must not land here.
-    connect(m_host, &EmulatorHost::commandFinished, this,
-            [this](const QString &command, const QString &response) {
-                if (m_hardware && command == QLatin1String("info ") + m_hardware->subject())
-                    m_hardware->setInfo(response);
-                else if (m_pcHistory && command.startsWith(QLatin1String("history ")))
-                    m_pcHistory->setHistory(response);
-                if (!m_pendingDebugCommand.isEmpty() && command == m_pendingDebugCommand) {
-                    m_pendingDebugCommand.clear();
-                    emit debugCommandFinished(command, response);
-                }
-            });
-    connect(m_host, &EmulatorHost::embeddedSizeChanged, this,
-            [this](int width, int height) {
-                if (!m_display)
-                    return;
-                // The size report arrives right after the reparent, and Hatari
-                // never maps the SDL window it created hidden, so show it now —
-                // otherwise the display stays black. The reported size is the
-                // video's native resolution, which the fit uses to keep aspect.
-                m_display->setVideoSize(width, height);
-                m_display->showEmbedded();
-            });
+    m_host = createBackend(BackendKind::Native, this);
+    wireBackend();
 
     // Restore the display preference before any dock is created, so the dock's
     // initial visibility matches it.
@@ -170,23 +110,6 @@ MainWindow::MainWindow(QWidget *parent)
                     editBreakpointCondition(line);
             });
 
-    connect(m_host, &EmulatorHost::stoppedChanged, this, [this](bool stopped) {
-        m_actStep->setEnabled(stopped);
-        m_actStepOver->setEnabled(stopped);
-        m_actResume->setEnabled(stopped);
-        m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
-        // The embedded panel renders no frames while stopped, so tell it to show
-        // its paused hint rather than look frozen.
-        if (m_display)
-            m_display->setPaused(stopped);
-        // Registers are only writable while stopped, through the debugger.
-        if (m_registers)
-            m_registers->setEditingEnabled(stopped);
-        if (m_memory)
-            m_memory->setEditingEnabled(stopped);
-        if (stopped)
-            onDebuggerStopped();
-    });
 
     createActions();
     createMenus();
@@ -204,14 +127,26 @@ MainWindow::MainWindow(QWidget *parent)
             openRecentSource();
     });
 
+    refreshToolchain();
+
+    updateModifiedState();
+    resize(1280, 860);
+}
+
+void MainWindow::refreshToolchain()
+{
+    // Run at construction (after the status bar exists) and after the setup
+    // dialog closes: a piece the dialog just installed (e.g. vasm in the
+    // per-user tools directory, which is not on PATH) must take effect without
+    // a restart, or the first build after a successful setup would still fail.
+    const ToolInfo assembler = toolchain::findAssembler();
+    m_build->setAssemblerPath(assembler.found() ? assembler.path
+                                                : QStringLiteral("vasmm68k_mot"));
     m_caps = probeHatari(toolchain::findEmulator().path);
     updateEmbedActionState();
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     m_statusEmulator->setText(m_caps.summary());
-
-    updateModifiedState();
-    resize(1280, 860);
 }
 
 MainWindow::~MainWindow() = default;
@@ -248,6 +183,11 @@ void MainWindow::createActions()
     m_actStop->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F5));
     connect(m_actStop, &QAction::triggered, this, &MainWindow::stopSession);
 
+    m_actPause = new QAction(tr("&Pause"), this);
+    m_actPause->setShortcut(QKeySequence(Qt::Key_F6));
+    m_actPause->setEnabled(false);
+    connect(m_actPause, &QAction::triggered, this, &MainWindow::pauseSession);
+
     m_actStep = new QAction(tr("&Step"), this);
     m_actStep->setShortcut(QKeySequence(Qt::Key_F10));
     m_actStep->setEnabled(false);
@@ -270,7 +210,6 @@ void MainWindow::createActions()
     m_actResume->setEnabled(false);
     connect(m_actResume, &QAction::triggered, this, &MainWindow::resume);
 
-
     // Checked state mirrors the persisted preference; the enabled state is set
     // later, once the emulator's capabilities are known.
     m_actEmbedDisplay = new QAction(tr("&Embed emulator display"), this);
@@ -278,6 +217,113 @@ void MainWindow::createActions()
     m_actEmbedDisplay->setChecked(m_embeddedDisplay);
     connect(m_actEmbedDisplay, &QAction::toggled, this, &MainWindow::setDisplayEmbedded);
 }
+
+void MainWindow::wireBackend()
+{
+    connect(m_host, &IDebugBackend::stateUpdated, this, &MainWindow::onStateUpdated);
+    connect(m_host, &IDebugBackend::logLine, this, [this](const QString &line) {
+        m_log->appendPlainText(line);
+    });
+    // Emulator errors are reported in the log *and* the status bar. Log-only was
+    // the previous behaviour, and the log is a bottom-dock tab that is not always
+    // visible, so a failed launch looked like a normal window.
+    connect(m_host, &IDebugBackend::errorOccurred, this, [this](const QString &message) {
+        m_log->appendPlainText(QStringLiteral("[error] ") + message);
+        statusBar()->showMessage(message, 15000);
+    });
+
+    // Without this the status bar kept saying "Running" after Hatari had died,
+    // because only stoppedChanged was connected. A dead emulator looked live and
+    // step/continue stayed enabled.
+    connect(m_host, &IDebugBackend::runningChanged, this, [this](bool running) {
+        emit sessionRunningChanged(running);
+        if (running) {
+            if (m_actPause)
+                m_actPause->setEnabled(!m_host->isStopped());
+            if (m_consoleInput)
+                m_consoleInput->setEnabled(true);
+            return;
+        }
+        if (m_consoleInput)
+            m_consoleInput->setEnabled(running);
+        m_statusEmulator->setText(m_caps.valid ? m_caps.summary() : tr("Not running"));
+        if (m_actPause)
+            m_actPause->setEnabled(false);
+        if (m_sessionArmed) {
+            m_sessionArmed = false;
+            if (m_actStep) m_actStep->setEnabled(false);
+            if (m_actStepOver) m_actStepOver->setEnabled(false);
+            if (m_actResume) m_actResume->setEnabled(false);
+            m_log->appendPlainText(tr("[session] emulator is no longer running"));
+        }
+    });
+    connect(m_host, &IDebugBackend::memoryDumpReady, this,
+            [this](quint32, const QString &response, int tag) {
+                // Route the dump to the pane that asked for it, by tag.
+                if (auto *view = m_memoryPanes.value(tag, nullptr))
+                    view->applyDump(response);
+            });
+    // `info <subject>` responses feed the hardware view. Routed by command text:
+    // `info basepage` is part of the normal refresh and must not land here.
+    connect(m_host, &IDebugBackend::commandFinished, this,
+            [this](const QString &command, const QString &response) {
+                if (m_hardware && command == QLatin1String("info ") + m_hardware->subject())
+                    m_hardware->setInfo(response);
+                else if (m_pcHistory && command.startsWith(QLatin1String("history ")))
+                    m_pcHistory->setHistory(response);
+                if (!m_pendingDebugCommand.isEmpty() && command == m_pendingDebugCommand) {
+                    m_pendingDebugCommand.clear();
+                    emit debugCommandFinished(command, response);
+                }
+            });
+    connect(m_host, &IDebugBackend::embeddedSizeChanged, this,
+            [this](int width, int height) {
+                if (!m_display)
+                    return;
+                // The size report arrives right after the reparent, and Hatari
+                // never maps the SDL window it created hidden, so show it now —
+                // otherwise the display stays black. The reported size is the
+                // video's native resolution, which the fit uses to keep aspect.
+                m_display->setVideoSize(width, height);
+                m_display->showEmbedded();
+            });
+
+    connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
+        m_actStep->setEnabled(stopped);
+        m_actStepOver->setEnabled(stopped);
+        m_actResume->setEnabled(stopped);
+        m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
+        // The embedded panel renders no frames while stopped, so tell it to show
+        // its paused hint rather than look frozen.
+        if (m_display)
+            m_display->setPaused(stopped);
+        // Registers are only writable while stopped, through the debugger.
+        if (m_actPause)
+            m_actPause->setEnabled(!stopped && m_host->isRunning());
+        if (m_registers)
+            m_registers->setEditingEnabled(stopped);
+        if (m_memory)
+            m_memory->setEditingEnabled(stopped);
+        if (stopped)
+            onDebuggerStopped();
+    });
+
+    connect(m_host, &IDebugBackend::stackDumpReady, this,
+            [this](quint32 sp, const QString &response) {
+                if (!m_stack)
+                    return;
+                // The annotation needs the *text* extent, not the data base.
+                // With no data section (or one that does not follow text) the
+                // data base gives an empty range and every return address
+                // silently goes unmarked, so take the extent from the
+                // listings and fall back to the old bound when the map has
+                // none (docs/code-review-glm-001.md, P3).
+                const quint32 textEnd = m_programMap.textEnd();
+                m_stack->setStackDump(sp, response, m_lastState.textBase,
+                                      textEnd ? textEnd : m_lastState.dataBase);
+            });
+}
+
 
 void MainWindow::createMenus()
 {
@@ -299,10 +345,14 @@ void MainWindow::createMenus()
     m_viewMenu = menuBar()->addMenu(tr("&View"));
     m_viewMenu->addAction(m_actEmbedDisplay);
 
+    auto *toolsMenu = menuBar()->addMenu(tr("&Tools"));
+    toolsMenu->addAction(tr("Set up tools and ROMs…"), this, &MainWindow::showToolSetup);
+
     auto *runMenu = menuBar()->addMenu(tr("&Run"));
     runMenu->addAction(m_actBuild);
     runMenu->addAction(m_actRun);
     runMenu->addAction(m_actStop);
+    runMenu->addAction(m_actPause);
     runMenu->addSeparator();
     runMenu->addAction(m_actResume);
     runMenu->addAction(m_actStep);
@@ -310,6 +360,26 @@ void MainWindow::createMenus()
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
+}
+
+void MainWindow::showToolSetup()
+{
+    SetupDialog dialog(this);
+    dialog.exec();
+    // A fetch the dialog just completed lands somewhere discovery looks but
+    // this window has not looked since construction.
+    refreshToolchain();
+}
+
+QString MainWindow::assemblerPath() const
+{
+    return m_build->assemblerPath();
+}
+
+void MainWindow::showSetupIfNeeded()
+{
+    if (SetupDialog::shouldPromptAtStartup())
+        showToolSetup();
 }
 
 QDockWidget *MainWindow::makeDock(const QString &title, const QString &objectName, QWidget *widget)
@@ -507,23 +577,27 @@ void MainWindow::createDocks()
             this, &MainWindow::removeWatchpoint);
     connect(m_breakpointPanel, &BreakpointPanel::watchpointActivated,
             this, [this](quint32 address) {
-                if (m_memory)
+                if (m_memory) {
+                    // The pane is tabbed with Problems/console: navigation to
+                    // an invisible tab would look like the click did nothing.
+                    if (m_memoryDock) {
+                        m_memoryDock->show();
+                        m_memoryDock->raise();
+                    }
                     m_memory->goToAddress(address);
+                }
             });
-    connect(m_host, &EmulatorHost::stackDumpReady, this,
-            [this](quint32 sp, const QString &response) {
-                if (!m_stack)
-                    return;
-                // The annotation needs the *text* extent, not the data base.
-                // With no data section (or one that does not follow text) the
-                // data base gives an empty range and every return address
-                // silently goes unmarked, so take the extent from the
-                // listings and fall back to the old bound when the map has
-                // none (docs/code-review-glm-001.md, P3).
-                const quint32 textEnd = m_programMap.textEnd();
-                m_stack->setStackDump(sp, response, m_lastState.textBase,
-                                      textEnd ? textEnd : m_lastState.dataBase);
-            });
+    // Following a pointer or a slot's address on the stack goes to the first
+    // memory pane, same as a watchpoint activation.
+    connect(m_stack, &StackView::addressActivated, this, [this](quint32 address) {
+        if (m_memory) {
+            if (m_memoryDock) {
+                m_memoryDock->show();
+                m_memoryDock->raise();
+            }
+            m_memory->goToAddress(address);
+        }
+    });
     connect(m_hardware, &HardwareView::subjectChanged, this,
             [this](const QString &subject) {
                 if (m_host->isRunning())
@@ -536,10 +610,6 @@ void MainWindow::createDocks()
     connect(m_registers, &RegistersView::registerEdited, this,
             [this](const QString &regName, quint32 value) {
                 setRegister(regName, value);
-            });
-    connect(m_memory, &MemoryView::memoryEdited, this,
-            [this](quint32 address, quint32 value) {
-                setMemoryByte(address, value);
             });
 
     // --- bottom: problems, console and memory, tabbed -------------------------
@@ -564,8 +634,33 @@ void MainWindow::createDocks()
 
     m_problemsDock = makeDock(tr("Problems"), QStringLiteral("problemsDock"), m_problems);
     addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
+    // A command entry under the log turns the console into a live debugger
+    // console: commands go through the backend's normal queue and the response
+    // is appended when it arrives (matched by command text in the
+    // commandFinished handler in wireBackend).
+    m_consoleInput = new QLineEdit(this);
+    m_consoleInput->setObjectName(QStringLiteral("consoleInput"));
+    m_consoleInput->setFont(mono);
+    m_consoleInput->setPlaceholderText(
+        tr("Debugger command (e.g. r, d, m $12596 20)"));
+    m_consoleInput->setEnabled(false);
+    connect(m_consoleInput, &QLineEdit::returnPressed, this, [this] {
+        const QString cmd = m_consoleInput->text().trimmed();
+        if (cmd.isEmpty())
+            return;
+        m_consoleInput->clear();
+        sendConsoleCommand(cmd);
+    });
+
+    auto *consoleWidget = new QWidget(this);
+    auto *consoleLayout = new QVBoxLayout(consoleWidget);
+    consoleLayout->setContentsMargins(0, 0, 0, 0);
+    consoleLayout->setSpacing(0);
+    consoleLayout->addWidget(m_log);
+    consoleLayout->addWidget(m_consoleInput);
+
     auto *consoleDock =
-        makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), m_log);
+        makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), consoleWidget);
     addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
     tabifyDockWidget(m_problemsDock, consoleDock);
 
@@ -636,7 +731,7 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
                 m_host->requestMemoryDump(address, length, tag);
             });
     connect(view, &MemoryView::memoryEdited, this,
-            [this](quint32 address, quint32 value) { setMemoryByte(address, value); });
+            [this, view](quint32 address, quint32 value) { setMemoryByte(address, value, view); });
     connect(view, &MemoryView::addPaneRequested, this, [this] { addMemoryPane(); });
 
     // Later panes tab onto the base memory dock.
@@ -672,6 +767,7 @@ void MainWindow::createToolBar()
     bar->addAction(m_actBuild);
     bar->addAction(m_actRun);
     bar->addAction(m_actStop);
+    bar->addAction(m_actPause);
     bar->addSeparator();
     bar->addAction(m_actResume);
     bar->addAction(m_actStep);
@@ -1131,6 +1227,11 @@ void MainWindow::launchEmulator()
         return;
     }
 
+    // Probe the binary actually being launched (not the default-path one the
+    // status bar probed at startup): the transport selection and the option
+    // gating below must match this emulator.
+    const HatariCapabilities launchedCaps = probeHatari(emulator.path);
+
     const QString sessionDir = makeSessionDir();
 
     SessionConfig config;
@@ -1155,9 +1256,9 @@ void MainWindow::launchEmulator()
     // The control socket is compiled into Hatari only under
     // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
     // Hatari exit with "Unrecognized option", so it must be gated rather than
-    // passed unconditionally (docs/PLAN.md §5 rule 12). Nothing in the IDE
-    // depends on it yet: all debugger commands travel over stdin.
-    if (m_caps.hasControlSocket)
+    // passed unconditionally (docs/PLAN.md §5 rule 12). The debugger commands
+    // never travel over it: stdin (native) or HRDB's TCP channel carry those.
+    if (launchedCaps.hasControlSocket)
         config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
     else
         config.controlSocketPath.clear();
@@ -1168,7 +1269,7 @@ void MainWindow::launchEmulator()
     // window even when the option is on. The dock is shown and the widget
     // realized now, because winId() has to be a live X11 window before Hatari
     // starts or there is nothing to reparent into.
-    if (m_embeddedDisplay && canEmbedDisplay() && m_display) {
+    if (m_embeddedDisplay && canEmbedDisplay(launchedCaps) && m_display) {
         m_displayDock->setVisible(true);
         m_display->setVisible(true);
         config.parentWindowId = QString::number(m_display->winId());
@@ -1176,12 +1277,55 @@ void MainWindow::launchEmulator()
         config.parentWindowId.clear();
     }
 
-    if (!m_caps.hasDebugExcept)
+    if (!launchedCaps.hasDebugExcept)
         config.debugExceptions.clear();
 
     QString error;
+
+    // Backend selection: an explicit per-project setting wins; the default
+    // ("auto") follows the *launched* binary's HRDB capability, probed by
+    // content because the fork is version-identical to upstream and adds no
+    // CLI option (docs/PLAN.md §5 rule 5). The bundled emulator is the fork,
+    // so a fresh install lands on HRDB; a user-supplied stock Hatari lands on
+    // native. Only the control socket is native-transport machinery; the
+    // bootstrap script runs on the fork too (--parse is upstream), and there
+    // its entry breakpoint fires into the remote break loop and waits for our
+    // HRDB connect — no race with TOS boot, unlike a socket-armed bp.
+    // A forced transport that mismatches the binary is a dead session, not a
+    // degradation: the fork's stdin debugger is never read once its listener
+    // binds (§9), and stock Hatari has no HRDB listener at all. Refuse at
+    // launch, naming the mismatch, rather than hanging the user.
+    BackendKind wanted;
+    if (m_settings.debugBackend == QLatin1String("hrdb")) {
+        if (!launchedCaps.hasHrdb) {
+            QMessageBox::critical(this, tr("Run"),
+                tr("The debug transport is set to HRDB, but %1 is a stock Hatari, which "
+                   "has no HRDB listener. Set the transport to Native/Auto, or use the "
+                   "hrdb-main fork.").arg(emulator.path));
+            return;
+        }
+        wanted = BackendKind::Hrdb;
+    } else if (m_settings.debugBackend == QLatin1String("native")) {
+        if (launchedCaps.hasHrdb) {
+            QMessageBox::critical(this, tr("Run"),
+                tr("The debug transport is set to Native, but %1 is the hrdb-main fork, "
+                   "whose stdin debugger is never read once its listener binds. Set the "
+                   "transport to HRDB/Auto.").arg(emulator.path));
+            return;
+        }
+        wanted = BackendKind::Native;
+    } else {
+        wanted = launchedCaps.hasHrdb ? BackendKind::Hrdb : BackendKind::Native;
+    }
+    if (m_host->kind() != wanted) {
+        m_host->stop();
+        delete m_host;
+        m_host = createBackend(wanted, this);
+        wireBackend();
+    }
+
     config.bootstrapScriptPath =
-        EmulatorHost::writeBootstrapScript(sessionDir, m_caps, &error);
+        EmulatorHost::writeBootstrapScript(sessionDir, launchedCaps, &error);
     if (config.bootstrapScriptPath.isEmpty()) {
         QMessageBox::critical(this, tr("Run"), error);
         return;
@@ -1276,7 +1420,7 @@ void MainWindow::launchEmulator()
     m_breakpointsArmedThisSession = false;
     m_bases = LineMap::SectionBases();
 
-    m_host->setCapabilities(m_caps);
+    m_host->setCapabilities(launchedCaps);
     if (!m_host->start(config, &error)) {
         QMessageBox::critical(this, tr("Run"), error);
         return;
@@ -1330,6 +1474,12 @@ void MainWindow::stepOver()
 {
     m_host->stepOver();
     m_host->refresh();
+}
+
+
+void MainWindow::pauseSession()
+{
+    m_host->pause();
 }
 
 void MainWindow::resume()
@@ -1474,21 +1624,39 @@ void MainWindow::debugCommand(const QString &command)
     m_host->command(command);
 }
 
-bool MainWindow::setMemoryByte(quint32 address, quint32 value)
+void MainWindow::sendConsoleCommand(const QString &command)
+{
+    if (!m_host->isRunning()) {
+        m_log->appendPlainText(tr("[console] no emulator session is running"));
+        return;
+    }
+    m_log->appendPlainText(QStringLiteral("> ") + command);
+    // The response streams via logLine from both backends (HRDB emits the ack
+    // for console-originated commands; native streams stderr). While the
+    // machine is running this defers to the next stop (native) or answers
+    // immediately for control commands (HRDB).
+    m_host->consoleCommand(command);
+}
+
+bool MainWindow::setMemoryByte(quint32 address, quint32 value, MemoryView *pane)
 {
     if (!m_host->isStopped()) {
         m_log->appendPlainText(tr("[edit] memory can only be changed while stopped"));
         return false;
     }
     // `w b <addr> <value>` writes one byte; silent on success, so refresh the
-    // view to show it.
+    // pane that asked. Without a pane (the remote-control setmem path) the
+    // first pane is the sensible default.
     m_host->command(QStringLiteral("w b $%1 $%2")
                         .arg(address, 0, 16)
                         .arg(value, 0, 16));
-    if (m_memory)
+    if (pane)
+        pane->refresh();
+    else if (m_memory)
         m_memory->refresh();
     return true;
 }
+
 
 bool MainWindow::setRegister(const QString &regName, quint32 value)
 {
@@ -1751,12 +1919,12 @@ void MainWindow::onStateUpdated(const MachineState &state)
     locationFromPc(state.pc);
 }
 
-bool MainWindow::canEmbedDisplay() const
+bool MainWindow::canEmbedDisplay(const HatariCapabilities &caps) const
 {
     // Both ends must be X11 clients of the same display, and the size report
     // that sizes the container travels on the control socket.
     return QGuiApplication::platformName() == QLatin1String("xcb")
-        && m_caps.hasControlSocket;
+        && caps.hasControlSocket;
 }
 
 void MainWindow::setDisplayEmbedded(bool on)
@@ -1773,7 +1941,7 @@ void MainWindow::updateEmbedActionState()
 {
     if (!m_actEmbedDisplay)
         return;
-    const bool can = canEmbedDisplay();
+    const bool can = canEmbedDisplay(m_caps);
     m_actEmbedDisplay->setEnabled(can);
     m_actEmbedDisplay->setToolTip(
         can ? tr("Run the emulator's display inside the IDE rather than in a "

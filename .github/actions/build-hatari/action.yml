@@ -39,6 +39,27 @@ inputs:
       appended to $GITHUB_PATH, so `hatari` resolves by name afterwards.
     required: true
 
+  variant:
+    description: >-
+      'upstream' (the pinned hatari release tarball) or 'hrdb' (the tattlemuss
+      fork at a pinned commit, adding the HRDB remote-debug listener).
+    required: false
+    default: 'upstream'
+  binary-name:
+    description: >-
+      Name the binary is installed as. 'hatari' normally; CI builds the fork
+      side by side with upstream as 'hatari-hrdb', while a release bundle ships
+      the fork AS 'hatari' (it is the only emulator bundled).
+    required: false
+    default: 'hatari'
+  hrdb-commit:
+    description: 'tattlemuss/hatari commit the hrdb variant is pinned to.'
+    required: false
+    default: '21aa4cb76783eb1b141b917fa1976c9c01331d66'
+  hrdb-sha256:
+    description: 'SHA-256 of the pinned fork tarball at hrdb-commit.'
+    required: false
+    default: '61be3f026ff6e930a5bdf7fd25e5b755126ec678cea0c483d93a71f916be7a05'
 outputs:
   path:
     description: Absolute path to the built `hatari` binary.
@@ -67,19 +88,31 @@ runs:
 
     # Version and checksum arrive as inputs, so the pin lives in one place and
     # every caller gets the same build. Pinned by checksum: an upstream change
-    # should fail loudly rather than quietly alter what is tested.
-    - name: Fetch Hatari ${{ inputs.version }}
+    # should fail loudly rather than quietly alter what is tested. The hrdb
+    # variant builds the tattlemuss fork at a pinned commit — the same
+    # discipline, different upstream.
+    - name: Fetch Hatari ${{ inputs.version }} (${{ inputs.variant }})
       shell: bash
       env:
         HATARI_VERSION: ${{ inputs.version }}
         HATARI_SHA256: ${{ inputs.sha256 }}
+        HRDB_COMMIT: ${{ inputs.hrdb-commit }}
+        HRDB_SHA256: ${{ inputs.hrdb-sha256 }}
       run: |
         set -euo pipefail
-        HATARI_URL="https://github.com/hatari/hatari/archive/refs/tags/v$HATARI_VERSION.tar.gz"
-        curl -fsSL -o hatari.tar.gz "$HATARI_URL"
-        echo "$HATARI_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
-          || echo "$HATARI_SHA256  hatari.tar.gz" | sha256sum -c -
-        tar xzf hatari.tar.gz
+        if [ "${{ inputs.variant }}" = "hrdb" ]; then
+          curl -fsSL -o hatari.tar.gz "https://github.com/tattlemuss/hatari/archive/$HRDB_COMMIT.tar.gz"
+          echo "$HRDB_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$HRDB_SHA256  hatari.tar.gz" | sha256sum -c -
+          tar xzf hatari.tar.gz
+          ln -s "hatari-$HRDB_COMMIT" "hatari-$HATARI_VERSION"
+        else
+          HATARI_URL="https://github.com/hatari/hatari/archive/refs/tags/v$HATARI_VERSION.tar.gz"
+          curl -fsSL -o hatari.tar.gz "$HATARI_URL"
+          echo "$HATARI_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$HATARI_SHA256  hatari.tar.gz" | sha256sum -c -
+          tar xzf hatari.tar.gz
+        fi
 
     - name: Install Hatari build dependencies
       shell: bash
@@ -130,12 +163,12 @@ runs:
       shell: bash
       env:
         HATARI_DEST: ${{ inputs.destination }}
+        BINARY_NAME: ${{ inputs.binary-name }}
       run: |
         set -euo pipefail
         # macOS builds an application bundle, so the executable is named
         # `Hatari` inside Contents/MacOS rather than `hatari` at the top level.
-        # The copy below lands it at `hatari` either way, which is what every
-        # caller and both workflows expect to find on PATH.
+        # The copy below lands it at the requested name either way.
         mkdir -p "$HATARI_DEST"
         HATARI_BIN=$(find hatari-build -type f -perm -u+x -iname hatari | head -1)
         if [ -z "$HATARI_BIN" ]; then
@@ -143,6 +176,6 @@ runs:
           find hatari-build -maxdepth 4 -name '*atari*' | head -20
           exit 1
         fi
-        cp "$HATARI_BIN" "$HATARI_DEST/hatari"
+        cp "$HATARI_BIN" "$HATARI_DEST/$BINARY_NAME"
         echo "$HATARI_DEST" >> "$GITHUB_PATH"
-        echo "path=$HATARI_DEST/hatari" >> "$GITHUB_OUTPUT"
+        echo "path=$HATARI_DEST/$BINARY_NAME" >> "$GITHUB_OUTPUT"

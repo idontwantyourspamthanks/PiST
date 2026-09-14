@@ -60,6 +60,7 @@ private:
     QLineEdit *m_assemblerPath = nullptr;
     QLineEdit *m_emulatorPath = nullptr;
     QComboBox *m_machine = nullptr;
+    QComboBox *m_debugBackend = nullptr;
     QComboBox *m_monitor = nullptr;
     QComboBox *m_cpu = nullptr;
     QSpinBox *m_ram = nullptr;

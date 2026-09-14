@@ -34,11 +34,11 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/ui/` | `MainWindow` (the application shell) and every debug panel, plus the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`). |
 | `src/editor/` | `CodeEditor` (the editor widget: line-number gutter, breakpoint dots, execution-line highlight, error markers) and `AsmHighlighter` (m68k Motorola syntax). |
 | `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), and the line maps — `LineMap`, `LinkMap`, `ProgramLineMap`. |
-| `src/emu/` | `EmulatorHost` (the Hatari subprocess and the whole debug transport), `SessionConfig` (one session's argv), `HatariProbe` (capability detection), `TosRom` (ROM discovery + version), `Machine` (ST/STe/TT/Falcon model), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
+| `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `HatariTextParse` (their shared `d` parser), `SessionConfig` (one session's argv), `HatariProbe` (capability detection), `TosRom` (ROM discovery + version), `Machine` (ST/STe/TT/Falcon model), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
 | `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent. |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings). |
-| `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → beside the exe → bundled tools dir → `PATH`), plus install hints. |
+| `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
 | `tests/` | Parser unit tests (always run) and the offscreen GUI/emulator integration tests (gated on tools being present). |
 | `demo/` | `hello.s` — a tiny program used by `run.sh` and the first-run experience. |
 

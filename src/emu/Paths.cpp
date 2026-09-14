@@ -91,6 +91,11 @@ QStringList tosSearchPaths()
     for (const QString &dir : bundledDataSearchPaths(QCoreApplication::applicationDirPath()))
         appendUnique(dirs, dir);
 
+    // 2.5. The per-user directory a first-run EmuTOS download installs into.
+    //    After the bundled data deliberately: an archive's own ROM is the one
+    //    its release process verified, so it stays the default when both exist.
+    appendUnique(dirs, suggestedRomDir());
+
     // 3. The OS data location for Hatari. Covers /usr/share/hatari on Linux,
     //    /usr/local/share/hatari, and the Homebrew prefix on macOS.
     const QStringList dataLocs =
@@ -121,6 +126,16 @@ QStringList tosSearchPaths()
     }
 
     return dirs;
+}
+
+QString suggestedRomDir()
+{
+    // GenericDataLocation, matching toolchain::suggestedInstallDir(): the two
+    // sit side by side as ~/.local/share/PiST/{tools,roms}.
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QStringLiteral("/.local/share");
+    return base + QStringLiteral("/PiST/roms");
 }
 
 QString sessionBaseDir()

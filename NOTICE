@@ -58,12 +58,15 @@ hatari — the emulator
       - it is NEVER committed to the PiST source repository. It is produced by
         the release workflow at release time only.
 
-    Version and source: Hatari 2.6.1, built from the upstream, unmodified source
-    tarball at
-    https://github.com/hatari/hatari/archive/refs/tags/v2.6.1.tar.gz
-    pinned by SHA-256
-    75f09c8deddb511b8c1574b84c507743097db9abc6edbb078f942efa8677547e
+    Version and source: the hrdb-main fork of Hatari — upstream 2.6.1 plus the
+    remote-debug listener PiST's HRDB transport uses — built from the
+    unmodified source at the pinned commit
+    https://github.com/tattlemuss/hatari/tree/21aa4cb76783eb1b141b917fa1976c9c01331d66
+    whose tarball is pinned by SHA-256
+    61be3f026ff6e930a5bdf7fd25e5b755126ec678cea0c483d93a71f916be7a05
     It is built with SDL2 (zlib licence) and libpng (libpng licence).
+    (PiST's debug transport selects itself from the emulator binary's content,
+    so the bundle carries exactly one emulator: this one.)
 
     Bundling is necessary because no distribution package is a usable version.
     Ubuntu 22.04 ships 2.3.1 and Ubuntu 24.04 ships 2.4.1, while PiST is
@@ -120,3 +123,15 @@ Qt 6 (Core, Gui, Widgets, Network, Test)
 
 
 No code from Hatari, vasm or Qt is included in this repository's sources.
+
+
+Bundled licence texts
+---------------------
+
+Every release archive carries the licence texts of what is actually inside it
+in share/doc/pist/licenses/, with a manifest (share/doc/pist/THIRD-PARTY.txt)
+generated from the archive's contents by packaging/collect-notices.py — the
+binaries present and the libraries the bundled Hatari links. The set is
+derived, not declared: whether Hatari links Capstone depends on the build
+host, so Capstone's BSD-3-Clause text ships exactly when Capstone does, and a
+component that appears without its text fails the release build.

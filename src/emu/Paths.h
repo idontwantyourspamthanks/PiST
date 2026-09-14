@@ -39,17 +39,27 @@ QStringList bundledDataSearchPaths(const QString &applicationDir);
 ///      carries is the one its release process verified, so it is what makes a
 ///      fresh download run; it is still only a default, and a ROM chosen in
 ///      Project Settings or named by `$PIST_TOS_DIR` takes precedence
-///   3. the OS data location for Hatari (`GenericDataLocation/hatari`), which
+///   3. the per-user ROM directory a first-run download installs into
+///      (`suggestedRomDir()`); after the bundled data, because the archive's
+///      verified ROM should win over a previously fetched one
+///   4. the OS data location for Hatari (`GenericDataLocation/hatari`), which
 ///      covers `/usr/share/hatari` on Linux and the equivalent elsewhere
-///   4. platform conventions (Homebrew and MacPorts prefixes on macOS)
-///   5. `<dir of hatari executable>/../share/hatari`, for a custom install prefix
-///   6. the executable's own directory, but only on Windows and macOS, where
+///   5. platform conventions (Homebrew and MacPorts prefixes on macOS)
+///   6. `<dir of hatari executable>/../share/hatari`, for a custom install prefix
+///   7. the executable's own directory, but only on Windows and macOS, where
 ///      Hatari's release bundles ship their data files beside the binary
 ///
 /// Non-existent paths, and paths that exist but are not directories, are
 /// omitted — so the list is also safe to show to the user as "directories
 /// searched".
 QStringList tosSearchPaths();
+
+/// Where a downloaded ROM image is installed so that tosSearchPaths() finds it
+/// on the next lookup: `~/.local/share/PiST/roms` on Linux and the equivalent
+/// elsewhere. The counterpart of toolchain::suggestedInstallDir() for data —
+/// the first-run setup installs EmuTOS here, and it only works as a default
+/// because the search below includes it.
+QString suggestedRomDir();
 
 /// Base directory for per-session state (the generated bootstrap script, the
 /// control socket, and the isolated config directory).

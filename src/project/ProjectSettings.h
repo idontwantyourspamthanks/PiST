@@ -72,6 +72,13 @@ struct ProjectSettings
     /// Extra arguments appended to the emulator command line.
     QStringList extraEmulatorArgs;
 
+    /// Debug transport: "native" (stock Hatari, stdin/prompt framing), "hrdb"
+    /// (a fork with the HRDB listener, driven over TCP), or "auto" (default —
+    /// follow the launched binary's probed capability; the bundled emulator is
+    /// the fork). Explicit values exist for forcing one side of a mismatched
+    /// setup, e.g. a stock Hatari when a project must be shared with one.
+    QString debugBackend = QStringLiteral("auto");
+
 };
 
 /// Persist and restore a project's settings.

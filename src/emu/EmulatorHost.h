@@ -4,8 +4,8 @@
 
 #pragma once
 
+#include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
-#include "emu/SessionConfig.h"
 
 #include <QByteArray>
 #include <QList>
@@ -14,8 +14,8 @@
 #include <QString>
 #include <QStringList>
 
-class QLocalServer;
-class QLocalSocket;
+#include "emu/EmbedSocket.h"
+
 class QProcess;
 class QTimer;
 
@@ -43,7 +43,7 @@ struct HatariCapabilities;
 /// prompt to **stdout**, which is a true end-of-command signal because the loop
 /// cannot print a prompt until it has finished executing. Command output itself
 /// arrives on **stderr**.
-class EmulatorHost : public QObject
+class EmulatorHost : public IDebugBackend
 {
     Q_OBJECT
 
@@ -53,13 +53,15 @@ public:
 
     /// Record what the emulator build supports. Consulted when writing the
     /// bootstrap script, which is version-gated (§5 rule 9).
-    void setCapabilities(const HatariCapabilities &caps) { m_caps = &caps; }
+    void setCapabilities(const HatariCapabilities &caps) override { m_caps = &caps; }
 
-    bool start(const SessionConfig &config, QString *error);
-    void stop();
+    bool start(const SessionConfig &config, QString *error) override;
+    void stop() override;
 
-    bool isRunning() const;
-    bool isStopped() const { return m_stopped; }
+    bool isRunning() const override;
+    bool isStopped() const override { return m_stopped; }
+
+    BackendKind kind() const override { return BackendKind::Native; }
 
     /// Queue a debugger command. Delivered over stdin, so it works while the
     /// debugger is stopped. A `commandFinished` signal follows.
@@ -69,14 +71,17 @@ public:
     /// stackDump identify a `memdump` for routing to memoryDumpReady or
     /// stackDumpReady rather than commandFinished alone.
     void command(const QString &command, quint32 dumpAddress = 0, bool stackDump = false,
-                 int dumpTag = 0);
+                 int dumpTag = 0) override;
 
-    void step();     // `s`
-    void stepOver(); // `n`
-    void resume();   // `c`
+    void step() override;     // `s`
+    void stepOver() override; // `n`
+    void resume() override;   // `c`
+    /// `hatari-stop` over the control socket — the only channel serviced
+    /// while emulation is running (docs/PLAN.md §3.3).
+    void pause() override;
 
     /// Queue the commands needed to render a full state snapshot.
-    void refresh();
+    void refresh() override;
 
     /// Remove every breakpoint, then arm the given ones. Order matters: clearing
     /// first means a rebuilt program cannot leave a stale breakpoint behind at an
@@ -84,11 +89,11 @@ public:
     ///
     /// Must be called after the entry stop, because the program's load address is
     /// only known once it has been executed (docs/PLAN.md §5 rule 6).
-    void clearBreakpoints();
+    void clearBreakpoints() override;
 
     /// Arm one breakpoint by emitting its Hatari `b` command. The caller resolves
     /// source lines to addresses first (see debug/Breakpoint.h).
-    void armBreakpoint(const QString &condition);
+    void armBreakpoint(const QString &condition) override;
 
     /// Request a memory dump of `length` bytes at `address`. The response arrives
     /// via commandFinished; the raw text is also parsed into memoryDumpReady.
@@ -96,44 +101,20 @@ public:
     /// `tag` identifies which memory pane asked, so several panes can be open at
     /// once and each dump is routed back to the pane that requested it rather
     /// than broadcast to all of them.
-    void requestMemoryDump(quint32 address, int length, int tag = 0);
+    void requestMemoryDump(quint32 address, int length, int tag = 0) override;
 
     /// Request a memory dump of the stack (at the stack pointer). Routed to
     /// stackDumpReady instead of memoryDumpReady, so the stack view and the
     /// memory view do not clobber each other when both refresh on a stop.
-    void requestStackDump(quint32 address, int length);
+    void requestStackDump(quint32 address, int length) override;
 
     /// Read all registers into the host's cached state.
-    void dumpRegisters();
+    void dumpRegisters() override;
 
     static QString writeBootstrapScript(const QString &directory,
                                         const HatariCapabilities &caps,
                                         QString *error);
 
-signals:
-    /// A `memdump` response, with the command it answered and the tag of the
-    /// pane that asked for it.
-    void memoryDumpReady(quint32 address, const QString &response, int tag);
-
-    /// A stack `memdump` response, routed separately from the memory view's.
-    void stackDumpReady(quint32 address, const QString &response);
-
-    void runningChanged(bool running);
-    void stoppedChanged(bool stopped);
-    void commandFinished(const QString &command, const QString &response);
-
-    /// One complete snapshot per state batch, not one per response: a batch
-    /// queued by refresh() is only complete once its last command has been
-    /// parsed, so a listener reacts (and re-queues its own follow-up commands)
-    /// once per stop instead of once per debugger response.
-    void stateUpdated(const pist::MachineState &state);
-    void logLine(const QString &line);
-    void errorOccurred(const QString &message);
-
-    /// The emulator reported a new video size over the control socket, in
-    /// response to `hatari-embed-info`. Only emitted when the display is
-    /// embedded; the container resizes itself to match.
-    void embeddedSizeChanged(int width, int height);
 
 private:
     struct Pending
@@ -184,22 +165,22 @@ private:
     /// Read pending stderr synchronously, before deciding a response is done.
     void drainStderr();
     void handleStdoutData(const QByteArray &data);
-    void handleSocketData();
     void parseRegisters(const QString &response);
     void parseBasepage(const QString &response);
     void parseDisassembly(const QString &response);
-    void openSocketServer(QString *error);
-    void closeSocketServer();
-
+    /// Open the control-socket server (shared EmbedSocket). Returns false when
+    /// a requested socket could not be listened on; a build without the option
+    /// is a success with no server (the session runs over stdin/stderr only).
+    bool openSocketServer(QString *error);
     SessionConfig m_config;
     const HatariCapabilities *m_caps = nullptr;
 
     QProcess *m_process = nullptr;
-    QLocalServer *m_server = nullptr;
-    QLocalSocket *m_socket = nullptr;
+    /// The control-socket server (embed size reports + `hatari-debug` lines
+    /// for pause). Shared with the HRDB backend.
+    EmbedSocket m_embedSocket;
 
     QByteArray m_stderrBuffer;
-    QByteArray m_socketBuffer;
 
     QQueue<Pending> m_queue;
     bool m_haveCurrent = false;

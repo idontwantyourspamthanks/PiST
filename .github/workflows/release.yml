@@ -24,6 +24,9 @@ env:
   # HD program, which is what the run-and-debug path needs.
   EMUTOS_URL: https://sourceforge.net/projects/emutos/files/emutos/1.4/emutos-1024k-1.4.zip/download
   EMUTOS_SHA256: dc9fbef6455a24ee8955cccd565588c718ba675fd54bc5a749003ac4bbd7f7e1
+  # The Qt the bundles deploy; collect-notices names it in the LGPL source
+  # offer, so it must be the version install-qt-action actually installs.
+  QT_VERSION: '6.8.1'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -132,12 +135,24 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.1'
+          version: ${{ env.QT_VERSION }}
+
+      # The licence terms of the bundled assembler live only in its source
+      # tarball's manual, and they must travel with the binary — so the
+      # packaging job needs the tarball, pinned exactly as the build jobs.
+      - name: Fetch and verify the vasm source (for its licence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o vasm.tar.gz "$VASM_URL"
+          echo "$VASM_SHA256  vasm.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$VASM_SHA256  vasm.tar.gz" | sha256sum -c -
 
       # xvfb and the ALSA/X libraries are needed for two different reasons: xvfb to
       # run the AppImage at all (the offscreen plugin is deliberately not bundled),
       # and the libraries so that the AppImage has something to *fail* against. The
       # smoke test is dishonest if the runner happens to have everything.
+
       - name: Install the emulator and its libraries
         if: matrix.emulator
         shell: bash
@@ -145,16 +160,25 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libsdl2-2.0-0 libreadline8 libpng16-16
 
-      # Same action the test job uses, so the emulator that ships is the one the
-      # test suite was run against. Only the Linux AppImage bundles it: on macOS
+      # Same action the test job uses, so the emulator that ships is one the
+      # test suites ran against (the fork on the hrdb leg, upstream on the
+      # native one). Only the Linux AppImage bundles it: on macOS
       # the archive is built from a bundle whose executable does not run
       # standalone (which is why the CI matrix has it switched off), and Windows
       # has no MSYS2 Hatari package. Both therefore still ask the user to install
       # Hatari, which the release notes say plainly.
-      - name: Build Hatari
+      - name: 'Build Hatari (the bundled emulator: hrdb fork)'
         if: matrix.emulator
         uses: ./.github/actions/build-hatari
         with:
+          # The bundled emulator is the hrdb-main FORK, installed as `hatari`:
+          # one emulator, and PiST's content probe selects HRDB automatically
+          # for it. The fork is upstream 2.6.1 plus the remote-debug listener,
+          # so emulation is identical to what CI tests against upstream; the
+          # native backend remains for user-supplied stock Hatari. GPL-2.0-or-
+          # later like upstream, with the source offer naming the pinned fork
+          # commit (NOTICE).
+          variant: hrdb
           destination: ${{ github.workspace }}/bundle/bin
 
       - uses: actions/download-artifact@v4
@@ -275,6 +299,18 @@ jobs:
             EXE_ARGS+=(-e AppDir/usr/bin/hatari)
           fi
 
+          # The licence texts must be inside the AppDir before linuxdeploy
+          # consumes it (a second pass is not an option: re-running the qt
+          # plugin on a populated AppDir demands QML tooling a fresh AppDir
+          # does not need). The set is derived from what was actually staged —
+          # including the libraries the bundled Hatari links (Capstone comes
+          # and goes with the build host) — so the notices cannot drift from
+          # the bytes we ship. Qt lands during the deploy itself, hence
+          # --expect-qt; the final artifact's notices are asserted below.
+          python3 packaging/collect-notices.py --root AppDir/usr --platform linux \
+            --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz --expect-qt
+
+
           export QMAKE="$(command -v qmake6 || command -v qmake)"
 
           # Both executables are named with -e, which is what makes linuxdeploy
@@ -296,6 +332,7 @@ jobs:
             -d AppDir/usr/share/applications/pist.desktop \
             -i packaging/icons/pist-256.png \
             --plugin qt --output appimage
+
 
           APPIMAGE=$(ls PiST-*.AppImage | head -1)
           echo "built $APPIMAGE ($(stat -c%s "$APPIMAGE") bytes)"
@@ -336,6 +373,16 @@ jobs:
               exit 1
             fi
           done
+
+          # The notices must travel too, and they must be the generated set.
+          for f in THIRD-PARTY.txt licenses/GPL-2.0.txt licenses/GPL-3.0.txt \
+                   licenses/LGPL-3.0.txt licenses/zlib.txt licenses/SDL2-LICENSE.txt \
+                   licenses/libpng.txt licenses/vasm-LICENCE.txt; do
+            if [ ! -f "verify-appimage/squashfs-root/usr/share/doc/pist/$f" ]; then
+              echo "ERROR: the AppImage lacks doc/pist/$f"
+              exit 1
+            fi
+          done
           echo "OK: emulator starts and its non-universal libraries are bundled"
 
           echo "--- $APPIMAGE --diagnose ---"
@@ -358,6 +405,15 @@ jobs:
               exit 1
             fi
           done
+
+          # The bundled emulator must be the HRDB fork: the content probe is
+          # what selects the transport, so an upstream binary here would
+          # silently ship the wrong debug channel.
+          if ! grep -q 'transport: hrdb' diagnose-appimage.txt; then
+            echo "ERROR: the bundled emulator is not the HRDB fork:"
+            cat diagnose-appimage.txt
+            exit 1
+          fi
           # And the ROM it must be *using* has to be the one inside the AppImage,
           # not a system copy that happened to be on the runner. A user without the
           # hatari package has no system copy, so this is the case that matters.
@@ -390,6 +446,18 @@ jobs:
           set -euo pipefail
           mkdir -p bundle/share/doc/pist
           cp LICENSE NOTICE README.md bundle/share/doc/pist/
+
+      # Same derivation for the plain archives. Windows cannot inspect linked
+      # libraries and bundles no emulator, so its set is the static one.
+      - name: Generate third-party notices
+        if: matrix.deployed
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLATFORM=macos
+          [ "${{ runner.os }}" = "Windows" ] && PLATFORM=windows
+          python3 packaging/collect-notices.py --root bundle --platform "$PLATFORM" \
+            --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz
 
       # The point of the exercise: prove the packaged archive resolves the
       # assembler *it* carries, rather than one on the machine building it.
@@ -451,6 +519,7 @@ jobs:
             echo "ERROR: the bundled ROM cannot autostart a program"
             exit 1
           fi
+
           echo "OK: bundled assembler and ROM both resolved"
 
       - name: Write build metadata
@@ -474,6 +543,15 @@ jobs:
             ls -l "$ASSET"
             exit 0
           fi
+
+          # The generated notices must be inside what ships — asserting on the
+          # tree being archived, not on the script having run.
+          for f in THIRD-PARTY.txt licenses/LGPL-3.0.txt licenses/vasm-LICENCE.txt; do
+            if [ ! -f "bundle/share/doc/pist/$f" ]; then
+              echo "ERROR: the archive lacks doc/pist/$f"
+              exit 1
+            fi
+          done
 
           V="${{ github.ref_name }}"
           [ -n "$V" ] || V="dev"
@@ -514,9 +592,11 @@ jobs:
             TOS images are copyrighted and are not included — supply your own in
             Project Settings if you need one.
 
-            **Emulator:** the Linux AppImage bundles Hatari 2.6.1, GPL-2.0-or-later,
-            built unmodified from a checksum-pinned upstream tarball (it never
-            patches it and runs it as a separate process). The macOS and Windows
+            **Emulator:** the Linux AppImage bundles the hrdb-main fork of Hatari
+            (upstream 2.6.1 plus the remote-debug listener PiST's HRDB transport
+            uses), GPL-2.0-or-later, built unmodified from a checksum-pinned
+            commit tarball (it never patches it and runs it as a separate
+            process). The macOS and Windows
             archives do **not** include it: there install Hatari yourself, or point
             PiST at one in Project Settings. Use 2.5 or later — 2.4.1 returns
             truncated debugger responses that break source-line debugging, and

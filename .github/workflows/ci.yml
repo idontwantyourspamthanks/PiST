@@ -98,6 +98,18 @@ jobs:
       # A free ROM so the emulator suites have something to boot. Pinned by
       # checksum for the same reason vasm is: an upstream change should fail
       # loudly rather than silently altering what is tested.
+
+      # The HRDB fork, side by side with the upstream build: the tst_hrdb suite
+      # and the gui transport-swap tests run against it. The bundled emulator
+      # in a release *is* this fork (release.yml), so CI must exercise the
+      # transport that ships.
+      - name: Build Hatari (hrdb fork)
+        if: matrix.emulator
+        uses: ./.github/actions/build-hatari
+        with:
+          variant: hrdb
+          binary-name: hatari-hrdb
+          destination: ${{ runner.temp }}/hatari-hrdb-bin
       - name: Verify the emulator build
         if: matrix.emulator
         shell: bash
@@ -156,6 +168,10 @@ jobs:
           # green while the most fragile part of the project went untested.
           PIST_REQUIRE_EMULATOR: ${{ matrix.emulator && '1' || '' }}
           PIST_TOS_DIR: ${{ matrix.emulator && format('{0}/roms', runner.temp) || '' }}
+          # The HRDB suites run against the fork built above; without it they
+          # skip (developer machines) rather than fail (they are not part of
+          # the require-emulator contract, which is about upstream Hatari).
+          PIST_HRDB_HATARI: ${{ matrix.emulator && format('{0}/hatari-hrdb-bin/hatari-hrdb', runner.temp) || '' }}
           # Runners have no display. Hatari uses SDL for video, so it needs the
           # dummy driver — the debugger transport and the emulated machine are
           # unaffected, which is all this suite exercises.

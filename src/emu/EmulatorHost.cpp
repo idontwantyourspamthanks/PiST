@@ -5,13 +5,11 @@
 #include "emu/EmulatorHost.h"
 
 #include "emu/HatariProbe.h"
+#include "emu/HatariTextParse.h"
 #include "emu/Paths.h"
 
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
-#include <QLocalServer>
-#include <QLocalSocket>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -94,23 +92,6 @@ const QRegularExpression &basepageRe()
     return re;
 }
 
-/// `$0125a2 60fe                     bra.b     $125a2`
-///
-/// The address prefix depends on which disassembler engine is active, which is
-/// a *user configuration* setting (`bDisasmUAE`), not a build property:
-///
-///   UAE engine (the default)   `00012596 7001      moveq #$01,d0`
-///   Capstone engine            `$00012596 7001     moveq #$01,d0`
-///
-/// So the `$` is optional here. The register dump's inline instruction line has
-/// no byte column and is deliberately not matched.
-const QRegularExpression &disasmRe()
-{
-    static const QRegularExpression re(QStringLiteral(
-        R"(^\$?([0-9A-Fa-f]{6,8})\s+((?:[0-9A-Fa-f]{2,4}\s+)*)(\S.*)?$)"),
-        QRegularExpression::MultilineOption);
-    return re;
-}
 
 /// A prompt is the literal `> ` written before each blocking read. It carries no
 /// trailing newline, so it is counted at the start of a stream or after a
@@ -144,7 +125,7 @@ int countPrompts(const QString &text)
 } // namespace
 
 EmulatorHost::EmulatorHost(QObject *parent)
-    : QObject(parent)
+    : IDebugBackend(parent)
 {
     m_commandTimeout = new QTimer(this);
     m_commandTimeout->setSingleShot(true);
@@ -157,6 +138,15 @@ EmulatorHost::EmulatorHost(QObject *parent)
         if (m_haveCurrent)
             completeCurrent();
     });
+
+    // The embed socket forwards: size reports become embeddedSizeChanged for
+    // MainWindow's display fit, and its log lines join ours.
+    connect(&m_embedSocket, &EmbedSocket::sizeReported, this,
+            [this](int width, int height) {
+                emit embeddedSizeChanged(width, height);
+            });
+    connect(&m_embedSocket, &EmbedSocket::logLine, this,
+            [this](const QString &line) { emit logLine(line); });
 }
 
 EmulatorHost::~EmulatorHost()
@@ -214,68 +204,23 @@ QString EmulatorHost::writeBootstrapScript(const QString &directory,
     return path;
 }
 
-void EmulatorHost::openSocketServer(QString *error)
+bool EmulatorHost::openSocketServer(QString *error)
 {
     // No socket requested: the emulator build has no support for one (it is
     // compiled only under HAVE_UNIX_DOMAIN_SOCKETS), so nothing will connect.
     // This is not an error — the session runs with stdin/stderr only.
     if (m_config.controlSocketPath.isEmpty())
-        return;
+        return true;
 
-    // Hatari is the *client*: it calls connect() and never binds, so the IDE has
-    // to be listening before the process starts. However, the socket is only
-    // serviced from the SDL event pump while emulation is running, so it carries
-    // control commands only, never debugger commands (docs/PLAN.md §3.3).
-    m_server = new QLocalServer(this);
-
-    QLocalServer::removeServer(m_config.controlSocketPath);
-
-    if (!m_server->listen(m_config.controlSocketPath)) {
-        if (error)
-            *error = QStringLiteral("cannot listen on control socket '%1': %2")
-                         .arg(m_config.controlSocketPath, m_server->errorString());
-        delete m_server;
-        m_server = nullptr;
-        return;
-    }
-
-    connect(m_server, &QLocalServer::newConnection, this, [this] {
-        m_socket = m_server->nextPendingConnection();
-        if (!m_socket)
-            return;
-        connect(m_socket, &QLocalSocket::readyRead, this, &EmulatorHost::handleSocketData);
-        connect(m_socket, &QLocalSocket::disconnected, this, [this] {
-            m_socket->deleteLater();
-            m_socket = nullptr;
-        });
-
-        // Ask for the video size so the embedded container can be sized to it.
-        // Commands on this channel are newline-terminated ASCII, and the only
-        // reply Hatari writes is the size (docs/PLAN.md §3.3). Only meaningful
-        // when the display is embedded; sending it otherwise is harmless but
-        // pointless, so it is gated.
-        if (!m_config.parentWindowId.isEmpty()) {
-            m_socket->write("hatari-embed-info\n");
-            emit logLine(tr("Control socket connected; requested embedded video size reports."));
-        }
-    });
+    // Hatari is the *client*: it calls connect() and never binds, so the IDE
+    // has to be listening before the process starts. However, the socket is
+    // only serviced from the SDL event pump while emulation is running, so it
+    // carries control commands only, never debugger commands (docs/PLAN.md
+    // §3.3). The server itself is shared with the HRDB backend.
+    m_embedSocket.setRequestOnConnect(!m_config.parentWindowId.isEmpty());
+    return m_embedSocket.listen(m_config.controlSocketPath, error);
 }
 
-void EmulatorHost::closeSocketServer()
-{
-    if (m_socket) {
-        m_socket->disconnect(this);
-        m_socket->deleteLater();
-        m_socket = nullptr;
-    }
-    if (m_server) {
-        m_server->close();
-        m_server->deleteLater();
-        m_server = nullptr;
-    }
-    if (!m_config.controlSocketPath.isEmpty())
-        QLocalServer::removeServer(m_config.controlSocketPath);
-}
 
 // Every per-session framing field is reset here rather than in start(), so the
 // next session cannot inherit the previous one's state. The fields that were
@@ -298,7 +243,7 @@ void EmulatorHost::resetTransport()
     m_owedPrompts = 0;
     m_stderrBuffer.clear();
     m_stderrAtDispatch = 0;
-    m_socketBuffer.clear();
+    m_embedSocket.close();
     m_commandTimeout->stop();
     m_settleTimer->stop();
 }
@@ -314,10 +259,9 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     if (!paths::ensureDirectory(config.sessionDir, error))
         return false;
 
-    openSocketServer(error);
     // A socket is optional: it is unavailable on Windows, and the session works
     // over stdin/stderr without it.
-    if (!m_config.controlSocketPath.isEmpty() && !m_server)
+    if (!openSocketServer(error))
         return false;
 
     m_process = new QProcess(this);
@@ -363,7 +307,7 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
                 emit stoppedChanged(false);
                 emit runningChanged(false);
                 emit logLine(tr("Hatari exited (code %1).").arg(code));
-                closeSocketServer();
+                m_embedSocket.close();
             });
 
     const QStringList argv = config.toArgv();
@@ -408,7 +352,7 @@ void EmulatorHost::stop()
         m_process->deleteLater();
         m_process = nullptr;
     }
-    closeSocketServer();
+    m_embedSocket.close();
 
     // `finished` is the only other emitter, and it is disconnected above, so a
     // manual stop would otherwise leave the UI showing "Stopped in debugger"
@@ -680,9 +624,31 @@ void EmulatorHost::refresh()
 void EmulatorHost::clearBreakpoints()
 {
     // `b all` removes every conditional breakpoint. Note this also removes the
+
     // bootstrap entry breakpoint if it somehow still exists, which is fine
     // because it is set with `:once` and has already fired by this point.
     command(QStringLiteral("b all"));
+}
+
+void EmulatorHost::pause()
+{
+    if (m_stopped)
+        return;
+    if (!m_embedSocket.connected()) {
+        emit errorOccurred(tr("Pause needs the control socket, which this Hatari "
+                              "build does not have."));
+        return;
+    }
+    // `hatari-stop` only clears the VBL loop's active flag and never enters
+    // the debugger — no prompt would arrive and the session would wedge. So
+    // arm an always-true one-shot breakpoint instead: `hatari-debug` lines run
+    // immediately (the socket is serviced from the SDL event pump while
+    // emulation runs, docs/PLAN.md §3.3), the condition fires at the next
+    // instruction, and the debugger enters normally, producing the standard
+    // prompt/stop flow. BreakCond operators are the single characters
+    // = ! < > (no <> form), so `pc ! 0` is the always-true condition; PC is
+    // never 0 after boot (the reset vectors are only read, not executed).
+    m_embedSocket.writeLine("hatari-debug b pc ! 0 :once\n");
 }
 
 void EmulatorHost::armBreakpoint(const QString &condition)
@@ -790,56 +756,22 @@ void EmulatorHost::onCommandTimeout()
     dispatchNext();
 }
 
-namespace {
-
-/// Parse a "<w>x<h>" embed-size report into width and height. Returns false for
-/// anything that is not exactly two positive integers around an 'x', so socket
-/// noise is never treated as a size and the container is never resized to junk.
-bool parseEmbedSize(const QString &line, int *width, int *height)
-{
-    const int x = line.indexOf(QLatin1Char('x'));
-    if (x <= 0)
-        return false;
-    bool okWidth = false, okHeight = false;
-    const int w = line.left(x).toInt(&okWidth);
-    const int h = line.mid(x + 1).toInt(&okHeight);
-    if (!okWidth || !okHeight || w <= 0 || h <= 0)
-        return false;
-    *width = w;
-    *height = h;
-    return true;
-}
-
-} // namespace
-
-void EmulatorHost::handleSocketData()
-{
-    if (!m_socket)
-        return;
-    m_socketBuffer += m_socket->readAll();
-
-    // Hatari reports the embedded video size as "<w>x<h>" with NO terminator:
-    // Control_SendEmbedSize's sprintf writes no newline (its own comment claims
-    // one, but the code writes none), so this must not wait for a line — doing so
-    // left every report sitting in the buffer unparsed, which is why the embedded
-    // display never learned its size. Each report is a separate write, spaced by
-    // a video mode change, so one report per read is the rule. Parse whatever has
-    // arrived, and only clear the buffer once a complete size has been consumed.
-    const QString text = QString::fromUtf8(m_socketBuffer).trimmed();
-    int width = 0, height = 0;
-    if (parseEmbedSize(text, &width, &height)) {
-        emit logLine(tr("Emulator window size: %1x%2").arg(width).arg(height));
-        emit embeddedSizeChanged(width, height);
-        m_socketBuffer.clear();
-    }
-}
 
 void EmulatorHost::handleStderrLine(const QString &line)
 {
     if (line.contains(QLatin1String("You have entered debug mode"))) {
+        emit logLine(line);
+        // The banner arrives on stderr amid the multi-KB entry dump, while the
+        // entry prompt is 2 bytes on stdout — the prompt's notifier can fire
+        // first. If it did, m_stopped is already set and the prompt has been
+        // consumed; setting m_awaitingEntryPrompt now would leave it stale,
+        // and the NEXT stop's prompt (a pause or breakpoint) would be
+        // swallowed as "the entry prompt", leaving the session running
+        // forever from the UI's point of view.
+        if (m_stopped)
+            return;
         m_stopped = true;
         emit stoppedChanged(true);
-        emit logLine(line);
         // Do NOT dispatch yet. After announcing entry the debugger prints its
         // session dump (autoloaded symbols, registers, the instruction at the
         // PC) and only then reaches its prompt. Dispatching now would attribute
@@ -932,34 +864,7 @@ void EmulatorHost::parseBasepage(const QString &response)
 
 void EmulatorHost::parseDisassembly(const QString &response)
 {
-    m_state.disassembly.clear();
-
-    QString pendingLabel;
-    const QStringList lines = response.split(QLatin1Char('\n'));
-    for (const QString &line : lines) {
-        const QString trimmed = line.trimmed();
-        if (trimmed.isEmpty() || trimmed == QLatin1String("(PC)"))
-            continue;
-
-        // A bare `name:` line labels the instruction that follows.
-        if (trimmed.endsWith(QLatin1Char(':')) && !trimmed.contains(QLatin1Char(' '))) {
-            pendingLabel = trimmed.left(trimmed.length() - 1);
-            continue;
-        }
-
-        auto m = disasmRe().match(trimmed);
-        if (!m.hasMatch())
-            continue;
-
-        DisasmLine dl;
-        dl.address = m.captured(1).toUInt(nullptr, 16);
-        dl.bytes = m.captured(2).trimmed();
-        dl.instruction = m.captured(3).trimmed();
-        dl.label = pendingLabel;
-        pendingLabel.clear();
-        dl.isCurrentPc = (dl.address == m_state.pc);
-        m_state.disassembly.append(dl);
-    }
+    hataritext::parseDisassembly(response, &m_state);
     // Emission is completeCurrent's, so a refresh batch reports once.
 }
 

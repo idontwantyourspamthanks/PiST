@@ -34,11 +34,17 @@ struct HatariCapabilities
     /// `--parse`: run debugger commands from a file at startup.
     bool hasParse = false;
 
+
+    /// The HRDB remote-debug protocol (the tattlemuss hrdb-main fork). The fork
+    /// is version-identical to upstream and adds no CLI option, so neither a
+    /// version nor an option probe can find it; the listener's banner string is
+    /// in the binary, and upstream's never is.
+    bool hasHrdb = false;
     QString summary() const;
 };
 
-/// Probe a Hatari binary. Runs `--version` and `-h`; safe to call before any
-/// session exists.
+/// Probe a Hatari binary. Runs `--version` and `-h`, and scans the binary's
+/// content for the HRDB banner string; safe to call before any session exists.
 HatariCapabilities probeHatari(const QString &hatariPath);
 
 } // namespace pist

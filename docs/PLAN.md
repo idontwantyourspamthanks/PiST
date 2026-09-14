@@ -706,12 +706,14 @@ Remaining assessments:
   use is the failure this exists to catch, and it has already caught two real
   packaging defects.
 
-Open: installers (deb, RPM, MSI, dmg) are not produced — the Linux asset is a
-plain AppImage and the others are tarballs/zips. Windows vasm needs mingw-w64,
-which the release workflow provides; the CI workflow does not yet test it there.
-The emulator is bundled only in the Linux AppImage: the macOS and Windows archives
-still document where to get it, and PiST reports it clearly when absent. What
-remains by design is not the absence of Hatari but the relationship to it — PiST
+Open: the emulator is bundled only in the Linux AppImage — the macOS and
+Windows archives still document where to get it, and PiST reports it clearly
+when absent. Installers are now produced: deb and RPM from the Linux release
+job, dmg from the macOS job and MSI from the Windows job, each verified in CI
+by installing or inspecting the package. The Windows vasm (cross-built with
+mingw-w64, as in the release workflow) is exercised natively on the Windows CI
+leg, so the shipping assembler is tested per-PR, not just at release time.
+What remains by design is not the absence of Hatari but the relationship to it — PiST
 never patches it, never links it, and drives it purely through command-line
 arguments as a separate process (see §10), so shipping a copy does not move the
 licence boundary.

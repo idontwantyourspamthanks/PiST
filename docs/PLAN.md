@@ -429,6 +429,19 @@ These are the operational constraints the launch builder must encode.
    *"Please use at least TOS v1.04 for the HD directory emulation"*, so this is a hard floor for the
    whole GEMDOS-HD run path, not just autostart.
 
+   **Fallback implemented (2026-09):** a pre-1.04 ROM no longer refuses the run. The IDE writes a
+   per-session 720 KiB FAT12 image (`src/build/FloppyImage.cpp`, geometry pinned against a real
+   `mkfs.vfat` image) containing `AUTO/PROG.PRG` and boots it via `--disk-a` with no positional
+   and no `-d`. Every TOS version executes `AUTO/*.PRG` from the boot floppy, so this works where
+   GEMDOS HD cannot. Two transport details differ on this path:
+   - `--debug` must accompany `--debug-except`: the `autostart` deferral arms the exception mask
+     only on INF load (`src/inffile.c`), and a floppy boot has no virtual INF, so without the
+     startup toggle the mask stays zero and faulting programs never break in. Verified on TOS
+     1.02: an illegal instruction breaks in with `Debugger: *CPU exception*`.
+   - The load address differs (the program lands low, at 0xCC04 on a 1 MiB ST rather than the
+     0x12596 seen under GEMDOS HD), which is exactly why breakpoints stay file:line and resolve
+     only after `info basepage`.
+
    **Machine type and ROM are coupled, and Hatari enforces the pairing by overriding `--machine`.**
    Verified matrix (TOS version × requested machine):
 
@@ -939,7 +952,9 @@ project; everything before it was either Linux-only or read from source.
 2. Reliable `logfile` delimiting under rapid command bursts
 3. Whether the embedded SDL GUI/shortcuts can be disabled so Hatari cannot rewrite config from
    inside the IDE window
-4. Viability of the AUTO-folder / floppy fallback for TOS 1.00/1.02
+4. ~~Viability of the AUTO-folder / floppy fallback for TOS 1.00/1.02~~ — **verified and
+   implemented** (§5 rule 3): TOS 1.02 boots a generated AUTO-folder floppy, the entry breakpoint
+   fires, and with `--debug` arming the mask an illegal instruction breaks in
 5. Windows and macOS behaviour of the embedding paths and `SetParent`
 6. Behaviour of `--control-socket` alternatives on Windows (only stdio is available)
 

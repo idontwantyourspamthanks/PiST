@@ -8,6 +8,7 @@
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
+#include "build/FloppyImage.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
@@ -1376,21 +1377,22 @@ void MainWindow::launchEmulator()
     // Three distinct cases, because collapsing them produces either a false
     // error or the silent hang this check exists to prevent:
     //
-    //   known too old  -> refuse, with the version we read
-    //   known good     -> proceed
-    //   unknown        -> warn and ask; a pre-1.04 ROM here boots the emulator
-    //                     but never starts the program, so the IDE would wait
-    //                     forever for a breakpoint that never comes
+    //   known too old  -> AUTO-folder floppy fallback
+    //   known good     -> the GEMDOS-HD path
+    //   unknown        -> warn and ask; if the user proceeds, the same floppy
+    //                     fallback, which works on every TOS version
+    bool floppyBoot = false;
     if (rom.knownTooOldForAutostart()) {
-        QMessageBox::critical(
-            this, tr("Run"),
-            tr("This ROM reports TOS %1, which cannot autostart a program from a GEMDOS "
-               "hard disk: Hatari requires TOS 1.04 or later.\n\nChoose a newer ROM.")
-                .arg(rom.versionText()));
-        return;
+        // GEMDOS HD does not exist below TOS 1.04 (Hatari refuses it), but
+        // every TOS executes AUTO/*.PRG from the boot floppy — the fallback
+        // instead of the old refusal (docs/PLAN.md §5 rule 3).
+        floppyBoot = true;
+        m_log->appendPlainText(
+            tr("[run] TOS %1 has no GEMDOS-HD autostart; booting from an "
+               "AUTO-folder floppy instead.").arg(rom.versionText()));
     }
 
-    if (!rom.supportsAutostart()) {
+    if (!floppyBoot && !rom.supportsAutostart()) {
         QString detail;
         if (rom.versionKnown) {
             // A version was read from the filename only. Hatari never consults
@@ -1404,13 +1406,33 @@ void MainWindow::launchEmulator()
 
         const auto answer = QMessageBox::warning(
             this, tr("Run"),
-            tr("Autostarting a program requires TOS 1.04 or later.\n\n%1\n\n"
-               "If this image is older than 1.04 the program will not start and debugging "
-               "will not attach.\n\nTry to run anyway?")
+            tr("This ROM cannot be confirmed to support autostarting a program from a "
+               "GEMDOS hard disk (that needs TOS 1.04 or later).\n\n%1\n\n"
+               "If you proceed, the program boots from an AUTO-folder floppy instead, "
+               "which works on every TOS version.\n\nTry to run anyway?")
                 .arg(detail),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (answer != QMessageBox::Yes)
             return;
+        // An unverifiable ROM gets the path that works on every TOS version.
+        floppyBoot = true;
+    }
+
+    if (floppyBoot) {
+        // Build the session's AUTO-folder floppy (AUTO/PROG.PRG plus an empty
+        // EMUDESK.INF for the debug-except deferral), and route the session
+        // around the GEMDOS HD: --disk-a, no positional, no -d, and --debug to
+        // arm the exception mask the INF path would have armed.
+        config.bootFloppyPath = sessionDir + QStringLiteral("/auto.st");
+        QString floppyError;
+        if (!floppy::writeAutoFolderImage(config.bootFloppyPath, prg, &floppyError)) {
+            QMessageBox::critical(this, tr("Run"),
+                                  tr("Could not build the AUTO-folder floppy:\n%1")
+                                      .arg(floppyError));
+            return;
+        }
+        config.gemdosDir.clear();
+        config.debugToggle = true;
     }
     config.tosPath = rom.path;
 

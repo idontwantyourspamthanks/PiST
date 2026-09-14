@@ -1,3 +1,4 @@
+#include "build/FloppyImage.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
 // Regression tests for the parsers whose correctness the IDE depends on: vasm
@@ -33,6 +34,7 @@ private slots:
     void lineMapResolvesAgainstLiveBases();
     void lineMapRejectsUnknownLine();
     void lineMapMatchesAbsoluteListingPaths();
+    void floppyImageGeometry();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -340,6 +342,80 @@ void TstParsers::lineMapMatchesAbsoluteListingPaths()
     // A genuinely different file must still not match.
     QVERIFY(!map.addressFor(QStringLiteral("other.s"), 6, bases, &addr));
     QVERIFY(!LineMap::sameSource(back.file, QStringLiteral("other.s")));
+}
+
+// The AUTO-folder image must match mkfs.vfat's canonical 720 KiB layout
+// exactly — pinned against a real image so a geometry mistake fails here
+// rather than as a TOS boot failure: 512-byte sectors, 2 sectors per cluster,
+// two 3-sector FATs, a 7-sector root directory, data at sector 14.
+void TstParsers::floppyImageGeometry()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+
+    const QString prgPath = tmp.path() + QStringLiteral("/hello.prg");
+    {
+        QFile f(prgPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        // 1500 bytes: bigger than the 4096-byte prg-size guard, spanning two
+        // clusters (2 * 1024) so the FAT chain has a real link to verify.
+        QByteArray data(1500, '\x41');
+        QCOMPARE(f.write(data), qint64(data.size()));
+    }
+    const QString imgPath = tmp.path() + QStringLiteral("/auto.st");
+    QString error;
+    QVERIFY(pist::floppy::writeAutoFolderImage(imgPath, prgPath, &error));
+    QFile img(imgPath);
+    QVERIFY(img.open(QIODevice::ReadOnly));
+    const QByteArray image = img.readAll();
+    QCOMPARE(image.size(), 720 * 1024);
+    auto u8 = [&](int off) { return quint8(image.at(off)); };
+    auto u16 = [&](int off) { return quint16(u8(off) | (u8(off + 1) << 8)); };
+
+    // BPB: the mkfs.vfat geometry.
+    QCOMPARE(u16(11), quint16(512));   // bytes per sector
+    QCOMPARE(u8(13), quint8(2));       // sectors per cluster
+    QCOMPARE(u16(14), quint16(1));     // reserved sectors
+    QCOMPARE(u8(16), quint8(2));       // FATs
+    QCOMPARE(u16(17), quint16(112));   // root entries
+    QCOMPARE(u16(19), quint16(1440));  // total sectors
+    QCOMPARE(u8(21), quint8(0xF0));    // media descriptor
+    QCOMPARE(u16(22), quint16(3));     // sectors per FAT
+
+    // FAT start (both copies share the layout): media F0, EOC, then the
+    // cluster chain 2 -> 3 -> ... -> EOC for AUTO (2) and PROG.PRG (3,4).
+    auto fat12 = [&](int cluster) {
+        const int off = 512 + cluster + cluster / 2; // FAT 1 at sector 1
+        const int v = u16(off);
+        return quint16(cluster & 1 ? v >> 4 : v & 0xFFF);
+    };
+    QCOMPARE(fat12(0), quint16(0xFF0));
+    QCOMPARE(fat12(1), quint16(0xFFF));
+    QCOMPARE(fat12(2), quint16(0xFFF)); // AUTO: single cluster
+    QCOMPARE(fat12(3), quint16(4));     // PROG.PRG: cluster 3 continues
+    QCOMPARE(fat12(4), quint16(0xFFF)); // PROG.PRG: ends at cluster 4
+    QCOMPARE(fat12(5), quint16(0));     // nothing beyond
+
+    // Root directory at sector 7: AUTO directory, EMUDESK.INF file.
+    const int root = 7 * 512;
+    QVERIFY(memcmp(image.constData() + root, "AUTO       ", 11) == 0);
+    QCOMPARE(u8(root + 11), quint8(0x10));          // directory attribute
+    QCOMPARE(u16(root + 26), quint16(2));           // start cluster
+    QVERIFY(memcmp(image.constData() + root + 32, "EMUDESK INF", 11) == 0);
+    QCOMPARE(u8(root + 43), quint8(0x20));          // archive attribute
+    QCOMPARE(u16(root + 32 + 28), quint32(0));      // empty file
+
+    // AUTO's data cluster at sector 14: ".", "..", PROG.PRG with size 1500.
+    const int autoDir = 14 * 512;
+    QVERIFY(memcmp(image.constData() + autoDir, ".          ", 11) == 0);
+    QVERIFY(memcmp(image.constData() + autoDir + 32, "..         ", 11) == 0);
+    QVERIFY(memcmp(image.constData() + autoDir + 64, "PROG    PRG", 11) == 0);
+    QCOMPARE(u16(autoDir + 64 + 26), quint16(3));      // start cluster
+    QCOMPARE(u16(autoDir + 64 + 28) | (u16(autoDir + 64 + 30) << 16),
+             quint32(1500));                           // file size
+
+    // PRG content lands at cluster 3 (sector 16) and reads back whole.
+    QCOMPARE(image.mid(16 * 512, 1500), QByteArray(1500, '\x41'));
 }
 
 QTEST_MAIN(TstParsers)

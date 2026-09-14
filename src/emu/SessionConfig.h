@@ -63,6 +63,22 @@ struct SessionConfig
     /// probe rather than setting this unconditionally.
     QString controlSocketPath;
 
+    /// AUTO-folder floppy image for TOS 1.00/1.02. When set, the session
+    /// boots from this image instead of the GEMDOS HD: no positional program
+    /// argument and no `-d` (GEMDOS HD does not exist below TOS 1.04 — Hatari
+    /// refuses it outright). The image is generated per session by
+    /// floppy::writeAutoFolderImage (docs/PLAN.md §5 rule 3's fallback).
+    QString bootFloppyPath;
+
+    /// Pass `--debug` to arm the exception mask at startup. Required on the
+    /// AUTO-folder path: the `autostart` deferral in `debugExceptions` arms
+    /// only when TOS loads the virtual EMUDESK.INF from a GEMDOS HD
+    /// (src/inffile.c), which a floppy boot never provides, so without this
+    /// the mask stays zero and faulting programs never break in. Not used on
+    /// the GEMDOS-HD path, where arming at startup would risk boot-time
+    /// faults breaking in before the program runs.
+    bool debugToggle = false;
+
     /// Embedded display: the X11 window ID (as text) of the container PiST
     /// provides. Exported to the child as `PARENT_WIN_ID`, and Hatari reparents
     /// its SDL window into it (src/control.c). Empty means the emulator runs as

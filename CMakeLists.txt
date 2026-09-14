@@ -43,6 +43,8 @@ qt_add_executable(pist
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
+    src/build/FloppyImage.cpp
+    src/build/FloppyImage.h
 
     src/control/RemoteControl.cpp
     src/control/RemoteControl.h
@@ -243,6 +245,8 @@ qt_add_executable(tst_parsers
     src/build/ProgramLineMap.cpp
     src/build/ProgramLineMap.h
     src/build/BuildService.cpp
+    src/build/FloppyImage.cpp
+    src/build/FloppyImage.h
     src/build/BuildService.h
     src/build/Diagnostic.h
 
@@ -392,6 +396,8 @@ qt_add_executable(tst_gui
     src/editor/AsmHighlighter.cpp
     src/editor/AsmHighlighter.h
     src/build/BuildService.cpp
+    src/build/FloppyImage.cpp
+    src/build/FloppyImage.h
     src/build/BuildService.h
     src/build/Diagnostic.h
     src/build/LineMap.cpp
@@ -482,6 +488,8 @@ qt_add_executable(tst_remotecontrol
     src/editor/AsmHighlighter.cpp
     src/editor/AsmHighlighter.h
     src/build/BuildService.cpp
+    src/build/FloppyImage.cpp
+    src/build/FloppyImage.h
     src/build/BuildService.h
     src/build/Diagnostic.h
     src/build/LineMap.cpp

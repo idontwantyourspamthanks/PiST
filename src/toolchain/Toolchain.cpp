@@ -6,6 +6,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QRegularExpression>
@@ -28,6 +29,17 @@ constexpr const char *kLinkerName = "vlink";
 /// Best-effort throughout — a missing version is not an error.
 QString probeVersion(const QString &path)
 {
+#ifdef Q_OS_WIN
+    // Only PE executables can answer on Windows: anything else (for example a
+    // POSIX script with an .exe name) can never run there, so probing it is
+    // wasted work — and worse, CreateProcess on such a file has been observed
+    // to stall for minutes inside the OS on some systems (CI evidence: a
+    // 300 s hang in QProcess::start that does not occur for real tools).
+    // Check the magic instead of paying a process start.
+    QFile probe(path);
+    if (!probe.open(QIODevice::ReadOnly) || probe.read(2) != "MZ")
+        return {};
+#endif
     const QStringList attempts = {QStringLiteral("--version"), QString()};
 
     for (const QString &args : attempts) {

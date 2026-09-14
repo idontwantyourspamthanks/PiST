@@ -201,9 +201,14 @@ void TstToolFetch::installToolBinaryIsFoundByDiscovery()
 
 void TstToolFetch::vasmTarballBuildsAndInstalls()
 {
+    // The fixture's Makefile needs no compiler, but the production build path
+    // refuses to start without one, so the test needs what it gates on: make,
+    // tar, and a discoverable compiler (a make-only platform, such as the
+    // Windows CI runner, would otherwise fail the refusal, not the build).
     if (QStandardPaths::findExecutable(QStringLiteral("make")).isEmpty()
-        || QStandardPaths::findExecutable(QStringLiteral("tar")).isEmpty())
-        QSKIP("needs make and tar");
+        || QStandardPaths::findExecutable(QStringLiteral("tar")).isEmpty()
+        || !toolchain::canBuildVasm())
+        QSKIP("needs make, tar and a compiler");
 
     // A fabricated "upstream release": the same one-level-down layout as
     // vasm's tarball, with a Makefile that produces a script instead of

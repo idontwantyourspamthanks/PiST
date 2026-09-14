@@ -100,18 +100,26 @@ runs:
         HRDB_SHA256: ${{ inputs.hrdb-sha256 }}
       run: |
         set -euo pipefail
+        # Both variants normalise to a variant-keyed source directory. The
+        # obvious alternative — extracting as hatari-<version> and symlinking
+        # that name for the hrdb variant — silently breaks when the action is
+        # invoked twice in one workspace (as ci.yml does): `ln -s` into an
+        # existing real directory creates the link *inside* it, and the second
+        # invocation then builds upstream again, producing a "fork" binary
+        # with no HRDB listener. That exact failure cost a CI cycle.
         if [ "${{ inputs.variant }}" = "hrdb" ]; then
           curl -fsSL -o hatari.tar.gz "https://github.com/tattlemuss/hatari/archive/$HRDB_COMMIT.tar.gz"
           echo "$HRDB_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
             || echo "$HRDB_SHA256  hatari.tar.gz" | sha256sum -c -
           tar xzf hatari.tar.gz
-          ln -s "hatari-$HRDB_COMMIT" "hatari-$HATARI_VERSION"
+          mv "hatari-$HRDB_COMMIT" "hatari-src-hrdb"
         else
           HATARI_URL="https://github.com/hatari/hatari/archive/refs/tags/v$HATARI_VERSION.tar.gz"
           curl -fsSL -o hatari.tar.gz "$HATARI_URL"
           echo "$HATARI_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
             || echo "$HATARI_SHA256  hatari.tar.gz" | sha256sum -c -
           tar xzf hatari.tar.gz
+          mv "hatari-$HATARI_VERSION" "hatari-src-upstream"
         fi
 
     - name: Install Hatari build dependencies
@@ -154,9 +162,8 @@ runs:
           echo "Homebrew prefix: $BREW_PREFIX -> targeting $ARCH"
           PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$BREW_PREFIX -DCMAKE_OSX_ARCHITECTURES=$ARCH"
         fi
-
-        cmake -S "hatari-$HATARI_VERSION" -B hatari-build -DCMAKE_BUILD_TYPE=Release $PREFIX_ARGS
-        cmake --build hatari-build --parallel
+        cmake -S "hatari-src-${{ inputs.variant }}" -B "hatari-build-${{ inputs.variant }}" -DCMAKE_BUILD_TYPE=Release $PREFIX_ARGS
+        cmake --build "hatari-build-${{ inputs.variant }}" --parallel
 
     - name: Install Hatari
       id: install
@@ -170,10 +177,10 @@ runs:
         # `Hatari` inside Contents/MacOS rather than `hatari` at the top level.
         # The copy below lands it at the requested name either way.
         mkdir -p "$HATARI_DEST"
-        HATARI_BIN=$(find hatari-build -type f -perm -u+x -iname hatari | head -1)
+        HATARI_BIN=$(find "hatari-build-${{ inputs.variant }}" -type f -perm -u+x -iname hatari | head -1)
         if [ -z "$HATARI_BIN" ]; then
           echo "ERROR: no hatari executable produced; tree:"
-          find hatari-build -maxdepth 4 -name '*atari*' | head -20
+          find "hatari-build-${{ inputs.variant }}" -maxdepth 4 -name '*atari*' | head -20
           exit 1
         fi
         cp "$HATARI_BIN" "$HATARI_DEST/$BINARY_NAME"

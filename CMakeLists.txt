@@ -59,6 +59,13 @@ qt_add_executable(pist
 
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
+    src/emu/DebugBackend.h
+    src/emu/EmbedSocket.cpp
+    src/emu/EmbedSocket.h
+    src/emu/HrdbBackend.cpp
+    src/emu/HrdbBackend.h
+    src/emu/HatariTextParse.cpp
+    src/emu/HatariTextParse.h
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/MachineState.h
@@ -72,6 +79,8 @@ qt_add_executable(pist
     src/project/ProjectSettings.h
     src/toolchain/Toolchain.cpp
     src/toolchain/Toolchain.h
+    src/toolchain/ToolFetch.cpp
+    src/toolchain/ToolFetch.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -101,8 +110,9 @@ qt_add_executable(pist
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
+    src/ui/SetupDialog.cpp
+    src/ui/SetupDialog.h
 )
-
 target_include_directories(pist PRIVATE src)
 
 target_link_libraries(pist PRIVATE
@@ -276,6 +286,25 @@ target_include_directories(tst_settings PRIVATE src)
 target_link_libraries(tst_settings PRIVATE Qt6::Test)
 add_test(NAME settings COMMAND tst_settings)
 
+# First-run fetch/install: checksum verification, archive extraction, and the
+# claim that an installed tool lands where discovery actually looks. Needs no
+# network — fixtures are fabricated locally; the vasm build case skips without
+# make/tar.
+qt_add_executable(tst_toolfetch
+    tests/tst_toolfetch.cpp
+    src/toolchain/ToolFetch.cpp
+    src/toolchain/ToolFetch.h
+    src/toolchain/Toolchain.cpp
+    src/toolchain/Toolchain.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+)
+target_include_directories(tst_toolfetch PRIVATE src)
+target_link_libraries(tst_toolfetch PRIVATE Qt6::Test)
+# The pin guard reads the workflows' copies of the fetch pins.
+target_compile_definitions(tst_toolfetch PRIVATE PIST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME toolfetch COMMAND tst_toolfetch)
+
 # GUI-level: constructs MainWindow and verifies the line map against a real
 # vasm listing, covering the PC <-> source-line claim end to end.
 qt_add_executable(tst_gui
@@ -304,6 +333,8 @@ qt_add_executable(tst_gui
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
+    src/ui/SetupDialog.cpp
+    src/ui/SetupDialog.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
     src/editor/CodeEditor.cpp
@@ -324,6 +355,13 @@ qt_add_executable(tst_gui
     src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
+    src/emu/DebugBackend.h
+    src/emu/EmbedSocket.cpp
+    src/emu/EmbedSocket.h
+    src/emu/HrdbBackend.cpp
+    src/emu/HrdbBackend.h
+    src/emu/HatariTextParse.cpp
+    src/emu/HatariTextParse.h
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/MachineState.h
@@ -337,6 +375,8 @@ qt_add_executable(tst_gui
     src/project/ProjectSettings.h
     src/toolchain/Toolchain.cpp
     src/toolchain/Toolchain.h
+    src/toolchain/ToolFetch.cpp
+    src/toolchain/ToolFetch.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -383,6 +423,8 @@ qt_add_executable(tst_remotecontrol
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
+    src/ui/SetupDialog.cpp
+    src/ui/SetupDialog.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
     src/editor/CodeEditor.cpp
@@ -403,6 +445,13 @@ qt_add_executable(tst_remotecontrol
     src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
+    src/emu/DebugBackend.h
+    src/emu/EmbedSocket.cpp
+    src/emu/EmbedSocket.h
+    src/emu/HrdbBackend.cpp
+    src/emu/HrdbBackend.h
+    src/emu/HatariTextParse.cpp
+    src/emu/HatariTextParse.h
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/MachineState.h
@@ -414,6 +463,8 @@ qt_add_executable(tst_remotecontrol
     src/emu/SessionConfig.h
     src/toolchain/Toolchain.cpp
     src/toolchain/Toolchain.h
+    src/toolchain/ToolFetch.cpp
+    src/toolchain/ToolFetch.h
     src/emu/Machine.cpp
     src/emu/Machine.h
     src/emu/TosRom.cpp
@@ -448,6 +499,11 @@ qt_add_executable(tst_emulatorhost
     src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
+    src/emu/DebugBackend.h
+    src/emu/EmbedSocket.cpp
+    src/emu/EmbedSocket.h
+    src/emu/HatariTextParse.cpp
+    src/emu/HatariTextParse.h
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/Paths.cpp
@@ -471,10 +527,45 @@ target_link_libraries(tst_emulatorhost PRIVATE Qt6::Test Qt6::Network)
 add_test(NAME emulatorhost COMMAND tst_emulatorhost)
 set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 
+# HRDB backend against the tattlemuss/hatari hrdb-main fork. Gated on
+# $PIST_HRDB_HATARI naming the fork's binary. CI builds the fork (it is the
+# bundled emulator in the Linux AppImage); developer machines skip without it.
+qt_add_executable(tst_hrdb
+    tests/tst_hrdb.cpp
+    src/emu/DebugBackend.h
+    src/emu/EmbedSocket.cpp
+    src/emu/EmbedSocket.h
+    src/emu/HrdbBackend.cpp
+    src/emu/HrdbBackend.h
+    src/emu/EmulatorHost.cpp
+    src/emu/EmulatorHost.h
+    src/emu/HatariTextParse.cpp
+    src/emu/HatariTextParse.h
+    src/emu/HatariProbe.cpp
+    src/emu/HatariProbe.h
+    src/emu/Paths.cpp
+    src/emu/Paths.h
+    src/emu/SessionConfig.cpp
+    src/emu/SessionConfig.h
+    src/project/ProjectSettings.cpp
+    src/project/ProjectSettings.h
+    src/emu/Machine.cpp
+    src/emu/Machine.h
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
+    src/emu/MachineState.h
+    src/emu/MemoryDump.cpp
+    src/emu/MemoryDump.h
+)
+target_include_directories(tst_hrdb PRIVATE src)
+target_link_libraries(tst_hrdb PRIVATE Qt6::Test Qt6::Network)
+add_test(NAME hrdb COMMAND tst_hrdb)
+set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
+
 # Test binaries must be console applications on Windows. qt_add_executable marks
 # them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
 # nothing at all, making a red run on Windows undiagnosable.
-foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol)
+foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol tst_toolfetch tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

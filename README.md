@@ -47,6 +47,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   - a **hardware registers** view of the shifter, MFP, ACIA/IKBD, sound, blitter and more, from
     Hatari's `info` commands
   - a **PC history** view of how the machine reached the current stop
+  - an **interactive debugger console** — type any Hatari debugger command (`r`, `d`,
+    `m $12596 20`, …) and see its output in the console dock
 - **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
   a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
   to rearrange), or right-click for a "Move to" menu. The layout persists.
@@ -55,6 +57,10 @@ The goal is *batteries included*: the toolchain and emulator ship with the IDE w
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
 your first line of code. The Linux AppImage meets that goal today; the macOS and Windows archives
 still need Hatari installed separately.
+
+On a machine with no assembler or ROM, the first run offers a **guided setup**: a
+checksum-pinned vasm source build and an EmuTOS download, each named with its URL and checksum
+before anything is fetched. Tools ▸ Set up tools and ROMs… reopens it.
 
 ## Target platform
 
@@ -114,7 +120,7 @@ clean, and means a newer (or a user-supplied) toolchain just works.
 
 ### The debug transport
 
-Hatari's debugger has no GDB stub and no structured protocol, so the IDE drives it through the
+Stock Hatari's debugger has no GDB stub and no structured protocol, so the IDE drives it through the
 channels it actually offers. That turned out to be the subtlest part of the project, and the
 findings are worth knowing before touching the code:
 
@@ -132,6 +138,16 @@ findings are worth knowing before touching the code:
 These are all consequences of driving an emulator we do not control, and each one exists because a
 test caught it. `docs/PLAN.md` §3.3 and §5 record them in full, along with the evidence.
 
+**An alternative transport exists.** `IDebugBackend` abstracts the debug channel, with two
+implementations: the native one above, and `HrdbBackend`, which speaks the typed TCP protocol of
+the [hrdb-main fork of Hatari](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus a
+remote-debug listener). The bundled emulator **is** that fork — the Linux AppImage ships it as
+`hatari`, and PiST detects it by binary content and selects HRDB automatically. A stock Hatari
+you install yourself lands on the native transport; Project Settings → Debug transport can force
+either. HRDB works on Windows, carries live section bases in its register reply, and can pause a
+*running* program — the things the native transport cannot do where Hatari's control socket is
+absent.
+
 ### Where the code lives
 
 | Path | Contents |
@@ -140,11 +156,12 @@ test caught it. `docs/PLAN.md` §3.3 and §5 record them in full, along with the
 | `src/ui/` | `MainWindow` (the shell) and every debug panel; X11 display embedding (`EmbedX11`, `EmulatorDisplayWidget`) |
 | `src/editor/` | `CodeEditor` (gutter, execution line, error markers) and `AsmHighlighter` (m68k Motorola syntax) |
 | `src/build/` | `BuildService` (drives vasm/vlink), `Diagnostic`, and the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` |
-| `src/emu/` | `EmulatorHost` (the Hatari subprocess + debug transport), `SessionConfig`, `HatariProbe`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
+| `src/emu/` | `IDebugBackend` (the transport contract) with `EmulatorHost` (stock Hatari, stdin/prompt framing) and `HrdbBackend` (hrdb-main fork, TCP 56001); `HatariTextParse`, `SessionConfig`, `HatariProbe`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
 | `src/debug/` | `Breakpoint` (file:line model + arming plan) and `Watchpoint` |
 | `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari |
+| `src/ui/SetupDialog.cpp` | First-run setup: checksum-pinned vasm source build and EmuTOS download |
 | `tests/` | Parser unit tests and the offscreen GUI/emulator integration tests |
 | `docs/` | Design documents — [PLAN](docs/PLAN.md), the [codebase guide](docs/ARCHITECTURE.md), [FUTURE](docs/FUTURE.md) |
 
@@ -174,7 +191,7 @@ themselves unless Hatari, `vasmm68k_mot` and a TOS ROM are available.
 
 Download an archive from [Releases](../../releases). The macOS and Windows archives
 contain PiST, the `vasmm68k_mot` assembler, and an EmuTOS ROM; the Linux AppImage
-carries those plus **Hatari 2.6.1**, so a fresh download runs and debugs with
+carries those plus **Hatari (the hrdb-main fork, 2.6.1-based)**, so a fresh download runs and debugs with
 nothing else installed:
 
 ```sh
@@ -229,9 +246,14 @@ of an upstream Hatari limitation rather than anything in `PiST`:
 | Registers, memory, disassembly, stepping | ✓ | ✓ | ✓ |
 | Breakpoints (set before launch) | ✓ | ✓ | ✓ |
 | Break in when the program faults | ✓ | ✓ | ✓ |
-| Pause a healthy running program | ✓ | ✗ | ✓ |
-| Change breakpoints while running | ✓ | ✗ | ✓ |
+| Pause a healthy running program | ✓ | ✗\* | ✓ |
+| Change breakpoints while running | ✓ | ✗\* | ✓ |
 | Swap disk images at runtime | ✓ | ✗ | ✓ |
+
+\* Pause on Windows, and live breakpoint changes there, work when the debug transport is the
+[hrdb-main fork](https://github.com/tattlemuss/hatari) (Project Settings → Debug transport),
+which speaks typed TCP instead of the POSIX-only control socket. Stock Hatari on Windows still
+lacks them.
 
 The three gaps are all downstream of one thing: Hatari's control channel is compiled only on
 POSIX systems (`HAVE_UNIX_DOMAIN_SOCKETS`), and it is the only way to command an *already running*
@@ -357,30 +379,36 @@ what is actually on screen.
 
 Bundled or invoked third-party components keep their own licences. In particular `vasm` is *not*
 free software (it permits unmodified, non-commercial redistribution, which is why the IDE never
-patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage is
-GPL-2.0-or-later, redistributed unmodified from a checksum-pinned upstream tarball, and the GNU
-Readline (GPL-3.0-or-later) that build links travels with it. See [docs/PLAN.md](docs/PLAN.md) §7
-for the full breakdown and the obligations that follow.
+patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage is the
+[hrdb-main fork](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus the remote-debug
+listener PiST's HRDB transport uses), GPL-2.0-or-later, redistributed unmodified from a
+checksum-pinned commit tarball, and the GNU Readline (GPL-3.0-or-later) that build links travels
+with it. See [docs/PLAN.md](docs/PLAN.md) §7 for the full breakdown and the obligations that
+follow.
 
 ## Known limitations
 
 Stated plainly, because an early release should not imply more than it does:
-
 - **The emulator integration has only been exercised on Linux.** CI builds and
   tests on Windows and macOS, and the path handling, tool discovery and install
   steps are verified there — but neither runner runs the emulator suite: Windows
   has no Hatari package for MSYS2, and the macOS Hatari build produces an
-  application bundle whose binary does not run standalone. Linux CI now builds the
-  pinned Hatari 2.6.1 and exercises assembling *and* debugging against it, so bug
-  reports from real Windows or macOS machines remain genuinely useful.
-- **Pause, changing breakpoints while running, and swapping disks at runtime do
-  not work on Windows.** Hatari compiles its control channel only on POSIX
-  systems. Breaking at entry, on exceptions, and at source-line breakpoints all
-  work. See [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix.
+  application bundle whose binary does not run standalone. Linux CI builds the
+  pinned Hatari 2.6.1 *and* the hrdb-main fork, and exercises assembling and
+  debugging against both transports, so bug reports from real Windows or macOS
+  machines remain genuinely useful.
+- **On stock Hatari, pause, changing breakpoints while running, and swapping disks at runtime
+  do not work on Windows.** Hatari compiles its control channel only on POSIX systems.
+  Breaking at entry, on exceptions, and at source-line breakpoints all work. The bundled
+  emulator (the hrdb-main fork, in the Linux AppImage) is not affected; on Windows a
+  user-installed [hrdb-main Hatari](https://github.com/tattlemuss/hatari) build gets pause and
+  live breakpoints back (auto-detected). See [docs/FUTURE.md](docs/FUTURE.md) for the upstream
+  fix that would cover the rest.
 - **No installers** — releases are an AppImage on Linux and tarballs/zips elsewhere,
   not deb/RPM/MSI/dmg.
-- **Hatari is bundled only in the Linux AppImage.** That copy is a pinned 2.6.1,
-  redistributed unmodified, so it debugs with nothing else installed. The macOS
+- **Hatari is bundled only in the Linux AppImage.** That copy is the hrdb-main fork
+  (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified from a
+  checksum-pinned commit tarball, so it debugs with nothing else installed — over HRDB. The macOS
   and Windows archives do not include it (and neither does a source build), so
   there the emulator must be installed separately — and no distribution package
   will do: Ubuntu 22.04 ships 2.3.1 and 24.04 ships 2.4.1, whose truncated

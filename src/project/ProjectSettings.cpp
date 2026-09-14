@@ -87,6 +87,7 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     emu[QStringLiteral("floppyImages")] = toArray(s.floppyImages);
     emu[QStringLiteral("fastForward")] = s.fastForward;
     emu[QStringLiteral("extraArgs")] = toArray(s.extraEmulatorArgs);
+    emu[QStringLiteral("debugBackend")] = s.debugBackend;
     root[QStringLiteral("emulator")] = emu;
 
     QFile file(path);
@@ -157,6 +158,8 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
     s->floppyImages = fromArray(emu.value(QStringLiteral("floppyImages")));
     s->fastForward = emu.value(QStringLiteral("fastForward")).toBool(true);
     s->extraEmulatorArgs = fromArray(emu.value(QStringLiteral("extraArgs")));
+    s->debugBackend = emu.value(QStringLiteral("debugBackend")).toString(
+        QStringLiteral("auto"));
 
     return true;
 }

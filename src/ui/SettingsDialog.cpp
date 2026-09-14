@@ -171,6 +171,13 @@ void SettingsDialog::buildUi()
     emulatorLayout->addWidget(browseEmu);
     emuLayout->addRow(tr("hatari:"), emulatorRow);
 
+    m_debugBackend = new QComboBox(emuTab);
+    m_debugBackend->addItem(tr("Auto (follow the emulator's capability)"),
+                            QStringLiteral("auto"));
+    m_debugBackend->addItem(tr("Native (stock Hatari)"), QStringLiteral("native"));
+    m_debugBackend->addItem(tr("HRDB (TCP remote debugging)"), QStringLiteral("hrdb"));
+    emuLayout->addRow(tr("Debug transport:"), m_debugBackend);
+
     m_machine = new QComboBox(emuTab);
     for (Machine machine : allMachines())
         m_machine->addItem(machineDisplayName(machine), static_cast<int>(machine));
@@ -281,6 +288,9 @@ void SettingsDialog::loadValues(const ProjectSettings &settings)
     const int monitorIndex = m_monitor->findText(settings.monitor);
     if (monitorIndex >= 0)
         m_monitor->setCurrentIndex(monitorIndex);
+
+    const int backendIndex = m_debugBackend->findData(settings.debugBackend);
+    m_debugBackend->setCurrentIndex(backendIndex >= 0 ? backendIndex : 0);
 
     m_ram->setValue(settings.memSizeMiB);
     m_hardDisk->setText(settings.hardDiskImage);
@@ -499,6 +509,8 @@ ProjectSettings SettingsDialog::settings() const
     s.monitor = m_monitor->currentText();
     s.memSizeMiB = m_ram->value();
     s.hardDiskImage = m_hardDisk->text().trimmed();
+
+    s.debugBackend = m_debugBackend->currentData().toString();
 
     s.floppyImages.clear();
     for (const QLineEdit *edit : {m_floppyA, m_floppyB})

@@ -34,8 +34,18 @@ public slots:
     /// Clear the view (no session, or registers not yet valid).
     void clear();
 
+
+signals:
+    /// The user double-clicked a row. For a value that looks like a pointer
+    /// this carries the pointed-to address (follow a return address);
+    /// otherwise the stack slot's own address (inspect the bytes at SP+n).
+    void addressActivated(quint32 address);
+
+private slots:
+    void onCellDoubleClicked(int row, int column);
 private:
     QTableWidget *m_table = nullptr;
+    quint32 m_sp = 0;
 };
 
 } // namespace pist

@@ -70,8 +70,10 @@ code. Use this table for a quick lookup:
 | The remote-control protocol | `src/control/RemoteControl.{h,cpp}` |
 | Project file (`.pistproject`) | `src/project/ProjectSettings.{h,cpp}` |
 | vasm/vlink/Hatari discovery | `src/toolchain/Toolchain.{h,cpp}` |
+| First-run tool/ROM setup | `src/ui/SetupDialog.{h,cpp}` + `src/toolchain/ToolFetch.{h,cpp}` |
+| The debug backends (native stdin transport, HRDB TCP) | `src/emu/{DebugBackend,EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 | X11 display embedding | `src/ui/{EmulatorDisplayWidget,EmbedX11}.{h,cpp}` |
-| A test | `tests/` (unit: `tst_parsers`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

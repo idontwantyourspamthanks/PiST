@@ -10,6 +10,7 @@
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
 #include "emu/HatariProbe.h"
+#include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
@@ -20,6 +21,7 @@
 class QAction;
 class QDockWidget;
 class QLabel;
+class QLineEdit;
 class QPlainTextEdit;
 class QTableWidget;
 class QTreeWidget;
@@ -30,8 +32,8 @@ class BuildService;
 class CodeEditor;
 class BreakpointPanel;
 class DisassemblyView;
-class EmulatorHost;
 class FileBrowser;
+class IDebugBackend;
 class MemoryView;
 class RegistersView;
 class StackView;
@@ -54,8 +56,28 @@ public slots:
     /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
     void addMemoryPane(quint32 initialAddress = 0);
 
+    /// Open the tool/ROM setup dialog. From the Tools menu.
+    void showToolSetup();
+
+    /// Open the setup dialog only when a required piece is missing. Called
+    /// once from main() after the window is shown, so a first run offers the
+    /// guided fetch instead of failing the first build with it.
+    void showSetupIfNeeded();
+
+    /// Re-resolve assembler/emulator paths and the capability probe, updating
+    /// the build service and status bar. Called at construction and after the
+    /// setup dialog, so a just-installed tool works without a restart.
+    void refreshToolchain();
+
     /// The build & debug console contents, for scripted verification.
     QString debugConsoleText() const;
+
+    /// Send a command typed into the debug console input. The response is
+    /// appended to the console log when it arrives (matched by command text).
+    void sendConsoleCommand(const QString &command);
+
+    /// The assembler path builds will use, for tests and diagnostics.
+    QString assemblerPath() const;
 
     /// A plain-text snapshot of the machine state (registers, PC, running
     /// state), for the remote-control interface. Read-only.
@@ -106,6 +128,7 @@ private slots:
     void stopSession();
     void step();
     void stepOver();
+    void pauseSession();
     void resume();
 
     void removeBreakpoint(const QString &file, int line);
@@ -118,8 +141,10 @@ private slots:
 
 public:
     /// Write a memory byte through the debugger (`w b <addr>=<value>`), when
-    /// stopped. Shared by the memory view's editing and the remote `setmem`.
-    bool setMemoryByte(quint32 address, quint32 value);
+    /// stopped. Shared by the memory views' editing and the remote `setmem`.
+    /// `pane` is the memory pane to refresh after the write; null (the remote
+    /// path) refreshes the first pane.
+    bool setMemoryByte(quint32 address, quint32 value, MemoryView *pane = nullptr);
 
     /// Send an arbitrary debugger command (for the remote `cmd`). The response
     /// arrives via debugCommandFinished.
@@ -141,6 +166,12 @@ private:
     void createDocks();
     void createToolBar();
     void createStatusBar();
+
+    /// Connect every backend signal to its handler. Runs once at construction
+    /// and again whenever the selected debug transport changes (a project can
+    /// switch between the native and HRDB backends), so it must be safe to
+    /// call on a freshly created backend.
+    void wireBackend();
 
     /// Load the project settings that sit beside a source file, if any.
     void loadProjectForSource(const QString &sourcePath);
@@ -176,7 +207,7 @@ private:
     /// PiST to be an X11 (xcb) client, and the control socket that carries the
     /// video-size report. When false the option is disabled and the emulator
     /// runs as a separate window regardless of the setting.
-    bool canEmbedDisplay() const;
+    bool canEmbedDisplay(const HatariCapabilities &caps) const;
 
     /// The embedded/separate display preference. Applies on the next Run; a
     /// running session keeps the mode it was launched with. Persisted as an
@@ -222,12 +253,12 @@ private:
     /// The View menu, kept so the per-dock show/hide actions can be appended once
     /// the docks exist (menus are created before docks).
     class QMenu *m_viewMenu = nullptr;
-    EmulatorHost *m_host = nullptr;
     HatariCapabilities m_caps;
-
+    IDebugBackend *m_host = nullptr;
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
+    QLineEdit *m_consoleInput = nullptr;
 
     /// Every open memory pane, keyed by the dump-routing tag each one carries, so
     /// a dump is routed back to the pane that asked for it. m_memory is the first
@@ -302,6 +333,7 @@ private:
     QAction *m_actStepOver = nullptr;
     QAction *m_actResume = nullptr;
     QAction *m_actClearBreakpoints = nullptr;
+    QAction *m_actPause = nullptr;
     QAction *m_actAddWatchpoint = nullptr;
 };
 

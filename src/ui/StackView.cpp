@@ -25,7 +25,7 @@ StackView::StackView(QWidget *parent)
     m_table->setHorizontalHeaderLabels({tr("Address"), tr("Value"), tr("Note")});
     m_table->verticalHeader()->setVisible(false);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setSelectionMode(QAbstractItemView::NoSelection);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setShowGrid(false);
     m_table->horizontalHeader()->setStretchLastSection(true);
 
@@ -37,6 +37,8 @@ StackView::StackView(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(m_table);
+
+    connect(m_table, &QTableWidget::cellDoubleClicked, this, &StackView::onCellDoubleClicked);
 }
 
 void StackView::clear()
@@ -47,6 +49,7 @@ void StackView::clear()
 void StackView::setStackDump(quint32 sp, const QString &response,
                              quint32 textBase, quint32 textEnd)
 {
+    m_sp = sp;
     const QList<MemoryRow> rows = parseMemoryDump(response);
     if (rows.isEmpty()) {
         clear();
@@ -98,6 +101,24 @@ void StackView::setStackDump(quint32 sp, const QString &response,
         m_table->setItem(i, 2, noteItem);
     }
     m_table->resizeColumnsToContents();
+}
+
+void StackView::onCellDoubleClicked(int row, int column)
+{
+    Q_UNUSED(column);
+    if (row < 0)
+        return;
+    // Read back the displayed value: the row's long if it looks like a pointer
+    // (return addresses, saved pointers), else the slot's own address, so the
+    // memory view can show the bytes the value points into or the slot itself.
+    const QString valueText = m_table->item(row, 1) ? m_table->item(row, 1)->text() : QString();
+    bool ok = false;
+    const quint32 value = valueText.toUInt(&ok, 16);
+    if (ok && looksLikeAddress(value)) {
+        emit addressActivated(value);
+        return;
+    }
+    emit addressActivated(m_sp + quint32(row * 4));
 }
 
 } // namespace pist

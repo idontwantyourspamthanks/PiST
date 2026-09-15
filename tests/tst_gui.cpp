@@ -15,6 +15,7 @@
 #include "image/StFormats.h"
 #include "ui/ImageEditor.h"
 #include "ui/ImageCanvas.h"
+#include "ui/SheetCanvas.h"
 #include "ui/NewImageDialog.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
@@ -139,9 +140,13 @@ private slots:
     /// into the image, replacing its entry; binaries are refused and
     /// reopening raises the existing tab.
     void floppyTextOpensAndSavesBack();
-    /// A Degas image on a disk opens as a 320×200 sheet; painting a pixel and
-    /// saving writes the Degas bytes back into the image entry.
+    /// A Degas image on a disk registers as a sprite sheet: slicing a phase
+    /// pulls its frames out of the sheet, and saving recomposes the sheet
+    /// back into the image entry.
     void floppyImageOpensAndSavesBack();
+    /// Spritesheet mode: phases place on sheets (numerically and by drag),
+    /// the mode toggle shows the composed sheet, and placement persists.
+    void phasePlacementAndSheetMode();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -1922,15 +1927,20 @@ void TstGui::floppyImageOpensAndSavesBack()
     QVERIFY(browser);
     browser->setFloppyImages({image, QString()});
 
-    // Opening imports the file as a full 320×200 sheet in an image tab.
+    // Opening registers the file as a sprite sheet rather than replacing the
+    // document: phases are sliced out of it in spritesheet mode.
     auto *tab = qobject_cast<ImageEditor *>(window.openFloppyEntry(0, QStringLiteral("PIECE.PI1")));
     QVERIFY2(tab, "a .pi1 entry must open in an image tab");
-    QCOMPARE(tab->document().width(), 320);
-    QCOMPARE(tab->document().height(), 200);
+    QCOMPARE(tab->document().sheets().size(), 1);
+    QVERIFY(tab->document().sheets().at(0).path.endsWith(QStringLiteral("PIECE.PI1")));
+
+    // Slice the sprite out of the sheet; the sliced frame carries the pixel.
+    QCOMPARE(tab->addPhaseFromSheet(0, QStringLiteral("sprite"), 0, 0, 32, 32, 1), 1);
+    QCOMPARE(tab->document().currentPhase(), 1);
     QCOMPARE(tab->document().pixels().at(0), red);
 
-    // Paint a blue pixel over the red one and save: the Degas bytes are
-    // written back into the image entry.
+    // Repaint and save: the sheet is recomposed from the phases and written
+    // back into the image entry.
     tab->document().setPixel(0, blue);
     auto *saveAction = window.findChild<QAction *>(QStringLiteral("saveAction"));
     QVERIFY(saveAction);
@@ -1946,12 +1956,76 @@ void TstGui::floppyImageOpensAndSavesBack()
     ImportedSheet sheet;
     QVERIFY2(importPi1(saved, PaletteKind::Ste, &sheet, &error), qPrintable(error));
     QCOMPARE(sheet.pixels.at(0), blue);
-    // The disk still holds exactly one entry — replaced, not duplicated.
     QStringList onDisk;
     for (const floppy::Entry &e : floppy::listImage(image, &error))
         onDisk.append(e.path);
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(onDisk.size(), 1);
+}
+
+
+void TstGui::phasePlacementAndSheetMode()
+{
+    const QString dir = m_work->path() + QStringLiteral("/phasesheets");
+    QVERIFY(QDir().mkpath(dir));
+
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    QCOMPARE(doc.addSheet(QStringLiteral("chars.pi1"), 320, 200), 0);
+    QCOMPARE(doc.addPhase(QStringLiteral("dragon"), 64, 64), 1);
+    QVERIFY(doc.setPhasePlacement(1, 0, 20, 50));
+    const QString pim = dir + QStringLiteral("sheet.pim");
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    auto *list = image->findChild<QListWidget *>(QStringLiteral("imagePhases"));
+    QVERIFY(list);
+    QCOMPARE(list->count(), 2);
+
+    // Select the dragon phase: the editing context follows it.
+    list->setCurrentRow(1);
+    QCOMPARE(image->document().currentPhase(), 1);
+    QCOMPARE(image->document().width(), 64);
+
+    // Numeric placement edits land in the document.
+    auto *x = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseX"));
+    auto *y = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseY"));
+    auto *sheetBox = image->findChild<QComboBox *>(QStringLiteral("imagePhaseSheet"));
+    QVERIFY(x && y && sheetBox);
+    QCOMPARE(x->value(), 20);
+    x->setValue(22);
+    QCOMPARE(image->document().phases().at(1).x, 22);
+    sheetBox->setCurrentIndex(0);   // "(unplaced)"
+    QCOMPARE(image->document().phases().at(1).sheet, -1);
+    sheetBox->setCurrentIndex(1);   // back onto the sheet
+    QCOMPARE(image->document().phases().at(1).sheet, 0);
+
+    // Spritesheet mode: the composed sheet view, then drag the strip.
+    auto *mode = image->findChild<QAction *>(QStringLiteral("imageSheetMode"));
+    QVERIFY(mode);
+    mode->setChecked(true);
+    auto *sheetCanvas = image->findChild<SheetCanvas *>();
+    QVERIFY2(sheetCanvas, "sheet mode must expose the composed sheet view");
+    const int scale = sheetCanvas->scale();
+    QTest::mousePress(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(22 * scale + 1, 50 * scale + 1));
+    QTest::mouseMove(sheetCanvas, QPoint(32 * scale + 1, 55 * scale + 1));
+    QTest::mouseRelease(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(32 * scale + 1, 55 * scale + 1));
+    QCOMPARE(image->document().phases().at(1).x, 32);
+    QCOMPARE(image->document().phases().at(1).y, 55);
+
+    // The placement survives the round-trip through the file.
+    QVERIFY2(image->saveFile(pim), qPrintable(image->lastError()));
+    ImageDocument reloaded;
+    QVERIFY2(reloaded.load(pim, &error), qPrintable(error));
+    QCOMPARE(reloaded.phases().at(1).x, 32);
+    QCOMPARE(reloaded.phases().at(1).y, 55);
 }
 
 QTEST_MAIN(TstGui)

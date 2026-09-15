@@ -261,6 +261,7 @@ private:
     void importImage();
     void exportImage();
     void exportImageSpriteSafe();
+    void exportSpriteSheet();
 
     void openRecentSource();
 
@@ -418,6 +419,7 @@ private:
     QAction *m_actImportImage = nullptr;
     QAction *m_actExportImage = nullptr;
     QAction *m_actExportImageSafe = nullptr;
+    QAction *m_actExportSpriteSheet = nullptr;
     QAction *m_actOpenProject = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;

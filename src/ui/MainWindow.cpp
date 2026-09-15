@@ -348,6 +348,8 @@ void MainWindow::onTabChanged(int index)
     if (m_actExportImage) {
         m_actExportImage->setEnabled(m_image != nullptr);
         m_actExportImageSafe->setEnabled(m_image != nullptr);
+        m_actExportSpriteSheet->setEnabled(m_image != nullptr
+                                           && m_image->currentSheetIndex() >= 0);
     }
 
     const QString path = m_editor ? m_editor->filePath()
@@ -421,6 +423,13 @@ void MainWindow::createActions()
            "re-imports losslessly with colour 0 as transparent"));
     connect(m_actExportImageSafe, &QAction::triggered, this,
             &MainWindow::exportImageSpriteSafe);
+
+    m_actExportSpriteSheet = new QAction(tr("Export Sprite &Sheet…"), this);
+    m_actExportSpriteSheet->setEnabled(false);
+    m_actExportSpriteSheet->setToolTip(
+        tr("Compose the current phase's sheet from its placed phases"));
+    connect(m_actExportSpriteSheet, &QAction::triggered, this,
+            &MainWindow::exportSpriteSheet);
 
     m_actSave = new QAction(tr("&Save"), this);
     m_actSave->setObjectName(QStringLiteral("saveAction"));
@@ -601,6 +610,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actImportImage);
     fileMenu->addAction(m_actExportImage);
     fileMenu->addAction(m_actExportImageSafe);
+    fileMenu->addAction(m_actExportSpriteSheet);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -1825,6 +1835,31 @@ void MainWindow::exportImageWith(bool spriteSafe)
     if (path.isEmpty())
         return;
     if (!m_image->exportFile(path, spriteSafe)) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("Could not export %1: %2").arg(path, m_image->lastError()));
+        return;
+    }
+    statusBar()->showMessage(tr("Exported %1").arg(path), 4000);
+}
+
+void MainWindow::exportSpriteSheet()
+{
+    if (!m_image)
+        return;
+    const int sheet = m_image->currentSheetIndex();
+    if (sheet < 0) {
+        QMessageBox::information(this, tr("Export sprite sheet"),
+                                 tr("This image has no sprite sheets. Import one first."));
+        return;
+    }
+    QString suggested = m_image->document().sheets().at(sheet).path;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export sprite sheet"), suggested,
+        tr("Degas Elite (*.pi1);;NeoChrome (*.neo);;IFF/ILBM (*.iff);;PNG (*.png);;"
+           "Assembler include (*.s);;Bitplane binary (*.bin)"));
+    if (path.isEmpty())
+        return;
+    if (!m_image->exportSheetFile(path, sheet, false)) {
         QMessageBox::warning(this, tr("Export"),
                              tr("Could not export %1: %2").arg(path, m_image->lastError()));
         return;

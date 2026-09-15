@@ -334,14 +334,15 @@ LemonAndLime's ST-relevant editing: layers, onion-skin, animated preview, named 
 flip/rotate/shift, and 8-way rotation bake. That lives in `src/image/{ImageDocument,Transform}.*`
 and `src/ui/ImageEditor`.
 
-**Sprite-sheet regions** — decided 2026-09: go straight to slicing rather than a one-shot import
-dialog. A sheet is a `.pim` with named rectangles: an optional `regions` array (name, x, y, w, h)
-in the existing JSON, so v1 files load unchanged and regions live in the sheet itself, not the
-project file. `ImageDocument::cropped()` yields a region's document and `exportRegion()` emits the
-same bytes as the whole-document `.s` / `.bin` exporters for that crop. All three phases are in:
-the ImageEditor edits regions (Region tool + panel, Extract opens the crop as its own tab), and a
-`.pi1` opens as a 320×200 sheet — from a floppy its saves write back into the image, and Export
-Sprite-Safe shifts the palette so colour 0 stays background (the failure `demo/test.pi1` shows).
+**Sprite-sheet phases** — decided 2026-09 (superseding a first-cut regions design): a phase is an
+animation *and* its home on a sheet. Each phase owns its frames outright and carries a cell size,
+so one document mixes 32×32 characters with a 64×64 boss; it also carries sheet placement
+(sheet index + x/y; frame k paints at [x + k·cellW, y]), and a document lists sheet targets
+(path + size). `composeSheet()` composes a sheet from its placed phases and `sliceSheetCells()`
+cuts an imported sheet into phase frames. The ImageEditor has a spritesheet mode: the composed
+sheet with drag-to-move strips and numeric placement. A `.pi1` opened from a disk registers as a
+sheet whose saves recompose and write back; Export Sprite-Safe keeps colour 0 as background so an
+export re-imports losslessly (the failure `demo/test.pi1` shows).
 
 Still not in PiST, on purpose:
 
@@ -352,5 +353,5 @@ Still not in PiST, on purpose:
 - Auto-export on Build / an asset list in `.pistproject`. Regions live in the `.pim` so a sheet is
   self-contained; export is explicit; the assembler consumes whatever `.s` or `.bin` the user wrote.
 
-v1 `.pim` files (composite `pixels` only) load as a single layer. Saved files still write `pixels`
-so an older PiST can open them.
+The `.pim` format is version 2 — phases own their frames — and v1 files are rejected outright
+(decided 2026-09: no users yet, and the two models are structurally incompatible).

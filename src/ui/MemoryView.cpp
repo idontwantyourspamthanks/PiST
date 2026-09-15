@@ -112,6 +112,8 @@ void MemoryView::onAddressEntered()
 void MemoryView::goToAddress(quint32 address)
 {
     // Align down so rows line up, which is what makes the display readable.
+    m_pendingEdit = false;
+    m_staleDumps = 0;
     m_base = address - (address % kRowBytes);
     m_addressEdit->setText(hex8(m_base));
     // The old region's bytes must not survive under the new base: until the
@@ -198,6 +200,22 @@ void MemoryView::applyDump(const QString &response)
     // display one region while an edit wrote to another.
     if (rows.first().address != m_base)
         return;
+
+    if (m_pendingEdit) {
+        QByteArray flat;
+        for (const MemoryRow &dump : rows) {
+            flat.append(reinterpret_cast<const char *>(dump.bytes.constData()),
+                        qMin(dump.bytes.size(), static_cast<qsizetype>(kRowBytes)));
+        }
+        const int offset = static_cast<int>(m_pendingAddress - m_base);
+        if (offset >= 0 && offset < flat.size()
+            && quint8(flat.at(offset)) != m_pendingValue) {
+            if (++m_staleDumps <= kMaxStaleDumps)
+                return;
+        }
+        m_pendingEdit = false;
+        m_staleDumps = 0;
+    }
 
     m_lastDump = response;
 
@@ -307,6 +325,10 @@ void MemoryView::onByteEdited(QTableWidgetItem *item)
     }
 
     const quint32 address = m_base + row * kRowBytes + (column - kFirstByteColumn);
+    m_pendingEdit = true;
+    m_pendingAddress = address;
+    m_pendingValue = static_cast<quint8>(value);
+    m_staleDumps = 0;
     emit memoryEdited(address, value);
 }
 

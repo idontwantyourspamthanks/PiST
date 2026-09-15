@@ -104,6 +104,10 @@ private slots:
     /// negative test and keep the pane uneditable — the reported bug.)
     void memoryEditEmitsForRealEdit();
 
+    /// A dump requested before the write landed must not paint the old byte
+    /// over the value the user just typed.
+    void memoryEditIgnoresStaleDump();
+
     /// The reported bug, end to end against a real emulator: a byte edited in
     /// the memory view while stopped must survive the follow-up refresh — the
     /// write/refresh storm was what made the value "return", and exactly one
@@ -474,6 +478,9 @@ void TstGui::memoryEditEmitsForRealEdit()
     QCOMPARE(edits.size(), 1);
     QCOMPARE(edits.first().at(0).toUInt(), 0x12591u);
     QCOMPARE(edits.first().at(1).toUInt(), 0xabu);
+    // Confirm the write so the next dump is not treated as stale.
+    view.applyDump(QStringLiteral(
+        "00012590: 70 ab 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"));
     // A double-click on a cell whose 4-byte window looks like an address must
     // EDIT, not navigate — pointer-following is Alt+double-click. Use bytes
     // 00 01 25 96 (an address-like long) in row 1's first long position by
@@ -487,6 +494,41 @@ void TstGui::memoryEditEmitsForRealEdit()
     // Abandon that editor so it cannot commit on teardown.
     if (auto *ed = qobject_cast<QLineEdit *>(QApplication::focusWidget()))
         QTest::keyClick(ed, Qt::Key_Escape);
+}
+
+void TstGui::memoryEditIgnoresStaleDump()
+{
+    MemoryView view;
+    view.resize(800, 400);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    view.setEditingEnabled(true);
+    view.goToAddress(0x12590);
+    view.applyDump(QStringLiteral(
+        "00012590: 00 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  ..a.t.`.r.Nu..HI\n"));
+
+    auto *table = view.findChild<QTableWidget *>();
+    QVERIFY(table);
+    auto *item = table->item(0, 1);
+    QVERIFY(item);
+    QCOMPARE(item->text(), QStringLiteral("00"));
+
+    QSignalSpy edits(&view, &MemoryView::memoryEdited);
+    table->editItem(item);
+    auto *editor = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    QVERIFY2(editor, "editItem must open an editor");
+    editor->setText(QStringLiteral("70"));
+    QTest::keyClick(editor, Qt::Key_Tab);
+    QCOMPARE(edits.size(), 1);
+
+    // This dump still has the old byte: it was requested before the write.
+    view.applyDump(QStringLiteral(
+        "00012590: 00 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  ..a.t.`.r.Nu..HI\n"));
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("70"));
+
+    view.applyDump(QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"));
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("70"));
 }
 
 void TstGui::memoryEditSurvivesRefreshLive()
@@ -554,10 +596,18 @@ void TstGui::memoryEditSurvivesRefreshLive()
 
     QCOMPARE(edits.size(), 1);
 
+    // The cell already shows the typed byte; that is not a round-trip. Blank
+    // it so the wait below is for a dump that actually contains the write.
+    {
+        const QSignalBlocker blocker(table);
+        if (auto *cell = table->item(0, 1))
+            cell->setText(QString());
+    }
+
     // The user's bug: the value "returned" after the write's follow-up
     // refresh. Wait for the refresh to land and require the new value to
     // still be displayed.
-    QTRY_COMPARE_WITH_TIMEOUT(table->item(0, 1)->text(), replacement.toUpper(), 10000);
+    QTRY_COMPARE_WITH_TIMEOUT(table->item(0, 1)->text(), replacement.toUpper(), 15000);
     QTest::qWait(500);  // let any storm fire
     QCOMPARE(table->item(0, 1)->text(), replacement.toUpper());
     QCOMPARE(edits.size(), 1);

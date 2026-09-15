@@ -76,6 +76,14 @@ private:
     bool m_editingEnabled = false;
 
     quint32 m_base = 0;
+    /// After a user edit, dumps that still show the old byte were requested
+    /// before the write landed (onStateUpdated refreshes the pane on every
+    /// register dump). Discard them so they cannot paint over the new value.
+    bool m_pendingEdit = false;
+    quint32 m_pendingAddress = 0;
+    quint8 m_pendingValue = 0;
+    int m_staleDumps = 0;
+    static constexpr int kMaxStaleDumps = 12;
     QString m_lastDump;
     /// The displayed bytes in memory order, indexed relative to m_base, so a
     /// cell's click can read the pointer at it without reparsing the table.

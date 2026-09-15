@@ -453,7 +453,10 @@ jobs:
           sudo apt-get install -y -qq rpm
           V="${{ github.ref_name }}"
           [ -n "$V" ] || V="dev"
-          COMMON=(-D "CPACK_INSTALLED_DIRECTORIES=AppDir;/"
+          # CMake 4's RelativePath requires an absolute directory; a relative
+          # AppDir produced empty symlink names and aborted the package.
+          stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" AppDir)
+          COMMON=(-D "CPACK_INSTALLED_DIRECTORIES=${stage};/"
                   -D "CPACK_INSTALL_CMAKE_PROJECTS=")
           cpack -G DEB "${COMMON[@]}" --config build/CPackConfig.cmake \
             -D CPACK_PACKAGE_FILE_NAME="pist-$V-linux-amd64"
@@ -609,8 +612,9 @@ jobs:
           set -euo pipefail
           V="${{ github.ref_name }}"
           [ -n "$V" ] || V="dev"
+          stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" bundle)
           cpack -G DragNDrop --config build/CPackConfig.cmake \
-            -D "CPACK_INSTALLED_DIRECTORIES=bundle;/" \
+            -D "CPACK_INSTALLED_DIRECTORIES=${stage};/" \
             -D "CPACK_INSTALL_CMAKE_PROJECTS=" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-macos-arm64"
           # Assert the installer carries what the archive has.
@@ -633,8 +637,9 @@ jobs:
           fi
           V="${{ github.ref_name }}"
           [ -n "$V" ] || V="dev"
+          stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" bundle)
           cpack -G WIX --config build/CPackConfig.cmake \
-            -D "CPACK_INSTALLED_DIRECTORIES=bundle;/" \
+            -D "CPACK_INSTALLED_DIRECTORIES=${stage};/" \
             -D "CPACK_INSTALL_CMAKE_PROJECTS=" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-windows-x86_64"
           [ -f "PiST-$V-windows-x86_64.msi" ] \

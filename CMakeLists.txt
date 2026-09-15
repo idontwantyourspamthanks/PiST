@@ -215,7 +215,8 @@ endif()
 # archives ship, so the installer and the tarball carry identical content —
 # binary, bundled Qt runtime, assembler, emulator, ROM, licences and notices.
 # The generator is chosen at package time (DEB/RPM on Linux, DragNDrop on
-# macOS, WIX on Windows); CPACK_INSTALLED_DIRECTORIES overrides the tree.
+# macOS, WIX on Windows); CPACK_INSTALLED_DIRECTORIES overrides the tree and
+# must be an absolute path (CMake 4 RelativePath).
 # ---------------------------------------------------------------------------
 set(CPACK_PACKAGE_NAME "pist")
 set(CPACK_PACKAGE_VENDOR "PiST")

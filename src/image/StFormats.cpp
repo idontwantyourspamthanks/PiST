@@ -376,6 +376,56 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     return true;
 }
 
+ImageDocument spriteSafeDocument(const ImageDocument &doc, QString *error)
+{
+    const QVector<int> composite = doc.pixels();
+    // Painted colour words, in the palette's own order.
+    QVector<int> used;
+    for (int word : doc.active()) {
+        if (word >= 0 && !used.contains(word) && composite.contains(word))
+            used.append(word);
+    }
+    // Colour 0 carrying no sprite pixels is already sprite-safe.
+    if (used.isEmpty() || used.first() != doc.active().first())
+        return doc;
+
+    if (used.size() > 15) {
+        if (error)
+            *error = QStringLiteral("the sprite uses all 16 colours; sprite-safe export "
+                                    "needs a free slot for the background");
+        return {};
+    }
+
+    // The reserved slot prefers the sheet's own background colour, then
+    // black, then the first free word at all.
+    int reserved = -1;
+    const int background = doc.background();
+    if (background != doc.active().first() && !used.contains(background))
+        reserved = background;
+    if (reserved < 0 && !used.contains(0))
+        reserved = 0;
+    for (int word = 0; reserved < 0 && word <= 0x777; ++word) {
+        if (!used.contains(word))
+            reserved = word;
+    }
+
+    QVector<int> active;
+    active.append(reserved);
+    for (int word : used)
+        active.append(word);
+
+    ImageDocument out = ImageDocument::create(doc.width(), doc.height(), doc.paletteKind());
+    out.setActive(active);
+    out.setBackground(reserved);
+    QVector<int> indices;
+    indices.reserve(composite.size());
+    for (int i = 0; i < composite.size(); ++i)
+        indices.append(i);
+    out.restoreIndices(indices, composite);
+    out.setModified(false);
+    return out;
+}
+
 bool importStImage(const QByteArray &bytes, StImageFormat format, PaletteKind kind,
                    ImportedSheet *out, QString *error)
 {

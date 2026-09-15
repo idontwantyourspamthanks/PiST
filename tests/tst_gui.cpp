@@ -12,6 +12,7 @@
 
 #include "editor/CodeEditor.h"
 #include "image/ImageDocument.h"
+#include "image/StFormats.h"
 #include "ui/ImageEditor.h"
 #include "ui/ImageCanvas.h"
 #include "ui/NewImageDialog.h"
@@ -138,6 +139,9 @@ private slots:
     /// into the image, replacing its entry; binaries are refused and
     /// reopening raises the existing tab.
     void floppyTextOpensAndSavesBack();
+    /// A Degas image on a disk opens as a 320×200 sheet; painting a pixel and
+    /// saving writes the Degas bytes back into the image entry.
+    void floppyImageOpensAndSavesBack();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -1409,7 +1413,8 @@ void TstGui::floppyTextOpensAndSavesBack()
     browser->setFloppyImages({image, QString()});
 
     // Opening extracts to the session and lands in a text tab.
-    CodeEditor *editor = window.openFloppyEntry(0, QStringLiteral("DOC.TXT"));
+    auto *editor = qobject_cast<CodeEditor *>(
+        window.openFloppyEntry(0, QStringLiteral("DOC.TXT")));
     QVERIFY2(editor, "a text entry must open in an editor tab");
     QCOMPARE(editor->toPlainText(), QStringLiteral("hello"));
     const int editorsAfterOpen = window.findChildren<CodeEditor *>().size();
@@ -1444,7 +1449,8 @@ void TstGui::floppyTextOpensAndSavesBack()
     QVERIFY(!floppy::readFileRaw(raw, QStringLiteral("DOC1.TXT"), &saved, &error));
 
     // An entry inside a folder round-trips through its subdirectory.
-    CodeEditor *note = window.openFloppyEntry(0, QStringLiteral("DOCS/NOTE.TXT"));
+    auto *note = qobject_cast<CodeEditor *>(
+        window.openFloppyEntry(0, QStringLiteral("DOCS/NOTE.TXT")));
     QVERIFY(note);
     note->setPlainText(QStringLiteral("edited"));
     saveAction->trigger();
@@ -1983,6 +1989,66 @@ void TstGui::imageRegionsPanelAndExtract()
     QCOMPARE(image->document().regions().at(1).y, 3);
     QCOMPARE(image->document().regions().at(1).w, 5);
     QCOMPARE(image->document().regions().at(1).h, 4);
+}
+
+
+void TstGui::floppyImageOpensAndSavesBack()
+{
+    const QString dir = m_work->path() + QStringLiteral("/floppyimg");
+    QVERIFY(QDir().mkpath(dir));
+
+    // A tiny Degas image to live on the disk: one red pixel at (0, 0).
+    ImageDocument piece = ImageDocument::create(32, 32, PaletteKind::Ste);
+    const int red = piece.active().at(1);
+    const int blue = piece.active().at(2);
+    piece.setPixel(0, red);
+    QString error;
+    const QByteArray pi1 = exportPi1(piece, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("PIECE.PI1");
+    file.data = pi1;
+    items.append(file);
+    const QString image = dir + QStringLiteral("/art.st");
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->setFloppyImages({image, QString()});
+
+    // Opening imports the file as a full 320×200 sheet in an image tab.
+    auto *tab = qobject_cast<ImageEditor *>(window.openFloppyEntry(0, QStringLiteral("PIECE.PI1")));
+    QVERIFY2(tab, "a .pi1 entry must open in an image tab");
+    QCOMPARE(tab->document().width(), 320);
+    QCOMPARE(tab->document().height(), 200);
+    QCOMPARE(tab->document().pixels().at(0), red);
+
+    // Paint a blue pixel over the red one and save: the Degas bytes are
+    // written back into the image entry.
+    tab->document().setPixel(0, blue);
+    auto *saveAction = window.findChild<QAction *>(QStringLiteral("saveAction"));
+    QVERIFY(saveAction);
+    saveAction->trigger();
+
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    QByteArray saved;
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("PIECE.PI1"), &saved, &error),
+             qPrintable(error));
+    QCOMPARE(saved.size(), 32034);
+
+    ImportedSheet sheet;
+    QVERIFY2(importPi1(saved, PaletteKind::Ste, &sheet, &error), qPrintable(error));
+    QCOMPARE(sheet.pixels.at(0), blue);
+    // The disk still holds exactly one entry — replaced, not duplicated.
+    QStringList onDisk;
+    for (const floppy::Entry &e : floppy::listImage(image, &error))
+        onDisk.append(e.path);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(onDisk.size(), 1);
 }
 
 QTEST_MAIN(TstGui)

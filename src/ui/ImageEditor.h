@@ -40,7 +40,7 @@ public:
     bool loadFile(const QString &path);
     bool saveFile(const QString &path);
     bool importFile(const QString &path, bool append);
-    bool exportFile(const QString &path);
+    bool exportFile(const QString &path, bool spriteSafe = false);
 
     QString lastError() const { return m_lastError; }
     QString filePath() const { return m_filePath; }

@@ -705,6 +705,10 @@ bool ImageEditor::loadFile(const QString &path)
 
 bool ImageEditor::saveFile(const QString &path)
 {
+    // A still-image path saves in that format rather than as .pim JSON, so
+    // editing a Degas file in place stays a Degas file.
+    if (!isPimPath(path))
+        return exportFile(path);
     QString error;
     if (!m_doc.save(path, &error)) {
         m_lastError = error;
@@ -743,32 +747,42 @@ bool ImageEditor::importFile(const QString &path, bool append)
     return true;
 }
 
-bool ImageEditor::exportFile(const QString &path)
+bool ImageEditor::exportFile(const QString &path, bool spriteSafe)
 {
     const StImageFormat format = stFormatFromPath(path);
     QString error;
+    const ImageDocument *sheet = &m_doc;
+    ImageDocument safe;
+    if (spriteSafe && format != StImageFormat::Pim) {
+        safe = spriteSafeDocument(m_doc, &error);
+        if (!error.isEmpty()) {
+            m_lastError = error;
+            return false;
+        }
+        sheet = &safe;
+    }
     QByteArray bytes;
     switch (format) {
     case StImageFormat::Pi1:
-        bytes = exportPi1(m_doc, m_doc.currentFrame(), &error);
+        bytes = exportPi1(*sheet, sheet->currentFrame(), &error);
         break;
     case StImageFormat::Neo:
-        bytes = exportNeo(m_doc, m_doc.currentFrame(), QFileInfo(path).completeBaseName(), &error);
+        bytes = exportNeo(*sheet, sheet->currentFrame(), QFileInfo(path).completeBaseName(), &error);
         break;
     case StImageFormat::Iff:
-        bytes = exportIff(m_doc, m_doc.currentFrame(), &error);
+        bytes = exportIff(*sheet, sheet->currentFrame(), &error);
         break;
     case StImageFormat::Png:
-        bytes = exportPng(m_doc, m_doc.currentFrame(), &error);
+        bytes = exportPng(*sheet, sheet->currentFrame(), &error);
         break;
     case StImageFormat::Mbk:
-        bytes = exportStosMbk(m_doc, 0, 1, &error);
+        bytes = exportStosMbk(*sheet, 0, 1, &error);
         break;
     case StImageFormat::Assembler:
-        bytes = exportAssembler(m_doc, m_doc.currentFrame(), &error);
+        bytes = exportAssembler(*sheet, sheet->currentFrame(), &error);
         break;
     case StImageFormat::BitplaneBin:
-        bytes = exportBitplanes(m_doc, m_doc.currentFrame(), &error);
+        bytes = exportBitplanes(*sheet, sheet->currentFrame(), &error);
         break;
     case StImageFormat::Pim:
         return saveFile(path);

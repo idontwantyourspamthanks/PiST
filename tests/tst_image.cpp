@@ -43,6 +43,7 @@ private slots:
     void regionsPersistInPim();
     void croppedDocumentCopiesTheRegion();
     void regionExportMatchesCroppedDocument();
+    void spriteSafeDocumentReservesColourZero();
 };
 
 void TstImage::cubeSizes()
@@ -428,6 +429,49 @@ void TstImage::regionExportMatchesCroppedDocument()
     // A region that misses the canvas is an error, not a silent export.
     const ImageRegion off{QStringLiteral("off"), 40, 40, 8, 8};
     QVERIFY(exportRegion(doc, 0, off, StImageFormat::BitplaneBin, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+}
+
+void TstImage::spriteSafeDocumentReservesColourZero()
+{
+    ImageDocument doc = ImageDocument::create(16, 8, PaletteKind::Ste);
+    const int red = doc.active().at(0);   // the problem colour: index 0
+    const int green = doc.active().at(1);
+    doc.setPixel(0, red);
+    doc.setPixel(1, green);
+
+    QString error;
+    ImageDocument safe = spriteSafeDocument(doc, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(safe.active().first(), 0);      // reserved slot
+    QCOMPARE(safe.active().at(1), red);
+    QCOMPARE(safe.active().at(2), green);
+    QCOMPARE(safe.pixels().at(0), red);      // pixels keep their colour words
+    QCOMPARE(safe.pixels().at(1), green);
+
+    // Encoding the safe sheet puts the sprite on indices >= 1, so the file
+    // re-imports losslessly with colour 0 read as the background.
+    const QByteArray bytes = exportPi1(safe, 0, &error);
+    QVERIFY2(!bytes.isEmpty(), qPrintable(error));
+    ImportedSheet sheet;
+    QVERIFY2(importPi1(bytes, PaletteKind::Ste, &sheet, &error), qPrintable(error));
+    QCOMPARE(sheet.active.at(0), 0);
+    QCOMPARE(sheet.pixels.at(0), red);
+    QCOMPARE(sheet.pixels.at(1), green);
+
+    // A sheet whose first colour paints nothing is already safe.
+    ImageDocument plain = ImageDocument::create(8, 8, PaletteKind::Ste);
+    plain.setPixel(0, plain.active().at(2));
+    ImageDocument untouched = spriteSafeDocument(plain, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(untouched.active(), plain.active());
+
+    // All 16 colours painted: there is no slot to reserve.
+    ImageDocument full = ImageDocument::create(16, 1, PaletteKind::Ste);
+    for (int i = 0; i < 16; ++i)
+        full.setPixel(i, full.active().at(i));
+    error.clear();
+    spriteSafeDocument(full, &error);
     QVERIFY(!error.isEmpty());
 }
 

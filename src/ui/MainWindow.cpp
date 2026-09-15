@@ -93,6 +93,15 @@ bool suffixIsEditableText(const QString &suffix)
     return text.contains(suffix);
 }
 
+bool suffixIsStillImage(const QString &suffix)
+{
+    static const QSet<QString> images = {
+        QStringLiteral("pi1"), QStringLiteral("neo"), QStringLiteral("iff"),
+        QStringLiteral("ilbm"), QStringLiteral("png"), QStringLiteral("pim"),
+    };
+    return images.contains(suffix);
+}
+
 bool suffixIsKnownBinary(const QString &suffix)
 {
     static const QSet<QString> binary = {
@@ -223,6 +232,8 @@ ImageEditor *MainWindow::addImageTab(const QString &path)
             editor->deleteLater();
             return nullptr;
         }
+        if (!isPimPath(path))
+            editor->setFilePath(path);   // importFile leaves the path unset
     }
     const int index = m_tabs->addTab(editor, editor->displayName());
     m_tabs->setCurrentIndex(index);
@@ -342,8 +353,10 @@ void MainWindow::onTabChanged(int index)
     m_editor = qobject_cast<CodeEditor *>(widget);
     m_image = qobject_cast<ImageEditor *>(widget);
 
-    if (m_actExportImage)
+    if (m_actExportImage) {
         m_actExportImage->setEnabled(m_image != nullptr);
+        m_actExportImageSafe->setEnabled(m_image != nullptr);
+    }
 
     const QString path = m_editor ? m_editor->filePath()
                                   : (m_image ? m_image->filePath() : QString());
@@ -408,6 +421,14 @@ void MainWindow::createActions()
     m_actExportImage = new QAction(tr("&Export Image…"), this);
     m_actExportImage->setEnabled(false);
     connect(m_actExportImage, &QAction::triggered, this, &MainWindow::exportImage);
+
+    m_actExportImageSafe = new QAction(tr("Export &Sprite-Safe Image…"), this);
+    m_actExportImageSafe->setEnabled(false);
+    m_actExportImageSafe->setToolTip(
+        tr("Export with colour 0 reserved for the background, so the image "
+           "re-imports losslessly with colour 0 as transparent"));
+    connect(m_actExportImageSafe, &QAction::triggered, this,
+            &MainWindow::exportImageSpriteSafe);
 
     m_actSave = new QAction(tr("&Save"), this);
     m_actSave->setObjectName(QStringLiteral("saveAction"));
@@ -587,6 +608,7 @@ void MainWindow::createMenus()
     fileMenu->addSeparator();
     fileMenu->addAction(m_actImportImage);
     fileMenu->addAction(m_actExportImage);
+    fileMenu->addAction(m_actExportImageSafe);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -1275,6 +1297,7 @@ bool MainWindow::maybeSaveImage(ImageEditor *editor)
                                   .arg(editor->filePath(), editor->lastError()));
         return false;
     }
+    writeBackFloppyDoc(editor->filePath());
 
     updateTabTitle(editor);
     updateModifiedState();
@@ -1348,7 +1371,7 @@ QString MainWindow::extractedFloppyPath(const QString &imagePath, const QString 
                                                                  QLatin1Char('_')));
 }
 
-CodeEditor *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
+QWidget *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
 {
     const QString imagePath = m_fileBrowser ? m_fileBrowser->floppyImages().value(drive)
                                             : QString();
@@ -1380,16 +1403,10 @@ CodeEditor *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
     }
 
     const QString suffix = QFileInfo(entryPath).suffix().toLower();
-    if (QStringList{QStringLiteral("pi1"), QStringLiteral("pi2"), QStringLiteral("pi3"),
-                    QStringLiteral("neo"), QStringLiteral("iff"), QStringLiteral("ilbm"),
-                    QStringLiteral("png"), QStringLiteral("mbk"), QStringLiteral("pim")}
-            .contains(suffix)) {
-        QMessageBox::information(
-            this, tr("Open"),
-            tr("Opening images from a floppy disk is not supported yet. Copy the file "
-               "to the hard drive to open it."));
-        return nullptr;
-    }
+    // A still image opens as an image tab over its extracted file: the
+    // 320×200 sheet maps 1:1 onto the file inside the image, so saving
+    // writes the same format straight back.
+    const bool stillImage = suffixIsStillImage(suffix);
     if (QStringLiteral("s") == suffix || QStringLiteral("asm") == suffix) {
         QMessageBox::information(
             this, tr("Open"),
@@ -1397,12 +1414,14 @@ CodeEditor *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
                "disk first (Copy on the disk, Paste on the hard drive).").arg(entryPath));
         return nullptr;
     }
-    const bool editable = suffixIsEditableText(suffix)
-        || (!suffixIsKnownBinary(suffix) && !data.contains('\0'));
-    if (!editable) {
-        QMessageBox::information(this, tr("Open"),
-                                 tr("%1 is not a text document.").arg(entryPath));
-        return nullptr;
+    if (!stillImage) {
+        const bool editable = suffixIsEditableText(suffix)
+            || (!suffixIsKnownBinary(suffix) && !data.contains('\0'));
+        if (!editable) {
+            QMessageBox::information(this, tr("Open"),
+                                     tr("%1 is not a text document.").arg(entryPath));
+            return nullptr;
+        }
     }
 
     if (!paths::ensureDirectory(QFileInfo(extracted).absolutePath(), &error)) {
@@ -1421,17 +1440,18 @@ CodeEditor *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
         }
     }
 
-    CodeEditor *editor = addEditorTab(extracted);
-    if (!editor)
+    QWidget *tab = stillImage ? static_cast<QWidget *>(addImageTab(extracted))
+                              : addEditorTab(extracted);
+    if (!tab)
         return nullptr;
     FloppyDoc doc;
     doc.imagePath = QFileInfo(imagePath).absoluteFilePath();
     doc.entryPath = entryPath;
     m_floppyDocs.insert(QFileInfo(extracted).absoluteFilePath(), doc);
-    const int index = m_tabs->indexOf(editor);
+    const int index = m_tabs->indexOf(tab);
     m_tabs->setTabToolTip(index, tr("%1 — edited inside %2")
                                     .arg(entryPath, QFileInfo(imagePath).fileName()));
-    return editor;
+    return tab;
 }
 
 void MainWindow::writeBackFloppyDoc(const QString &path)
@@ -1660,6 +1680,8 @@ void MainWindow::saveFile()
             QMessageBox::critical(this, tr("Save"),
                                   tr("Could not write %1: %2")
                                       .arg(m_image->filePath(), m_image->lastError()));
+        } else {
+            writeBackFloppyDoc(m_image->filePath());
         }
         updateTabTitle(m_image);
         updateModifiedState();
@@ -1792,6 +1814,16 @@ void MainWindow::importImage()
 
 void MainWindow::exportImage()
 {
+    exportImageWith(false);
+}
+
+void MainWindow::exportImageSpriteSafe()
+{
+    exportImageWith(true);
+}
+
+void MainWindow::exportImageWith(bool spriteSafe)
+{
     if (!m_image)
         return;
     const QString path = QFileDialog::getSaveFileName(
@@ -1800,7 +1832,7 @@ void MainWindow::exportImage()
            "STOS sprite bank (*.mbk);;Assembler include (*.s);;Bitplane binary (*.bin)"));
     if (path.isEmpty())
         return;
-    if (!m_image->exportFile(path)) {
+    if (!m_image->exportFile(path, spriteSafe)) {
         QMessageBox::warning(this, tr("Export"),
                              tr("Could not export %1: %2").arg(path, m_image->lastError()));
         return;

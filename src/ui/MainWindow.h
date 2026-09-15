@@ -168,12 +168,13 @@ public:
     /// it without a prompt. Returns false and sets error on a bad address.
     bool addWatchpointAddress(const QString &text, QString *error);
 
-    /// Open a text entry from a mounted floppy image (the file browser's
-    /// double-click). The entry is extracted to a file in the session
-    /// directory and opened in a text tab; saving that tab writes the text
-    /// back into the image. Returns the editor, or null when the entry cannot
-    /// be opened (no disk, not text, read error).
-    CodeEditor *openFloppyEntry(int drive, const QString &entryPath);
+    /// Open an entry from a mounted floppy image (the file browser's
+    /// double-click). Text opens in a text tab; a still image (.pi1, .neo,
+    /// .iff, .png, .pim) opens as an image tab over the imported sheet. The
+    /// entry is extracted to a file in the session directory, and saving that
+    /// tab writes it back into the image. Returns the tab, or null when the
+    /// entry cannot be opened (no disk, not text, read error).
+    QWidget *openFloppyEntry(int drive, const QString &entryPath);
 
 private:
     void createActions();
@@ -196,6 +197,9 @@ private:
 
     /// Keep the project-files pane's Disk A/B groups in line with settings.
     void syncFileBrowserDisks();
+
+    /// Shared tail of the two export actions.
+    void exportImageWith(bool spriteSafe);
 
     /// A text document opened from a floppy image: where the extracted file
     /// lives on the host, and which image entry it writes back to on save.
@@ -256,6 +260,7 @@ private:
     QString suggestedImageDirectory() const;
     void importImage();
     void exportImage();
+    void exportImageSpriteSafe();
 
     void openRecentSource();
 
@@ -412,6 +417,7 @@ private:
     QAction *m_actNewImage = nullptr;
     QAction *m_actImportImage = nullptr;
     QAction *m_actExportImage = nullptr;
+    QAction *m_actExportImageSafe = nullptr;
     QAction *m_actOpenProject = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;

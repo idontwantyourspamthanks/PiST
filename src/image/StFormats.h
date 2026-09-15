@@ -48,6 +48,15 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 /// extra frame when the size matches.
 bool applyImport(ImageDocument *doc, const ImportedSheet &sheet, bool append, QString *error);
 
+/// Re-order the active colours so the sprite never occupies colour 0: the
+/// reserved background slot takes index 0 and every painted colour moves up,
+/// which is what makes an ST still image re-import losslessly when its
+/// colour 0 is treated as transparent. Uses the current frame's pixels; a
+/// sheet that already keeps colour 0 free is returned unchanged. When all
+/// 16 colours are painted there is no slot to reserve: `*error` is set and
+/// the returned document is unspecified.
+ImageDocument spriteSafeDocument(const ImageDocument &doc, QString *error);
+
 QByteArray exportPi1(const ImageDocument &doc, int frame, QString *error);
 QByteArray exportNeo(const ImageDocument &doc, int frame, const QString &name, QString *error);
 QByteArray exportIff(const ImageDocument &doc, int frame, QString *error);

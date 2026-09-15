@@ -338,10 +338,10 @@ and `src/ui/ImageEditor`.
 dialog. A sheet is a `.pim` with named rectangles: an optional `regions` array (name, x, y, w, h)
 in the existing JSON, so v1 files load unchanged and regions live in the sheet itself, not the
 project file. `ImageDocument::cropped()` yields a region's document and `exportRegion()` emits the
-same bytes as the whole-document `.s` / `.bin` exporters for that crop. Phases: (1) model + export,
-done; (2) region editing UI in the ImageEditor; (3) the Degas loop — a `.pi1` opens as a 320×200
-sheet, from a floppy its saves write back into the image, and a sprite-safe export option keeps
-colour 0 as background so an export re-imports losslessly (the failure `demo/test.pi1` shows).
+same bytes as the whole-document `.s` / `.bin` exporters for that crop. All three phases are in:
+the ImageEditor edits regions (Region tool + panel, Extract opens the crop as its own tab), and a
+`.pi1` opens as a 320×200 sheet — from a floppy its saves write back into the image, and Export
+Sprite-Safe shifts the palette so colour 0 stays background (the failure `demo/test.pi1` shows).
 
 Still not in PiST, on purpose:
 

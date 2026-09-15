@@ -116,7 +116,7 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("PiST"));
-    QApplication::setApplicationVersion(QStringLiteral("0.3.0"));
+    QApplication::setApplicationVersion(QStringLiteral("0.3.1"));
     QApplication::setOrganizationName(QStringLiteral("PiST"));
 
     // Before anything else touches the style: applyTheme() captures the

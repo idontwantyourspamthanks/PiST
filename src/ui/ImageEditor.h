@@ -5,7 +5,11 @@
 #pragma once
 
 #include "image/ImageDocument.h"
+#include "image/StFormats.h"
 #include "image/Tools.h"
+
+#include <QHash>
+#include <QImage>
 
 #include <QWidget>
 
@@ -20,6 +24,7 @@ class QListWidgetItem;
 class QPushButton;
 class QScrollArea;
 class QSpinBox;
+class QStackedWidget;
 class QTimer;
 class QToolButton;
 class QUndoStack;
@@ -27,6 +32,7 @@ class QUndoStack;
 namespace pist {
 
 class ImageCanvas;
+class SheetCanvas;
 
 /// Document tab for a `.pim` sprite: grid canvas, ST palette, frames, layers,
 /// onion-skin, animated preview, and import/export of Atari ST still-image formats.
@@ -41,6 +47,16 @@ public:
     bool saveFile(const QString &path);
     bool importFile(const QString &path, bool append);
     bool exportFile(const QString &path, bool spriteSafe = false);
+    /// Compose sheet `sheetIndex` from its placed phases and write it.
+    bool exportSheetFile(const QString &path, int sheetIndex, bool spriteSafe);
+    /// The sheet the current phase is placed on (0 when unplaced); -1 when
+    /// the document has no sheets at all.
+    int currentSheetIndex() const;
+    /// Slice `count` cells out of an imported sheet into a new phase — the
+    /// spritesheet-mode "add a phase over the sheet" flow. Returns the new
+    /// phase index, or -1 when the sheet has no imported pixels.
+    int addPhaseFromSheet(int sheetIndex, const QString &name, int x, int y,
+                          int cellW, int cellH, int count);
 
     QString lastError() const { return m_lastError; }
     QString filePath() const { return m_filePath; }
@@ -63,6 +79,8 @@ signals:
     void modificationChanged(bool modified);
 
 private slots:
+    void setSheetMode(bool on);
+    void onPhasePlacementChanged();
     void setTool();
     void selectSwatch();
     void openPalettePicker();
@@ -115,6 +133,8 @@ private:
     void refreshOnion();
     void refreshPreview();
     void refreshCanvas();
+    void refreshSheetView();
+    void refreshPhasePlacement();
     void refreshChrome();
     void updateOverspill();
     void paintIndices(const QVector<int> &indices, int colour);
@@ -146,6 +166,15 @@ private:
 
     ImageCanvas *m_canvas = nullptr;
     QScrollArea *m_scroll = nullptr;
+    SheetCanvas *m_sheetCanvas = nullptr;
+    QStackedWidget *m_modeStack = nullptr;
+    QComboBox *m_phaseSheet = nullptr;
+    QSpinBox *m_phaseX = nullptr;
+    QSpinBox *m_phaseY = nullptr;
+    QAction *m_actSheetMode = nullptr;
+    /// Imported sheet pixels (for slicing) and their display form, per sheet.
+    QHash<int, ImportedSheet> m_importedSheets;
+    QHash<int, QImage> m_sheetUnderlays;
     QButtonGroup *m_tools = nullptr;
     QButtonGroup *m_swatches = nullptr;
     QWidget *m_swatchBar = nullptr;

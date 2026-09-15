@@ -8,6 +8,7 @@
 #include "image/Transform.h"
 #include "ui/Appearance.h"
 #include "ui/ImageCanvas.h"
+#include "ui/SheetCanvas.h"
 #include "ui/PalettePickerDialog.h"
 
 #include <QAbstractButton>
@@ -27,6 +28,7 @@
 #include <QListWidgetItem>
 #include <QPixmap>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QScrollArea>
 #include <QSize>
 #include <QSlider>
@@ -239,6 +241,12 @@ ImageEditor::ImageEditor(QWidget *parent)
     addTool(DrawTool::Eyedropper, tr("Eyedropper"));
     connect(m_tools, &QButtonGroup::buttonClicked, this, &ImageEditor::setTool);
 
+    m_actSheetMode = new QAction(tr("Sprite sheet"), this);
+    m_actSheetMode->setObjectName(QStringLiteral("imageSheetMode"));
+    m_actSheetMode->setCheckable(true);
+    m_actSheetMode->setToolTip(tr("Show the composed sheet and move phases around"));
+    connect(m_actSheetMode, &QAction::toggled, this, &ImageEditor::setSheetMode);
+
     bar->addSeparator();
     auto *size = new QSlider(Qt::Horizontal, this);
     size->setRange(1, 8);
@@ -308,6 +316,9 @@ ImageEditor::ImageEditor(QWidget *parent)
     bar->addAction(m_actPalette);
 
     bar->addSeparator();
+    bar->addAction(m_actSheetMode);
+
+    bar->addSeparator();
     auto addTransform = [&](QAction *&action, appearance::Icon icon, const QString &name,
                             const QString &objectName, void (ImageEditor::*method)()) {
         action = new QAction(name, this);
@@ -371,7 +382,27 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_scroll->setWidgetResizable(false);
     m_scroll->setAlignment(Qt::AlignCenter);
     m_scroll->viewport()->installEventFilter(this);
-    body->addWidget(m_scroll, 1);
+    m_sheetCanvas = new SheetCanvas(this);
+    m_sheetCanvas->setObjectName(QStringLiteral("imageSheetCanvas"));
+    auto *sheetScroll = new QScrollArea(this);
+    sheetScroll->setWidget(m_sheetCanvas);
+    sheetScroll->setWidgetResizable(true);
+    m_modeStack = new QStackedWidget(this);
+    m_modeStack->addWidget(m_scroll);
+    m_modeStack->addWidget(sheetScroll);
+    body->addWidget(m_modeStack, 1);
+
+    connect(m_sheetCanvas, &SheetCanvas::phaseSelected, m_phases, [this](int index) {
+        m_phases->setCurrentRow(index);
+    });
+    connect(m_sheetCanvas, &SheetCanvas::phaseMoved, this, [this](int index, int x, int y) {
+        const ImageDocument before = m_doc;
+        const int sheet = m_doc.phases().at(index).sheet;
+        m_doc.setPhasePlacement(index, sheet, x, y);
+        pushSnapshot(before, tr("move phase"));
+        refreshPhases();
+        notifyModified();
+    });
 
     connect(m_canvas, &ImageCanvas::indicesPainted, this, &ImageEditor::paintIndices);
     connect(m_canvas, &ImageCanvas::strokeEnded, this, &ImageEditor::finishStroke);
@@ -538,6 +569,29 @@ ImageEditor::ImageEditor(QWidget *parent)
     phaseBtns->addWidget(m_addPhase);
     phaseBtns->addWidget(m_removePhase);
     right->addLayout(phaseBtns);
+
+    // The current phase's strip placement on a sprite sheet.
+    auto *placementRow = new QHBoxLayout;
+    m_phaseSheet = new QComboBox(this);
+    m_phaseSheet->setObjectName(QStringLiteral("imagePhaseSheet"));
+    connect(m_phaseSheet, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &ImageEditor::onPhasePlacementChanged);
+    m_phaseX = new QSpinBox(this);
+    m_phaseX->setObjectName(QStringLiteral("imagePhaseX"));
+    m_phaseX->setPrefix(tr("x "));
+    m_phaseX->setRange(-4096, 4095);
+    m_phaseY = new QSpinBox(this);
+    m_phaseY->setObjectName(QStringLiteral("imagePhaseY"));
+    m_phaseY->setPrefix(tr("y "));
+    m_phaseY->setRange(-4096, 4095);
+    connect(m_phaseX, qOverload<int>(&QSpinBox::valueChanged), this,
+            &ImageEditor::onPhasePlacementChanged);
+    connect(m_phaseY, qOverload<int>(&QSpinBox::valueChanged), this,
+            &ImageEditor::onPhasePlacementChanged);
+    placementRow->addWidget(m_phaseSheet);
+    placementRow->addWidget(m_phaseX);
+    placementRow->addWidget(m_phaseY);
+    right->addLayout(placementRow);
     m_previewTimer = new QTimer(this);
     connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
 
@@ -606,6 +660,12 @@ bool ImageEditor::loadFile(const QString &path)
 
 bool ImageEditor::saveFile(const QString &path)
 {
+    // Saving onto a registered sheet path recomposes that sheet from its
+    // phases; editing a sheet means editing its sprites.
+    for (int i = 0; i < m_doc.sheets().size(); ++i) {
+        if (QFileInfo(m_doc.sheets().at(i).path) == QFileInfo(path))
+            return exportSheetFile(path, i, false);
+    }
     // A still-image path saves in that format rather than as .pim JSON, so
     // editing a Degas file in place stays a Degas file.
     if (!isPimPath(path))
@@ -623,6 +683,7 @@ bool ImageEditor::saveFile(const QString &path)
 
 bool ImageEditor::importFile(const QString &path, bool append)
 {
+    Q_UNUSED(append);
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         m_lastError = file.errorString();
@@ -635,16 +696,32 @@ bool ImageEditor::importFile(const QString &path, bool append)
         m_lastError = error;
         return false;
     }
-    if (!applyImport(&m_doc, sheet, append, &error)) {
-        m_lastError = error;
-        return false;
+
+    // A still image becomes a sprite-sheet target: the sheet mode shows it
+    // and phases are sliced out of it, rather than the pixels being edited
+    // in place.
+    const int index = m_doc.addSheet(path, sheet.width, sheet.height);
+    m_importedSheets.insert(index, sheet);
+
+    QImage underlay(sheet.width, sheet.height, QImage::Format_ARGB32);
+    for (int y = 0; y < sheet.height; ++y) {
+        auto *line = reinterpret_cast<QRgb *>(underlay.scanLine(y));
+        for (int x = 0; x < sheet.width; ++x) {
+            const int value = sheet.pixels.at(y * sheet.width + x);
+            if (value < 0)
+                line[x] = qRgb(50, 50, 50);
+            else {
+                const Rgb rgb = cubeRgb(m_doc.paletteKind(), value);
+                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
+            }
+        }
     }
-    m_undo->clear();
-    m_canvas->setDocument(&m_doc);
-    rebuildSwatches();
-    refreshChrome();
+    m_sheetUnderlays.insert(index, underlay);
+
+    m_actSheetMode->setChecked(true);
+    m_sheetCanvas->setSheetIndex(index);
+    refreshSheetView();
     notifyModified();
-    fitToView();
     return true;
 }
 
@@ -1074,6 +1151,171 @@ void ImageEditor::refreshPhases()
     m_previewPhaseBox->blockSignals(false);
 }
 
+void ImageEditor::setSheetMode(bool on)
+{
+    if (!m_modeStack)
+        return;
+    m_modeStack->setCurrentIndex(on ? 1 : 0);
+    // Paint tools make no sense over the composed sheet.
+    for (QAbstractButton *button : m_tools->buttons())
+        button->setEnabled(!on);
+    if (on)
+        refreshSheetView();
+}
+
+void ImageEditor::refreshSheetView()
+{
+    if (!m_sheetCanvas)
+        return;
+    int sheet = 0;
+    if (m_doc.phases().at(m_doc.currentPhase()).sheet >= 0)
+        sheet = m_doc.phases().at(m_doc.currentPhase()).sheet;
+    else if (m_doc.sheets().isEmpty())
+        sheet = -1;
+    m_sheetCanvas->setSheetIndex(sheet);
+    m_sheetCanvas->setUnderlay(m_sheetUnderlays.value(sheet));
+    m_sheetCanvas->setSelectedPhase(m_phases ? m_phases->currentRow() : -1);
+    m_sheetCanvas->setDocument(&m_doc);
+    m_sheetCanvas->updateGeometry();
+    m_sheetCanvas->adjustSize();
+    m_sheetCanvas->update();
+}
+
+void ImageEditor::refreshPhasePlacement()
+{
+    if (!m_phaseSheet || !m_phaseX || !m_phaseY)
+        return;
+    const ImagePhase &current = m_doc.phases().at(m_doc.currentPhase());
+    m_phaseSheet->blockSignals(true);
+    m_phaseSheet->clear();
+    m_phaseSheet->addItem(tr("unplaced"), -1);
+    for (int i = 0; i < m_doc.sheets().size(); ++i) {
+        const ImageSheet &sheet = m_doc.sheets().at(i);
+        m_phaseSheet->addItem(sheet.path.isEmpty()
+                                  ? tr("Sheet %1").arg(i + 1)
+                                  : QFileInfo(sheet.path).fileName(),
+                              i);
+    }
+    const int index = m_phaseSheet->findData(current.sheet);
+    m_phaseSheet->setCurrentIndex(index >= 0 ? index : 0);
+    m_phaseSheet->blockSignals(false);
+
+    m_phaseX->blockSignals(true);
+    m_phaseY->blockSignals(true);
+    const bool placed = current.sheet >= 0;
+    m_phaseX->setEnabled(placed);
+    m_phaseY->setEnabled(placed);
+    if (placed) {
+        m_phaseX->setValue(current.x);
+        m_phaseY->setValue(current.y);
+    }
+    m_phaseX->blockSignals(false);
+    m_phaseY->blockSignals(false);
+}
+
+void ImageEditor::onPhasePlacementChanged()
+{
+    const int phase = m_doc.currentPhase();
+    const int sheet = m_phaseSheet->currentData().toInt();
+    if (!m_doc.setPhasePlacement(phase, sheet, m_phaseX->value(), m_phaseY->value()))
+        return;
+    // Placement edits are metadata tweaks, like phase renames: no snapshot.
+    refreshPhases();
+    refreshSheetView();
+    notifyModified();
+}
+
+int ImageEditor::addPhaseFromSheet(int sheetIndex, const QString &name, int x, int y,
+                                   int cellW, int cellH, int count)
+{
+    if (!m_importedSheets.contains(sheetIndex))
+        return -1;
+    const QVector<QVector<int>> cells =
+        sliceSheetCells(m_importedSheets.value(sheetIndex), x, y, cellW, cellH, count);
+    if (cells.isEmpty())
+        return -1;
+    const ImageDocument before = m_doc;
+    const int index = m_doc.addPhase(name, cellW, cellH);
+    m_doc.setPhasePlacement(index, sheetIndex, x, y);
+    m_doc.replaceActiveLayer(cells.first());
+    for (int k = 1; k < cells.size(); ++k) {
+        m_doc.addFrame();
+        m_doc.replaceActiveLayer(cells.at(k));
+    }
+    pushSnapshot(before, tr("add phase from sheet"));
+    refreshChrome();
+    m_phases->setCurrentRow(index);
+    notifyModified();
+    return index;
+}
+
+int ImageEditor::currentSheetIndex() const
+{
+    if (m_doc.sheets().isEmpty())
+        return -1;
+    const int sheet = m_doc.phases().at(m_doc.currentPhase()).sheet;
+    return sheet >= 0 ? sheet : 0;
+}
+
+bool ImageEditor::exportSheetFile(const QString &path, int sheetIndex, bool spriteSafe)
+{
+    QString error;
+    ImageDocument composed = composeSheet(m_doc, sheetIndex, &error);
+    if (!error.isEmpty()) {
+        m_lastError = error;
+        return false;
+    }
+    if (spriteSafe) {
+        ImageDocument safe = spriteSafeDocument(composed, &error);
+        if (!error.isEmpty()) {
+            m_lastError = error;
+            return false;
+        }
+        composed = safe;
+    }
+
+    const StImageFormat format = stFormatFromPath(path);
+    QByteArray bytes;
+    switch (format) {
+    case StImageFormat::Pi1:
+        bytes = exportPi1(composed, 0, &error);
+        break;
+    case StImageFormat::Neo:
+        bytes = exportNeo(composed, 0, QFileInfo(path).completeBaseName(), &error);
+        break;
+    case StImageFormat::Iff:
+        bytes = exportIff(composed, 0, &error);
+        break;
+    case StImageFormat::Png:
+        bytes = exportPng(composed, 0, &error);
+        break;
+    case StImageFormat::Mbk:
+        bytes = exportStosMbk(composed, 0, 1, &error);
+        break;
+    case StImageFormat::Assembler:
+        bytes = exportAssembler(composed, 0, &error);
+        break;
+    case StImageFormat::BitplaneBin:
+        bytes = exportBitplanes(composed, 0, &error);
+        break;
+    default:
+        m_lastError = tr("Unknown export format for %1").arg(path);
+        return false;
+    }
+    if (!error.isEmpty()) {
+        m_lastError = error;
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || file.write(bytes) != bytes.size()) {
+        m_lastError = file.errorString();
+        return false;
+    }
+    return true;
+}
+
 void ImageEditor::refreshOnion()
 {
     if (!m_canvas)
@@ -1131,6 +1373,7 @@ void ImageEditor::refreshChrome()
     refreshFrames();
     refreshLayers();
     refreshPhases();
+    refreshPhasePlacement();
     refreshCanvas();
     refreshPreview();
     updateOverspill();

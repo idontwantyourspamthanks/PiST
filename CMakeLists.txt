@@ -131,7 +131,9 @@ qt_add_library(pist_core OBJECT
     src/ui/SetupDialog.cpp
     src/ui/SetupDialog.h
     src/ui/ImageCanvas.cpp
+    src/ui/SheetCanvas.cpp
     src/ui/ImageCanvas.h
+    src/ui/SheetCanvas.h
     src/ui/ImageEditor.cpp
     src/ui/ImageEditor.h
     src/ui/PalettePickerDialog.cpp

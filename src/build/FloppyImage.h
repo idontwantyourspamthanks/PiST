@@ -62,6 +62,23 @@ QVector<Entry> listRaw(const QByteArray &raw, QString *error);
 /// Load an image file and list it.
 QVector<Entry> listImage(const QString &imagePath, QString *error);
 
+/// Read one file's content out of a decoded image. `entryPath` is the
+/// `/`-separated path `listRaw` reports (`AUTO/PROG.PRG`).
+bool readFileRaw(const QByteArray &raw, const QString &entryPath,
+                 QByteArray *data, QString *error);
+
+/// Rewrite an existing image in place: drop `removals` (an entry removes its
+/// whole subtree), then add `additions` — the operations behind copying files
+/// onto a floppy and moving them off one. An addition whose 8.3 name already
+/// exists on the disk is given a numbered name rather than failing the write.
+/// The new contents are staged to a sibling temporary file, so a failure never
+/// truncates the original, and the staged image only replaces the original
+/// once complete. The container format follows the suffix (`.st`, `.img`,
+/// `.msa`); `.dim` and `.ipf` cannot be written back and are refused. The
+/// FAT12 layout is always rebuilt with the canonical 720 KiB geometry.
+bool updateImage(const QString &imagePath, const QVector<Item> &additions,
+                 const QStringList &removals, QString *error);
+
 /// Write a 720 KiB FAT12 image containing `items` (files and directories).
 /// Empty files are allowed; empty directories are kept. Fails when the
 /// contents do not fit, or when the root directory would exceed 112 entries.

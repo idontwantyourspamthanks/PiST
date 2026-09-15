@@ -38,6 +38,9 @@ private slots:
     void floppyListsAutoFolder();
     void floppyWritesAndListsFiles();
     void floppyMsaRoundTrip();
+    void floppyReadsFilesFromImage();
+    void floppyUpdateAddsAndRemoves();
+    void floppyUpdateRefusesDim();
     void floppyRejectsOversizedExport();
 };
 
@@ -509,6 +512,147 @@ void TstParsers::floppyMsaRoundTrip()
     const QVector<floppy::Entry> entries = floppy::listImage(msa, &error);
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY(entryNamed(entries, QStringLiteral("A.PRG"), false));
+}
+
+void TstParsers::floppyReadsFilesFromImage()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item dir;
+    dir.destPath = QStringLiteral("STUFF");
+    dir.isDirectory = true;
+    items.append(dir);
+    floppy::Item nested;
+    nested.destPath = QStringLiteral("STUFF/DATA.BIN");
+    // 1500 bytes spans two 1 KiB clusters, so the read must follow the chain.
+    QByteArray payload(1500, '\0');
+    for (int i = 0; i < payload.size(); ++i)
+        payload[i] = char(i & 0xff);
+    nested.data = payload;
+    items.append(nested);
+    floppy::Item root;
+    root.destPath = QStringLiteral("hello.txt");
+    root.data = QByteArrayLiteral("hi there");
+    items.append(root);
+
+    const QString img = tmp.path() + QStringLiteral("/read.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(img, items, &error), qPrintable(error));
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(img, &raw, &error), qPrintable(error));
+
+    QByteArray data;
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("HELLO.TXT"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArrayLiteral("hi there"));
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("hello.txt"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArrayLiteral("hi there"));
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("STUFF/DATA.BIN"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, payload);
+
+    QVERIFY(!floppy::readFileRaw(raw, QStringLiteral("STUFF"), &data, &error));
+    QVERIFY(!floppy::readFileRaw(raw, QStringLiteral("NOPE.TXT"), &data, &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TstParsers::floppyUpdateAddsAndRemoves()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item dir;
+    dir.destPath = QStringLiteral("DATA");
+    dir.isDirectory = true;
+    items.append(dir);
+    floppy::Item keep;
+    keep.destPath = QStringLiteral("DATA/KEEP.TXT");
+    keep.data = QByteArrayLiteral("kept");
+    items.append(keep);
+    floppy::Item drop;
+    drop.destPath = QStringLiteral("DROP.TXT");
+    drop.data = QByteArrayLiteral("dropped");
+    items.append(drop);
+
+    QString error;
+    const QString st = tmp.path() + QStringLiteral("/work.st");
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+
+    floppy::Item added;
+    added.destPath = QStringLiteral("DATA/NEW.BIN");
+    added.data = QByteArray(1200, '\x7f');
+    QVERIFY2(floppy::updateImage(st, {added}, {QStringLiteral("DROP.TXT")}, &error),
+             qPrintable(error));
+
+    const QVector<floppy::Entry> entries = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entryNamed(entries, QStringLiteral("DATA"), true));
+    QVERIFY(entryNamed(entries, QStringLiteral("DATA/KEEP.TXT"), false));
+    QVERIFY(entryNamed(entries, QStringLiteral("DATA/NEW.BIN"), false));
+    QVERIFY(!entryNamed(entries, QStringLiteral("DROP.TXT"), false));
+
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(st, &raw, &error), qPrintable(error));
+    QByteArray data;
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("DATA/KEEP.TXT"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArrayLiteral("kept"));
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("DATA/NEW.BIN"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArray(1200, '\x7f'));
+
+    // Adding a name that already exists duplicates it with a numbered name
+    // rather than failing, so pasting the same file onto a disk twice keeps
+    // both copies.
+    floppy::Item dup;
+    dup.destPath = QStringLiteral("DROP.TXT");
+    dup.data = QByteArrayLiteral("dropped again");
+    QVERIFY2(floppy::updateImage(st, {dup, dup}, {}, &error), qPrintable(error));
+    const QVector<floppy::Entry> withDups = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entryNamed(withDups, QStringLiteral("DROP.TXT"), false));
+    QVERIFY(entryNamed(withDups, QStringLiteral("DROP1.TXT"), false));
+
+    // Removing a folder removes everything under it, and nothing beside it.
+    QVERIFY2(floppy::updateImage(st, {}, {QStringLiteral("DATA")}, &error),
+             qPrintable(error));
+    const QVector<floppy::Entry> after = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(after.size(), 2);
+    QVERIFY(entryNamed(after, QStringLiteral("DROP.TXT"), false));
+    QVERIFY(entryNamed(after, QStringLiteral("DROP1.TXT"), false));
+
+    // The same operations must keep a compressed .msa a working .msa.
+    const QString msa = tmp.path() + QStringLiteral("/work.msa");
+    QVERIFY2(floppy::writeImage(msa, items, &error), qPrintable(error));
+    floppy::Item small;
+    small.destPath = QStringLiteral("A.PRG");
+    small.data = QByteArrayLiteral("\x4e\x75");
+    QVERIFY2(floppy::updateImage(msa, {small}, {}, &error), qPrintable(error));
+    const QVector<floppy::Entry> msaEntries = floppy::listImage(msa, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entryNamed(msaEntries, QStringLiteral("DATA/KEEP.TXT"), false));
+    QVERIFY(entryNamed(msaEntries, QStringLiteral("A.PRG"), false));
+}
+
+void TstParsers::floppyUpdateRefusesDim()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString dim = tmp.path() + QStringLiteral("/disk.dim");
+    {
+        QFile f(dim);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(32 + 720 * 1024, '\0'));
+    }
+    floppy::Item file;
+    file.destPath = QStringLiteral("X.TXT");
+    file.data = QByteArrayLiteral("x");
+    QString error;
+    QVERIFY(!floppy::updateImage(dim, {file}, {}, &error));
+    QVERIFY(!error.isEmpty());
 }
 
 void TstParsers::floppyRejectsOversizedExport()

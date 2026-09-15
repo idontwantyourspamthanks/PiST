@@ -441,6 +441,15 @@ QVector<RawDirEntry> parseDirBytes(const QByteArray &dir)
     return out;
 }
 
+const RawDirEntry *dirEntryNamed(const QVector<RawDirEntry> &entries, const QString &name)
+{
+    for (const RawDirEntry &e : entries) {
+        if (e.name.compare(name, Qt::CaseInsensitive) == 0)
+            return &e;
+    }
+    return nullptr;
+}
+
 void listDir(const QByteArray &image, const Geo &g, const QByteArray &dirBytes,
              const QString &prefix, int depth, QVector<Entry> *out)
 {
@@ -697,9 +706,14 @@ bool insertItem(Node *root, const Item &item, QString *error)
                 dir = existing;
                 continue;
             }
-            setError(error, QStringLiteral("%1 would collide with another file on the floppy")
-                                .arg(dest));
-            return false;
+            if (existing->isDir) {
+                setError(error, QStringLiteral("%1 collides with a folder on the floppy")
+                                    .arg(dest));
+                return false;
+            }
+            // A second file with the same 8.3 name falls through to the
+            // uniquifier below, so copying onto a disk twice duplicates
+            // (ONE.TXT, then ONE1.TXT) instead of failing the write.
         }
 
         QSet<QByteArray> used;
@@ -903,6 +917,126 @@ QVector<Entry> listImage(const QString &imagePath, QString *error)
     if (!loadRaw(imagePath, &raw, error))
         return {};
     return listRaw(raw, error);
+}
+
+bool readFileRaw(const QByteArray &raw, const QString &entryPath, QByteArray *data,
+                 QString *error)
+{
+    Geo g;
+    if (!parseGeo(raw, &g)) {
+        setError(error, QStringLiteral("not a FAT12 floppy image"));
+        return false;
+    }
+    QString clean = QDir::fromNativeSeparators(entryPath).trimmed();
+    while (clean.startsWith(QLatin1Char('/')))
+        clean.remove(0, 1);
+    while (clean.endsWith(QLatin1Char('/')))
+        clean.chop(1);
+    const QStringList parts = clean.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) {
+        setError(error, QStringLiteral("no entry named on the floppy"));
+        return false;
+    }
+
+    const int rootStart = (g.reservedSectors + g.fatCount * g.fatSectors) * g.sectorSize;
+    const int rootBytes = g.rootSectors * g.sectorSize;
+    QByteArray dirBytes = raw.mid(rootStart, rootBytes);
+    for (int i = 0; i < parts.size(); ++i) {
+        const RawDirEntry *found = dirEntryNamed(parseDirBytes(dirBytes), parts.at(i));
+        if (!found) {
+            setError(error, QStringLiteral("%1 is not on the floppy").arg(clean));
+            return false;
+        }
+        if (i + 1 == parts.size()) {
+            if (found->isDir) {
+                setError(error, QStringLiteral("%1 is a folder").arg(clean));
+                return false;
+            }
+            if (data)
+                *data = readChain(raw, g, found->cluster, found->size, false);
+            return true;
+        }
+        if (!found->isDir) {
+            setError(error, QStringLiteral("%1 is not a folder").arg(clean));
+            return false;
+        }
+        dirBytes = readChain(raw, g, found->cluster, 0, true);
+    }
+    return false;
+}
+
+bool updateImage(const QString &imagePath, const QVector<Item> &additions,
+                 const QStringList &removals, QString *error)
+{
+    const QString suffix = QFileInfo(imagePath).suffix().toLower();
+    if (suffix == QLatin1String("dim") || suffix == QLatin1String("ipf")) {
+        setError(error,
+                 QStringLiteral("PiST can only rewrite .st, .img and .msa images"));
+        return false;
+    }
+    if (additions.isEmpty() && removals.isEmpty())
+        return true;
+
+    QByteArray raw;
+    if (!loadRaw(imagePath, &raw, error))
+        return false;
+    QString listError;
+    const QVector<Entry> entries = listRaw(raw, &listError);
+    if (!listError.isEmpty()) {
+        setError(error, listError);
+        return false;
+    }
+
+    QStringList removed;
+    for (const QString &path : removals) {
+        QString clean = QDir::fromNativeSeparators(path).trimmed();
+        while (clean.startsWith(QLatin1Char('/')))
+            clean.remove(0, 1);
+        while (clean.endsWith(QLatin1Char('/')))
+            clean.chop(1);
+        if (!clean.isEmpty())
+            removed.append(clean);
+    }
+
+    QVector<Item> items;
+    for (const Entry &entry : entries) {
+        bool dropped = false;
+        for (const QString &r : removed) {
+            if (entry.path.compare(r, Qt::CaseInsensitive) == 0
+                || entry.path.startsWith(r + QLatin1Char('/'), Qt::CaseInsensitive)) {
+                dropped = true;
+                break;
+            }
+        }
+        if (dropped)
+            continue;
+        Item item;
+        item.destPath = entry.path;
+        item.isDirectory = entry.isDirectory;
+        if (!entry.isDirectory && !readFileRaw(raw, entry.path, &item.data, error))
+            return false;
+        items.append(item);
+    }
+    items += additions;
+
+    // Stage beside the original with the same suffix, so saveRaw picks the
+    // same container format, and only replace the original once the new
+    // image is complete.
+    const QFileInfo info(imagePath);
+    const QString staged = info.absolutePath() + QStringLiteral("/.pist-%1.tmp.%2")
+                                              .arg(info.completeBaseName(), suffix);
+    if (!writeImage(staged, items, error)) {
+        QFile::remove(staged);
+        return false;
+    }
+    QFile::remove(imagePath);
+    if (!QFile::rename(staged, imagePath)) {
+        setError(error, QStringLiteral("could not replace %1 with the staged image")
+                            .arg(imagePath));
+        QFile::remove(staged);
+        return false;
+    }
+    return true;
 }
 
 bool writeImage(const QString &imagePath, const QVector<Item> &items, QString *error)

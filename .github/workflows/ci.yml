@@ -268,7 +268,15 @@ jobs:
         run: |
           echo "### ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          ctest --test-dir build --build-config Release 2>&1 | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+          # Re-running ctest here used to abort the widget tests: this step
+          # has no QT_QPA_PLATFORM=offscreen, so the summary contradicted a
+          # green Test step. Quote the Test step's own log instead.
+          log=build/Testing/Temporary/LastTest.log
+          if [ -f "$log" ]; then
+            tail -25 "$log" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no LastTest.log (tests did not run)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install (staged)

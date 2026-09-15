@@ -147,6 +147,10 @@ private slots:
     /// Spritesheet mode: phases place on sheets (numerically and by drag),
     /// the mode toggle shows the composed sheet, and placement persists.
     void phasePlacementAndSheetMode();
+    /// A saved document's sheet pixels reload from the recorded file, so
+    /// slicing works after a reopen, and selecting a phase retargets the
+    /// animation preview.
+    void sheetPixelsSurviveReopen();
     /// A document with unplaced phases and no sheets: New sheet creates the
     /// 320×200 target and staged phases drag straight onto it.
     void newSheetAndStagingDrag();
@@ -2184,6 +2188,59 @@ void TstGui::sliceDialogBuildsPhaseFromSheet()
     QCOMPARE(image->document().frameCount(), 6);
     for (int k = 0; k < 6; ++k)
         QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
+}
+
+
+void TstGui::sheetPixelsSurviveReopen()
+{
+    const QString dir = m_work->path() + QStringLiteral("/reopen");
+    QVERIFY(QDir().mkpath(dir));
+
+    // The sheet file on disk: a 96x32 strip of three marked cells.
+    ImageDocument strip = ImageDocument::create(96, 32, PaletteKind::Ste);
+    for (int k = 0; k < 3; ++k)
+        strip.setPixel(k * 32, strip.active().at(k + 1));
+    const QString pi1Path = dir + QStringLiteral("/strip.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(strip, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    {
+        QFile out(pi1Path);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    }
+
+    // A document that references the sheet by path.
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    QCOMPARE(doc.addSheet(pi1Path, 320, 200), 0);
+    const QString pim = dir + QStringLiteral("withsheet.pim");
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    // A fresh process-equivalent: a new window loading the document knows
+    // nothing about the import, yet slicing must work off the recorded file.
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().at(0).path, pi1Path);
+
+    QCOMPARE(image->addPhaseFromSheet(0, QStringLiteral("walk"), 0, 0, 32, 32, 3), 1);
+    QVERIFY(image->document().setCurrentPhase(1));
+    QCOMPARE(image->document().frameCount(), 3);
+    for (int k = 0; k < 3; ++k)
+        QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
+
+    // Selecting a phase retargets the animation preview.
+    auto *list = image->findChild<QListWidget *>(QStringLiteral("imagePhases"));
+    QVERIFY(list);
+    auto *previewBox = image->findChild<QComboBox *>(QStringLiteral("imagePreviewPhase"));
+    QVERIFY(previewBox);
+    list->setCurrentRow(0);
+    QCOMPARE(previewBox->currentData().toInt(), 0);
+    list->setCurrentRow(1);
+    QCOMPARE(previewBox->currentData().toInt(), 1);
 }
 
 QTEST_MAIN(TstGui)

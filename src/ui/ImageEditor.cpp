@@ -268,6 +268,48 @@ private:
     QSpinBox *m_count = nullptr;
 };
 
+QImage sheetUnderlayImage(const ImportedSheet &sheet, PaletteKind kind)
+{
+    QImage underlay(sheet.width, sheet.height, QImage::Format_ARGB32);
+    for (int y = 0; y < sheet.height; ++y) {
+        auto *line = reinterpret_cast<QRgb *>(underlay.scanLine(y));
+        for (int x = 0; x < sheet.width; ++x) {
+            const int value = sheet.pixels.at(y * sheet.width + x);
+            if (value < 0)
+                line[x] = qRgb(50, 50, 50);
+            else {
+                const Rgb rgb = cubeRgb(kind, value);
+                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
+            }
+        }
+    }
+    return underlay;
+}
+
+/// (Re)load the pixel data of every sheet target that has a readable file,
+/// so slicing works after a document is reopened. Sheets without a path or
+/// with a missing file stay pixel-less until re-imported.
+void loadSheetPixels(ImageDocument &doc, QHash<int, ImportedSheet> &pixels,
+                     QHash<int, QImage> &underlays)
+{
+    pixels.clear();
+    underlays.clear();
+    for (int i = 0; i < doc.sheets().size(); ++i) {
+        const ImageSheet &sheet = doc.sheets().at(i);
+        if (sheet.path.isEmpty() || !QFileInfo::exists(sheet.path))
+            continue;
+        QFile file(sheet.path);
+        if (!file.open(QIODevice::ReadOnly))
+            continue;
+        ImportedSheet imported;
+        if (importStImage(file.readAll(), stFormatFromPath(sheet.path), doc.paletteKind(),
+                          &imported, nullptr)) {
+            pixels.insert(i, imported);
+            underlays.insert(i, sheetUnderlayImage(imported, doc.paletteKind()));
+        }
+    }
+}
+
 appearance::Icon iconForTool(DrawTool tool)
 {
     using appearance::Icon;
@@ -732,6 +774,8 @@ void ImageEditor::newDocument(int width, int height, PaletteKind kind)
     m_doc = ImageDocument::create(width, height, kind);
     m_filePath.clear();
     m_undo->clear();
+    m_importedSheets.clear();
+    m_sheetUnderlays.clear();
     if (m_actPlay)
         m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
@@ -773,6 +817,7 @@ bool ImageEditor::loadFile(const QString &path)
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
     m_canvas->setDocument(&m_doc);
     m_canvas->setCurrentColour(m_colour);
+    loadSheetPixels(m_doc, m_importedSheets, m_sheetUnderlays);
     rebuildSwatches();
     refreshChrome();
     notifyModified();
@@ -824,21 +869,7 @@ bool ImageEditor::importFile(const QString &path, bool append)
     // in place.
     const int index = m_doc.addSheet(path, sheet.width, sheet.height);
     m_importedSheets.insert(index, sheet);
-
-    QImage underlay(sheet.width, sheet.height, QImage::Format_ARGB32);
-    for (int y = 0; y < sheet.height; ++y) {
-        auto *line = reinterpret_cast<QRgb *>(underlay.scanLine(y));
-        for (int x = 0; x < sheet.width; ++x) {
-            const int value = sheet.pixels.at(y * sheet.width + x);
-            if (value < 0)
-                line[x] = qRgb(50, 50, 50);
-            else {
-                const Rgb rgb = cubeRgb(m_doc.paletteKind(), value);
-                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
-            }
-        }
-    }
-    m_sheetUnderlays.insert(index, underlay);
+    m_sheetUnderlays.insert(index, sheetUnderlayImage(sheet, m_doc.paletteKind()));
 
     m_actSheetMode->setChecked(true);
     m_sheetCanvas->setSheetIndex(index);
@@ -1901,6 +1932,10 @@ void ImageEditor::addPhase()
         slicePhaseFromSheet();
         return;
     }
+    if (m_actSheetMode->isChecked() && sheet >= 0 && m_status) {
+        m_status->setText(tr("This sheet's pixels are not loaded in this session — "
+                             "re-import the file to slice phases from it."));
+    }
 
     bool ok = false;
     const QString name = QInputDialog::getText(this, tr("New phase"), tr("Name:"),
@@ -1945,6 +1980,16 @@ void ImageEditor::selectPhase(int row)
     // canvas and the preview all follow the phase's own frames.
     if (row < 0 || row >= m_doc.phases().size() || !m_doc.setCurrentPhase(row))
         return;
+    // The animation preview plays the selected phase, not whatever was
+    // previewed before.
+    if (m_previewPhase != row) {
+        m_previewPhase = row;
+        m_previewPhaseBox->blockSignals(true);
+        const int index = m_previewPhaseBox->findData(row);
+        m_previewPhaseBox->setCurrentIndex(index >= 0 ? index : 0);
+        m_previewPhaseBox->blockSignals(false);
+        refreshPreview();
+    }
     refreshChrome();
 }
 

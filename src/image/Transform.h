@@ -23,14 +23,6 @@ enum class ShiftDirection {
     Down,
 };
 
-/// Named contiguous run of frames (walk-left, idle, …). Inclusive 0-based
-/// indices. Insert/delete of frames shifts these bounds.
-struct ImagePhase {
-    QString name;
-    int start = 0;
-    int end = 0;
-};
-
 struct OnionGhost {
     int index = -1;
     bool prev = true;
@@ -57,11 +49,5 @@ QVector<QVector<int>> generateRotationFrames(const QVector<int> &data, int size,
 QVector<OnionGhost> neighbourFrames(int current, int count, int distance = -1);
 
 int nextPreviewFrame(int current, int count, int start, int end);
-
-QVector<ImagePhase> insertFramesIntoPhases(const QVector<ImagePhase> &phases, int index,
-                                           int count = 1);
-QVector<ImagePhase> deleteFrameFromPhases(const QVector<ImagePhase> &phases, int index);
-QVector<ImagePhase> clampPhases(const QVector<ImagePhase> &phases, int frameCount);
-bool phaseContains(const ImagePhase &phase, int frameIndex);
 
 } // namespace pist

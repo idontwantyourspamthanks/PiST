@@ -323,16 +323,6 @@ void paintRect(QPainter &p, const QRectF &r, qreal w)
                           -r.height() * 0.22));
 }
 
-void paintRegion(QPainter &p, const QRectF &r, qreal w)
-{
-    QPen pen = stroke(ink(), w);
-    pen.setStyle(Qt::DashLine);
-    p.setPen(pen);
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(r.adjusted(r.width() * 0.14, r.height() * 0.20, -r.width() * 0.14,
-                          -r.height() * 0.20));
-}
-
 void paintRoundRect(QPainter &p, const QRectF &r, qreal w)
 {
     p.setPen(stroke(ink(), w));
@@ -803,7 +793,6 @@ PaintFn painterFor(Icon id)
     case Icon::Ellipse: return paintEllipse;
     case Icon::Fill: return paintFill;
     case Icon::Eyedropper: return paintEyedropper;
-    case Icon::Region: return paintRegion;
     case Icon::Undo: return paintUndo;
     case Icon::Redo: return paintRedo;
     case Icon::Grid: return paintGrid;

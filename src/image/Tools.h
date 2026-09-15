@@ -21,7 +21,6 @@ enum class DrawTool {
     Ellipse,
     Fill,
     Eyedropper,
-    Region,
 };
 
 inline bool isShapeTool(DrawTool tool)

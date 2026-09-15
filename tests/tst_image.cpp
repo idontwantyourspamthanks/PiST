@@ -38,12 +38,11 @@ private slots:
     void flipAndShift();
     void rotateNinetyAndBake();
     void layersOccludeAndRoundTrip();
-    void phasesFollowInsertDelete();
     void onionAndPreviewIndex();
-    void regionsPersistInPim();
-    void croppedDocumentCopiesTheRegion();
-    void regionExportMatchesCroppedDocument();
     void spriteSafeDocumentReservesColourZero();
+    void phasesOwnTheirFrames();
+    void v2PersistsPlacementAndSheets();
+    void sheetComposeAndSlice();
 };
 
 void TstImage::cubeSizes()
@@ -121,9 +120,17 @@ void TstImage::pimRejectsBadSize()
     QCOMPARE(doc.height(), 32);
 
     QString error;
-    QVERIFY(!doc.fromJson(QByteArray("{\"format\":\"pist.image\",\"width\":0,\"height\":8,"
-                                     "\"palette\":\"ste\",\"active\":[0],\"frames\":[{\"pixels\":[]}]}"),
-                          &error));
+    // v2 with an out-of-range cell size is rejected.
+    QVERIFY(!doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\","
+        "\"active\":[0],\"phases\":[{\"name\":\"p\",\"cellW\":0,\"cellH\":8,"
+        "\"frames\":[{\"pixels\":[]}]}]}"), &error));
+    QVERIFY(!error.isEmpty());
+
+    // So is the v1 shape: there is no upgrade path.
+    QVERIFY(!doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":1,\"width\":8,\"height\":8,"
+        "\"palette\":\"ste\",\"active\":[0],\"frames\":[{\"pixels\":[]}]}"), &error));
     QVERIFY(!error.isEmpty());
 }
 
@@ -294,25 +301,40 @@ void TstImage::layersOccludeAndRoundTrip()
     QVERIFY(loaded.toJson().contains("\"layers\""));
 }
 
-void TstImage::phasesFollowInsertDelete()
+void TstImage::phasesOwnTheirFrames()
 {
-    QVector<ImagePhase> phases{{QStringLiteral("walk-left"), 2, 5},
-                               {QStringLiteral("walk-right"), 6, 9}};
-    const QVector<ImagePhase> afterInsert = insertFramesIntoPhases(phases, 6, 1);
-    QCOMPARE(afterInsert.at(0).end, 6);
-    QCOMPARE(afterInsert.at(1).start, 7);
-    QCOMPARE(afterInsert.at(1).end, 10);
-
     ImageDocument doc = ImageDocument::create(8, 8, PaletteKind::Ste);
     doc.addFrame();
     doc.addFrame();
-    QCOMPARE(doc.addPhase(), 0);
-    QVERIFY(doc.setPhaseRange(0, 0, 1));
-    doc.setCurrentFrame(1);
+    QCOMPARE(doc.phaseCount(), 1);
+    QCOMPARE(doc.frameCount(), 3);
+
+    // A new phase owns its own frames at its own cell size; the two phases
+    // are fully independent.
+    QCOMPARE(doc.addPhase(QStringLiteral("dragon"), 16, 16), 1);
+    QCOMPARE(doc.currentPhase(), 1);
+    QCOMPARE(doc.frameCount(), 1);
+    QCOMPARE(doc.width(), 16);
+    doc.setPixel(0, doc.active().at(1));
     doc.addFrame();
-    QCOMPARE(doc.phases().at(0).end, 2);
-    QVERIFY(doc.removeFrame(0));
-    QCOMPARE(doc.phases().at(0).end, 1);
+    QCOMPARE(doc.frameCount(), 2);
+
+    // Editing the first phase does not touch the second.
+    QVERIFY(doc.setCurrentPhase(0));
+    QCOMPARE(doc.frameCount(), 3);
+    QCOMPARE(doc.width(), 8);
+    QCOMPARE(doc.pixels().at(0), kTransparent);
+
+    // Placement round-trips.
+    QCOMPARE(doc.addSheet(QStringLiteral("sheets/chars.pi1"), 320, 200), 0);
+    QVERIFY(doc.setPhasePlacement(1, 0, 42, 50));
+    QCOMPARE(doc.phases().at(1).sheet, 0);
+    QCOMPARE(doc.phases().at(1).x, 42);
+
+    // The last remaining phase cannot be removed.
+    QVERIFY(doc.removePhase(1));
+    QVERIFY(!doc.removePhase(0));
+    QCOMPARE(doc.phaseCount(), 1);
 }
 
 void TstImage::onionAndPreviewIndex()
@@ -322,114 +344,6 @@ void TstImage::onionAndPreviewIndex()
     QCOMPARE(nextPreviewFrame(3, 4, 0, 3), 0);
     QCOMPARE(nextPreviewFrame(5, 8, 2, 5), 2);
     QCOMPARE(nextPreviewFrame(3, 8, 3, 3), 3);
-}
-
-void TstImage::regionsPersistInPim()
-{
-    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
-    QVector<ImageRegion> regions;
-    regions.append({QStringLiteral("player"), 0, 0, 16, 16});
-    regions.append({QStringLiteral("hud"), 16, 16, 15, 12});
-    doc.setRegions(regions);
-
-    ImageDocument reloaded;
-    QString error;
-    QVERIFY2(reloaded.fromJson(doc.toJson(), &error), qPrintable(error));
-    QCOMPARE(reloaded.regions().size(), 2);
-    QCOMPARE(reloaded.regions().at(0).name, QStringLiteral("player"));
-    QCOMPARE(reloaded.regions().at(0).w, 16);
-    QCOMPARE(reloaded.regions().at(1).name, QStringLiteral("hud"));
-    QCOMPARE(reloaded.regions().at(1).x, 16);
-    QCOMPARE(reloaded.regions().at(1).h, 12);
-
-    // Regions survive the on-disk form too.
-    QTemporaryDir dir;
-    QVERIFY(dir.isValid());
-    const QString path = dir.filePath(QStringLiteral("sheet.pim"));
-    QVERIFY2(doc.save(path, &error), qPrintable(error));
-    ImageDocument loaded;
-    QVERIFY2(loaded.load(path, &error), qPrintable(error));
-    QCOMPARE(loaded.regions().size(), 2);
-    QCOMPARE(loaded.regions().at(0).name, QStringLiteral("player"));
-    QCOMPARE(loaded.regions().at(1).h, 12);
-
-    // A v1-shaped .pim without a regions key loads as no regions.
-    QVERIFY(reloaded.fromJson(QByteArrayLiteral(
-        "{\"format\":\"pist.image\",\"version\":1,\"width\":8,\"height\":8,"
-        "\"palette\":\"ste\",\"active\":[3840],\"background\":3840,"
-        "\"frames\":[{\"pixels\":[]}]}")));
-    QVERIFY(reloaded.regions().isEmpty());
-
-    // Malformed region entries are dropped rather than failing the load.
-    QJsonDocument parsed = QJsonDocument::fromJson(doc.toJson());
-    QJsonObject root = parsed.object();
-    QJsonArray bad = root.value(QStringLiteral("regions")).toArray();
-    QJsonObject noise;
-    noise.insert(QStringLiteral("name"), QStringLiteral("broken"));
-    bad.append(noise);
-    root.insert(QStringLiteral("regions"), bad);
-    parsed.setObject(root);
-    QVERIFY2(reloaded.fromJson(parsed.toJson(), &error), qPrintable(error));
-    QCOMPARE(reloaded.regions().size(), 2);
-}
-
-void TstImage::croppedDocumentCopiesTheRegion()
-{
-    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
-    doc.setPixel(5 * 32 + 5, doc.active().at(1));
-    doc.setPixel(4 * 32 + 6, doc.active().at(2));
-
-    ImageDocument crop = doc.cropped({QStringLiteral("mark"), 3, 3, 4, 4});
-    QCOMPARE(crop.width(), 4);
-    QCOMPARE(crop.height(), 4);
-    QCOMPARE(crop.paletteKind(), PaletteKind::Ste);
-    QCOMPARE(crop.active(), doc.active());
-    QCOMPARE(crop.pixels().at(2 * 4 + 2), doc.active().at(1));
-    QCOMPARE(crop.pixels().at(1 * 4 + 3), doc.active().at(2));
-    QCOMPARE(crop.pixels().at(0), kTransparent);
-
-    // Cropping clamps to the canvas instead of sliding out of range.
-    const ImageDocument edge = doc.cropped({QStringLiteral("edge"), 30, 30, 16, 16});
-    QCOMPARE(edge.width(), 2);
-    QCOMPARE(edge.height(), 2);
-}
-
-void TstImage::regionExportMatchesCroppedDocument()
-{
-    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
-    ImageRegion region{QStringLiteral("half"), 8, 8, 16, 16};
-    // Fill the region with the colour at active position 3: bitplanes 0 and 1 set.
-    for (int y = 8; y < 24; ++y) {
-        for (int x = 8; x < 24; ++x)
-            doc.setPixel(y * 32 + x, doc.active().at(3));
-    }
-
-    ImageDocument crop = doc.cropped(region);
-    QString error;
-    const QByteArray bin = exportRegion(doc, 0, region, StImageFormat::BitplaneBin, &error);
-    QVERIFY2(!bin.isEmpty(), qPrintable(error));
-    QCOMPARE(bin, exportBitplanes(crop, 0, nullptr));
-
-    // Hand-computed bytes: a 16-wide region is one word per plane, 4 planes
-    // per row, 16 rows; index 3 lights planes 0 and 1 only.
-    const QByteArray row = QByteArrayLiteral("\xff\xff\xff\xff\x00\x00\x00\x00");
-    QByteArray expected;
-    for (int i = 0; i < 16; ++i)
-        expected += row;
-    QCOMPARE(bin.size(), 128);
-    QCOMPARE(bin, expected);
-
-    const QByteArray include = exportRegion(doc, 0, region, StImageFormat::Assembler, &error);
-    QVERIFY2(!include.isEmpty(), qPrintable(error));
-    QCOMPARE(include, exportAssembler(crop, 0, nullptr));
-    QVERIFY(include.contains("dc.w"));
-    // The include describes the region, not the sheet it came from.
-    QVERIFY(include.contains("16x16"));
-
-    // A region that misses the canvas is an error, not a silent export.
-    const ImageRegion off{QStringLiteral("off"), 40, 40, 8, 8};
-    QVERIFY(exportRegion(doc, 0, off, StImageFormat::BitplaneBin, &error).isEmpty());
-    QVERIFY(!error.isEmpty());
 }
 
 void TstImage::spriteSafeDocumentReservesColourZero()
@@ -472,6 +386,79 @@ void TstImage::spriteSafeDocumentReservesColourZero()
         full.setPixel(i, full.active().at(i));
     error.clear();
     spriteSafeDocument(full, &error);
+    QVERIFY(!error.isEmpty());
+}
+
+
+void TstImage::v2PersistsPlacementAndSheets()
+{
+    QString error;
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    QCOMPARE(doc.addPhase(QStringLiteral("dragon"), 32, 32), 1);
+    doc.setPixel(3, doc.active().at(2));
+    QCOMPARE(doc.addSheet(QStringLiteral("sheets/chars.pi1"), 320, 200), 0);
+    QVERIFY(doc.setPhasePlacement(1, 0, 42, 50));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("set.pim"));
+    QVERIFY2(doc.save(path, &error), qPrintable(error));
+
+    ImageDocument loaded;
+    QVERIFY2(loaded.load(path, &error), qPrintable(error));
+    QCOMPARE(loaded.phaseCount(), 2);
+    QCOMPARE(loaded.sheets().size(), 1);
+    QCOMPARE(loaded.sheets().at(0).path, QStringLiteral("sheets/chars.pi1"));
+    QCOMPARE(loaded.sheets().at(0).width, 320);
+    QVERIFY(loaded.setCurrentPhase(1));
+    QCOMPARE(loaded.width(), 32);
+    QCOMPARE(loaded.phases().at(1).x, 42);
+    QCOMPARE(loaded.phases().at(1).sheet, 0);
+    QCOMPARE(loaded.pixels().at(3), doc.active().at(2));
+
+    // The v1 shape is rejected outright: there is no upgrade path.
+    error.clear();
+    QVERIFY(!loaded.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":1,\"width\":8,\"height\":8,"
+        "\"palette\":\"ste\",\"active\":[0],\"frames\":[{\"pixels\":[]}]}"), &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TstImage::sheetComposeAndSlice()
+{
+    ImageDocument doc = ImageDocument::create(4, 4, PaletteKind::Ste);
+    QCOMPARE(doc.addSheet(QString(), 8, 4), 0);
+    // Phase 0: two 4x4 cells at [0, 0], painted with distinct colours.
+    doc.setPixel(0, doc.active().at(1));
+    QCOMPARE(doc.addPhase(QStringLiteral("second"), 4, 4), 1);
+    doc.setPixel(5, doc.active().at(2));   // top-right pixel of its single cell
+    QVERIFY(doc.setPhasePlacement(0, 0, 0, 0));
+    QVERIFY(doc.setPhasePlacement(1, 0, 4, 0));
+
+    QString error;
+    ImageDocument composed = composeSheet(doc, 0, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(composed.width(), 8);
+    QCOMPARE(composed.height(), 4);
+    QCOMPARE(composed.pixels().at(0), doc.active().at(1));
+    // Phase 1's pixel 5 sits at row 1, col 1 of its cell: [4+1, 0+1] → index 13.
+    QCOMPARE(composed.pixels().at(13), doc.active().at(2));
+    QCOMPARE(composed.pixels().at(1), kTransparent);
+
+    // Slicing is the inverse: cut [4, 0] 4x4 back out of the composed sheet.
+    ImportedSheet sheet;
+    sheet.width = 8;
+    sheet.height = 4;
+    sheet.pixels = composed.pixels();
+    const QVector<QVector<int>> cells = sliceSheetCells(sheet, 4, 0, 4, 4, 1);
+    QCOMPARE(cells.size(), 1);
+    QCOMPARE(cells.at(0).at(5), doc.active().at(2));
+    QCOMPARE(cells.at(0).at(0), kTransparent);
+
+    // Unknown sheet index is an error.
+    error.clear();
+    composeSheet(doc, 3, &error);
     QVERIFY(!error.isEmpty());
 }
 

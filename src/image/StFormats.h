@@ -48,6 +48,17 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 /// extra frame when the size matches.
 bool applyImport(ImageDocument *doc, const ImportedSheet &sheet, bool append, QString *error);
 
+/// Compose the sheet `sheetIndex` from its placed phases: a single-frame
+/// document of the sheet's size with each phase's frames painted at
+/// [x + k*cellW, y]. Transparency stays transparent; unplaced phases and
+/// phases on other sheets are skipped. Fails on an unknown sheet index.
+ImageDocument composeSheet(const ImageDocument &doc, int sheetIndex, QString *error);
+
+/// Slice `count` cells of cellW×cellH out of `sheet`, left to right from
+/// [x, y], into frame pixel arrays (transparency preserved).
+QVector<QVector<int>> sliceSheetCells(const ImportedSheet &sheet, int x, int y,
+                                      int cellW, int cellH, int count);
+
 /// Re-order the active colours so the sprite never occupies colour 0: the
 /// reserved background slot takes index 0 and every painted colour moves up,
 /// which is what makes an ST still image re-import losslessly when its
@@ -65,11 +76,5 @@ QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumbe
 QByteArray exportAssembler(const ImageDocument &doc, int frame, QString *error);
 QByteArray exportBitplanes(const ImageDocument &doc, int frame, QString *error);
 
-/// Export one region of a sprite sheet: crop the frame to `region` (clipped
-/// to the canvas) and produce exactly the bytes the whole-document exporter
-/// produces for that crop. Formats: Assembler (a `dc.w` include) and
-/// BitplaneBin (raw word-padded bitplanes). Empty array on failure.
-QByteArray exportRegion(const ImageDocument &doc, int frame, const ImageRegion &region,
-                        StImageFormat format, QString *error);
 
 } // namespace pist

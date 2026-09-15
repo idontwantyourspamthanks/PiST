@@ -761,31 +761,70 @@ QByteArray exportAssembler(const ImageDocument &doc, int frame, QString *error)
     return text;
 }
 
-QByteArray exportRegion(const ImageDocument &doc, int frame, const ImageRegion &region,
-                        StImageFormat format, QString *error)
+ImageDocument composeSheet(const ImageDocument &doc, int sheetIndex, QString *error)
 {
-    const int x = qBound(0, region.x, doc.width());
-    const int y = qBound(0, region.y, doc.height());
-    const int w = qBound(0, region.w, doc.width() - x);
-    const int h = qBound(0, region.h, doc.height() - y);
-    if (w <= 0 || h <= 0) {
+    if (sheetIndex < 0 || sheetIndex >= doc.sheets().size()) {
         if (error)
-            *error = QStringLiteral("region %1 does not intersect the image")
-                         .arg(region.name.isEmpty() ? QStringLiteral("(unnamed)") : region.name);
+            *error = QStringLiteral("no such sprite sheet");
         return {};
     }
+    const ImageSheet &sheet = doc.sheets().at(sheetIndex);
+    ImageDocument out = ImageDocument::create(sheet.width, sheet.height, doc.paletteKind());
+    out.setActive(doc.active());
+    out.setBackground(doc.background());
 
-    const ImageDocument crop = doc.cropped(region, frame);
-    switch (format) {
-    case StImageFormat::Assembler:
-        return exportAssembler(crop, 0, error);
-    case StImageFormat::BitplaneBin:
-        return exportBitplanes(crop, 0, error);
-    default:
-        if (error)
-            *error = QStringLiteral("unsupported region export format");
-        return {};
+    QVector<int> canvas(out.width() * out.height(), kTransparent);
+    const int w = out.width();
+    const int h = out.height();
+    for (const ImagePhase &phase : doc.phases()) {
+        if (phase.sheet != sheetIndex)
+            continue;
+        for (int k = 0; k < phase.frames.size(); ++k) {
+            const QVector<int> &composite = phase.frames.at(k).composite;
+            const int originX = phase.x + k * phase.cellW;
+            for (int row = 0; row < phase.cellH; ++row) {
+                const int y = phase.y + row;
+                if (y < 0 || y >= h)
+                    continue;
+                for (int col = 0; col < phase.cellW; ++col) {
+                    const int x = originX + col;
+                    if (x < 0 || x >= w)
+                        continue;
+                    const int value = composite.at(row * phase.cellW + col);
+                    if (value >= 0)
+                        canvas[y * w + x] = value;
+                }
+            }
+        }
     }
+    out.replaceActiveLayer(canvas);
+    out.setModified(false);
+    return out;
+}
+
+QVector<QVector<int>> sliceSheetCells(const ImportedSheet &sheet, int x, int y,
+                                      int cellW, int cellH, int count)
+{
+    QVector<QVector<int>> cells;
+    if (cellW <= 0 || cellH <= 0 || count <= 0)
+        return cells;
+    for (int k = 0; k < count; ++k) {
+        QVector<int> cell(cellW * cellH, kTransparent);
+        const int originX = x + k * cellW;
+        for (int row = 0; row < cellH; ++row) {
+            const int sy = y + row;
+            if (sy < 0 || sy >= sheet.height)
+                continue;
+            for (int col = 0; col < cellW; ++col) {
+                const int sx = originX + col;
+                if (sx < 0 || sx >= sheet.width)
+                    continue;
+                cell[row * cellW + col] = sheet.pixels.at(sy * sheet.width + sx);
+            }
+        }
+        cells.append(cell);
+    }
+    return cells;
 }
 
 } // namespace pist

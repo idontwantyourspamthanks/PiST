@@ -73,20 +73,6 @@ void ImageCanvas::setOnion(const QVector<int> &pixels, qreal opacity)
     update();
 }
 
-void ImageCanvas::setRegions(const QVector<ImageRegion> &regions)
-{
-    m_regions = regions;
-    if (m_selectedRegion >= m_regions.size())
-        m_selectedRegion = -1;
-    update();
-}
-
-void ImageCanvas::setSelectedRegion(int index)
-{
-    m_selectedRegion = index;
-    update();
-}
-
 void ImageCanvas::setCellSize(int size)
 {
     const int next = qBound(kMinCellSize, size, kMaxCellSize);
@@ -122,15 +108,6 @@ int ImageCanvas::indexAt(const QPoint &pos) const
     if (col < 0 || col >= m_doc->width() || row < 0 || row >= m_doc->height())
         return -1;
     return row * m_doc->width() + col;
-}
-
-QPoint ImageCanvas::clampedCell(const QPoint &pos) const
-{
-    if (!m_doc || m_cellSize <= 0)
-        return {};
-    const int col = qBound(0, pos.x() / m_cellSize, m_doc->width() - 1);
-    const int row = qBound(0, pos.y() / m_cellSize, m_doc->height() - 1);
-    return {col, row};
 }
 
 QRect ImageCanvas::cellRect(int index) const
@@ -215,31 +192,6 @@ void ImageCanvas::paintEvent(QPaintEvent *)
         for (int y = 0; y <= m_doc->height(); ++y)
             p.drawLine(0, y * m_cellSize, m_doc->width() * m_cellSize, y * m_cellSize);
     }
-
-    // Region overlays: a dark halo keeps the outline visible on any content,
-    // the selection is solid while the others are dashed.
-    for (int i = 0; i < m_regions.size(); ++i) {
-        const ImageRegion &region = m_regions.at(i);
-        const QRect gp(region.x * m_cellSize, region.y * m_cellSize,
-                       region.w * m_cellSize, region.h * m_cellSize);
-        QPen halo(QColor(0, 0, 0, 150));
-        halo.setWidth(3);
-        p.setPen(halo);
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(gp);
-        QPen outline(i == m_selectedRegion ? QColor(255, 255, 255)
-                                           : QColor(255, 255, 255, 190));
-        outline.setStyle(i == m_selectedRegion ? Qt::SolidLine : Qt::DashLine);
-        p.setPen(outline);
-        p.drawRect(gp);
-    }
-    if (!m_regionRubber.isNull()) {
-        QPen pen(QColor(255, 220, 0), 1, Qt::DashLine);
-        p.setPen(pen);
-        p.setBrush(QColor(255, 220, 0, 30));
-        p.drawRect(m_regionRubber.x() * m_cellSize, m_regionRubber.y() * m_cellSize,
-                   m_regionRubber.width() * m_cellSize, m_regionRubber.height() * m_cellSize);
-    }
 }
 
 void ImageCanvas::applyAt(int index, bool erase)
@@ -270,28 +222,6 @@ void ImageCanvas::mousePressEvent(QMouseEvent *event)
 {
     const int index = indexAt(event->pos());
     emit cursorIndexChanged(index);
-
-    if (m_tool == DrawTool::Region) {
-        if (!m_doc)
-            return;
-        // Press inside a region selects it; a drag elsewhere starts a new one.
-        const QPoint cell = clampedCell(event->pos());
-        for (int i = m_regions.size() - 1; i >= 0; --i) {
-            const ImageRegion &region = m_regions.at(i);
-            if (QRect(region.x, region.y, region.w, region.h).contains(cell)) {
-                m_selectedRegion = i;
-                update();
-                emit regionSelected(i);
-                return;
-            }
-        }
-        m_creatingRegion = true;
-        m_regionAnchor = cell;
-        m_regionRubber = QRect(cell, cell);
-        update();
-        return;
-    }
-
     if (index < 0)
         return;
 
@@ -317,17 +247,6 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *event)
 {
     const int index = indexAt(event->pos());
     emit cursorIndexChanged(index);
-    if (m_tool == DrawTool::Region) {
-        if (!m_creatingRegion)
-            return;
-        const QPoint cell = clampedCell(event->pos());
-        m_regionRubber = QRect(qMin(m_regionAnchor.x(), cell.x()),
-                               qMin(m_regionAnchor.y(), cell.y()),
-                               qAbs(m_regionAnchor.x() - cell.x()) + 1,
-                               qAbs(m_regionAnchor.y() - cell.y()) + 1);
-        update();
-        return;
-    }
     if (!m_painting)
         return;
     if (isShapeTool(m_tool)) {
@@ -343,16 +262,6 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (m_tool == DrawTool::Region) {
-        if (!m_creatingRegion)
-            return;
-        m_creatingRegion = false;
-        if (m_regionRubber.isValid())
-            emit regionDrawn(m_regionRubber);
-        m_regionRubber = QRect();
-        update();
-        return;
-    }
     if (!m_painting)
         return;
     m_painting = false;
@@ -415,7 +324,6 @@ void ImageCanvas::updateCursor()
     case DrawTool::Rect:
     case DrawTool::RoundRect:
     case DrawTool::Ellipse:
-    case DrawTool::Region:
         kind = appearance::CanvasCursor::Crosshair;
         break;
     }

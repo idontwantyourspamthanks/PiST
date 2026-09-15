@@ -49,13 +49,61 @@ QVector<int> pixelsFromJson(const QJsonArray &array, int expected)
     return pixels;
 }
 
+QJsonObject frameToJson(const ImageFrame &frame)
+{
+    QJsonObject obj;
+    obj[QStringLiteral("pixels")] = pixelsToJson(frame.composite);
+    QJsonArray layers;
+    for (const ImageLayer &layer : frame.layers) {
+        QJsonObject layerObj;
+        layerObj[QStringLiteral("name")] = layer.name;
+        layerObj[QStringLiteral("visible")] = layer.visible;
+        layerObj[QStringLiteral("pixels")] = pixelsToJson(layer.pixels);
+        layers.append(layerObj);
+    }
+    obj[QStringLiteral("layers")] = layers;
+    return obj;
+}
+
+ImageFrame frameFromJson(const QJsonObject &obj, int cellW, int cellH)
+{
+    const int expected = cellW * cellH;
+    ImageFrame frame;
+    frame.composite = pixelsFromJson(obj.value(QStringLiteral("pixels")).toArray(), expected);
+    const QJsonArray layers = obj.value(QStringLiteral("layers")).toArray();
+    if (!layers.isEmpty()) {
+        for (const QJsonValue &layerValue : layers) {
+            const QJsonObject layerObj = layerValue.toObject();
+            ImageLayer layer;
+            layer.name = layerObj.value(QStringLiteral("name")).toString(QStringLiteral("Layer"));
+            layer.visible = layerObj.value(QStringLiteral("visible")).toBool(true);
+            layer.pixels = pixelsFromJson(layerObj.value(QStringLiteral("pixels")).toArray(),
+                                          expected);
+            frame.layers.append(layer);
+        }
+    } else {
+        // A composite-only frame (the v1 shape) becomes a single layer.
+        ImageLayer layer;
+        layer.name = QStringLiteral("Layer 1");
+        layer.pixels = frame.composite;
+        frame.layers.append(layer);
+    }
+    return frame;
+}
+
 } // namespace
 
 ImageDocument::ImageDocument()
 {
     m_active = defaultActiveIndices(m_kind);
     m_background = m_active.isEmpty() ? 0 : m_active.first();
-    m_frames.append(blankFrame());
+
+    ImagePhase phase;
+    phase.name = QStringLiteral("Phase 1");
+    phase.cellW = 32;
+    phase.cellH = 32;
+    m_phases.append(phase);
+    m_phases.last().frames.append(blankFrame());
 }
 
 ImageDocument ImageDocument::create(int width, int height, PaletteKind kind)
@@ -64,15 +112,42 @@ ImageDocument ImageDocument::create(int width, int height, PaletteKind kind)
     doc.m_kind = kind;
     doc.m_active = defaultActiveIndices(kind);
     doc.m_background = doc.m_active.isEmpty() ? 0 : doc.m_active.first();
+
     QString error;
-    if (!doc.setGeometry(width, height, &error))
-        doc.setGeometry(32, 32, nullptr);
-    doc.m_frames = {doc.blankFrame()};
-    doc.m_current = 0;
+    if (!doc.setPhaseCellSize(0, width, height, &error))
+        doc.setPhaseCellSize(0, 32, 32, nullptr);
+    doc.m_phases[0].frames = {doc.blankFrame()};
+    doc.m_currentPhase = 0;
+    doc.m_currentFrame = 0;
     doc.m_activeLayer = 0;
-    doc.m_phases.clear();
     doc.m_modified = false;
     return doc;
+}
+
+ImagePhase &ImageDocument::phase()
+{
+    return m_phases[m_currentPhase];
+}
+
+const ImageFrame *ImageDocument::frameAt(int index) const
+{
+    const QVector<ImageFrame> &frames = phase().frames;
+    if (index < 0 || index >= frames.size())
+        return nullptr;
+    return &frames.at(index);
+}
+
+ImageFrame *ImageDocument::frameAt(int index)
+{
+    QVector<ImageFrame> &frames = phase().frames;
+    if (index < 0 || index >= frames.size())
+        return nullptr;
+    return &frames[index];
+}
+
+const QVector<int> &ImageDocument::frame(int index) const
+{
+    return phase().frames.at(index).composite;
 }
 
 QVector<int> ImageDocument::blankPixels() const
@@ -89,17 +164,17 @@ ImageLayer ImageDocument::makeLayer(const QString &name) const
     return layer;
 }
 
-ImageDocument::Frame ImageDocument::blankFrame() const
+ImageFrame ImageDocument::blankFrame() const
 {
-    Frame frame;
+    ImageFrame frame;
     frame.layers = {makeLayer(QStringLiteral("Layer 1"))};
     remesh(frame);
     return frame;
 }
 
-ImageDocument::Frame ImageDocument::blankFrameFrom(const Frame &templateFrame) const
+ImageFrame ImageDocument::blankFrameFrom(const ImageFrame &templateFrame) const
 {
-    Frame frame;
+    ImageFrame frame;
     if (templateFrame.layers.isEmpty())
         return blankFrame();
     for (const ImageLayer &src : templateFrame.layers) {
@@ -111,7 +186,7 @@ ImageDocument::Frame ImageDocument::blankFrameFrom(const Frame &templateFrame) c
     return frame;
 }
 
-int ImageDocument::mergedPixel(const Frame &frame, int index)
+int ImageDocument::mergedPixel(const ImageFrame &frame, int index)
 {
     for (int i = frame.layers.size() - 1; i >= 0; --i) {
         const ImageLayer &layer = frame.layers.at(i);
@@ -126,7 +201,7 @@ int ImageDocument::mergedPixel(const Frame &frame, int index)
     return kTransparent;
 }
 
-void ImageDocument::remesh(Frame &frame) const
+void ImageDocument::remesh(ImageFrame &frame) const
 {
     const int n = pixelCount();
     frame.composite.resize(n);
@@ -136,23 +211,23 @@ void ImageDocument::remesh(Frame &frame) const
 
 void ImageDocument::remeshCurrent()
 {
-    remesh(m_frames[m_current]);
+    remesh(phase().frames[m_currentFrame]);
 }
 
 void ImageDocument::clampActiveLayer()
 {
-    const int n = m_frames[m_current].layers.size();
+    const int n = phase().frames[m_currentFrame].layers.size();
     if (n <= 0)
-        m_frames[m_current].layers.append(makeLayer(QStringLiteral("Layer 1")));
-    if (m_activeLayer >= m_frames[m_current].layers.size())
-        m_activeLayer = m_frames[m_current].layers.size() - 1;
+        phase().frames[m_currentFrame].layers.append(makeLayer(QStringLiteral("Layer 1")));
+    if (m_activeLayer >= phase().frames[m_currentFrame].layers.size())
+        m_activeLayer = phase().frames[m_currentFrame].layers.size() - 1;
     if (m_activeLayer < 0)
         m_activeLayer = 0;
 }
 
 int ImageDocument::resolvedLayer(int layer) const
 {
-    const int n = m_frames.at(m_current).layers.size();
+    const int n = phase().frames.at(m_currentFrame).layers.size();
     const int index = layer >= 0 ? layer : m_activeLayer;
     if (index < 0 || index >= n)
         return -1;
@@ -164,7 +239,7 @@ ImageLayer *ImageDocument::layerAt(int layer)
     const int index = resolvedLayer(layer);
     if (index < 0)
         return nullptr;
-    return &m_frames[m_current].layers[index];
+    return &phase().frames[m_currentFrame].layers[index];
 }
 
 const ImageLayer *ImageDocument::layerAt(int layer) const
@@ -172,7 +247,7 @@ const ImageLayer *ImageDocument::layerAt(int layer) const
     const int index = resolvedLayer(layer);
     if (index < 0)
         return nullptr;
-    return &m_frames[m_current].layers[index];
+    return &phase().frames.at(m_currentFrame).layers[index];
 }
 
 const QVector<int> &ImageDocument::activeLayerPixels() const
@@ -185,11 +260,13 @@ const QVector<int> &ImageDocument::activeLayerPixels() const
 
 int ImageDocument::layerCount() const
 {
-    return m_frames.at(m_current).layers.size();
+    return phase().frames.at(m_currentFrame).layers.size();
 }
 
-bool ImageDocument::setGeometry(int width, int height, QString *error)
+bool ImageDocument::setPhaseCellSize(int phaseIndex, int width, int height, QString *error)
 {
+    if (phaseIndex < 0 || phaseIndex >= m_phases.size())
+        return false;
     if (width < kMinSize || width > kMaxWidth || height < kMinSize || height > kMaxHeight) {
         const QString message = QStringLiteral("image size must be between %1×%2 and %3×%4")
                                     .arg(kMinSize)
@@ -201,8 +278,8 @@ bool ImageDocument::setGeometry(int width, int height, QString *error)
         m_lastError = message;
         return false;
     }
-    m_width = width;
-    m_height = height;
+    m_phases[phaseIndex].cellW = width;
+    m_phases[phaseIndex].cellH = height;
     return true;
 }
 
@@ -212,50 +289,121 @@ void ImageDocument::replaceWith(const ImageDocument &other)
     touch();
 }
 
+bool ImageDocument::setCurrentPhase(int index)
+{
+    if (index < 0 || index >= m_phases.size())
+        return false;
+    m_currentPhase = index;
+    m_currentFrame = 0;
+    clampActiveLayer();
+    return true;
+}
+
+int ImageDocument::addPhase(const QString &name, int cellW, int cellH)
+{
+    ImagePhase phase;
+    phase.name = name.trimmed().isEmpty() ? QStringLiteral("Phase %1").arg(m_phases.size() + 1)
+                                          : name.trimmed();
+    phase.cellW = qBound(kMinSize, cellW, kMaxWidth);
+    phase.cellH = qBound(kMinSize, cellH, kMaxHeight);
+    phase.frames.append(blankFrame());
+    m_phases.append(phase);
+    m_currentPhase = m_phases.size() - 1;
+    m_currentFrame = 0;
+    clampActiveLayer();
+    touch();
+    return m_currentPhase;
+}
+
+bool ImageDocument::removePhase(int index)
+{
+    if (index < 0 || index >= m_phases.size() || m_phases.size() <= 1)
+        return false;
+    m_phases.removeAt(index);
+    if (m_currentPhase >= m_phases.size())
+        m_currentPhase = m_phases.size() - 1;
+    m_currentFrame = 0;
+    clampActiveLayer();
+    touch();
+    return true;
+}
+
+bool ImageDocument::renamePhase(int index, const QString &name)
+{
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty() || index < 0 || index >= m_phases.size())
+        return false;
+    m_phases[index].name = trimmed;
+    touch();
+    return true;
+}
+
+bool ImageDocument::setPhasePlacement(int index, int sheet, int x, int y)
+{
+    if (index < 0 || index >= m_phases.size())
+        return false;
+    if (sheet >= m_sheets.size())
+        return false;
+    m_phases[index].sheet = sheet;
+    m_phases[index].x = x;
+    m_phases[index].y = y;
+    touch();
+    return true;
+}
+
+int ImageDocument::addSheet(const QString &path, int width, int height)
+{
+    ImageSheet sheet;
+    sheet.path = path;
+    sheet.width = qBound(kMinSize, width, kMaxWidth);
+    sheet.height = qBound(kMinSize, height, kMaxHeight);
+    m_sheets.append(sheet);
+    touch();
+    return m_sheets.size() - 1;
+}
+
 bool ImageDocument::setCurrentFrame(int index)
 {
-    if (index < 0 || index >= m_frames.size())
+    if (index < 0 || index >= phase().frames.size())
         return false;
-    m_current = index;
+    m_currentFrame = index;
     clampActiveLayer();
     return true;
 }
 
 int ImageDocument::addFrame()
 {
-    const int insertAt = m_current + 1;
-    m_frames.insert(insertAt, blankFrameFrom(m_frames.at(m_current)));
-    m_phases = insertFramesIntoPhases(m_phases, insertAt, 1);
-    m_current = insertAt;
+    const int insertAt = m_currentFrame + 1;
+    phase().frames.insert(insertAt, blankFrameFrom(phase().frames.at(m_currentFrame)));
+    m_currentFrame = insertAt;
     clampActiveLayer();
     touch();
-    return m_current;
+    return m_currentFrame;
 }
 
 int ImageDocument::duplicateFrame(int source)
 {
-    if (source < 0 || source >= m_frames.size())
+    if (source < 0 || source >= phase().frames.size())
         return -1;
-    const int insertAt = m_current + 1;
-    Frame copy = m_frames.at(source);
-    m_frames.insert(insertAt, copy);
-    m_phases = insertFramesIntoPhases(m_phases, insertAt, 1);
-    m_current = insertAt;
+    const int insertAt = m_currentFrame + 1;
+    ImageFrame copy = phase().frames.at(source);
+    phase().frames.insert(insertAt, copy);
+    m_currentFrame = insertAt;
     clampActiveLayer();
     touch();
-    return m_current;
+    return m_currentFrame;
 }
 
 bool ImageDocument::removeFrame(int index)
 {
-    if (m_frames.size() <= 1 || index < 0 || index >= m_frames.size())
+    QVector<ImageFrame> &frames = phase().frames;
+    if (frames.size() <= 1 || index < 0 || index >= frames.size())
         return false;
-    m_frames.removeAt(index);
-    m_phases = clampPhases(deleteFrameFromPhases(m_phases, index), m_frames.size());
-    if (m_current >= m_frames.size())
-        m_current = m_frames.size() - 1;
-    else if (m_current > index)
-        --m_current;
+    frames.removeAt(index);
+    if (m_currentFrame >= frames.size())
+        m_currentFrame = frames.size() - 1;
+    else if (m_currentFrame > index)
+        --m_currentFrame;
     clampActiveLayer();
     touch();
     return true;
@@ -263,17 +411,18 @@ bool ImageDocument::removeFrame(int index)
 
 bool ImageDocument::moveFrame(int from, int to)
 {
-    const int n = m_frames.size();
+    QVector<ImageFrame> &frames = phase().frames;
+    const int n = frames.size();
     if (from == to || from < 0 || to < 0 || from >= n || to >= n)
         return false;
-    const Frame frame = m_frames.takeAt(from);
-    m_frames.insert(to, frame);
-    if (m_current == from)
-        m_current = to;
-    else if (from < to && m_current > from && m_current <= to)
-        --m_current;
-    else if (to < from && m_current >= to && m_current < from)
-        ++m_current;
+    const ImageFrame frame = frames.takeAt(from);
+    frames.insert(to, frame);
+    if (m_currentFrame == from)
+        m_currentFrame = to;
+    else if (from < to && m_currentFrame > from && m_currentFrame <= to)
+        --m_currentFrame;
+    else if (to < from && m_currentFrame >= to && m_currentFrame < from)
+        ++m_currentFrame;
     clampActiveLayer();
     touch();
     return true;
@@ -289,7 +438,7 @@ bool ImageDocument::setActiveLayer(int index)
 
 int ImageDocument::addLayer()
 {
-    Frame &frame = m_frames[m_current];
+    ImageFrame &frame = phase().frames[m_currentFrame];
     frame.layers.append(makeLayer(QStringLiteral("Layer %1").arg(frame.layers.size() + 1)));
     m_activeLayer = frame.layers.size() - 1;
     remesh(frame);
@@ -299,7 +448,7 @@ int ImageDocument::addLayer()
 
 bool ImageDocument::removeLayer(int index)
 {
-    Frame &frame = m_frames[m_current];
+    ImageFrame &frame = phase().frames[m_currentFrame];
     if (frame.layers.size() <= 1 || index < 0 || index >= frame.layers.size())
         return false;
     frame.layers.removeAt(index);
@@ -314,7 +463,7 @@ bool ImageDocument::removeLayer(int index)
 
 bool ImageDocument::moveLayer(int from, int to)
 {
-    Frame &frame = m_frames[m_current];
+    ImageFrame &frame = phase().frames[m_currentFrame];
     const int n = frame.layers.size();
     if (from == to || from < 0 || to < 0 || from >= n || to >= n)
         return false;
@@ -336,7 +485,7 @@ bool ImageDocument::renameLayer(int index, const QString &name)
     const QString trimmed = name.trimmed();
     if (trimmed.isEmpty() || index < 0 || index >= layerCount())
         return false;
-    m_frames[m_current].layers[index].name = trimmed;
+    phase().frames[m_currentFrame].layers[index].name = trimmed;
     touch();
     return true;
 }
@@ -345,84 +494,10 @@ bool ImageDocument::setLayerVisible(int index, bool visible)
 {
     if (index < 0 || index >= layerCount())
         return false;
-    m_frames[m_current].layers[index].visible = visible;
+    phase().frames[m_currentFrame].layers[index].visible = visible;
     remeshCurrent();
     touch();
     return true;
-}
-
-int ImageDocument::addPhase()
-{
-    ImagePhase phase;
-    phase.name = QStringLiteral("Phase %1").arg(m_phases.size() + 1);
-    phase.start = m_current;
-    phase.end = m_current;
-    m_phases.append(phase);
-    touch();
-    return m_phases.size() - 1;
-}
-
-bool ImageDocument::removePhase(int index)
-{
-    if (index < 0 || index >= m_phases.size())
-        return false;
-    m_phases.removeAt(index);
-    touch();
-    return true;
-}
-
-bool ImageDocument::renamePhase(int index, const QString &name)
-{
-    const QString trimmed = name.trimmed();
-    if (trimmed.isEmpty() || index < 0 || index >= m_phases.size())
-        return false;
-    m_phases[index].name = trimmed;
-    touch();
-    return true;
-}
-
-bool ImageDocument::setPhaseRange(int index, int start, int end)
-{
-    if (index < 0 || index >= m_phases.size() || m_frames.isEmpty())
-        return false;
-    const int last = m_frames.size() - 1;
-    const int lo = qBound(0, qMin(start, end), last);
-    const int hi = qBound(0, qMax(start, end), last);
-    m_phases[index].start = lo;
-    m_phases[index].end = hi;
-    touch();
-    return true;
-}
-
-void ImageDocument::setRegions(const QVector<ImageRegion> &regions)
-{
-    m_regions = regions;
-    touch();
-}
-
-ImageDocument ImageDocument::cropped(const ImageRegion &region, int frame) const
-{
-    const int source = frame < 0 ? m_current : qBound(0, frame, m_frames.size() - 1);
-    const int x = qBound(0, region.x, m_width);
-    const int y = qBound(0, region.y, m_height);
-    const int w = qBound(0, region.w, m_width - x);
-    const int h = qBound(0, region.h, m_height - y);
-
-    ImageDocument out = ImageDocument::create(w > 0 ? w : 1, h > 0 ? h : 1, m_kind);
-    out.m_active = m_active;
-    out.m_background = m_background;
-    if (w <= 0 || h <= 0)
-        return out;
-
-    const QVector<int> &composite = m_frames.at(source).composite;
-    QVector<int> slice(w * h, kTransparent);
-    for (int row = 0; row < h; ++row) {
-        for (int col = 0; col < w; ++col)
-            slice[row * w + col] = composite.at((y + row) * m_width + (x + col));
-    }
-    out.replaceActiveLayer(slice);
-    out.m_modified = false;
-    return out;
 }
 
 void ImageDocument::setActive(const QVector<int> &indices)
@@ -471,12 +546,14 @@ void ImageDocument::setPaletteKind(PaletteKind kind)
         if (!nextActive.contains(mapped) && nextActive.size() < kMaxActive)
             nextActive.append(mapped);
     }
-    for (Frame &frame : m_frames) {
-        for (ImageLayer &layer : frame.layers) {
-            for (int &pixel : layer.pixels)
-                pixel = remap(pixel);
+    for (ImagePhase &phase : m_phases) {
+        for (ImageFrame &frame : phase.frames) {
+            for (ImageLayer &layer : frame.layers) {
+                for (int &pixel : layer.pixels)
+                    pixel = remap(pixel);
+            }
+            remesh(frame);
         }
-        remesh(frame);
     }
     m_kind = kind;
     m_active = clampActive(nextActive, kind);
@@ -530,35 +607,34 @@ bool ImageDocument::replaceActiveLayer(const QVector<int> &pixels)
 
 bool ImageDocument::flipActiveLayer(FlipDirection direction)
 {
-    return replaceActiveLayer(flipData(activeLayerPixels(), m_width, m_height, direction));
+    return replaceActiveLayer(flipData(activeLayerPixels(), width(), height(), direction));
 }
 
 bool ImageDocument::shiftActiveLayer(ShiftDirection direction)
 {
-    return replaceActiveLayer(shiftData(activeLayerPixels(), m_width, m_height, direction));
+    return replaceActiveLayer(shiftData(activeLayerPixels(), width(), height(), direction));
 }
 
 int ImageDocument::generateRotations(int count)
 {
-    if (m_width != m_height || count < 2)
+    if (width() != height() || count < 2)
         return 0;
-    const Frame source = m_frames.at(m_current);
-    QVector<Frame> rotated;
+    const ImageFrame source = phase().frames.at(m_currentFrame);
+    QVector<ImageFrame> rotated;
     for (int i = 1; i < count; ++i) {
         const double angle = 360.0 / count * i;
-        Frame frame;
+        ImageFrame frame;
         for (const ImageLayer &src : source.layers) {
             ImageLayer layer = src;
-            layer.pixels = rotateIndexed(src.pixels, m_width, angle);
+            layer.pixels = rotateIndexed(src.pixels, width(), angle);
             frame.layers.append(layer);
         }
         remesh(frame);
         rotated.append(frame);
     }
-    const int insertAt = m_current + 1;
+    const int insertAt = m_currentFrame + 1;
     for (int i = 0; i < rotated.size(); ++i)
-        m_frames.insert(insertAt + i, rotated.at(i));
-    m_phases = insertFramesIntoPhases(m_phases, insertAt, rotated.size());
+        phase().frames.insert(insertAt + i, rotated.at(i));
     touch();
     return rotated.size();
 }
@@ -587,55 +663,40 @@ QByteArray ImageDocument::toJson() const
 {
     QJsonObject root;
     root[QStringLiteral("format")] = QStringLiteral("pist.image");
-    root[QStringLiteral("version")] = 1;
-    root[QStringLiteral("width")] = m_width;
-    root[QStringLiteral("height")] = m_height;
+    root[QStringLiteral("version")] = 2;
     root[QStringLiteral("palette")] = paletteKindName(m_kind);
     QJsonArray active;
     for (int index : m_active)
         active.append(index);
     root[QStringLiteral("active")] = active;
     root[QStringLiteral("background")] = m_background;
-    QJsonArray frames;
-    for (const Frame &frame : m_frames) {
+
+    QJsonArray sheets;
+    for (const ImageSheet &sheet : m_sheets) {
         QJsonObject obj;
-        obj[QStringLiteral("pixels")] = pixelsToJson(frame.composite);
-        QJsonArray layers;
-        for (const ImageLayer &layer : frame.layers) {
-            QJsonObject layerObj;
-            layerObj[QStringLiteral("name")] = layer.name;
-            layerObj[QStringLiteral("visible")] = layer.visible;
-            layerObj[QStringLiteral("pixels")] = pixelsToJson(layer.pixels);
-            layers.append(layerObj);
-        }
-        obj[QStringLiteral("layers")] = layers;
-        frames.append(obj);
+        obj[QStringLiteral("path")] = sheet.path;
+        obj[QStringLiteral("width")] = sheet.width;
+        obj[QStringLiteral("height")] = sheet.height;
+        sheets.append(obj);
     }
-    root[QStringLiteral("frames")] = frames;
-    if (!m_phases.isEmpty()) {
-        QJsonArray phases;
-        for (const ImagePhase &phase : m_phases) {
-            QJsonObject obj;
-            obj[QStringLiteral("name")] = phase.name;
-            obj[QStringLiteral("start")] = phase.start;
-            obj[QStringLiteral("end")] = phase.end;
-            phases.append(obj);
-        }
-        root[QStringLiteral("phases")] = phases;
+    root[QStringLiteral("sheets")] = sheets;
+
+    QJsonArray phases;
+    for (const ImagePhase &phase : m_phases) {
+        QJsonObject obj;
+        obj[QStringLiteral("name")] = phase.name;
+        obj[QStringLiteral("cellW")] = phase.cellW;
+        obj[QStringLiteral("cellH")] = phase.cellH;
+        obj[QStringLiteral("sheet")] = phase.sheet;
+        obj[QStringLiteral("x")] = phase.x;
+        obj[QStringLiteral("y")] = phase.y;
+        QJsonArray frames;
+        for (const ImageFrame &frame : phase.frames)
+            frames.append(frameToJson(frame));
+        obj[QStringLiteral("frames")] = frames;
+        phases.append(obj);
     }
-    if (!m_regions.isEmpty()) {
-        QJsonArray regions;
-        for (const ImageRegion &region : m_regions) {
-            QJsonObject obj;
-            obj[QStringLiteral("name")] = region.name;
-            obj[QStringLiteral("x")] = region.x;
-            obj[QStringLiteral("y")] = region.y;
-            obj[QStringLiteral("w")] = region.w;
-            obj[QStringLiteral("h")] = region.h;
-            regions.append(obj);
-        }
-        root[QStringLiteral("regions")] = regions;
-    }
+    root[QStringLiteral("phases")] = phases;
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
@@ -660,16 +721,61 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
             *error = message;
         return false;
     }
+    if (root.value(QStringLiteral("version")).toInt(0) != 2) {
+        const QString message = QStringLiteral("unsupported .pim version (expected 2)");
+        m_lastError = message;
+        if (error)
+            *error = message;
+        return false;
+    }
 
     PaletteKind kind = PaletteKind::Ste;
     if (!paletteKindFromName(root.value(QStringLiteral("palette")).toString(), &kind))
         kind = PaletteKind::Ste;
 
-    QString geoError;
-    if (!setGeometry(root.value(QStringLiteral("width")).toInt(),
-                     root.value(QStringLiteral("height")).toInt(), &geoError)) {
+    QVector<ImageSheet> sheets;
+    const QJsonArray sheetArray = root.value(QStringLiteral("sheets")).toArray();
+    for (const QJsonValue &value : sheetArray) {
+        const QJsonObject obj = value.toObject();
+        ImageSheet sheet;
+        sheet.path = obj.value(QStringLiteral("path")).toString();
+        sheet.width = obj.value(QStringLiteral("width")).toInt(320);
+        sheet.height = obj.value(QStringLiteral("height")).toInt(200);
+        sheets.append(sheet);
+    }
+
+    const QJsonArray phaseArray = root.value(QStringLiteral("phases")).toArray();
+    QVector<ImagePhase> phases;
+    for (const QJsonValue &value : phaseArray) {
+        const QJsonObject obj = value.toObject();
+        ImagePhase phase;
+        phase.name = obj.value(QStringLiteral("name")).toString(QStringLiteral("Phase"));
+        phase.cellW = obj.value(QStringLiteral("cellW")).toInt(32);
+        phase.cellH = obj.value(QStringLiteral("cellH")).toInt(32);
+        if (phase.cellW < kMinSize || phase.cellW > kMaxWidth || phase.cellH < kMinSize
+            || phase.cellH > kMaxHeight) {
+            const QString message = QStringLiteral("phase %1 has an out-of-range cell size")
+                                        .arg(phase.name);
+            m_lastError = message;
+            if (error)
+                *error = message;
+            return false;
+        }
+        phase.sheet = obj.value(QStringLiteral("sheet")).toInt(-1);
+        phase.x = obj.value(QStringLiteral("x")).toInt(0);
+        phase.y = obj.value(QStringLiteral("y")).toInt(0);
+        const QJsonArray frameArray = obj.value(QStringLiteral("frames")).toArray();
+        for (const QJsonValue &frameValue : frameArray)
+            phase.frames.append(frameFromJson(frameValue.toObject(), phase.cellW, phase.cellH));
+        if (phase.frames.isEmpty())
+            phase.frames.append(blankFrame());
+        phases.append(phase);
+    }
+    if (phases.isEmpty()) {
+        const QString message = QStringLiteral(".pim file has no phases");
+        m_lastError = message;
         if (error)
-            *error = geoError;
+            *error = message;
         return false;
     }
 
@@ -678,75 +784,13 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
     for (const QJsonValue &value : activeArray)
         active.append(value.toInt());
 
-    const int expected = pixelCount();
-    QVector<Frame> frames;
-    const QJsonArray frameArray = root.value(QStringLiteral("frames")).toArray();
-    for (const QJsonValue &value : frameArray) {
-        const QJsonObject obj = value.toObject();
-        const QVector<int> composite = pixelsFromJson(obj.value(QStringLiteral("pixels")).toArray(),
-                                                      expected);
-        Frame frame;
-        const QJsonArray layers = obj.value(QStringLiteral("layers")).toArray();
-        if (!layers.isEmpty()) {
-            for (const QJsonValue &layerValue : layers) {
-                const QJsonObject layerObj = layerValue.toObject();
-                ImageLayer layer;
-                layer.name = layerObj.value(QStringLiteral("name")).toString(QStringLiteral("Layer"));
-                layer.visible = layerObj.value(QStringLiteral("visible")).toBool(true);
-                layer.pixels = pixelsFromJson(layerObj.value(QStringLiteral("pixels")).toArray(),
-                                              expected);
-                frame.layers.append(layer);
-            }
-        } else {
-            ImageLayer layer = makeLayer(QStringLiteral("Layer 1"));
-            layer.pixels = composite;
-            frame.layers.append(layer);
-        }
-        remesh(frame);
-        frames.append(frame);
-    }
-    if (frames.isEmpty()) {
-        const QString message = QStringLiteral(".pim file has no frames");
-        m_lastError = message;
-        if (error)
-            *error = message;
-        return false;
-    }
-
-    QVector<ImagePhase> phases;
-    const QJsonArray phaseArray = root.value(QStringLiteral("phases")).toArray();
-    for (const QJsonValue &value : phaseArray) {
-        const QJsonObject obj = value.toObject();
-        ImagePhase phase;
-        phase.name = obj.value(QStringLiteral("name")).toString(QStringLiteral("Phase"));
-        phase.start = obj.value(QStringLiteral("start")).toInt(0);
-        phase.end = obj.value(QStringLiteral("end")).toInt(0);
-        phases.append(phase);
-    }
-
-    // Regions are optional metadata: entries without a name or a positive
-    // size are metadata noise, not worth failing the load over.
-    QVector<ImageRegion> regions;
-    const QJsonArray regionArray = root.value(QStringLiteral("regions")).toArray();
-    for (const QJsonValue &value : regionArray) {
-        const QJsonObject obj = value.toObject();
-        ImageRegion region;
-        region.name = obj.value(QStringLiteral("name")).toString();
-        region.x = obj.value(QStringLiteral("x")).toInt(0);
-        region.y = obj.value(QStringLiteral("y")).toInt(0);
-        region.w = obj.value(QStringLiteral("w")).toInt(0);
-        region.h = obj.value(QStringLiteral("h")).toInt(0);
-        if (!region.name.isEmpty() && region.w > 0 && region.h > 0)
-            regions.append(region);
-    }
-
     m_kind = kind;
     m_active = clampActive(active, kind);
     m_background = root.value(QStringLiteral("background")).toInt(0);
-    m_frames = frames;
-    m_phases = clampPhases(phases, m_frames.size());
-    m_regions = regions;
-    m_current = 0;
+    m_sheets = sheets;
+    m_phases = phases;
+    m_currentPhase = 0;
+    m_currentFrame = 0;
     m_activeLayer = 0;
     m_modified = false;
     return true;

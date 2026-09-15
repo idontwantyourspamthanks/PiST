@@ -181,21 +181,6 @@ QString swatchStyleSheet(const QColor &color)
         .arg(color.name(), mute.name(), ring.name());
 }
 
-QString uniqueRegionName(const QVector<ImageRegion> &regions)
-{
-    const auto taken = [&regions](const QString &candidate) {
-        for (const ImageRegion &region : regions)
-            if (region.name == candidate)
-                return true;
-        return false;
-    };
-    int n = regions.size() + 1;
-    QString name = QObject::tr("Region %1").arg(n);
-    while (taken(name))
-        name = QObject::tr("Region %1").arg(++n);
-    return name;
-}
-
 appearance::Icon iconForTool(DrawTool tool)
 {
     using appearance::Icon;
@@ -214,8 +199,6 @@ appearance::Icon iconForTool(DrawTool tool)
         return Icon::Fill;
     case DrawTool::Eyedropper:
         return Icon::Eyedropper;
-    case DrawTool::Region:
-        return Icon::Region;
     }
     return Icon::Brush;
 }
@@ -254,7 +237,6 @@ ImageEditor::ImageEditor(QWidget *parent)
     addTool(DrawTool::Ellipse, tr("Ellipse outline"));
     addTool(DrawTool::Fill, tr("Flood fill"));
     addTool(DrawTool::Eyedropper, tr("Eyedropper"));
-    addTool(DrawTool::Region, tr("Regions — drag a rectangle to add, click to select"));
     connect(m_tools, &QButtonGroup::buttonClicked, this, &ImageEditor::setTool);
 
     bar->addSeparator();
@@ -556,87 +538,6 @@ ImageEditor::ImageEditor(QWidget *parent)
     phaseBtns->addWidget(m_addPhase);
     phaseBtns->addWidget(m_removePhase);
     right->addLayout(phaseBtns);
-    auto *rangeRow = new QHBoxLayout;
-    m_phaseStart = new QSpinBox(this);
-    m_phaseStart->setObjectName(QStringLiteral("imagePhaseStart"));
-    m_phaseStart->setMinimum(1);
-    m_phaseStart->setPrefix(tr("start "));
-    m_phaseEnd = new QSpinBox(this);
-    m_phaseEnd->setObjectName(QStringLiteral("imagePhaseEnd"));
-    m_phaseEnd->setMinimum(1);
-    m_phaseEnd->setPrefix(tr("end "));
-    connect(m_phaseStart, qOverload<int>(&QSpinBox::valueChanged), this,
-            &ImageEditor::phaseRangeChanged);
-    connect(m_phaseEnd, qOverload<int>(&QSpinBox::valueChanged), this,
-            &ImageEditor::phaseRangeChanged);
-    rangeRow->addWidget(m_phaseStart);
-    rangeRow->addWidget(m_phaseEnd);
-    right->addLayout(rangeRow);
-
-    right->addWidget(new QLabel(tr("Regions"), this));
-    m_regions = new QListWidget(this);
-    m_regions->setObjectName(QStringLiteral("imageRegions"));
-    m_regions->setMaximumWidth(160);
-    m_regions->setMaximumHeight(100);
-    connect(m_regions, &QListWidget::currentRowChanged, this, &ImageEditor::selectRegion);
-    right->addWidget(m_regions);
-    m_addRegion = makeIconButton(appearance::Icon::AddFrame, tr("Add region"));
-    m_addRegion->setObjectName(QStringLiteral("imageAddRegion"));
-    connect(m_addRegion, &QToolButton::clicked, this, &ImageEditor::addRegion);
-    m_removeRegion = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete region"));
-    m_removeRegion->setObjectName(QStringLiteral("imageRemoveRegion"));
-    connect(m_removeRegion, &QToolButton::clicked, this, &ImageEditor::removeRegion);
-    auto *regionBtns = new QHBoxLayout;
-    regionBtns->addWidget(m_addRegion);
-    regionBtns->addWidget(m_removeRegion);
-    right->addLayout(regionBtns);
-
-    m_regionName = new QLineEdit(this);
-    m_regionName->setObjectName(QStringLiteral("imageRegionName"));
-    m_regionName->setPlaceholderText(tr("Region name"));
-    connect(m_regionName, &QLineEdit::textEdited, this, &ImageEditor::regionFieldChanged);
-    right->addWidget(m_regionName);
-    auto *regionCoords = new QHBoxLayout;
-    m_regionX = new QSpinBox(this);
-    m_regionX->setObjectName(QStringLiteral("imageRegionX"));
-    m_regionX->setPrefix(tr("x "));
-    m_regionY = new QSpinBox(this);
-    m_regionY->setObjectName(QStringLiteral("imageRegionY"));
-    m_regionY->setPrefix(tr("y "));
-    m_regionW = new QSpinBox(this);
-    m_regionW->setObjectName(QStringLiteral("imageRegionW"));
-    m_regionW->setPrefix(tr("w "));
-    m_regionH = new QSpinBox(this);
-    m_regionH->setObjectName(QStringLiteral("imageRegionH"));
-    m_regionH->setPrefix(tr("h "));
-    for (QSpinBox *box : {m_regionX, m_regionY, m_regionW, m_regionH}) {
-        box->setRange(0, 4095);
-        connect(box, qOverload<int>(&QSpinBox::valueChanged), this,
-                &ImageEditor::regionFieldChanged);
-        regionCoords->addWidget(box);
-    }
-    right->addLayout(regionCoords);
-    m_extractRegion = new QPushButton(tr("Extract…"), this);
-    m_extractRegion->setObjectName(QStringLiteral("imageExtractRegion"));
-    m_extractRegion->setToolTip(tr("Open the selected region as its own sprite"));
-    connect(m_extractRegion, &QPushButton::clicked, this, &ImageEditor::extractRegion);
-    right->addWidget(m_extractRegion);
-
-    // Canvas region interactions land in the panel.
-    connect(m_canvas, &ImageCanvas::regionDrawn, this, [this](const QRect &rect) {
-        const ImageDocument before = m_doc;
-        QVector<ImageRegion> next = m_doc.regions();
-        next.append({uniqueRegionName(next), rect.x(), rect.y(), rect.width(), rect.height()});
-        m_doc.setRegions(next);
-        pushSnapshot(before, tr("add region"));
-        refreshRegions();
-        m_regions->setCurrentRow(next.size() - 1);
-        notifyModified();
-    });
-    connect(m_canvas, &ImageCanvas::regionSelected, m_regions, [this](int index) {
-        m_regions->setCurrentRow(index);
-    });
-
     m_previewTimer = new QTimer(this);
     connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
 
@@ -1148,9 +1049,15 @@ void ImageEditor::refreshPhases()
     m_phases->blockSignals(true);
     const int selected = m_phases->currentRow();
     m_phases->clear();
-    for (int i = 0; i < m_doc.phases().size(); ++i) {
-        const ImagePhase &phase = m_doc.phases().at(i);
-        m_phases->addItem(tr("%1  %2–%3").arg(phase.name).arg(phase.start + 1).arg(phase.end + 1));
+    for (const ImagePhase &phase : m_doc.phases()) {
+        QString placement;
+        if (phase.sheet >= 0)
+            placement = tr("  @%1,%2").arg(phase.x).arg(phase.y);
+        m_phases->addItem(tr("%1  %2\u00d7%3%4")
+                              .arg(phase.name)
+                              .arg(phase.cellW)
+                              .arg(phase.cellH)
+                              .arg(placement));
     }
     if (selected >= 0 && selected < m_phases->count())
         m_phases->setCurrentRow(selected);
@@ -1158,30 +1065,13 @@ void ImageEditor::refreshPhases()
 
     m_previewPhaseBox->blockSignals(true);
     m_previewPhaseBox->clear();
-    m_previewPhaseBox->addItem(tr("All frames"), -1);
     for (int i = 0; i < m_doc.phases().size(); ++i)
         m_previewPhaseBox->addItem(m_doc.phases().at(i).name, i);
     const int phaseIndex = m_previewPhaseBox->findData(m_previewPhase);
     m_previewPhaseBox->setCurrentIndex(phaseIndex >= 0 ? phaseIndex : 0);
-    if (phaseIndex < 0)
-        m_previewPhase = -1;
+    if (phaseIndex < 0 && m_previewPhaseBox->count() > 0)
+        m_previewPhase = m_previewPhaseBox->itemData(0).toInt();
     m_previewPhaseBox->blockSignals(false);
-
-    const int last = qMax(1, m_doc.frameCount());
-    m_phaseStart->blockSignals(true);
-    m_phaseEnd->blockSignals(true);
-    m_phaseStart->setMaximum(last);
-    m_phaseEnd->setMaximum(last);
-    const int row = m_phases->currentRow();
-    const bool has = row >= 0 && row < m_doc.phases().size();
-    m_phaseStart->setEnabled(has);
-    m_phaseEnd->setEnabled(has);
-    if (has) {
-        m_phaseStart->setValue(m_doc.phases().at(row).start + 1);
-        m_phaseEnd->setValue(m_doc.phases().at(row).end + 1);
-    }
-    m_phaseStart->blockSignals(false);
-    m_phaseEnd->blockSignals(false);
 }
 
 void ImageEditor::refreshOnion()
@@ -1241,7 +1131,6 @@ void ImageEditor::refreshChrome()
     refreshFrames();
     refreshLayers();
     refreshPhases();
-    refreshRegions();
     refreshCanvas();
     refreshPreview();
     updateOverspill();
@@ -1347,20 +1236,6 @@ void ImageEditor::shiftBy(ShiftDirection direction)
     notifyModified();
 }
 
-int ImageEditor::previewRangeStart() const
-{
-    if (m_previewPhase >= 0 && m_previewPhase < m_doc.phases().size())
-        return m_doc.phases().at(m_previewPhase).start;
-    return 0;
-}
-
-int ImageEditor::previewRangeEnd() const
-{
-    if (m_previewPhase >= 0 && m_previewPhase < m_doc.phases().size())
-        return m_doc.phases().at(m_previewPhase).end;
-    return m_doc.frameCount() - 1;
-}
-
 int ImageEditor::stackIndexFromDisplay(int displayRow) const
 {
     return m_doc.layerCount() - 1 - displayRow;
@@ -1443,7 +1318,7 @@ void ImageEditor::togglePlay(bool on)
 {
     m_playing = on;
     if (m_playing) {
-        m_previewFrame = previewRangeStart();
+        m_previewFrame = 0;
         m_previewTimer->start(qMax(1, 1000 / qMax(1, m_fps)));
         m_actPlay->setIcon(appearance::icon(appearance::Icon::Pause));
         m_actPlay->setToolTip(tr("Pause animation"));
@@ -1459,8 +1334,10 @@ void ImageEditor::togglePlay(bool on)
 
 void ImageEditor::previewTick()
 {
-    m_previewFrame = nextPreviewFrame(m_previewFrame, m_doc.frameCount(), previewRangeStart(),
-                                      previewRangeEnd());
+    const int count = m_previewPhase >= 0 && m_previewPhase < m_doc.phases().size()
+        ? m_doc.phases().at(m_previewPhase).frames.size()
+        : m_doc.frameCount();
+    m_previewFrame = nextPreviewFrame(m_previewFrame, count, 0, count - 1);
     refreshPreview();
 }
 
@@ -1477,7 +1354,7 @@ void ImageEditor::previewPhaseChanged(int index)
         return;
     m_previewPhase = m_previewPhaseBox->itemData(index).toInt();
     if (m_playing)
-        m_previewFrame = previewRangeStart();
+        m_previewFrame = 0;
     refreshPreview();
 }
 
@@ -1579,10 +1456,24 @@ void ImageEditor::renameLayer()
 
 void ImageEditor::addPhase()
 {
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("New phase"), tr("Name:"),
+                                               QLineEdit::Normal,
+                                               tr("Phase %1").arg(m_doc.phaseCount() + 1), &ok);
+    if (!ok)
+        return;
+    const int cellW = QInputDialog::getInt(this, tr("New phase"), tr("Sprite width:"),
+                                           m_doc.width(), 1, 320, 1, &ok);
+    if (!ok)
+        return;
+    const int cellH = QInputDialog::getInt(this, tr("New phase"), tr("Sprite height:"),
+                                           m_doc.height(), 1, 200, 1, &ok);
+    if (!ok)
+        return;
     const ImageDocument before = m_doc;
-    const int index = m_doc.addPhase();
+    const int index = m_doc.addPhase(name, cellW, cellH);
     pushSnapshot(before, tr("add phase"));
-    refreshPhases();
+    refreshChrome();
     m_phases->setCurrentRow(index);
     notifyModified();
 }
@@ -1594,26 +1485,21 @@ void ImageEditor::removePhase()
     if (!m_doc.removePhase(row))
         return;
     if (m_previewPhase == row)
-        m_previewPhase = -1;
+        m_previewPhase = 0;
     else if (m_previewPhase > row)
         --m_previewPhase;
     pushSnapshot(before, tr("delete phase"));
-    refreshPhases();
+    refreshChrome();
     notifyModified();
 }
 
 void ImageEditor::selectPhase(int row)
 {
-    if (row < 0 || row >= m_doc.phases().size())
+    // Selecting a phase switches the editing context: the frames panel, the
+    // canvas and the preview all follow the phase's own frames.
+    if (row < 0 || row >= m_doc.phases().size() || !m_doc.setCurrentPhase(row))
         return;
-    m_phaseStart->blockSignals(true);
-    m_phaseEnd->blockSignals(true);
-    m_phaseStart->setEnabled(true);
-    m_phaseEnd->setEnabled(true);
-    m_phaseStart->setValue(m_doc.phases().at(row).start + 1);
-    m_phaseEnd->setValue(m_doc.phases().at(row).end + 1);
-    m_phaseStart->blockSignals(false);
-    m_phaseEnd->blockSignals(false);
+    refreshChrome();
 }
 
 void ImageEditor::renamePhase()
@@ -1632,136 +1518,6 @@ void ImageEditor::renamePhase()
     pushSnapshot(before, tr("rename phase"));
     refreshPhases();
     notifyModified();
-}
-
-void ImageEditor::phaseRangeChanged()
-{
-    const int row = m_phases->currentRow();
-    if (row < 0)
-        return;
-    m_doc.setPhaseRange(row, m_phaseStart->value() - 1, m_phaseEnd->value() - 1);
-    refreshPhases();
-    m_phases->setCurrentRow(row);
-    notifyModified();
-}
-
-void ImageEditor::refreshRegions()
-{
-    if (!m_regions || !m_regionName)
-        return;
-    m_regions->blockSignals(true);
-    const int selected = m_regions->currentRow();
-    m_regions->clear();
-    for (const ImageRegion &region : m_doc.regions()) {
-        m_regions->addItem(tr("%1  %2,%3 %4\u00d7%5")
-                               .arg(region.name).arg(region.x).arg(region.y)
-                               .arg(region.w).arg(region.h));
-    }
-    if (selected >= 0 && selected < m_regions->count())
-        m_regions->setCurrentRow(selected);
-    m_regions->blockSignals(false);
-
-    const int row = m_regions->currentRow();
-    const bool has = row >= 0 && row < m_doc.regions().size();
-    m_regionX->blockSignals(true);
-    m_regionY->blockSignals(true);
-    m_regionW->blockSignals(true);
-    m_regionH->blockSignals(true);
-    m_regionX->setMaximum(qMax(0, m_doc.width() - 1));
-    m_regionY->setMaximum(qMax(0, m_doc.height() - 1));
-    m_regionW->setMaximum(m_doc.width());
-    m_regionH->setMaximum(m_doc.height());
-    if (has) {
-        const ImageRegion &region = m_doc.regions().at(row);
-        m_regionX->setValue(region.x);
-        m_regionY->setValue(region.y);
-        m_regionW->setValue(region.w);
-        m_regionH->setValue(region.h);
-        // Leave the text alone while it is being typed in.
-        if (!m_regionName->hasFocus())
-            m_regionName->setText(region.name);
-    }
-    m_regionX->blockSignals(false);
-    m_regionY->blockSignals(false);
-    m_regionW->blockSignals(false);
-    m_regionH->blockSignals(false);
-    m_regionName->setEnabled(has);
-    m_regionX->setEnabled(has);
-    m_regionY->setEnabled(has);
-    m_regionW->setEnabled(has);
-    m_regionH->setEnabled(has);
-    m_removeRegion->setEnabled(has);
-    m_extractRegion->setEnabled(has);
-    if (!has)
-        m_regionName->clear();
-    m_canvas->setRegions(m_doc.regions());
-    m_canvas->setSelectedRegion(row);
-}
-
-void ImageEditor::addRegion()
-{
-    const ImageDocument before = m_doc;
-    QVector<ImageRegion> next = m_doc.regions();
-    // A centred 16\u00d716 box (or as big as the canvas allows).
-    const int side = qBound(1, qMin(16, qMin(m_doc.width(), m_doc.height())),
-                            qMin(m_doc.width(), m_doc.height()));
-    const int x = (m_doc.width() - side) / 2;
-    const int y = (m_doc.height() - side) / 2;
-    next.append({uniqueRegionName(next), x, y, side, side});
-    m_doc.setRegions(next);
-    pushSnapshot(before, tr("add region"));
-    refreshRegions();
-    m_regions->setCurrentRow(next.size() - 1);
-    notifyModified();
-}
-
-void ImageEditor::removeRegion()
-{
-    const int row = m_regions->currentRow();
-    const ImageDocument before = m_doc;
-    QVector<ImageRegion> next = m_doc.regions();
-    if (row < 0 || row >= next.size())
-        return;
-    next.remove(row);
-    m_doc.setRegions(next);
-    pushSnapshot(before, tr("delete region"));
-    refreshRegions();
-    notifyModified();
-}
-
-void ImageEditor::selectRegion(int row)
-{
-    m_canvas->setSelectedRegion(row >= 0 && row < m_doc.regions().size() ? row : -1);
-    // Field contents follow the list selection.
-    refreshRegions();
-}
-
-void ImageEditor::regionFieldChanged()
-{
-    const int row = m_regions->currentRow();
-    if (row < 0 || row >= m_doc.regions().size())
-        return;
-    QVector<ImageRegion> next = m_doc.regions();
-    ImageRegion &region = next[row];
-    const QString typed = m_regionName->text().trimmed();
-    if (!typed.isEmpty())
-        region.name = typed;
-    region.x = m_regionX->value();
-    region.y = m_regionY->value();
-    region.w = m_regionW->value();
-    region.h = m_regionH->value();
-    m_doc.setRegions(next);
-    // Co-ordinate edits are metadata tweaks, like phase ranges: no snapshot.
-    refreshRegions();
-    notifyModified();
-}
-
-void ImageEditor::extractRegion()
-{
-    const int row = m_regions->currentRow();
-    if (row < 0 || row >= m_doc.regions().size())
-        return;
-    emit regionExtractRequested(m_doc.cropped(m_doc.regions().at(row)));
 }
 
 } // namespace pist

@@ -18,20 +18,42 @@ struct ImageLayer {
     QVector<int> pixels;
 };
 
-/// A named rectangle on the canvas: one sprite of a sprite sheet. Optional
-/// document metadata — a .pim without regions is a plain sprite document,
-/// and v1 files load unchanged.
-struct ImageRegion {
-    QString name;
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
+/// One animation frame of a phase: a bottom-first layer stack plus a
+/// maintained composite (`kTransparent` = empty). Paint lands on the active
+/// layer.
+struct ImageFrame {
+    QVector<ImageLayer> layers;
+    QVector<int> composite;
 };
 
-/// In-memory sprite: size, ST palette cube, up to 16 active colours, and one
-/// or more frames. Each frame is a bottom-first layer stack plus a maintained
-/// composite (`kTransparent` = empty). Paint lands on the active layer.
+/// A sprite-sheet file the document's phases are laid out on. The pixels
+/// live in the file; the document keeps the target path and geometry.
+struct ImageSheet {
+    QString path;
+    int width = 320;
+    int height = 200;
+};
+
+/// One animation of the sprite set: `frames.size()` cells of cellW×cellH,
+/// owned outright by the phase — each phase has its own cell size, so a
+/// document can mix 32×32 characters with a 64×64 boss. `sheet`/`x`/`y`
+/// place the strip on a sheet: frame k is painted at [x + k*cellW, y].
+/// `sheet` indexes the document's sheets, or is -1 while the phase is
+/// unplaced. A phase always holds at least one frame.
+struct ImagePhase {
+    QString name;
+    int cellW = 32;
+    int cellH = 32;
+    int sheet = -1;
+    int x = 0;
+    int y = 0;
+    QVector<ImageFrame> frames;
+};
+
+/// In-memory sprite set: an ST palette cube, up to 16 active colours, and
+/// phases that each own their frames. The editor edits one phase at a time;
+/// the "canvas" is the current phase's cell size. Width/height/frame
+/// accessors delegate to the current phase and frame.
 class ImageDocument
 {
 public:
@@ -41,35 +63,36 @@ public:
 
     ImageDocument();
 
-    /// Blank document of `width`×`height` with one transparent frame.
+    /// Blank document of one phase with `width`×`height` cells and one
+    /// transparent frame.
     static ImageDocument create(int width, int height, PaletteKind kind);
 
-    int width() const { return m_width; }
-    int height() const { return m_height; }
-    int pixelCount() const { return m_width * m_height; }
+    /// The current phase's cell size: the canvas the editor edits.
+    int width() const { return phase().cellW; }
+    int height() const { return phase().cellH; }
+    int pixelCount() const { return width() * height(); }
     PaletteKind paletteKind() const { return m_kind; }
     const QVector<int> &active() const { return m_active; }
     int background() const { return m_background; }
-    int frameCount() const { return m_frames.size(); }
-    int currentFrame() const { return m_current; }
-    /// Composite of the current frame (what the viewer sees).
-    const QVector<int> &pixels() const { return m_frames.at(m_current).composite; }
-    /// Composite of frame `index`.
-    const QVector<int> &frame(int index) const { return m_frames.at(index).composite; }
+
+    int phaseCount() const { return m_phases.size(); }
+    int currentPhase() const { return m_currentPhase; }
+    const QVector<ImagePhase> &phases() const { return m_phases; }
+    const QVector<ImageSheet> &sheets() const { return m_sheets; }
+
+    /// Frames of the current phase.
+    int frameCount() const { return phase().frames.size(); }
+    int currentFrame() const { return m_currentFrame; }
+    /// Composite of the current phase's frame `index` (what the viewer sees).
+    const QVector<int> &frame(int index) const;
+    /// Composite of the current frame.
+    const QVector<int> &pixels() const { return phase().frames.at(m_currentFrame).composite; }
     /// Active layer's pixels (fill / stroke source).
     const QVector<int> &activeLayerPixels() const;
 
     int layerCount() const;
     int activeLayer() const { return m_activeLayer; }
-    const QVector<ImageLayer> &layers() const { return m_frames.at(m_current).layers; }
-    const QVector<ImagePhase> &phases() const { return m_phases; }
-    const QVector<ImageRegion> &regions() const { return m_regions; }
-    void setRegions(const QVector<ImageRegion> &regions);
-
-    /// The current frame (or `frame`) cropped to `region`, clipped to the
-    /// canvas and sharing the palette: the basis of per-region export. A
-    /// region that misses the canvas yields a 1×1 transparent document.
-    ImageDocument cropped(const ImageRegion &region, int frame = -1) const;
+    const QVector<ImageLayer> &layers() const { return phase().frames.at(m_currentFrame).layers; }
 
     bool isModified() const { return m_modified; }
     void setModified(bool on) { m_modified = on; }
@@ -84,9 +107,19 @@ public:
     /// Replace the whole document (used by import-as-replace).
     void replaceWith(const ImageDocument &other);
 
+    bool setCurrentPhase(int index);
+    /// Add an empty phase named `name` with `cellW`×`cellH` cells and one
+    /// transparent frame; returns its index and makes it current.
+    int addPhase(const QString &name, int cellW, int cellH);
+    bool removePhase(int index);
+    bool renamePhase(int index, const QString &name);
+    /// Place a phase's strip on a sheet; `sheet` -1 marks it unplaced.
+    bool setPhasePlacement(int index, int sheet, int x, int y);
+    /// Register a sheet target; returns its index.
+    int addSheet(const QString &path, int width, int height);
+
     bool setCurrentFrame(int index);
-    /// Insert a blank frame after the current one (matching its layer names)
-    /// and select it.
+    /// Insert a blank frame after the current one (matching its layer names).
     int addFrame();
     /// Insert a copy of `source` after the current frame and select it.
     int duplicateFrame(int source);
@@ -101,11 +134,6 @@ public:
     bool moveLayer(int from, int to);
     bool renameLayer(int index, const QString &name);
     bool setLayerVisible(int index, bool visible);
-
-    int addPhase();
-    bool removePhase(int index);
-    bool renamePhase(int index, const QString &name);
-    bool setPhaseRange(int index, int start, int end);
 
     void setActive(const QVector<int> &indices);
     bool toggleActive(int cubeIndex);
@@ -130,34 +158,32 @@ public:
     QColor displayColor(int cubeIndex) const;
 
 private:
-    struct Frame {
-        QVector<ImageLayer> layers;
-        QVector<int> composite;
-    };
+    const ImagePhase &phase() const { return m_phases.at(m_currentPhase); }
+    ImagePhase &phase();
+    ImageFrame *frameAt(int index);
+    const ImageFrame *frameAt(int index) const;
 
-    bool setGeometry(int width, int height, QString *error);
+    bool setPhaseCellSize(int phaseIndex, int width, int height, QString *error);
     QVector<int> blankPixels() const;
     ImageLayer makeLayer(const QString &name) const;
-    Frame blankFrame() const;
-    Frame blankFrameFrom(const Frame &templateFrame) const;
-    void remesh(Frame &frame) const;
+    ImageFrame blankFrame() const;
+    ImageFrame blankFrameFrom(const ImageFrame &templateFrame) const;
+    void remesh(ImageFrame &frame) const;
     void remeshCurrent();
     void clampActiveLayer();
     int resolvedLayer(int layer) const;
     ImageLayer *layerAt(int layer);
     const ImageLayer *layerAt(int layer) const;
-    static int mergedPixel(const Frame &frame, int index);
+    static int mergedPixel(const ImageFrame &frame, int index);
     void touch() { m_modified = true; }
 
-    int m_width = 32;
-    int m_height = 32;
     PaletteKind m_kind = PaletteKind::Ste;
     QVector<int> m_active;
     int m_background = 0;
-    QVector<Frame> m_frames;
+    QVector<ImageSheet> m_sheets;
     QVector<ImagePhase> m_phases;
-    QVector<ImageRegion> m_regions;
-    int m_current = 0;
+    int m_currentPhase = 0;
+    int m_currentFrame = 0;
     int m_activeLayer = 0;
     bool m_modified = false;
     mutable QString m_lastError;

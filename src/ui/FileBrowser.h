@@ -11,6 +11,7 @@
 class QFileSystemModel;
 class QLabel;
 class QLineEdit;
+class QMimeData;
 class QPushButton;
 class QStandardItemModel;
 class QTreeView;
@@ -53,6 +54,10 @@ public slots:
     /// Host paths selected in the hard-drive tree (files and folders).
     QStringList selectedHardDrivePaths() const;
 
+    /// Entries selected in floppy pane `drive`, as image-relative paths like
+    /// `listImage` reports them (`AUTO/PROG.PRG`).
+    QStringList selectedFloppyEntries(int drive) const;
+
     /// Write the current hard-drive selection to a `.st` or `.msa` image.
     bool exportHardDriveSelection(const QString &imagePath, QString *error);
 
@@ -91,23 +96,81 @@ public slots:
     /// Returns true on success. This is the same path the inline editor takes.
     bool renamePath(const QString &path, const QString &newName);
 
+    /// Copy (or cut, to move) hard-drive paths into the browser's clipboard
+    /// for pasting into a hard-drive directory or onto a floppy pane.
+    void copyHardDrivePaths(const QStringList &paths, bool cut);
+
+    /// Copy (or cut) entries from floppy `drive` — image-relative paths as
+    /// `selectedFloppyEntries` reports them — into the browser's clipboard.
+    void copyFloppyEntries(int drive, const QStringList &entryPaths, bool cut);
+
+    /// Paste the clipboard into hard-drive directory `dir`. Returns true on
+    /// success; failures are reported with a message box.
+    bool pasteIntoDirectory(const QString &dir);
+
+    /// Paste the clipboard into floppy `drive`, inside the image directory
+    /// `dirInImage` (empty for the image root). Returns true on success.
+    bool pasteIntoFloppy(int drive, const QString &dirInImage);
+
 private slots:
     void onPathEntered();
     void onActivated(const QModelIndex &index);
     void onContextMenu(const QPoint &pos);
+    void onFloppyContextMenu(const QPoint &pos);
     void onModelPathRenamed(const QString &path, const QString &oldName, const QString &newName);
     void onExportFloppy();
     void onChangeFloppy();
     void onEjectFloppy();
 
 private:
+    /// The clipboard behind the Copy/Cut/Paste actions. It is browser-wide,
+    /// not the system clipboard, because a paste can cross panes and needs to
+    /// know whether its entries are host paths or floppy image paths.
+    struct Clipboard {
+        enum Mode { None, Copy, Cut };
+        Mode mode = None;
+        bool fromFloppy = false;   // paths are image-relative entry paths
+        int drive = -1;            // source drive when fromFloppy
+        QStringList paths;
+    };
+
     /// The directory context menu actions apply to: the selected directory,
     /// the selected file's parent, or the root when nothing is selected.
     QString contextDirectory() const;
 
+    /// The directory a drop or paste onto the hard-drive pane at `pos`
+    /// targets: the directory under the cursor, else its parent.
+    QString hardDriveTargetDirectory(const QPoint &pos) const;
+
+    /// The same for a floppy pane: an image directory path, empty for the
+    /// image root.
+    QString floppyTargetDirectory(int drive, const QPoint &pos) const;
+
     /// Shared by the Delete shortcut and the context menu: confirm, then
     /// deletePath. Returns true when the path is gone.
     bool confirmAndDelete(const QString &path);
+
+    /// Host → host: copy or move `paths` into `targetDir`.
+    bool transferHostPaths(const QStringList &paths, const QString &targetDir, bool move);
+
+    /// Host → floppy: add `hostPaths` inside image directory `dirInImage`;
+    /// when `removeSources`, delete the host files afterwards (a move).
+    bool addHostPathsToFloppy(int drive, const QString &dirInImage,
+                              const QStringList &hostPaths, bool removeSources);
+
+    /// Floppy → host: extract `entryPaths` into `targetDir`; when
+    /// `removeSource`, also drop them from the image (a move).
+    bool extractFloppyEntries(int drive, const QStringList &entryPaths,
+                              const QString &targetDir, bool removeSource);
+
+    /// Floppy → floppy, possibly the same image (copying within a disk).
+    bool copyFloppyToFloppy(int sourceDrive, const QStringList &entryPaths,
+                            int targetDrive, const QString &dirInImage, bool removeSource);
+
+    void dropOnHardDrive(const QPoint &pos, const QMimeData *mime, Qt::DropAction action,
+                         Qt::KeyboardModifiers modifiers);
+    void dropOnFloppy(int drive, const QPoint &pos, const QMimeData *mime,
+                      Qt::DropAction action, Qt::KeyboardModifiers modifiers);
 
     void refreshFloppy(int drive);
     int driveOfSender() const;
@@ -126,6 +189,7 @@ private:
     QPushButton *m_export = nullptr;
     FloppyPane m_floppy[2];
     QString m_floppyPath[2];
+    Clipboard m_clipboard;
 };
 
 } // namespace pist

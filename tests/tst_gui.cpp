@@ -128,6 +128,10 @@ private slots:
     /// Disk A/B groups list a mounted image, eject it, and export the
     /// hard-drive selection to a new .st / .msa floppy.
     void fileBrowserFloppyGroups();
+    /// Copy, cut and paste through the browser panes: duplicate and move on
+    /// the hard drive (with pathRenamed for open documents), and across the
+    /// hard-drive and floppy panes.
+    void fileBrowserCopyMovePanes();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -1271,6 +1275,91 @@ void TstGui::fileBrowserFloppyGroups()
     const QString exportedMsa = dir + QStringLiteral("/out.msa");
     QVERIFY2(browser->exportHardDriveSelection(exportedMsa, &error), qPrintable(error));
     QVERIFY(QFileInfo(exportedMsa).size() > 10);
+}
+
+void TstGui::fileBrowserCopyMovePanes()
+{
+    const QString dir = m_work->path() + QStringLiteral("/copymove");
+    QVERIFY(QDir().mkpath(dir));
+    QVERIFY(QDir().mkpath(dir + QStringLiteral("/sub")));
+    const QString alpha = dir + QStringLiteral("/alpha.txt");
+    {
+        QFile f(alpha);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("alpha");
+    }
+    const QString beta = dir + QStringLiteral("/beta.txt");
+    {
+        QFile f(beta);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("beta");
+    }
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    window.openPath(alpha);
+
+    auto contentOf = [](const QString &path) {
+        QFile f(path);
+        f.open(QIODevice::ReadOnly);
+        return f.readAll();
+    };
+
+    // Copy within the hard drive: the original stays, a duplicate lands in sub.
+    browser->copyHardDrivePaths({alpha}, false);
+    QVERIFY(browser->pasteIntoDirectory(dir + QStringLiteral("/sub")));
+    QCOMPARE(contentOf(dir + QStringLiteral("/sub/alpha.txt")), QByteArray("alpha"));
+    QCOMPARE(contentOf(alpha), QByteArray("alpha"));
+
+    // Cut within the hard drive: the file moves and open documents follow.
+    QSignalSpy renamed(browser, &FileBrowser::pathRenamed);
+    browser->copyHardDrivePaths({beta}, true);
+    QVERIFY(browser->pasteIntoDirectory(dir + QStringLiteral("/sub")));
+    QVERIFY(!QFileInfo::exists(beta));
+    QCOMPARE(contentOf(dir + QStringLiteral("/sub/beta.txt")), QByteArray("beta"));
+    QCOMPARE(renamed.count(), 1);
+    QCOMPARE(renamed.at(0).at(0).toString(), beta);
+    QCOMPARE(renamed.at(0).at(1).toString(), dir + QStringLiteral("/sub/beta.txt"));
+
+    // A cut is one-shot: the clipboard is spent by the paste above.
+    QVERIFY(!browser->pasteIntoDirectory(dir + QStringLiteral("/sub")));
+
+    // Two disks: A holds a file, B is empty.
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("ONE.TXT");
+    file.data = QByteArrayLiteral("one");
+    items.append(file);
+    const QString imageA = dir + QStringLiteral("/a.st");
+    const QString imageB = dir + QStringLiteral("/b.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(imageA, items, &error), qPrintable(error));
+    QVERIFY2(floppy::writeImage(imageB, {}, &error), qPrintable(error));
+    browser->setFloppyImages({imageA, imageB});
+
+    // Copy from disk A to disk B.
+    browser->copyFloppyEntries(0, {QStringLiteral("ONE.TXT")}, false);
+    QVERIFY(browser->pasteIntoFloppy(1, QString()));
+    const QVector<floppy::Entry> onB = floppy::listImage(imageB, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(onB.size(), 1);
+    QCOMPARE(onB.at(0).path, QStringLiteral("ONE.TXT"));
+    // The copy on A is untouched, and pasting again keeps adding.
+    QVERIFY(browser->pasteIntoFloppy(1, QString()));
+    const QVector<floppy::Entry> onBAgain = floppy::listImage(imageB, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(onBAgain.size(), 2);
+
+    // Cut off disk A onto the hard drive: extracted here, removed there.
+    browser->copyFloppyEntries(0, {QStringLiteral("ONE.TXT")}, true);
+    QVERIFY(browser->pasteIntoDirectory(dir));
+    QCOMPARE(contentOf(dir + QStringLiteral("/ONE.TXT")), QByteArray("one"));
+    QStringList leftOnA;
+    for (const floppy::Entry &e : floppy::listImage(imageA, &error))
+        leftOnA.append(e.path);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(!leftOnA.contains(QStringLiteral("ONE.TXT")));
 }
 
 // The editor's modified state drives the window title and the save prompt, and

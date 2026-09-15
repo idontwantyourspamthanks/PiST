@@ -15,13 +15,16 @@ following the program counter. C++17, CMake, GPL-2.0-or-later.
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-ctest --test-dir build --output-on-failure
+QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 ```
 
 - Parser/unit tests always run. Integration tests (`tst_gui`, `tst_remotecontrol`,
   `tst_emulatorhost`) run **offscreen** and `QSKIP` unless Hatari, `vasmm68k_mot` and a TOS ROM are
   present — set `PIST_TOS_DIR=<dir>` and put the tools on `PATH`; `PIST_REQUIRE_EMULATOR=1` makes a
   skip fail (CI uses this).
+- Keep `QT_QPA_PLATFORM=offscreen` on every test run, including local ones. Tests can open modal
+  dialogs; on a desktop session those are real windows that hang the run until someone clicks them
+  away. Running a test binary directly without the variable is how that happens.
 - To run the app: `./run.sh` (builds if needed, opens `demo/hello.s`). Needs a real display and, for
   a full debug session, Hatari + a TOS ROM.
 - **Verify a change by running the specific test that covers it.** For debug-loop changes, prove it

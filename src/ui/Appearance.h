@@ -42,6 +42,7 @@ enum class Icon {
     Ellipse,
     Fill,
     Eyedropper,
+    Region,
     Undo,
     Redo,
     Grid,

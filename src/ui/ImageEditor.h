@@ -14,8 +14,10 @@ class QButtonGroup;
 class QComboBox;
 class QEvent;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
+class QPushButton;
 class QScrollArea;
 class QSpinBox;
 class QTimer;
@@ -50,6 +52,8 @@ public:
     const ImageDocument &document() const { return m_doc; }
 
     void newDocument(int width, int height, PaletteKind kind);
+    /// Take `doc` as the edited sheet, untitled (used by region extraction).
+    void replaceDocument(const ImageDocument &doc);
     void undo();
     void redo();
     /// Rebuild toolbar icons after a theme change.
@@ -57,6 +61,8 @@ public:
 
 signals:
     void modificationChanged(bool modified);
+    /// The user asked to open a region's crop as its own sprite.
+    void regionExtractRequested(const pist::ImageDocument &doc);
 
 private slots:
     void setTool();
@@ -98,6 +104,11 @@ private slots:
     void selectPhase(int row);
     void renamePhase();
     void phaseRangeChanged();
+    void addRegion();
+    void removeRegion();
+    void selectRegion(int row);
+    void regionFieldChanged();
+    void extractRegion();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -108,6 +119,7 @@ private:
     void refreshFrames();
     void refreshLayers();
     void refreshPhases();
+    void refreshRegions();
     void refreshOnion();
     void refreshPreview();
     void refreshCanvas();
@@ -151,6 +163,12 @@ private:
     QListWidget *m_frames = nullptr;
     QListWidget *m_layers = nullptr;
     QListWidget *m_phases = nullptr;
+    QListWidget *m_regions = nullptr;
+    QLineEdit *m_regionName = nullptr;
+    QSpinBox *m_regionX = nullptr;
+    QSpinBox *m_regionY = nullptr;
+    QSpinBox *m_regionW = nullptr;
+    QSpinBox *m_regionH = nullptr;
     QLabel *m_preview = nullptr;
     QComboBox *m_onion = nullptr;
     QComboBox *m_previewPhaseBox = nullptr;
@@ -186,6 +204,9 @@ private:
     QToolButton *m_layerDown = nullptr;
     QToolButton *m_addPhase = nullptr;
     QToolButton *m_removePhase = nullptr;
+    QToolButton *m_addRegion = nullptr;
+    QToolButton *m_removeRegion = nullptr;
+    QPushButton *m_extractRegion = nullptr;
 };
 
 } // namespace pist

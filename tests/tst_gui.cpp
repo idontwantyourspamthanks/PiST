@@ -46,6 +46,7 @@
 #include <QTabBar>
 #include <QTableWidget>
 #include <QTimer>
+#include <QSpinBox>
 #include <QToolButton>
 #include <QProcess>
 #include <QTreeView>
@@ -161,6 +162,10 @@ private slots:
     /// New Image… requires a file name and writes the blank `.pim` before
     /// the editor opens, rather than defaulting every sprite to sprite.pim.
     void newImageDialogResolvesFileName();
+    /// Sprite-sheet regions: the panel edits region metadata, saving
+    /// persists it, the canvas Region tool draws new regions, and Extract
+    /// opens the crop as its own tab.
+    void imageRegionsPanelAndExtract();
 
 private:
     QString m_vasm;
@@ -1885,6 +1890,99 @@ void TstGui::newImageDialogResolvesFileName()
     const QString path = dialog.filePath();
     QCOMPARE(QFileInfo(path).fileName(), QStringLiteral("hero.pim"));
     QCOMPARE(QFileInfo(path).absolutePath(), QFileInfo(tmp.path()).absoluteFilePath());
+}
+
+
+void TstGui::imageRegionsPanelAndExtract()
+{
+    const QString dir = m_work->path() + QStringLiteral("/regions");
+    QVERIFY(QDir().mkpath(dir));
+
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    doc.setPixel(12 * 32 + 12, doc.active().at(1));
+    const QString pim = dir + QStringLiteral("/sheet.pim");
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY2(image, "opening a .pim must create an ImageEditor tab");
+    QCOMPARE(image->document().regions().size(), 0);
+
+    // The panel: adding a region lands it selected with a default box.
+    auto *list = image->findChild<QListWidget *>(QStringLiteral("imageRegions"));
+    QVERIFY(list);
+    auto *addBtn = image->findChild<QToolButton *>(QStringLiteral("imageAddRegion"));
+    QVERIFY(addBtn);
+    addBtn->click();
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(image->document().regions().size(), 1);
+    QCOMPARE(image->document().regions().at(0).name, QStringLiteral("Region 1"));
+
+    // Numeric edits land in the document.
+    auto *nameField = image->findChild<QLineEdit *>(QStringLiteral("imageRegionName"));
+    auto *x = image->findChild<QSpinBox *>(QStringLiteral("imageRegionX"));
+    auto *y = image->findChild<QSpinBox *>(QStringLiteral("imageRegionY"));
+    auto *w = image->findChild<QSpinBox *>(QStringLiteral("imageRegionW"));
+    auto *h = image->findChild<QSpinBox *>(QStringLiteral("imageRegionH"));
+    QVERIFY(nameField && x && y && w && h);
+    nameField->setFocus();
+    nameField->clear();
+    QTest::keyClicks(nameField, QStringLiteral("mark"));
+    x->setValue(8);
+    y->setValue(8);
+    w->setValue(16);
+    h->setValue(16);
+    QCOMPARE(image->document().regions().at(0).name, QStringLiteral("mark"));
+    QCOMPARE(image->document().regions().at(0).x, 8);
+    QCOMPARE(image->document().regions().at(0).w, 16);
+
+    // Saving persists the regions.
+    QVERIFY2(image->saveFile(pim), qPrintable(image->lastError()));
+    ImageDocument reloaded;
+    QVERIFY2(reloaded.load(pim, &error), qPrintable(error));
+    QCOMPARE(reloaded.regions().size(), 1);
+    QCOMPARE(reloaded.regions().at(0).name, QStringLiteral("mark"));
+
+    // Extract opens the crop as a second, untitled tab.
+    auto *extract = image->findChild<QPushButton *>(QStringLiteral("imageExtractRegion"));
+    QVERIFY(extract);
+    extract->click();
+    QCOMPARE(tabs->count(), 2);
+    auto *cropTab = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(cropTab);
+    QVERIFY(cropTab != image);
+    QVERIFY(cropTab->filePath().isEmpty());
+    QCOMPARE(cropTab->document().width(), 16);
+    QCOMPARE(cropTab->document().height(), 16);
+    QCOMPARE(cropTab->document().regions().size(), 0);
+    QCOMPARE(cropTab->document().pixels().at(4 * 16 + 4), doc.active().at(1));
+
+    // The canvas Region tool draws a new rectangle into the document.
+    auto *canvas = image->findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    QToolButton *regionTool = nullptr;
+    for (auto *button : image->findChildren<QToolButton *>()) {
+        if (button->property("tool").toInt() == int(DrawTool::Region))
+            regionTool = button;
+    }
+    QVERIFY(regionTool);
+    regionTool->click();
+    const int cell = canvas->cellSize();
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(2 * cell + cell / 2, 3 * cell + cell / 2));
+    QTest::mouseMove(canvas, QPoint(6 * cell + cell / 2, 6 * cell + cell / 2));
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(6 * cell + cell / 2, 6 * cell + cell / 2));
+    QCOMPARE(image->document().regions().size(), 2);
+    QCOMPARE(image->document().regions().at(1).name, QStringLiteral("Region 2"));
+    QCOMPARE(image->document().regions().at(1).x, 2);
+    QCOMPARE(image->document().regions().at(1).y, 3);
+    QCOMPARE(image->document().regions().at(1).w, 5);
+    QCOMPARE(image->document().regions().at(1).h, 4);
 }
 
 QTEST_MAIN(TstGui)

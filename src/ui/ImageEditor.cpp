@@ -26,6 +26,7 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPixmap>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSize>
 #include <QSlider>
@@ -180,6 +181,21 @@ QString swatchStyleSheet(const QColor &color)
         .arg(color.name(), mute.name(), ring.name());
 }
 
+QString uniqueRegionName(const QVector<ImageRegion> &regions)
+{
+    const auto taken = [&regions](const QString &candidate) {
+        for (const ImageRegion &region : regions)
+            if (region.name == candidate)
+                return true;
+        return false;
+    };
+    int n = regions.size() + 1;
+    QString name = QObject::tr("Region %1").arg(n);
+    while (taken(name))
+        name = QObject::tr("Region %1").arg(++n);
+    return name;
+}
+
 appearance::Icon iconForTool(DrawTool tool)
 {
     using appearance::Icon;
@@ -198,6 +214,8 @@ appearance::Icon iconForTool(DrawTool tool)
         return Icon::Fill;
     case DrawTool::Eyedropper:
         return Icon::Eyedropper;
+    case DrawTool::Region:
+        return Icon::Region;
     }
     return Icon::Brush;
 }
@@ -236,6 +254,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     addTool(DrawTool::Ellipse, tr("Ellipse outline"));
     addTool(DrawTool::Fill, tr("Flood fill"));
     addTool(DrawTool::Eyedropper, tr("Eyedropper"));
+    addTool(DrawTool::Region, tr("Regions — drag a rectangle to add, click to select"));
     connect(m_tools, &QButtonGroup::buttonClicked, this, &ImageEditor::setTool);
 
     bar->addSeparator();
@@ -554,6 +573,70 @@ ImageEditor::ImageEditor(QWidget *parent)
     rangeRow->addWidget(m_phaseEnd);
     right->addLayout(rangeRow);
 
+    right->addWidget(new QLabel(tr("Regions"), this));
+    m_regions = new QListWidget(this);
+    m_regions->setObjectName(QStringLiteral("imageRegions"));
+    m_regions->setMaximumWidth(160);
+    m_regions->setMaximumHeight(100);
+    connect(m_regions, &QListWidget::currentRowChanged, this, &ImageEditor::selectRegion);
+    right->addWidget(m_regions);
+    m_addRegion = makeIconButton(appearance::Icon::AddFrame, tr("Add region"));
+    m_addRegion->setObjectName(QStringLiteral("imageAddRegion"));
+    connect(m_addRegion, &QToolButton::clicked, this, &ImageEditor::addRegion);
+    m_removeRegion = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete region"));
+    m_removeRegion->setObjectName(QStringLiteral("imageRemoveRegion"));
+    connect(m_removeRegion, &QToolButton::clicked, this, &ImageEditor::removeRegion);
+    auto *regionBtns = new QHBoxLayout;
+    regionBtns->addWidget(m_addRegion);
+    regionBtns->addWidget(m_removeRegion);
+    right->addLayout(regionBtns);
+
+    m_regionName = new QLineEdit(this);
+    m_regionName->setObjectName(QStringLiteral("imageRegionName"));
+    m_regionName->setPlaceholderText(tr("Region name"));
+    connect(m_regionName, &QLineEdit::textEdited, this, &ImageEditor::regionFieldChanged);
+    right->addWidget(m_regionName);
+    auto *regionCoords = new QHBoxLayout;
+    m_regionX = new QSpinBox(this);
+    m_regionX->setObjectName(QStringLiteral("imageRegionX"));
+    m_regionX->setPrefix(tr("x "));
+    m_regionY = new QSpinBox(this);
+    m_regionY->setObjectName(QStringLiteral("imageRegionY"));
+    m_regionY->setPrefix(tr("y "));
+    m_regionW = new QSpinBox(this);
+    m_regionW->setObjectName(QStringLiteral("imageRegionW"));
+    m_regionW->setPrefix(tr("w "));
+    m_regionH = new QSpinBox(this);
+    m_regionH->setObjectName(QStringLiteral("imageRegionH"));
+    m_regionH->setPrefix(tr("h "));
+    for (QSpinBox *box : {m_regionX, m_regionY, m_regionW, m_regionH}) {
+        box->setRange(0, 4095);
+        connect(box, qOverload<int>(&QSpinBox::valueChanged), this,
+                &ImageEditor::regionFieldChanged);
+        regionCoords->addWidget(box);
+    }
+    right->addLayout(regionCoords);
+    m_extractRegion = new QPushButton(tr("Extract…"), this);
+    m_extractRegion->setObjectName(QStringLiteral("imageExtractRegion"));
+    m_extractRegion->setToolTip(tr("Open the selected region as its own sprite"));
+    connect(m_extractRegion, &QPushButton::clicked, this, &ImageEditor::extractRegion);
+    right->addWidget(m_extractRegion);
+
+    // Canvas region interactions land in the panel.
+    connect(m_canvas, &ImageCanvas::regionDrawn, this, [this](const QRect &rect) {
+        const ImageDocument before = m_doc;
+        QVector<ImageRegion> next = m_doc.regions();
+        next.append({uniqueRegionName(next), rect.x(), rect.y(), rect.width(), rect.height()});
+        m_doc.setRegions(next);
+        pushSnapshot(before, tr("add region"));
+        refreshRegions();
+        m_regions->setCurrentRow(next.size() - 1);
+        notifyModified();
+    });
+    connect(m_canvas, &ImageCanvas::regionSelected, m_regions, [this](int index) {
+        m_regions->setCurrentRow(index);
+    });
+
     m_previewTimer = new QTimer(this);
     connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
 
@@ -570,6 +653,22 @@ ImageEditor::ImageEditor(QWidget *parent)
 void ImageEditor::newDocument(int width, int height, PaletteKind kind)
 {
     m_doc = ImageDocument::create(width, height, kind);
+    m_filePath.clear();
+    m_undo->clear();
+    if (m_actPlay)
+        m_actPlay->setChecked(false);
+    m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
+    m_canvas->setDocument(&m_doc);
+    m_canvas->setCurrentColour(m_colour);
+    rebuildSwatches();
+    refreshChrome();
+    notifyModified();
+    fitToView();
+}
+
+void ImageEditor::replaceDocument(const ImageDocument &doc)
+{
+    m_doc = doc;
     m_filePath.clear();
     m_undo->clear();
     if (m_actPlay)
@@ -1128,6 +1227,7 @@ void ImageEditor::refreshChrome()
     refreshFrames();
     refreshLayers();
     refreshPhases();
+    refreshRegions();
     refreshCanvas();
     refreshPreview();
     updateOverspill();
@@ -1529,6 +1629,125 @@ void ImageEditor::phaseRangeChanged()
     refreshPhases();
     m_phases->setCurrentRow(row);
     notifyModified();
+}
+
+void ImageEditor::refreshRegions()
+{
+    if (!m_regions || !m_regionName)
+        return;
+    m_regions->blockSignals(true);
+    const int selected = m_regions->currentRow();
+    m_regions->clear();
+    for (const ImageRegion &region : m_doc.regions()) {
+        m_regions->addItem(tr("%1  %2,%3 %4\u00d7%5")
+                               .arg(region.name).arg(region.x).arg(region.y)
+                               .arg(region.w).arg(region.h));
+    }
+    if (selected >= 0 && selected < m_regions->count())
+        m_regions->setCurrentRow(selected);
+    m_regions->blockSignals(false);
+
+    const int row = m_regions->currentRow();
+    const bool has = row >= 0 && row < m_doc.regions().size();
+    m_regionX->blockSignals(true);
+    m_regionY->blockSignals(true);
+    m_regionW->blockSignals(true);
+    m_regionH->blockSignals(true);
+    m_regionX->setMaximum(qMax(0, m_doc.width() - 1));
+    m_regionY->setMaximum(qMax(0, m_doc.height() - 1));
+    m_regionW->setMaximum(m_doc.width());
+    m_regionH->setMaximum(m_doc.height());
+    if (has) {
+        const ImageRegion &region = m_doc.regions().at(row);
+        m_regionX->setValue(region.x);
+        m_regionY->setValue(region.y);
+        m_regionW->setValue(region.w);
+        m_regionH->setValue(region.h);
+        // Leave the text alone while it is being typed in.
+        if (!m_regionName->hasFocus())
+            m_regionName->setText(region.name);
+    }
+    m_regionX->blockSignals(false);
+    m_regionY->blockSignals(false);
+    m_regionW->blockSignals(false);
+    m_regionH->blockSignals(false);
+    m_regionName->setEnabled(has);
+    m_regionX->setEnabled(has);
+    m_regionY->setEnabled(has);
+    m_regionW->setEnabled(has);
+    m_regionH->setEnabled(has);
+    m_removeRegion->setEnabled(has);
+    m_extractRegion->setEnabled(has);
+    if (!has)
+        m_regionName->clear();
+    m_canvas->setRegions(m_doc.regions());
+    m_canvas->setSelectedRegion(row);
+}
+
+void ImageEditor::addRegion()
+{
+    const ImageDocument before = m_doc;
+    QVector<ImageRegion> next = m_doc.regions();
+    // A centred 16\u00d716 box (or as big as the canvas allows).
+    const int side = qBound(1, qMin(16, qMin(m_doc.width(), m_doc.height())),
+                            qMin(m_doc.width(), m_doc.height()));
+    const int x = (m_doc.width() - side) / 2;
+    const int y = (m_doc.height() - side) / 2;
+    next.append({uniqueRegionName(next), x, y, side, side});
+    m_doc.setRegions(next);
+    pushSnapshot(before, tr("add region"));
+    refreshRegions();
+    m_regions->setCurrentRow(next.size() - 1);
+    notifyModified();
+}
+
+void ImageEditor::removeRegion()
+{
+    const int row = m_regions->currentRow();
+    const ImageDocument before = m_doc;
+    QVector<ImageRegion> next = m_doc.regions();
+    if (row < 0 || row >= next.size())
+        return;
+    next.remove(row);
+    m_doc.setRegions(next);
+    pushSnapshot(before, tr("delete region"));
+    refreshRegions();
+    notifyModified();
+}
+
+void ImageEditor::selectRegion(int row)
+{
+    m_canvas->setSelectedRegion(row >= 0 && row < m_doc.regions().size() ? row : -1);
+    // Field contents follow the list selection.
+    refreshRegions();
+}
+
+void ImageEditor::regionFieldChanged()
+{
+    const int row = m_regions->currentRow();
+    if (row < 0 || row >= m_doc.regions().size())
+        return;
+    QVector<ImageRegion> next = m_doc.regions();
+    ImageRegion &region = next[row];
+    const QString typed = m_regionName->text().trimmed();
+    if (!typed.isEmpty())
+        region.name = typed;
+    region.x = m_regionX->value();
+    region.y = m_regionY->value();
+    region.w = m_regionW->value();
+    region.h = m_regionH->value();
+    m_doc.setRegions(next);
+    // Co-ordinate edits are metadata tweaks, like phase ranges: no snapshot.
+    refreshRegions();
+    notifyModified();
+}
+
+void ImageEditor::extractRegion()
+{
+    const int row = m_regions->currentRow();
+    if (row < 0 || row >= m_doc.regions().size())
+        return;
+    emit regionExtractRequested(m_doc.cropped(m_doc.regions().at(row)));
 }
 
 } // namespace pist

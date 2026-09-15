@@ -273,6 +273,14 @@ void MainWindow::wireImage(ImageEditor *editor)
         if (editor == m_image)
             updateModifiedState();
     });
+    connect(editor, &ImageEditor::regionExtractRequested, this, [this](const ImageDocument &doc) {
+        ImageEditor *tab = addImageTab(QString());
+        if (!tab)
+            return;
+        tab->replaceDocument(doc);
+        updateTabTitle(tab);
+        updateModifiedState();
+    });
 }
 
 QList<CodeEditor *> MainWindow::openEditors() const

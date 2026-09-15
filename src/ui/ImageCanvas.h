@@ -32,6 +32,9 @@ public:
     void setOnion(const QVector<int> &pixels, qreal opacity = 0.5);
     void setCellSize(int size);
     int cellSize() const { return m_cellSize; }
+    /// Sheet-region outlines drawn over the image; `index` is the selection.
+    void setRegions(const QVector<ImageRegion> &regions);
+    void setSelectedRegion(int index);
 
     static constexpr int kMinCellSize = 1;
     static constexpr int kMaxCellSize = 128;
@@ -46,6 +49,10 @@ signals:
     void cellSizeChanged(int size);
     void zoomStepsRequested(int steps);
     void shiftRequested(ShiftDirection direction);
+    /// The Region tool finished a drag: `rect` is in image pixels.
+    void regionDrawn(const QRect &rect);
+    /// Pressing inside a region with the Region tool selected it.
+    void regionSelected(int index);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -58,6 +65,7 @@ protected:
 private:
     Grid grid() const;
     int indexAt(const QPoint &pos) const;
+    QPoint clampedCell(const QPoint &pos) const;
     QRect cellRect(int index) const;
     void rebuildImage();
     void applyAt(int index, bool erase);
@@ -78,6 +86,11 @@ private:
     QVector<int> m_onion;
     qreal m_onionOpacity = 0.5;
     QImage m_logical;
+    QVector<ImageRegion> m_regions;
+    int m_selectedRegion = -1;
+    bool m_creatingRegion = false;
+    QPoint m_regionAnchor;
+    QRect m_regionRubber;
 };
 
 } // namespace pist

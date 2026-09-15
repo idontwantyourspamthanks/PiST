@@ -263,6 +263,17 @@ int ImageDocument::layerCount() const
     return phase().frames.at(m_currentFrame).layers.size();
 }
 
+QVector<int> ImageDocument::resizedPixels(const QVector<int> &pixels, int oldW, int oldH,
+                                          int newW, int newH)
+{
+    QVector<int> out(newW * newH, kTransparent);
+    for (int y = 0; y < qMin(oldH, newH); ++y) {
+        for (int x = 0; x < qMin(oldW, newW); ++x)
+            out[y * newW + x] = pixels.at(y * oldW + x);
+    }
+    return out;
+}
+
 bool ImageDocument::setPhaseCellSize(int phaseIndex, int width, int height, QString *error)
 {
     if (phaseIndex < 0 || phaseIndex >= m_phases.size())
@@ -278,8 +289,19 @@ bool ImageDocument::setPhaseCellSize(int phaseIndex, int width, int height, QStr
         m_lastError = message;
         return false;
     }
-    m_phases[phaseIndex].cellW = width;
-    m_phases[phaseIndex].cellH = height;
+    ImagePhase &phase = m_phases[phaseIndex];
+    if (phase.cellW == width && phase.cellH == height)
+        return true;
+    const int oldW = phase.cellW;
+    const int oldH = phase.cellH;
+    phase.cellW = width;
+    phase.cellH = height;
+    for (ImageFrame &frame : phase.frames) {
+        for (ImageLayer &layer : frame.layers)
+            layer.pixels = resizedPixels(layer.pixels, oldW, oldH, width, height);
+        remesh(frame);
+    }
+    touch();
     return true;
 }
 

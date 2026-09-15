@@ -111,6 +111,10 @@ public:
     /// Add an empty phase named `name` with `cellW`×`cellH` cells and one
     /// transparent frame; returns its index and makes it current.
     int addPhase(const QString &name, int cellW, int cellH);
+    /// Change a phase's cell size. Frames keep their content anchored at the
+    /// top-left: pixels that no longer fit are cropped, newly exposed areas
+    /// are transparent.
+    bool setPhaseCellSize(int phaseIndex, int width, int height, QString *error = nullptr);
     bool removePhase(int index);
     bool renamePhase(int index, const QString &name);
     /// Place a phase's strip on a sheet; `sheet` -1 marks it unplaced.
@@ -163,7 +167,8 @@ private:
     ImageFrame *frameAt(int index);
     const ImageFrame *frameAt(int index) const;
 
-    bool setPhaseCellSize(int phaseIndex, int width, int height, QString *error);
+    static QVector<int> resizedPixels(const QVector<int> &pixels, int oldW, int oldH,
+                                      int newW, int newH);
     QVector<int> blankPixels() const;
     ImageLayer makeLayer(const QString &name) const;
     ImageFrame blankFrame() const;

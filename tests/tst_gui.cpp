@@ -150,6 +150,9 @@ private slots:
     /// A document with unplaced phases and no sheets: New sheet creates the
     /// 320×200 target and staged phases drag straight onto it.
     void newSheetAndStagingDrag();
+    /// Phase cell size is editable from the panel and adding frames in sheet
+    /// mode extends the strip.
+    void phaseCellSizeAndStripGrowth();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -2080,6 +2083,52 @@ void TstGui::newSheetAndStagingDrag()
     QCOMPARE(image->document().phases().at(1).sheet, 0);
     QCOMPARE(image->document().phases().at(1).x, 10);
     QCOMPARE(image->document().phases().at(1).y, 10);
+}
+
+
+void TstGui::phaseCellSizeAndStripGrowth()
+{
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    const QString pim = m_work->path() + QStringLiteral("/cells.pim");
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+
+    // The panel exposes the current phase's cell size, and edits resize it.
+    auto *cellW = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseCellW"));
+    auto *cellH = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseCellH"));
+    QVERIFY(cellW && cellH);
+    QCOMPARE(cellW->value(), 32);
+    cellW->setValue(16);
+    cellH->setValue(24);
+    QCOMPARE(image->document().width(), 16);
+    QCOMPARE(image->document().height(), 24);
+
+    // Adding frames through the frames panel grows the strip: with the phase
+    // placed, the composed sheet paints both cells.
+    QCOMPARE(image->document().addSheet(QStringLiteral("out.pi1"), 320, 200), 0);
+    QVERIFY(image->document().setPhasePlacement(0, 0, 0, 0));
+    auto *addFrame = image->findChild<QToolButton *>(QStringLiteral("imageAddFrame"));
+    QVERIFY(addFrame);
+    addFrame->click();
+    QCOMPARE(image->document().frameCount(), 2);
+
+    QString composeError;
+    ImageDocument composed = composeSheet(image->document(), 0, &composeError);
+    QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
+    // A painted pixel in the second frame must compose at [16, ...], one cell
+    // to the right of the first.
+    image->document().setCurrentFrame(1);
+    image->document().setPixel(0, image->document().active().at(2));
+    composed = composeSheet(image->document(), 0, &composeError);
+    QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
+    QCOMPARE(composed.pixels().at(16), image->document().active().at(2));
 }
 
 QTEST_MAIN(TstGui)

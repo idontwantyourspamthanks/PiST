@@ -470,6 +470,7 @@ ImageEditor::ImageEditor(QWidget *parent)
         return button;
     };
     m_addFrame = makeIconButton(appearance::Icon::AddFrame, tr("Add frame"));
+    m_addFrame->setObjectName(QStringLiteral("imageAddFrame"));
     connect(m_addFrame, &QToolButton::clicked, this, &ImageEditor::addFrame);
     m_dupFrame = makeIconButton(appearance::Icon::DuplicateFrame, tr("Duplicate frame"));
     connect(m_dupFrame, &QToolButton::clicked, this, &ImageEditor::duplicateFrame);
@@ -611,6 +612,22 @@ ImageEditor::ImageEditor(QWidget *parent)
     placementRow->addWidget(m_phaseX);
     placementRow->addWidget(m_phaseY);
     right->addLayout(placementRow);
+    auto *cellRow = new QHBoxLayout;
+    m_phaseCellW = new QSpinBox(this);
+    m_phaseCellW->setObjectName(QStringLiteral("imagePhaseCellW"));
+    m_phaseCellW->setPrefix(tr("w "));
+    m_phaseCellW->setRange(1, kStScreenWidth);
+    m_phaseCellH = new QSpinBox(this);
+    m_phaseCellH->setObjectName(QStringLiteral("imagePhaseCellH"));
+    m_phaseCellH->setPrefix(tr("h "));
+    m_phaseCellH->setRange(1, kStScreenHeight);
+    connect(m_phaseCellW, qOverload<int>(&QSpinBox::valueChanged), this,
+            &ImageEditor::onPhaseCellSizeChanged);
+    connect(m_phaseCellH, qOverload<int>(&QSpinBox::valueChanged), this,
+            &ImageEditor::onPhaseCellSizeChanged);
+    cellRow->addWidget(m_phaseCellW);
+    cellRow->addWidget(m_phaseCellH);
+    right->addLayout(cellRow);
     m_previewTimer = new QTimer(this);
     connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
 
@@ -1242,6 +1259,13 @@ void ImageEditor::refreshPhasePlacement()
     }
     m_phaseX->blockSignals(false);
     m_phaseY->blockSignals(false);
+
+    m_phaseCellW->blockSignals(true);
+    m_phaseCellH->blockSignals(true);
+    m_phaseCellW->setValue(current.cellW);
+    m_phaseCellH->setValue(current.cellH);
+    m_phaseCellW->blockSignals(false);
+    m_phaseCellH->blockSignals(false);
 }
 
 void ImageEditor::onPhasePlacementChanged()
@@ -1252,6 +1276,20 @@ void ImageEditor::onPhasePlacementChanged()
         return;
     // Placement edits are metadata tweaks, like phase renames: no snapshot.
     refreshPhases();
+    refreshSheetView();
+    notifyModified();
+}
+
+void ImageEditor::onPhaseCellSizeChanged()
+{
+    const ImageDocument before = m_doc;
+    if (!m_doc.setPhaseCellSize(m_doc.currentPhase(), m_phaseCellW->value(),
+                                m_phaseCellH->value(), nullptr)) {
+        refreshPhasePlacement();   // revert the out-of-range value
+        return;
+    }
+    pushSnapshot(before, tr("change cell size"));
+    refreshCanvas();
     refreshSheetView();
     notifyModified();
 }
@@ -1395,6 +1433,8 @@ void ImageEditor::refreshCanvas()
     m_canvas->updateGeometry();
     m_canvas->adjustSize();
     m_canvas->update();
+    // Frame adds/removes and cell-size changes change the composed strips.
+    refreshSheetView();
     refreshOnion();
     updateStatus();
 }
@@ -1730,6 +1770,44 @@ void ImageEditor::renameLayer()
 
 void ImageEditor::addPhase()
 {
+    // Over a freshly imported sheet, adding a phase slices cells out of it.
+    const int sheet = m_sheetCanvas ? m_sheetCanvas->sheetIndex() : -1;
+    const bool canSlice = m_actSheetMode->isChecked()
+        && sheet >= 0 && m_importedSheets.contains(sheet);
+    if (canSlice) {
+        bool ok = false;
+        const QString name = QInputDialog::getText(
+            this, tr("Slice phase from sheet"), tr("Name:"), QLineEdit::Normal,
+            tr("Phase %1").arg(m_doc.phaseCount() + 1), &ok);
+        if (!ok)
+            return;
+        const int cellW = QInputDialog::getInt(this, tr("Slice phase from sheet"),
+                                               tr("Sprite width:"), 32, 1, 320, 1, &ok);
+        if (!ok)
+            return;
+        const int cellH = QInputDialog::getInt(this, tr("Slice phase from sheet"),
+                                               tr("Sprite height:"), 32, 1, 200, 1, &ok);
+        if (!ok)
+            return;
+        const int x = QInputDialog::getInt(this, tr("Slice phase from sheet"),
+                                           tr("First cell x:"), 0, 0, 319, 1, &ok);
+        if (!ok)
+            return;
+        const int y = QInputDialog::getInt(this, tr("Slice phase from sheet"),
+                                           tr("First cell y:"), 0, 0, 199, 1, &ok);
+        if (!ok)
+            return;
+        const int count = QInputDialog::getInt(this, tr("Slice phase from sheet"),
+                                               tr("Frame count:"), 1, 1, 99, 1, &ok);
+        if (!ok)
+            return;
+        const int index = addPhaseFromSheet(sheet, name, x, y, cellW, cellH, count);
+        if (index < 0)
+            return;
+        m_sheetCanvas->setUnderlay(m_sheetUnderlays.value(sheet));
+        return;
+    }
+
     bool ok = false;
     const QString name = QInputDialog::getText(this, tr("New phase"), tr("Name:"),
                                                QLineEdit::Normal,

@@ -82,6 +82,7 @@ private slots:
     void setSheetMode(bool on);
     void onNewSheet();
     void onPhasePlacementChanged();
+    void onPhaseCellSizeChanged();
     void setTool();
     void selectSwatch();
     void openPalettePicker();
@@ -172,6 +173,8 @@ private:
     QComboBox *m_phaseSheet = nullptr;
     QSpinBox *m_phaseX = nullptr;
     QSpinBox *m_phaseY = nullptr;
+    QSpinBox *m_phaseCellW = nullptr;
+    QSpinBox *m_phaseCellH = nullptr;
     QAction *m_actSheetMode = nullptr;
     QAction *m_actNewSheet = nullptr;
     /// Imported sheet pixels (for slicing) and their display form, per sheet.

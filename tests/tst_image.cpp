@@ -40,6 +40,7 @@ private slots:
     void layersOccludeAndRoundTrip();
     void onionAndPreviewIndex();
     void spriteSafeDocumentReservesColourZero();
+    void phaseCellSizeResizesFrames();
     void phasesOwnTheirFrames();
     void v2PersistsPlacementAndSheets();
     void sheetComposeAndSlice();
@@ -299,6 +300,36 @@ void TstImage::layersOccludeAndRoundTrip()
     QCOMPARE(loaded.layers().at(1).visible, false);
     QCOMPARE(loaded.pixels().at(0), 1);
     QVERIFY(loaded.toJson().contains("\"layers\""));
+}
+
+void TstImage::phaseCellSizeResizesFrames()
+{
+    ImageDocument doc = ImageDocument::create(4, 4, PaletteKind::Ste);
+    doc.replaceActiveLayer({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+    doc.addLayer();
+    doc.setPixel(0, doc.active().at(3));   // second layer diverges at (0, 0)
+
+    // Grow: new area is transparent on every layer, old content survives.
+    QVERIFY(doc.setPhaseCellSize(0, 6, 5));
+    QCOMPARE(doc.width(), 6);
+    QCOMPARE(doc.height(), 5);
+    QCOMPARE(doc.pixels().at(0 * 6 + 0), doc.active().at(3));   // top layer wins
+    QCOMPARE(doc.pixels().at(1 * 6 + 1), 6);
+    QCOMPARE(doc.pixels().at(4 * 6 + 5), kTransparent);
+    QCOMPARE(doc.layerCount(), 2);
+    QCOMPARE(doc.layers().at(0).pixels.at(3), 4);
+    QCOMPARE(doc.layers().at(0).pixels.at(4 * 6 + 5), kTransparent);
+
+    // Shrink: content outside the new cell is cropped.
+    QVERIFY(doc.setPhaseCellSize(0, 2, 2));
+    QCOMPARE(doc.pixels(), (QVector<int>{doc.active().at(3), 2, 5, 6}));
+    QCOMPARE(doc.layers().at(0).pixels, (QVector<int>{1, 2, 5, 6}));
+
+    // A second phase is untouched.
+    doc.addPhase(QStringLiteral("other"), 8, 8);
+    QVERIFY(doc.setPhaseCellSize(0, 2, 2));
+    QVERIFY(doc.setCurrentPhase(1));
+    QCOMPARE(doc.width(), 8);
 }
 
 void TstImage::phasesOwnTheirFrames()

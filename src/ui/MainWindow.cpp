@@ -232,8 +232,6 @@ ImageEditor *MainWindow::addImageTab(const QString &path)
             editor->deleteLater();
             return nullptr;
         }
-        if (!isPimPath(path))
-            editor->setFilePath(path);   // importFile leaves the path unset
     }
     const int index = m_tabs->addTab(editor, editor->displayName());
     m_tabs->setCurrentIndex(index);
@@ -1677,13 +1675,16 @@ void MainWindow::saveFile()
                 QMessageBox::critical(this, tr("Save"),
                                       tr("Could not write %1: %2")
                                           .arg(path, m_image->lastError()));
+                return;
             }
+            statusBar()->showMessage(tr("Saved %1").arg(path), 4000);
         } else if (!m_image->saveFile(m_image->filePath())) {
             QMessageBox::critical(this, tr("Save"),
                                   tr("Could not write %1: %2")
                                       .arg(m_image->filePath(), m_image->lastError()));
         } else {
             writeBackFloppyDoc(m_image->filePath());
+            statusBar()->showMessage(tr("Saved %1").arg(m_image->filePath()), 4000);
         }
         updateTabTitle(m_image);
         updateModifiedState();
@@ -1852,19 +1853,36 @@ void MainWindow::exportSpriteSheet()
                                  tr("This image has no sprite sheets. Import one first."));
         return;
     }
-    QString suggested = m_image->document().sheets().at(sheet).path;
+    const QString suggested = m_image->document().sheets().at(sheet).path;
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Export sprite sheet"), suggested,
         tr("Degas Elite (*.pi1);;NeoChrome (*.neo);;IFF/ILBM (*.iff);;PNG (*.png);;"
            "Assembler include (*.s);;Bitplane binary (*.bin)"));
     if (path.isEmpty())
         return;
+    exportSpriteSheetTo(path);
+}
+
+bool MainWindow::exportSpriteSheetTo(const QString &path)
+{
+    if (!m_image)
+        return false;
+    const int sheet = m_image->currentSheetIndex();
+    if (sheet < 0) {
+        QMessageBox::information(this, tr("Export sprite sheet"),
+                                 tr("This image has no sprite sheets. Import one first."));
+        return false;
+    }
     if (!m_image->exportSheetFile(path, sheet, false)) {
         QMessageBox::warning(this, tr("Export"),
                              tr("Could not export %1: %2").arg(path, m_image->lastError()));
-        return;
+        return false;
     }
+    // When the sheet came off a mounted floppy, the recomposition belongs
+    // back in the disk image.
+    writeBackFloppyDoc(path);
     statusBar()->showMessage(tr("Exported %1").arg(path), 4000);
+    return true;
 }
 
 void MainWindow::build()

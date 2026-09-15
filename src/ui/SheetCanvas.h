@@ -28,6 +28,9 @@ public:
     /// Raw pixels of a freshly imported sheet, drawn under the layout while
     /// it is being sliced; empty when there is none (reopened documents).
     void setUnderlay(const QImage &image);
+    /// Show/hide the imported sheet's pixels (the import reference) without
+    /// losing them; hidden, the canvas shows only the composed phases.
+    void setUnderlayVisible(bool on);
     void setSelectedPhase(int index);
     /// Cells about to be sliced into a new phase, drawn as yellow boxes so
     /// the dialog's numbers can be checked against the art. Image-space.
@@ -65,6 +68,7 @@ private:
     int m_scale = 1;
     int m_selected = -1;
     QImage m_underlay;
+    bool m_underlayVisible = true;
     QVector<QRect> m_slicePreview;
     bool m_dragging = false;
     bool m_dragFromStaging = false;

@@ -185,6 +185,7 @@ private:
     QSpinBox *m_phaseCellH = nullptr;
     QAction *m_actSheetMode = nullptr;
     QAction *m_actNewSheet = nullptr;
+    QAction *m_actSheetSource = nullptr;
     /// Imported sheet pixels (for slicing) and their display form, per sheet.
     QHash<int, ImportedSheet> m_importedSheets;
     QHash<int, QImage> m_sheetUnderlays;

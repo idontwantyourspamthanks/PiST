@@ -140,9 +140,9 @@ private slots:
     /// into the image, replacing its entry; binaries are refused and
     /// reopening raises the existing tab.
     void floppyTextOpensAndSavesBack();
-    /// A Degas image on a disk registers as a sprite sheet: slicing a phase
-    /// pulls its frames out of the sheet, and saving recomposes the sheet
-    /// back into the image entry.
+    /// A Degas image on a disk registers as a sprite sheet in a new untitled
+    /// document: slicing a phase pulls its frames out of the sheet, and
+    /// Export Sprite Sheet recomposes the sheet back into the image entry.
     void floppyImageOpensAndSavesBack();
     /// Spritesheet mode: phases place on sheets (numerically and by drag),
     /// the mode toggle shows the composed sheet, and placement persists.
@@ -1943,24 +1943,25 @@ void TstGui::floppyImageOpensAndSavesBack()
     QVERIFY(browser);
     browser->setFloppyImages({image, QString()});
 
-    // Opening registers the file as a sprite sheet rather than replacing the
-    // document: phases are sliced out of it in spritesheet mode.
+    // Opening registers the file as a sprite sheet; the document itself is
+    // a new, untitled .pim — the imported file is a sheet target, not the
+    // document.
     auto *tab = qobject_cast<ImageEditor *>(window.openFloppyEntry(0, QStringLiteral("PIECE.PI1")));
     QVERIFY2(tab, "a .pi1 entry must open in an image tab");
+    QVERIFY2(tab->filePath().isEmpty(),
+             "an imported sheet must not adopt the file as its document path");
     QCOMPARE(tab->document().sheets().size(), 1);
-    QVERIFY(tab->document().sheets().at(0).path.endsWith(QStringLiteral("PIECE.PI1")));
 
-    // Slice the sprite out of the sheet; the sliced frame carries the pixel.
+    // Slice the sprite out of the sheet into a phase and repaint it.
     QCOMPARE(tab->addPhaseFromSheet(0, QStringLiteral("sprite"), 0, 0, 32, 32, 1), 1);
     QCOMPARE(tab->document().currentPhase(), 1);
     QCOMPARE(tab->document().pixels().at(0), red);
-
-    // Repaint and save: the sheet is recomposed from the phases and written
-    // back into the image entry.
     tab->document().setPixel(0, blue);
-    auto *saveAction = window.findChild<QAction *>(QStringLiteral("saveAction"));
-    QVERIFY(saveAction);
-    saveAction->trigger();
+
+    // Export Sprite Sheet recomposes the sheet and writes it back into the
+    // image entry — that is how edits reach the disk.
+    const QString sheetPath = tab->document().sheets().at(0).path;
+    QVERIFY2(window.exportSpriteSheetTo(sheetPath), "sheet export must succeed");
 
     QByteArray raw;
     QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
@@ -1978,7 +1979,6 @@ void TstGui::floppyImageOpensAndSavesBack()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(onDisk.size(), 1);
 }
-
 
 void TstGui::phasePlacementAndSheetMode()
 {
@@ -2048,7 +2048,6 @@ void TstGui::phasePlacementAndSheetMode()
     QCOMPARE(reloaded.phases().at(1).y, 55);
 }
 
-
 void TstGui::newSheetAndStagingDrag()
 {
     // The demo.pim situation: two phases, neither placed, no sheets.
@@ -2094,158 +2093,6 @@ void TstGui::newSheetAndStagingDrag()
     QCOMPARE(image->document().phases().at(1).x, 10);
     QCOMPARE(image->document().phases().at(1).y, 10);
 }
-
-
-void TstGui::phaseCellSizeAndStripGrowth()
-{
-    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
-    const QString pim = m_work->path() + QStringLiteral("/cells.pim");
-    QString error;
-    QVERIFY2(doc.save(pim, &error), qPrintable(error));
-
-    MainWindow window;
-    window.openPath(pim);
-    auto *tabs = window.findChild<QTabWidget *>();
-    QVERIFY(tabs);
-    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
-    QVERIFY(image);
-
-    // The panel exposes the current phase's cell size, and edits resize it.
-    auto *cellW = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseCellW"));
-    auto *cellH = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseCellH"));
-    QVERIFY(cellW && cellH);
-    QCOMPARE(cellW->value(), 32);
-    cellW->setValue(16);
-    cellH->setValue(24);
-    QCOMPARE(image->document().width(), 16);
-    QCOMPARE(image->document().height(), 24);
-
-    // Adding frames through the frames panel grows the strip: with the phase
-    // placed, the composed sheet paints both cells.
-    QCOMPARE(image->document().addSheet(QStringLiteral("out.pi1"), 320, 200), 0);
-    QVERIFY(image->document().setPhasePlacement(0, 0, 0, 0));
-    auto *addFrame = image->findChild<QToolButton *>(QStringLiteral("imageAddFrame"));
-    QVERIFY(addFrame);
-    addFrame->click();
-    QCOMPARE(image->document().frameCount(), 2);
-
-    QString composeError;
-    ImageDocument composed = composeSheet(image->document(), 0, &composeError);
-    QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
-    // A painted pixel in the second frame must compose at [16, ...], one cell
-    // to the right of the first.
-    image->document().setCurrentFrame(1);
-    image->document().setPixel(0, image->document().active().at(2));
-    composed = composeSheet(image->document(), 0, &composeError);
-    QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
-    QCOMPARE(composed.pixels().at(16), image->document().active().at(2));
-}
-
-
-void TstGui::sliceDialogBuildsPhaseFromSheet()
-{
-    const QString dir = m_work->path() + QStringLiteral("/slice");
-    QVERIFY(QDir().mkpath(dir));
-
-    // A 192x32 strip: six 32x32 cells, each marked with its own colour.
-    ImageDocument strip = ImageDocument::create(192, 32, PaletteKind::Ste);
-    for (int k = 0; k < 6; ++k)
-        strip.setPixel(k * 32, strip.active().at(k + 1));
-    const QString pi1Path = dir + QStringLiteral("/strip.pi1");
-    QString error;
-    const QByteArray pi1 = exportPi1(strip, 0, &error);
-    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
-    {
-        QFile out(pi1Path);
-        QVERIFY(out.open(QIODevice::WriteOnly));
-        QCOMPARE(out.write(pi1), qint64(pi1.size()));
-    }
-
-    MainWindow window;
-    window.openPath(pi1Path);
-    auto *tabs = window.findChild<QTabWidget *>();
-    QVERIFY(tabs);
-    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
-    QVERIFY(image);
-    QCOMPARE(image->document().sheets().size(), 1);
-
-    // Add phase opens the slice dialog over the imported sheet; fill it in
-    // from a single-shot timer that runs inside the dialog's event loop.
-    QTimer::singleShot(0, image, [image]() {
-        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-        QVERIFY(dialog);
-        auto *count = dialog->findChild<QSpinBox *>(QStringLiteral("sliceCount"));
-        auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("sliceName"));
-        QVERIFY(count && name);
-        name->setText(QStringLiteral("walk"));
-        count->setValue(6);
-        dialog->accept();
-    });
-    auto *addBtn = image->findChild<QToolButton *>(QStringLiteral("imageAddPhase"));
-    QVERIFY(addBtn);
-    addBtn->click();
-
-    // The sliced phase carries all six marked frames.
-    QVERIFY(image->document().setCurrentPhase(1));
-    QCOMPARE(image->document().phases().at(1).name, QStringLiteral("walk"));
-    QCOMPARE(image->document().frameCount(), 6);
-    for (int k = 0; k < 6; ++k)
-        QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
-}
-
-
-void TstGui::sheetPixelsSurviveReopen()
-{
-    const QString dir = m_work->path() + QStringLiteral("/reopen");
-    QVERIFY(QDir().mkpath(dir));
-
-    // The sheet file on disk: a 96x32 strip of three marked cells.
-    ImageDocument strip = ImageDocument::create(96, 32, PaletteKind::Ste);
-    for (int k = 0; k < 3; ++k)
-        strip.setPixel(k * 32, strip.active().at(k + 1));
-    const QString pi1Path = dir + QStringLiteral("/strip.pi1");
-    QString error;
-    const QByteArray pi1 = exportPi1(strip, 0, &error);
-    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
-    {
-        QFile out(pi1Path);
-        QVERIFY(out.open(QIODevice::WriteOnly));
-        QCOMPARE(out.write(pi1), qint64(pi1.size()));
-    }
-
-    // A document that references the sheet by path.
-    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
-    QCOMPARE(doc.addSheet(pi1Path, 320, 200), 0);
-    const QString pim = dir + QStringLiteral("withsheet.pim");
-    QVERIFY2(doc.save(pim, &error), qPrintable(error));
-
-    // A fresh process-equivalent: a new window loading the document knows
-    // nothing about the import, yet slicing must work off the recorded file.
-    MainWindow window;
-    window.openPath(pim);
-    auto *tabs = window.findChild<QTabWidget *>();
-    QVERIFY(tabs);
-    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
-    QVERIFY(image);
-    QCOMPARE(image->document().sheets().at(0).path, pi1Path);
-
-    QCOMPARE(image->addPhaseFromSheet(0, QStringLiteral("walk"), 0, 0, 32, 32, 3), 1);
-    QVERIFY(image->document().setCurrentPhase(1));
-    QCOMPARE(image->document().frameCount(), 3);
-    for (int k = 0; k < 3; ++k)
-        QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
-
-    // Selecting a phase retargets the animation preview.
-    auto *list = image->findChild<QListWidget *>(QStringLiteral("imagePhases"));
-    QVERIFY(list);
-    auto *previewBox = image->findChild<QComboBox *>(QStringLiteral("imagePreviewPhase"));
-    QVERIFY(previewBox);
-    list->setCurrentRow(0);
-    QCOMPARE(previewBox->currentData().toInt(), 0);
-    list->setCurrentRow(1);
-    QCOMPARE(previewBox->currentData().toInt(), 1);
-}
-
 
 void TstGui::stagedPhaseSlicesOnPlacement()
 {
@@ -2328,6 +2175,155 @@ void TstGui::stagedPhaseSlicesOnPlacement()
     QCOMPARE(image->document().frame(0).at(0), strip.active().at(3));
     QCOMPARE(image->document().frame(1).at(0), image->document().active().at(15));
 }
+
+void TstGui::phaseCellSizeAndStripGrowth()
+{
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    const QString pim = m_work->path() + QStringLiteral("/cells.pim");
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+
+    // The panel exposes the current phase's cell size, and edits resize it.
+    auto *cellW = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseCellW"));
+    auto *cellH = image->findChild<QSpinBox *>(QStringLiteral("imagePhaseCellH"));
+    QVERIFY(cellW && cellH);
+    QCOMPARE(cellW->value(), 32);
+    cellW->setValue(16);
+    cellH->setValue(24);
+    QCOMPARE(image->document().width(), 16);
+    QCOMPARE(image->document().height(), 24);
+
+    // Adding frames through the frames panel grows the strip: with the phase
+    // placed, the composed sheet paints both cells.
+    QCOMPARE(image->document().addSheet(QStringLiteral("out.pi1"), 320, 200), 0);
+    QVERIFY(image->document().setPhasePlacement(0, 0, 0, 0));
+    auto *addFrame = image->findChild<QToolButton *>(QStringLiteral("imageAddFrame"));
+    QVERIFY(addFrame);
+    addFrame->click();
+    QCOMPARE(image->document().frameCount(), 2);
+
+    QString composeError;
+    ImageDocument composed = composeSheet(image->document(), 0, &composeError);
+    QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
+    // A painted pixel in the second frame must compose at [16, ...], one cell
+    // to the right of the first.
+    image->document().setCurrentFrame(1);
+    image->document().setPixel(0, image->document().active().at(2));
+    composed = composeSheet(image->document(), 0, &composeError);
+    QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
+    QCOMPARE(composed.pixels().at(16), image->document().active().at(2));
+}
+
+void TstGui::sliceDialogBuildsPhaseFromSheet()
+{
+    const QString dir = m_work->path() + QStringLiteral("/slice");
+    QVERIFY(QDir().mkpath(dir));
+
+    // A 192x32 strip: six 32x32 cells, each marked with its own colour.
+    ImageDocument strip = ImageDocument::create(192, 32, PaletteKind::Ste);
+    for (int k = 0; k < 6; ++k)
+        strip.setPixel(k * 32, strip.active().at(k + 1));
+    const QString pi1Path = dir + QStringLiteral("/strip.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(strip, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    {
+        QFile out(pi1Path);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    }
+
+    MainWindow window;
+    window.openPath(pi1Path);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().size(), 1);
+
+    // Add phase opens the slice dialog over the imported sheet; fill it in
+    // from a single-shot timer that runs inside the dialog's event loop.
+    QTimer::singleShot(0, image, [image]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto *count = dialog->findChild<QSpinBox *>(QStringLiteral("sliceCount"));
+        auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("sliceName"));
+        QVERIFY(count && name);
+        name->setText(QStringLiteral("walk"));
+        count->setValue(6);
+        dialog->accept();
+    });
+    auto *addBtn = image->findChild<QToolButton *>(QStringLiteral("imageAddPhase"));
+    QVERIFY(addBtn);
+    addBtn->click();
+
+    // The sliced phase carries all six marked frames.
+    QVERIFY(image->document().setCurrentPhase(1));
+    QCOMPARE(image->document().phases().at(1).name, QStringLiteral("walk"));
+    QCOMPARE(image->document().frameCount(), 6);
+    for (int k = 0; k < 6; ++k)
+        QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
+}
+
+void TstGui::sheetPixelsSurviveReopen()
+{
+    const QString dir = m_work->path() + QStringLiteral("/reopen");
+    QVERIFY(QDir().mkpath(dir));
+
+    // The sheet file on disk: a 96x32 strip of three marked cells.
+    ImageDocument strip = ImageDocument::create(96, 32, PaletteKind::Ste);
+    for (int k = 0; k < 3; ++k)
+        strip.setPixel(k * 32, strip.active().at(k + 1));
+    const QString pi1Path = dir + QStringLiteral("/strip.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(strip, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    {
+        QFile out(pi1Path);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    }
+
+    // A document that references the sheet by path.
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    QCOMPARE(doc.addSheet(pi1Path, 320, 200), 0);
+    const QString pim = dir + QStringLiteral("withsheet.pim");
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    // A fresh process-equivalent: a new window loading the document knows
+    // nothing about the import, yet slicing must work off the recorded file.
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().at(0).path, pi1Path);
+
+    QCOMPARE(image->addPhaseFromSheet(0, QStringLiteral("walk"), 0, 0, 32, 32, 3), 1);
+    QVERIFY(image->document().setCurrentPhase(1));
+    QCOMPARE(image->document().frameCount(), 3);
+    for (int k = 0; k < 3; ++k)
+        QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
+
+    // Selecting a phase retargets the animation preview.
+    auto *list = image->findChild<QListWidget *>(QStringLiteral("imagePhases"));
+    QVERIFY(list);
+    auto *previewBox = image->findChild<QComboBox *>(QStringLiteral("imagePreviewPhase"));
+    QVERIFY(previewBox);
+    list->setCurrentRow(0);
+    QCOMPARE(previewBox->currentData().toInt(), 0);
+    list->setCurrentRow(1);
+    QCOMPARE(previewBox->currentData().toInt(), 1);
+}
+
 
 QTEST_MAIN(TstGui)
 

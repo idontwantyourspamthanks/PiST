@@ -168,6 +168,10 @@ public:
     /// it without a prompt. Returns false and sets error on a bad address.
     bool addWatchpointAddress(const QString &text, QString *error);
 
+    /// Compose the current phase's sheet and write it to `path`, writing
+    /// back into a mounted floppy when the sheet came from one.
+    bool exportSpriteSheetTo(const QString &path);
+
     /// Open an entry from a mounted floppy image (the file browser's
     /// double-click). Text opens in a text tab; a still image (.pi1, .neo,
     /// .iff, .png, .pim) opens as an image tab over the imported sheet. The

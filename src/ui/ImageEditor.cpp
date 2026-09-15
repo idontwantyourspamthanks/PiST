@@ -381,6 +381,17 @@ ImageEditor::ImageEditor(QWidget *parent)
            "is chosen on export)"));
     connect(m_actNewSheet, &QAction::triggered, this, &ImageEditor::onNewSheet);
 
+    m_actSheetSource = new QAction(tr("Sheet source"), this);
+    m_actSheetSource->setObjectName(QStringLiteral("imageSheetSource"));
+    m_actSheetSource->setCheckable(true);
+    m_actSheetSource->setChecked(true);
+    m_actSheetSource->setToolTip(
+        tr("Show the imported sheet's pixels under the layout (the slicing "
+           "reference); off shows the composed export"));
+    connect(m_actSheetSource, &QAction::toggled, this, [this](bool on) {
+        m_sheetCanvas->setUnderlayVisible(on);
+    });
+
     bar->addSeparator();
     auto *size = new QSlider(Qt::Horizontal, this);
     size->setRange(1, 8);
@@ -452,7 +463,9 @@ ImageEditor::ImageEditor(QWidget *parent)
     bar->addSeparator();
     bar->addAction(m_actSheetMode);
     bar->addAction(m_actNewSheet);
+    bar->addAction(m_actSheetSource);
     m_actNewSheet->setEnabled(false);
+    m_actSheetSource->setEnabled(false);
 
     bar->addSeparator();
     auto addTransform = [&](QAction *&action, appearance::Icon icon, const QString &name,
@@ -1328,6 +1341,7 @@ void ImageEditor::setSheetMode(bool on)
     for (QAbstractButton *button : m_tools->buttons())
         button->setEnabled(!on);
     m_actNewSheet->setEnabled(on);
+    m_actSheetSource->setEnabled(on);
     if (on)
         refreshSheetView();
 }

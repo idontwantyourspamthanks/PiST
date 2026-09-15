@@ -41,6 +41,12 @@ void SheetCanvas::setUnderlay(const QImage &image)
     update();
 }
 
+void SheetCanvas::setUnderlayVisible(bool on)
+{
+    m_underlayVisible = on;
+    update();
+}
+
 void SheetCanvas::setSelectedPhase(int index)
 {
     m_selected = index;
@@ -140,7 +146,7 @@ void SheetCanvas::paintEvent(QPaintEvent *)
                             sheet.width * m_scale, sheet.height * m_scale);
     p.fillRect(sheetRectPx, QColor(50, 50, 50));
 
-    if (!m_underlay.isNull()) {
+    if (m_underlayVisible && !m_underlay.isNull()) {
         // The freshly imported file, dimmed so placed strips stand out.
         p.setOpacity(0.45);
         p.drawImage(sheetRectPx, m_underlay);

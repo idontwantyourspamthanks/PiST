@@ -41,7 +41,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings). |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
 | `tests/` | Parser and image unit tests (always run) and the offscreen GUI/emulator integration tests (gated on tools being present). |
-| `demo/` | `hello.s` — a tiny program used by `run.sh` and the first-run experience; `demo.pim` — a sample sprite. |
+| `demo/` | `hello.s` — a tiny program used by `run.sh` and the first-run experience; `demo.pim` — a sample sprite set (two phases, v2 format). |
 
 ### Per-file detail
 

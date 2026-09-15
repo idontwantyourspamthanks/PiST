@@ -182,8 +182,9 @@ cmake --build build
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
-through to see the whole loop. `demo/demo.pim` is a sample sprite for the image
-editor. It always uses your real display; run the tests
+through to see the whole loop. `demo/demo.pim` is a sample sprite set for the
+image editor — two phases ("Atari ST" 32×32, "Bum" 16×16) you can lay out on a
+sprite sheet and export. It always uses your real display; run the tests
 (below) for the headless checks.
 
 Run the tests:

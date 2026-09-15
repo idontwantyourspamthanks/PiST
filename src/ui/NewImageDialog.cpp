@@ -8,14 +8,22 @@
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QSize>
 #include <QSpinBox>
 
 namespace pist {
 
-NewImageDialog::NewImageDialog(QWidget *parent)
+NewImageDialog::NewImageDialog(QWidget *parent, const QString &directory)
     : QDialog(parent)
+    , m_directory(directory)
 {
     setWindowTitle(tr("New Image"));
     auto *form = new QFormLayout(this);
@@ -49,10 +57,57 @@ NewImageDialog::NewImageDialog(QWidget *parent)
     m_palette->addItem(tr("Atari STfm (512 colours)"), int(PaletteKind::Stfm));
     form->addRow(tr("Palette"), m_palette);
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    form->addRow(buttons);
+    m_file = new QLineEdit(this);
+    m_file->setObjectName(QStringLiteral("newImageFileName"));
+    m_file->setPlaceholderText(tr("Name (*.pim)"));
+    auto *browse = new QPushButton(tr("Browse…"), this);
+    connect(browse, &QPushButton::clicked, this, &NewImageDialog::browse);
+    auto *fileRow = new QHBoxLayout;
+    fileRow->addWidget(m_file, 1);
+    fileRow->addWidget(browse);
+    form->addRow(tr("File"), fileRow);
+
+    m_buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    connect(m_buttons, &QDialogButtonBox::accepted, this, [this] {
+        const QString path = filePath();
+        if (path.isEmpty())
+            return;
+        if (QFileInfo::exists(path)) {
+            const auto answer = QMessageBox::warning(
+                this, tr("New Image"),
+                tr("%1 already exists.\n\nReplace it?").arg(QFileInfo(path).fileName()),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (answer != QMessageBox::Yes)
+                return;
+        }
+        accept();
+    });
+    connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    form->addRow(m_buttons);
+
+    connect(m_file, &QLineEdit::textChanged, this, &NewImageDialog::updateOkButton);
+    updateOkButton();
+}
+
+void NewImageDialog::browse()
+{
+    QString start = filePath();
+    if (start.isEmpty()) {
+        start = m_directory;
+        if (start.isEmpty())
+            start = QDir::homePath();
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("New image file"), start, tr("PiST images (*.pim)"), nullptr,
+        QFileDialog::DontConfirmOverwrite);
+    if (!path.isEmpty())
+        m_file->setText(path);
+}
+
+void NewImageDialog::updateOkButton()
+{
+    if (QPushButton *ok = m_buttons->button(QDialogButtonBox::Ok))
+        ok->setEnabled(!filePath().isEmpty());
 }
 
 int NewImageDialog::imageWidth() const
@@ -68,6 +123,20 @@ int NewImageDialog::imageHeight() const
 PaletteKind NewImageDialog::paletteKind() const
 {
     return PaletteKind(m_palette->currentData().toInt());
+}
+
+QString NewImageDialog::filePath() const
+{
+    const QString text = m_file->text().trimmed();
+    if (text.isEmpty())
+        return {};
+    QFileInfo info(text);
+    if (info.isRelative() && !m_directory.isEmpty())
+        info = QFileInfo(QDir(m_directory), text);
+    QString path = info.absoluteFilePath();
+    if (!path.endsWith(QLatin1String(".pim"), Qt::CaseInsensitive))
+        path += QStringLiteral(".pim");
+    return path;
 }
 
 } // namespace pist

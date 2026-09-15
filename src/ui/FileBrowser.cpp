@@ -91,6 +91,11 @@ void FileBrowser::showFor(const QString &sourcePath)
     }
 }
 
+QString FileBrowser::directory() const
+{
+    return m_model ? m_model->rootPath() : QString();
+}
+
 void FileBrowser::showDirectory(const QString &path)
 {
     const QFileInfo info(path);

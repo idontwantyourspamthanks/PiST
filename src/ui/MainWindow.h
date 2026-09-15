@@ -225,6 +225,7 @@ private:
 
     void newImage();
     void newImageIn(const QString &directory);
+    QString suggestedImageDirectory() const;
     void importImage();
     void exportImage();
 

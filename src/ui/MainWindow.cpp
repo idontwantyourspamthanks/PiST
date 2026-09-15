@@ -12,6 +12,7 @@
 #include "build/FloppyImage.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "image/ImageDocument.h"
 #include "image/StFormats.h"
 #include "toolchain/Toolchain.h"
 #include "debug/Breakpoint.h"
@@ -1476,24 +1477,62 @@ QString MainWindow::buildSourcePath() const
 
 void MainWindow::newImage()
 {
-    newImageIn(QString());
+    newImageIn(suggestedImageDirectory());
+}
+
+QString MainWindow::suggestedImageDirectory() const
+{
+    auto dirOf = [](const QString &path) -> QString {
+        return path.isEmpty() ? QString() : QFileInfo(path).absolutePath();
+    };
+    QString dir;
+    if (m_image)
+        dir = dirOf(m_image->filePath());
+    if (dir.isEmpty() && m_editor)
+        dir = dirOf(m_editor->filePath());
+    if (dir.isEmpty() && m_fileBrowser)
+        dir = m_fileBrowser->directory();
+    if (dir.isEmpty())
+        dir = dirOf(settings::lastSourcePath());
+    if (dir.isEmpty())
+        dir = QDir::homePath();
+    return dir;
 }
 
 void MainWindow::newImageIn(const QString &directory)
 {
-    NewImageDialog dialog(this);
+    NewImageDialog dialog(this, directory);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    ImageEditor *editor = addImageTab(QString());
-    if (!editor)
+
+    const QString path = dialog.filePath();
+    if (path.isEmpty())
         return;
-    editor->newDocument(dialog.imageWidth(), dialog.imageHeight(), dialog.paletteKind());
-    if (!directory.isEmpty()) {
-        const QString path = QDir(directory).filePath(QStringLiteral("sprite.pim"));
-        editor->setFilePath(QFileInfo::exists(path) ? QString() : path);
+
+    ImageDocument doc = ImageDocument::create(dialog.imageWidth(), dialog.imageHeight(),
+                                              dialog.paletteKind());
+    QString error;
+    if (!doc.save(path, &error)) {
+        QMessageBox::warning(this, tr("New Image"),
+                             tr("Could not create %1: %2").arg(path, error));
+        return;
     }
-    updateTabTitle(editor);
-    updateModifiedState();
+
+    if (ImageEditor *open = imageForPath(path)) {
+        if (!open->loadFile(path)) {
+            QMessageBox::warning(this, tr("New Image"),
+                                 tr("Could not open %1: %2").arg(path, open->lastError()));
+            return;
+        }
+        m_tabs->setCurrentWidget(open);
+        updateTabTitle(open);
+        updateModifiedState();
+        return;
+    }
+    if (!addImageTab(path))
+        return;
+    if (m_fileBrowser)
+        m_fileBrowser->showFor(path);
 }
 
 void MainWindow::importImage()

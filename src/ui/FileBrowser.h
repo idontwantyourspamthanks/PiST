@@ -32,6 +32,9 @@ public slots:
     /// Show an explicit directory.
     void showDirectory(const QString &path);
 
+    /// The directory currently shown, or empty before the first show.
+    QString directory() const;
+
 signals:
     /// A file was activated (double-clicked or Enter). The receiver decides
     /// what to do with the path.

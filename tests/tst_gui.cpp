@@ -14,6 +14,7 @@
 #include "image/ImageDocument.h"
 #include "ui/ImageEditor.h"
 #include "ui/ImageCanvas.h"
+#include "ui/NewImageDialog.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -130,6 +131,9 @@ private slots:
     /// Opening a `.pim` creates an ImageEditor tab that coexists with `.s`
     /// tabs; Build still finds the assembly source when the image is focused.
     void imageTabsOpenBesideAssembly();
+    /// New Image… requires a file name and writes the blank `.pim` before
+    /// the editor opens, rather than defaulting every sprite to sprite.pim.
+    void newImageDialogResolvesFileName();
 
 private:
     QString m_vasm;
@@ -1503,6 +1507,20 @@ void TstGui::imageTabsOpenBesideAssembly()
     QVERIFY(ok);
     QCOMPARE(tabs->count(), 1);
     QVERIFY(qobject_cast<CodeEditor *>(tabs->widget(0)));
+}
+
+void TstGui::newImageDialogResolvesFileName()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    NewImageDialog dialog(nullptr, tmp.path());
+    auto *name = dialog.findChild<QLineEdit *>(QStringLiteral("newImageFileName"));
+    QVERIFY(name);
+    QVERIFY(dialog.filePath().isEmpty());
+    name->setText(QStringLiteral("hero"));
+    const QString path = dialog.filePath();
+    QCOMPARE(QFileInfo(path).fileName(), QStringLiteral("hero.pim"));
+    QCOMPARE(QFileInfo(path).absolutePath(), QFileInfo(tmp.path()).absoluteFilePath());
 }
 
 QTEST_MAIN(TstGui)

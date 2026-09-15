@@ -584,7 +584,8 @@ writes to any real `hatari.cfg`.
 
 Deliberately deferred: a ROM SHA-256 known-good table and EmuTOS shipping (§7 packaging), and
 multi-file/vlink builds. Floppy *listing* and *export* of 720 KiB `.st` / `.msa` images is
-implemented in the project-files pane; writing into an existing image, and IPF/Pasti, are not.
+implemented in the project-files pane, as are in-place edits (the copy/move paths rewrite an
+image with `floppy::updateImage`; `.dim`/`.ipf` targets are refused). IPF/Pasti authoring is not.
 
 ### Phase 2 — full debug UI on the native backend
 
@@ -962,7 +963,8 @@ project; everything before it was either Linux-only or read from source.
    implemented** (§5 rule 3): TOS 1.02 boots a generated AUTO-folder floppy, the entry breakpoint
    fires, and with `--debug` arming the mask an illegal instruction breaks in.
    Floppy *listing* and *export* of 720 KiB `.st` / `.msa` images from the project-files pane
-   is also implemented (`src/build/FloppyImage.cpp`); IPF/Pasti and in-place image edits are not.
+   is also implemented (`src/build/FloppyImage.cpp`), as are in-place edits (`readFileRaw` +
+   `updateImage` back the file browser's copy/move); IPF/Pasti authoring is not.
 5. Windows and macOS behaviour of the embedding paths and `SetParent`
 6. Behaviour of `--control-socket` alternatives on Windows (only stdio is available)
 

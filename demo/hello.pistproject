@@ -13,6 +13,7 @@
         "linkerPath": ""
     },
     "emulator": {
+        "debugBackend": "auto",
         "extraArgs": [
         ],
         "fastForward": true,

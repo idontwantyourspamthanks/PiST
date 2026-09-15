@@ -213,6 +213,7 @@ void FileBrowser::onContextMenu(const QPoint &pos)
 
     QMenu menu(this);
     QAction *newFile = menu.addAction(tr("New File…"));
+    QAction *newImage = menu.addAction(tr("New Image…"));
     QAction *newFolder = menu.addAction(tr("New Folder…"));
     menu.addSeparator();
     QAction *rename = menu.addAction(tr("Rename…"));
@@ -232,6 +233,8 @@ void FileBrowser::onContextMenu(const QPoint &pos)
             QMessageBox::warning(this, tr("New File"),
                                  tr("Could not create the file. The name may be invalid or "
                                     "already exist."));
+    } else if (chosen == newImage) {
+        emit newImageRequested(contextDirectory());
     } else if (chosen == newFolder) {
         bool ok = false;
         const QString name = QInputDialog::getText(

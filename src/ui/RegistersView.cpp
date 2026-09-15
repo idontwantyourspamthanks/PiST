@@ -4,9 +4,12 @@
 
 #include "ui/RegistersView.h"
 
+#include "ui/Appearance.h"
+
 #include <QGridLayout>
 #include <QHeaderView>
-#include <QLabel>
+#include <QPalette>
+#include <QSignalBlocker>
 #include <QTableWidget>
 
 namespace pist {
@@ -26,6 +29,8 @@ RegistersView::RegistersView(QWidget *parent)
     m_table->setSelectionMode(QAbstractItemView::NoSelection);
     m_table->setShowGrid(false);
     m_table->setFocusPolicy(Qt::NoFocus);
+    m_table->setAlternatingRowColors(true);
+    appearance::markMono(m_table);
 
     for (int i = 0; i < 8; ++i) {
         auto *dName = new QTableWidgetItem(QStringLiteral("D%1").arg(i));
@@ -53,6 +58,8 @@ RegistersView::RegistersView(QWidget *parent)
     m_flags->setSelectionMode(QAbstractItemView::NoSelection);
     m_flags->setShowGrid(false);
     m_flags->setFocusPolicy(Qt::NoFocus);
+    m_flags->setAlternatingRowColors(true);
+    appearance::markMono(m_flags);
 
     // USP and ISP are not settable by name in Hatari (its own todo notes SP/SSP
     // register names are unimplemented), so only PC and SR get editable cells.
@@ -82,11 +89,16 @@ RegistersView::RegistersView(QWidget *parent)
 
 void RegistersView::setValue(int row, int column, quint32 value)
 {
-    if (auto *item = m_table->item(row, column)) {
-        const QString text = QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
-        item->setText(text);
-        m_lastValues[item] = text;
-    }
+    auto *item = m_table->item(row, column);
+    if (!item)
+        return;
+    const QString text = QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
+    const bool changed = !item->text().isEmpty() && item->text() != text;
+    const QSignalBlocker blocker(m_table);
+    item->setText(text);
+    item->setForeground(changed ? appearance::colors().changed
+                                : palette().color(QPalette::Text));
+    m_lastValues[item] = text;
 }
 
 void RegistersView::setState(const MachineState &state)
@@ -94,32 +106,49 @@ void RegistersView::setState(const MachineState &state)
     if (!state.regs.valid)
         return;
 
+    m_lastState = state;
+    m_haveState = true;
+
     for (int i = 0; i < 8; ++i) {
         setValue(i, 1, state.regs.d[i]);
         setValue(i, 3, state.regs.a[i]);
     }
 
-    m_flags->item(0, 1)->setText(
-        QStringLiteral("%1").arg(state.pc, 8, 16, QLatin1Char('0')).toUpper());
-    m_flags->item(1, 1)->setText(
-        QStringLiteral("%1  X%2 N%3 Z%4 V%5 C%6")
-            .arg(state.regs.sr, 4, 16, QLatin1Char('0')).toUpper()
-            .arg(state.regs.flagX ? 1 : 0)
-            .arg(state.regs.flagN ? 1 : 0)
-            .arg(state.regs.flagZ ? 1 : 0)
-            .arg(state.regs.flagV ? 1 : 0)
-            .arg(state.regs.flagC ? 1 : 0));
-    m_flags->item(2, 1)->setText(
-        QStringLiteral("%1").arg(state.regs.usp, 8, 16, QLatin1Char('0')).toUpper());
-    m_flags->item(3, 1)->setText(
-        QStringLiteral("%1").arg(state.regs.isp, 8, 16, QLatin1Char('0')).toUpper());
+    const appearance::Colors c = appearance::colors();
+    const QSignalBlocker flagsBlocker(m_flags);
 
-    for (int i = 0; i < 4; ++i) {
-        if (auto *item = m_flags->item(i, 1))
-            m_lastValues[item] = item->text();
-    }
+    auto setFlag = [&](int row, const QString &text) {
+        auto *item = m_flags->item(row, 1);
+        if (!item)
+            return;
+        const bool changed = !item->text().isEmpty() && item->text() != text;
+        item->setText(text);
+        item->setForeground(changed ? c.changed : palette().color(QPalette::Text));
+        m_lastValues[item] = text;
+    };
+
+    setFlag(0, QStringLiteral("%1").arg(state.pc, 8, 16, QLatin1Char('0')).toUpper());
+    setFlag(1, QStringLiteral("%1  X%2 N%3 Z%4 V%5 C%6")
+                   .arg(state.regs.sr, 4, 16, QLatin1Char('0')).toUpper()
+                   .arg(state.regs.flagX ? 1 : 0)
+                   .arg(state.regs.flagN ? 1 : 0)
+                   .arg(state.regs.flagZ ? 1 : 0)
+                   .arg(state.regs.flagV ? 1 : 0)
+                   .arg(state.regs.flagC ? 1 : 0));
+    setFlag(2, QStringLiteral("%1").arg(state.regs.usp, 8, 16, QLatin1Char('0')).toUpper());
+    setFlag(3, QStringLiteral("%1").arg(state.regs.isp, 8, 16, QLatin1Char('0')).toUpper());
 
     m_flags->resizeColumnsToContents();
+}
+
+void RegistersView::applyAppearance()
+{
+    appearance::markMono(m_table);
+    appearance::markMono(m_flags);
+    m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
+    m_flags->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
+    if (m_haveState)
+        setState(m_lastState);
 }
 
 void RegistersView::setEditingEnabled(bool enabled)

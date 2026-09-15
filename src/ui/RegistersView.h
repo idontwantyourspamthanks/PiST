@@ -35,6 +35,9 @@ public slots:
     /// then.
     void setEditingEnabled(bool enabled);
 
+    /// Re-apply the theme font and the last shown values' colours.
+    void applyAppearance();
+
 signals:
     /// The user committed a new value for a register (e.g. "d0", "a7", "pc").
     void registerEdited(const QString &regName, quint32 value);
@@ -48,6 +51,8 @@ private:
 
     /// Last shown value per cell, so invalid edit input can be reverted.
     QHash<QTableWidgetItem *, QString> m_lastValues;
+    MachineState m_lastState;
+    bool m_haveState = false;
 };
 
 } // namespace pist

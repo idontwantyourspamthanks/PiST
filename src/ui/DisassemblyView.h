@@ -24,9 +24,14 @@ public slots:
     void setState(const pist::MachineState &state);
     void goToAddress(quint32 address);
 
+    /// Re-apply the theme font and the last listing's colours.
+    void applyAppearance();
+
 private:
     QTableWidget *m_table = nullptr;
     quint32 m_pc = 0;
+    MachineState m_lastState;
+    bool m_haveState = false;
 };
 
 } // namespace pist

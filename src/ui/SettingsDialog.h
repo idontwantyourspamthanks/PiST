@@ -19,9 +19,6 @@ namespace pist {
 
 /// Project settings editor.
 ///
-/// Functional first: every control does something and the values reach the
-/// build and the emulator command line. Visual refinement comes later.
-///
 /// The machine and ROM controls are deliberately linked. Hatari overrides
 /// `--machine` to match the ROM and reports it only as an error log line
 /// (docs/PLAN.md §5 rule 3), so the dialog shows which ROMs suit the chosen
@@ -73,6 +70,7 @@ private:
     // Application-wide appearance preferences (QSettings-backed, not part of
     // the project file). See the Appearance tab in buildUi().
     QComboBox *m_theme = nullptr;
+    QComboBox *m_fontFamily = nullptr;
     QSpinBox *m_fontSize = nullptr;
     QLineEdit *m_hardDisk = nullptr;
     QLineEdit *m_floppyA = nullptr;

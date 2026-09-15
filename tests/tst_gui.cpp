@@ -11,6 +11,9 @@
 // here rather than assumed.
 
 #include "editor/CodeEditor.h"
+#include "image/ImageDocument.h"
+#include "ui/ImageEditor.h"
+#include "ui/ImageCanvas.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -34,10 +37,13 @@
 #include <QHeaderView>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QProcess>
 #include <QTreeView>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QFontDatabase>
+#include <QSettings>
 #include <QtTest>
 
 using namespace pist;
@@ -115,12 +121,15 @@ private slots:
     /// three pieces missing and offer their remedies — the deterministic form
     /// of a first run on a bare machine.
     void setupDialogShowsMissingPieces();
-    /// Font-size and theme preferences take effect on the editor and the
-    /// application palette.
+    /// Font-size, font-family and theme preferences take effect on the editor
+    /// and the application palette.
     void appearancePreferencesApply();
     /// Documents open in tabs: pristine-tab reuse, raise-not-duplicate, the
     /// modified marker on the label, and the never-empty invariant.
     void documentTabsManageOpenFiles();
+    /// Opening a `.pim` creates an ImageEditor tab that coexists with `.s`
+    /// tabs; Build still finds the assembly source when the image is focused.
+    void imageTabsOpenBesideAssembly();
 
 private:
     QString m_vasm;
@@ -1277,6 +1286,7 @@ void TstGui::appearancePreferencesApply()
     QSettings settings;
     settings.remove(QStringLiteral("appearance/theme"));
     settings.remove(QStringLiteral("appearance/fontSize"));
+    settings.remove(QStringLiteral("appearance/fontFamily"));
 
     MainWindow window;
     auto *editor = window.findChild<CodeEditor *>();
@@ -1287,6 +1297,21 @@ void TstGui::appearancePreferencesApply()
     settings.setValue(QStringLiteral("appearance/fontSize"), defaultSize + 6);
     editor->applyFontPreferences();
     QCOMPARE(editor->font().pointSize(), defaultSize + 6);
+
+    // Font family: a real installed family is applied to the editor.
+    const QString family =
+        QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+    QVERIFY(!family.isEmpty());
+    QVERIFY(pist::appearance::editorFontChoices().contains(QStringLiteral("Monospace")));
+    settings.setValue(QStringLiteral("appearance/fontFamily"), family);
+    editor->applyFontPreferences();
+    QCOMPARE(editor->font().family(), family);
+
+    // Unset theme defaults to dark (the designed look).
+    QVERIFY(pist::appearance::theme() == QLatin1String("dark"));
+    pist::appearance::applyTheme();
+    QVERIFY(QApplication::palette().color(QPalette::Window).lightness() < 128);
+    QVERIFY(pist::appearance::darkModeActive());
 
     // Theme: dark must measurably darken the application palette and switch
     // the syntax colours to the dark set; light must undo both.
@@ -1303,9 +1328,9 @@ void TstGui::appearancePreferencesApply()
     QVERIFY(!pist::appearance::darkModeActive());
 
     // Restore the platform default for the rest of the suite.
-    settings.remove(QStringLiteral("appearance/theme"));
-
+    settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("system"));
     settings.remove(QStringLiteral("appearance/fontSize"));
+    settings.remove(QStringLiteral("appearance/fontFamily"));
     pist::appearance::applyTheme();
 }
 
@@ -1368,6 +1393,116 @@ void TstGui::documentTabsManageOpenFiles()
     auto *pristine = qobject_cast<CodeEditor *>(tabs->widget(0));
     QVERIFY(pristine);
     QVERIFY(pristine->filePath().isEmpty());
+}
+
+void TstGui::imageTabsOpenBesideAssembly()
+{
+    const QString dir = m_work->path() + QStringLiteral("/img");
+    QVERIFY(QDir().mkpath(dir));
+    const QString source = dir + QStringLiteral("/prog.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\tnop\n\trts\n");
+    src.close();
+
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    const QString pim = dir + QStringLiteral("/sprite.pim");
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+
+    window.openPath(source);
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY(qobject_cast<CodeEditor *>(tabs->currentWidget()));
+
+    window.openPath(pim);
+    QCOMPARE(tabs->count(), 2);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY2(image, "opening a .pim must create an ImageEditor tab");
+    QCOMPARE(image->filePath(), pim);
+    QCOMPARE(tabs->tabText(tabs->indexOf(image)), QStringLiteral("sprite.pim"));
+
+    bool sawBrush = false;
+    for (auto *button : image->findChildren<QToolButton *>()) {
+        if (!button->property("tool").isValid())
+            continue;
+        QVERIFY2(!button->icon().isNull(), "drawing tools are icons, not text labels");
+        if (button->property("tool").toInt() == int(DrawTool::Brush))
+            sawBrush = true;
+    }
+    QVERIFY(sawBrush);
+
+    QList<QToolButton *> swatches;
+    QToolButton *checkedSwatch = nullptr;
+    for (auto *button : image->findChildren<QToolButton *>()) {
+        if (!button->property("cube").isValid())
+            continue;
+        swatches.append(button);
+        if (button->isChecked())
+            checkedSwatch = button;
+    }
+    QVERIFY2(checkedSwatch, "the active palette colour is marked on its swatch");
+    QVERIFY(swatches.size() >= 3);
+    QToolButton *otherSwatch = nullptr;
+    for (auto *button : swatches) {
+        if (button != checkedSwatch && button->property("cube").toInt() >= 0) {
+            otherSwatch = button;
+            break;
+        }
+    }
+    QVERIFY(otherSwatch);
+    QTest::mouseClick(otherSwatch, Qt::LeftButton);
+    QVERIFY(otherSwatch->isChecked());
+    QVERIFY(!checkedSwatch->isChecked());
+    auto *canvas = image->findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    QVERIFY2(canvas->cursor().shape() != Qt::ArrowCursor,
+             "the canvas uses a paint-tip cursor, not the window arrow");
+    const int beforeZoom = canvas->cellSize();
+    QVERIFY(QMetaObject::invokeMethod(image, "zoomIn"));
+    QVERIFY2(canvas->cellSize() > beforeZoom, "Zoom in must enlarge the pixel grid");
+
+    QVERIFY(QMetaObject::invokeMethod(image, "addFrame"));
+    QCOMPARE(image->document().frameCount(), 2);
+    QVERIFY(image->isModifiedSinceLoad());
+    QCOMPARE(tabs->tabText(tabs->indexOf(image)), QStringLiteral("sprite.pim *"));
+    QVERIFY(image->saveFile(pim));
+    QVERIFY(!image->isModifiedSinceLoad());
+    QVERIFY(!tabs->tabText(tabs->indexOf(image)).endsWith(QLatin1String(" *")));
+
+    // Focusing the image must not strand Build: the assembly source is still
+    // the project source.
+    QMetaObject::invokeMethod(&window, "build");
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("--- build ---")));
+
+    window.openPath(pim);
+    QCOMPARE(tabs->count(), 2);
+
+    bool ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested",
+                                        Q_ARG(int, tabs->indexOf(image)));
+    QVERIFY(ok);
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY(qobject_cast<CodeEditor *>(tabs->currentWidget()));
+
+    ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, 0));
+    QVERIFY(ok);
+    QCOMPARE(tabs->count(), 1);
+    auto *pristine = qobject_cast<CodeEditor *>(tabs->widget(0));
+    QVERIFY(pristine);
+    QVERIFY(pristine->filePath().isEmpty());
+
+    // Opening a .pim as the only document still leaves a pristine assembly
+    // editor when that last tab is closed.
+    window.openPath(pim);
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY(qobject_cast<ImageEditor *>(tabs->currentWidget()));
+    ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, 0));
+    QVERIFY(ok);
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY(qobject_cast<CodeEditor *>(tabs->widget(0)));
 }
 
 QTEST_MAIN(TstGui)

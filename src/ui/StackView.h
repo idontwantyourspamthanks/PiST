@@ -34,6 +34,9 @@ public slots:
     /// Clear the view (no session, or registers not yet valid).
     void clear();
 
+    /// Re-apply the theme font and the last dump's colours.
+    void applyAppearance();
+
 
 signals:
     /// The user double-clicked a row. For a value that looks like a pointer
@@ -46,6 +49,10 @@ private slots:
 private:
     QTableWidget *m_table = nullptr;
     quint32 m_sp = 0;
+    QString m_lastResponse;
+    quint32 m_lastTextBase = 0;
+    quint32 m_lastTextEnd = 0;
+    bool m_haveDump = false;
 };
 
 } // namespace pist

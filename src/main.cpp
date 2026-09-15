@@ -124,6 +124,8 @@ int main(int argc, char *argv[])
     // restore them later.
     pist::appearance::applyTheme();
 
+    QApplication::setWindowIcon(pist::appearance::windowIcon());
+
     QCommandLineParser parser;
     parser.setApplicationDescription(
         QStringLiteral("An IDE for Atari ST assembly development"));

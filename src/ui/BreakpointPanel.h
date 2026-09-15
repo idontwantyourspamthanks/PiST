@@ -37,6 +37,9 @@ public:
     /// Report whether the session has run far enough to resolve addresses.
     void setResolvable(bool resolvable);
 
+    /// Re-apply the theme colours to the current list.
+    void applyAppearance();
+
 signals:
     void breakpointActivated(const QString &file, int line);
     void removeRequested(const QString &file, int line);

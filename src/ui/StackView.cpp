@@ -5,6 +5,7 @@
 #include "ui/StackView.h"
 
 #include "emu/MemoryDump.h"
+#include "ui/Appearance.h"
 
 #include <QHeaderView>
 #include <QTableWidget>
@@ -28,11 +29,8 @@ StackView::StackView(QWidget *parent)
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setShowGrid(false);
     m_table->horizontalHeader()->setStretchLastSection(true);
-
-    QFont mono = m_table->font();
-    mono.setFamily(QStringLiteral("monospace"));
-    mono.setStyleHint(QFont::TypeWriter);
-    m_table->setFont(mono);
+    m_table->setAlternatingRowColors(true);
+    appearance::markMono(m_table);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -50,6 +48,10 @@ void StackView::setStackDump(quint32 sp, const QString &response,
                              quint32 textBase, quint32 textEnd)
 {
     m_sp = sp;
+    m_lastResponse = response;
+    m_lastTextBase = textBase;
+    m_lastTextEnd = textEnd;
+    m_haveDump = true;
     const QList<MemoryRow> rows = parseMemoryDump(response);
     if (rows.isEmpty()) {
         clear();
@@ -73,6 +75,7 @@ void StackView::setStackDump(quint32 sp, const QString &response,
     }
 
     m_table->setRowCount(kLongs);
+    const appearance::Colors theme = appearance::colors();
     for (int i = 0; i < kLongs; ++i) {
         const quint32 address = sp + quint32(i * 4);
         const int offset = int(address - base);
@@ -89,6 +92,9 @@ void StackView::setStackDump(quint32 sp, const QString &response,
                    : QStringLiteral("    %1").arg(address, 8, 16, QLatin1Char('0')));
         auto *valueItem = new QTableWidgetItem(QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')));
         auto *noteItem = new QTableWidgetItem(note);
+        addrItem->setForeground(i == 0 ? theme.gutterPc : theme.address);
+        if (!note.isEmpty())
+            noteItem->setForeground(theme.success);
 
         if (i == 0 || !note.isEmpty()) {
             QFont f = valueItem->font();
@@ -101,6 +107,14 @@ void StackView::setStackDump(quint32 sp, const QString &response,
         m_table->setItem(i, 2, noteItem);
     }
     m_table->resizeColumnsToContents();
+}
+
+void StackView::applyAppearance()
+{
+    appearance::markMono(m_table);
+    m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
+    if (m_haveDump)
+        setStackDump(m_sp, m_lastResponse, m_lastTextBase, m_lastTextEnd);
 }
 
 void StackView::onCellDoubleClicked(int row, int column)

@@ -48,6 +48,9 @@ public slots:
     /// stopped — writes go through the debugger.
     void setEditingEnabled(bool enabled);
 
+    /// Re-apply the theme font and the last dump's colours.
+    void applyAppearance();
+
 signals:
     /// The view wants a dump of `address`, `length` bytes.
     void dumpRequested(quint32 address, int length);
@@ -73,6 +76,7 @@ private:
     bool m_editingEnabled = false;
 
     quint32 m_base = 0;
+    QString m_lastDump;
     /// The displayed bytes in memory order, indexed relative to m_base, so a
     /// cell's click can read the pointer at it without reparsing the table.
     QByteArray m_bytes;

@@ -33,6 +33,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 ```
 
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line
+- **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
+  NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
+  multiple frames, and export to those formats plus STOS `.MBK` and an assembler include
 - **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
   monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line

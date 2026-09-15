@@ -4,6 +4,8 @@
 
 #include "ui/PcHistoryView.h"
 
+#include "ui/Appearance.h"
+
 #include <QPlainTextEdit>
 #include <QVBoxLayout>
 
@@ -16,11 +18,8 @@ PcHistoryView::PcHistoryView(QWidget *parent)
     m_text->setReadOnly(true);
     m_text->setPlaceholderText(
         tr("The recent program counters appear here once the machine stops.\n"
-           "It tracks the execution path from the start of the session."));
-    QFont mono = m_text->font();
-    mono.setFamily(QStringLiteral("monospace"));
-    mono.setStyleHint(QFont::TypeWriter);
-    m_text->setFont(mono);
+            "It tracks the execution path from the start of the session."));
+    appearance::markMono(m_text);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);

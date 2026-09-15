@@ -59,6 +59,8 @@ code. Use this table for a quick lookup:
 | The app shell, menus, docks, panels, layout | `src/ui/MainWindow.{h,cpp}` |
 | A debug panel (registers, memory, stack, …) | the matching `src/ui/<Name>View.{h,cpp}` |
 | The text editor or gutter/breakpoints | `src/editor/CodeEditor.{h,cpp}` |
+| The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
+| `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats}.*` |
 | Syntax highlighting | `src/editor/AsmHighlighter.{h,cpp}` |
 | The build pipeline / diagnostics | `src/build/BuildService.{h,cpp}` |
 | PC ↔ source-line mapping | `src/build/{LineMap,LinkMap,ProgramLineMap}.{h,cpp}` |
@@ -73,7 +75,7 @@ code. Use this table for a quick lookup:
 | First-run tool/ROM setup | `src/ui/SetupDialog.{h,cpp}` + `src/toolchain/ToolFetch.{h,cpp}` |
 | The debug backends (native stdin transport, HRDB TCP) | `src/emu/{DebugBackend,EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 | X11 display embedding | `src/ui/{EmulatorDisplayWidget,EmbedX11}.{h,cpp}` |
-| A test | `tests/` (unit: `tst_parsers`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

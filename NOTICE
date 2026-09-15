@@ -124,6 +124,16 @@ Qt 6 (Core, Gui, Widgets, Network, Test)
 
 No code from Hatari, vasm or Qt is included in this repository's sources.
 
+The ST colour-word layout, Degas/NeoChrome/IFF/STOS bitplane packing, and paint-tool geometry in
+`src/image/` were reimplemented from the known file formats and from the behaviour of the
+LemonAndLime sprite editor (a separate project; not vendored, not linked).
+
+The flood-fill, palette, and brush toolbar glyphs follow the silhouettes of the
+SVG Repo paint-bucket, paint-palette, and paint-brush icons in
+docs/paint-bucket-fill-svgrepo-com.svg, docs/paint-palette-svgrepo-com.svg and
+docs/paint-brush-svgrepo-com.svg; they are redrawn as themed QPainterPaths rather
+than loading those files at runtime.
+
 
 Bundled licence texts
 ---------------------

@@ -40,6 +40,7 @@ qt_add_executable(pist
     src/editor/CodeEditor.cpp
     src/ui/Appearance.cpp
     src/ui/Appearance.h
+    src/ui/Icons.cpp
     src/editor/CodeEditor.h
 
     src/build/BuildService.cpp
@@ -90,6 +91,15 @@ qt_add_executable(pist
     src/emu/TosRom.cpp
     src/emu/TosRom.h
 
+    src/image/Palette.cpp
+    src/image/Palette.h
+    src/image/ImageDocument.cpp
+    src/image/ImageDocument.h
+    src/image/Tools.cpp
+    src/image/Tools.h
+    src/image/StFormats.cpp
+    src/image/StFormats.h
+
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
     src/ui/RegistersView.cpp
@@ -116,6 +126,14 @@ qt_add_executable(pist
     src/ui/SettingsDialog.h
     src/ui/SetupDialog.cpp
     src/ui/SetupDialog.h
+    src/ui/ImageCanvas.cpp
+    src/ui/ImageCanvas.h
+    src/ui/ImageEditor.cpp
+    src/ui/ImageEditor.h
+    src/ui/PalettePickerDialog.cpp
+    src/ui/PalettePickerDialog.h
+    src/ui/NewImageDialog.cpp
+    src/ui/NewImageDialog.h
 )
 target_include_directories(pist PRIVATE src)
 
@@ -260,6 +278,23 @@ target_include_directories(tst_parsers PRIVATE src)
 target_link_libraries(tst_parsers PRIVATE Qt6::Test)
 add_test(NAME parsers COMMAND tst_parsers)
 
+# Sprite document, ST palettes, paint tools and PI1/NEO/MBK/PNG codecs.
+# Always runs; no emulator or display required.
+qt_add_executable(tst_image
+    tests/tst_image.cpp
+    src/image/Palette.cpp
+    src/image/Palette.h
+    src/image/ImageDocument.cpp
+    src/image/ImageDocument.h
+    src/image/Tools.cpp
+    src/image/Tools.h
+    src/image/StFormats.cpp
+    src/image/StFormats.h
+)
+target_include_directories(tst_image PRIVATE src)
+target_link_libraries(tst_image PRIVATE Qt6::Test Qt6::Gui)
+add_test(NAME image COMMAND tst_image)
+
 # TOS ROM identification: version must come from the image header, so the
 # autostart guard cannot be skipped by an unusual filename.
 qt_add_executable(tst_tosrom
@@ -391,6 +426,22 @@ qt_add_executable(tst_gui
     src/ui/SettingsDialog.h
     src/ui/SetupDialog.cpp
     src/ui/SetupDialog.h
+    src/image/Palette.cpp
+    src/image/Palette.h
+    src/image/ImageDocument.cpp
+    src/image/ImageDocument.h
+    src/image/Tools.cpp
+    src/image/Tools.h
+    src/image/StFormats.cpp
+    src/image/StFormats.h
+    src/ui/ImageCanvas.cpp
+    src/ui/ImageCanvas.h
+    src/ui/ImageEditor.cpp
+    src/ui/ImageEditor.h
+    src/ui/PalettePickerDialog.cpp
+    src/ui/PalettePickerDialog.h
+    src/ui/NewImageDialog.cpp
+    src/ui/NewImageDialog.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
     src/editor/CodeEditor.cpp
@@ -398,6 +449,7 @@ qt_add_executable(tst_gui
     src/editor/AsmHighlighter.cpp
     src/ui/Appearance.cpp
     src/ui/Appearance.h
+    src/ui/Icons.cpp
     src/editor/AsmHighlighter.h
     src/build/BuildService.cpp
     src/build/FloppyImage.cpp
@@ -485,11 +537,28 @@ qt_add_executable(tst_remotecontrol
     src/ui/SettingsDialog.h
     src/ui/SetupDialog.cpp
     src/ui/SetupDialog.h
+    src/image/Palette.cpp
+    src/image/Palette.h
+    src/image/ImageDocument.cpp
+    src/image/ImageDocument.h
+    src/image/Tools.cpp
+    src/image/Tools.h
+    src/image/StFormats.cpp
+    src/image/StFormats.h
+    src/ui/ImageCanvas.cpp
+    src/ui/ImageCanvas.h
+    src/ui/ImageEditor.cpp
+    src/ui/ImageEditor.h
+    src/ui/PalettePickerDialog.cpp
+    src/ui/PalettePickerDialog.h
+    src/ui/NewImageDialog.cpp
+    src/ui/NewImageDialog.h
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
     src/editor/CodeEditor.cpp
     src/ui/Appearance.cpp
     src/ui/Appearance.h
+    src/ui/Icons.cpp
     src/editor/CodeEditor.h
     src/editor/AsmHighlighter.cpp
     src/editor/AsmHighlighter.h
@@ -629,7 +698,7 @@ set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 # Test binaries must be console applications on Windows. qt_add_executable marks
 # them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
 # nothing at all, making a red run on Windows undiagnosable.
-foreach(test_target IN ITEMS tst_parsers tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol tst_toolfetch tst_hrdb)
+foreach(test_target IN ITEMS tst_parsers tst_image tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol tst_toolfetch tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

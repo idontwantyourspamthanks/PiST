@@ -261,7 +261,7 @@ void SettingsDialog::buildUi()
 
     // ------------------------------------------------------------ appearance
     // Application-wide preferences (QSettings), deliberately not part of the
-    // project file: a theme and a font size are the user's taste, not the
+    // project file: a theme, a font and a size are the user's taste, not the
     // project's.
     auto *appearanceTab = new QWidget(this);
     auto *appearanceLayout = new QFormLayout(appearanceTab);
@@ -280,6 +280,23 @@ void SettingsDialog::buildUi()
     if (themeIndex >= 0)
         m_theme->setCurrentIndex(themeIndex);
     appearanceLayout->addRow(tr("Theme:"), m_theme);
+
+    m_fontFamily = new QComboBox(appearanceTab);
+    m_fontFamily->addItem(tr("Default"), QString());
+    {
+        const QStringList choices = appearance::editorFontChoices();
+        for (const QString &family : choices)
+            m_fontFamily->addItem(family, family);
+        const QString current = appearance::editorFontFamily();
+        int index = m_fontFamily->findData(current);
+        if (index < 0 && !current.isEmpty()) {
+            m_fontFamily->addItem(current, current);
+            index = m_fontFamily->count() - 1;
+        }
+        if (index >= 0)
+            m_fontFamily->setCurrentIndex(index);
+    }
+    appearanceLayout->addRow(tr("Editor font:"), m_fontFamily);
 
     m_fontSize = new QSpinBox(appearanceTab);
     m_fontSize->setRange(0, 48);
@@ -303,6 +320,8 @@ void SettingsDialog::accept()
     // project settings the rest of the dialog edits.
     QSettings().setValue(QStringLiteral("appearance/theme"),
                          m_theme->currentData().toString());
+    QSettings().setValue(QStringLiteral("appearance/fontFamily"),
+                         m_fontFamily->currentData().toString());
     QSettings().setValue(QStringLiteral("appearance/fontSize"), m_fontSize->value());
     QDialog::accept();
 }

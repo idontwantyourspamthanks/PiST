@@ -12,6 +12,7 @@
 #include "build/FloppyImage.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "image/StFormats.h"
 #include "toolchain/Toolchain.h"
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
@@ -20,6 +21,8 @@
 #include "ui/EmulatorDisplayWidget.h"
 #include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
+#include "ui/ImageEditor.h"
+#include "ui/NewImageDialog.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
@@ -28,6 +31,7 @@
 #include "ui/StackView.h"
 #include "ui/RegistersView.h"
 
+#include <algorithm>
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
@@ -35,43 +39,54 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QHeaderView>
+#include <QInputDialog>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
-#include <QGuiApplication>
 #include <QPlainTextEdit>
-#include <QRegularExpression>
+#include <QPushButton>
 #include <QProcess>
-#include <QVBoxLayout>
-#include <QStandardPaths>
+#include <QRegularExpression>
 #include <QSettings>
+#include <QSize>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
-#include <QInputDialog>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
+#include <QVBoxLayout>
 
 namespace pist {
 
 namespace {
+
+bool isPristineEditor(CodeEditor *editor)
+{
+    return editor && editor->filePath().isEmpty() && !editor->isModifiedSinceLoad()
+        && editor->document()->isEmpty();
+}
 
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    // Documents live in tabs. The extension-dispatch seam for non-text editors
-    // (an image editor, a music editor, other text kinds) is addEditorTab();
-    // m_editor tracks the current *text* editor and is null when the current
-    // tab is not one, so its uses are guarded accordingly.
+    // Documents live in tabs. openPath() dispatches `.pim` / ST still-images
+    // to addImageTab() and everything else to addEditorTab(). m_editor tracks
+    // the current *text* editor and is null on an image tab; m_image is the
+    // reverse. Build/Run use buildSourcePath() so a focused image does not
+    // strand the assembler.
     m_tabs = new QTabWidget(this);
+    m_tabs->setObjectName(QStringLiteral("documentTabs"));
     m_tabs->setDocumentMode(true);
     m_tabs->setTabsClosable(true);
     m_tabs->setMovable(true);
@@ -101,6 +116,7 @@ MainWindow::MainWindow(QWidget *parent)
     createDocks();
     createToolBar();
     createStatusBar();
+    applyAppearance();
 
     // Sessions left by a crash or a kill, once they are old enough that no live
     // instance could still own them.
@@ -108,7 +124,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Reopen where the user left off when nothing was passed on the command line.
     QTimer::singleShot(0, this, [this] {
-        if (m_editor->filePath().isEmpty())
+        if (m_editor && m_editor->filePath().isEmpty() && !m_image)
             openRecentSource();
     });
 
@@ -125,8 +141,7 @@ CodeEditor *MainWindow::addEditorTab(const QString &path)
     // untouched "untitled" buffer.
     if (!path.isEmpty() && m_tabs->count() == 1) {
         auto *only = qobject_cast<CodeEditor *>(m_tabs->widget(0));
-        if (only && only->filePath().isEmpty() && !only->isModifiedSinceLoad()
-            && only->document()->isEmpty()) {
+        if (isPristineEditor(only)) {
             if (!only->loadFile(path)) {
                 QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
                 return nullptr;
@@ -142,6 +157,35 @@ CodeEditor *MainWindow::addEditorTab(const QString &path)
         QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
         editor->deleteLater();
         return nullptr;
+    }
+    const int index = m_tabs->addTab(editor, editor->displayName());
+    m_tabs->setCurrentIndex(index);
+    updateTabTitle(editor);
+    return editor;
+}
+
+ImageEditor *MainWindow::addImageTab(const QString &path)
+{
+    // Opening an image into a single untouched assembly tab replaces it so the
+    // session does not keep a stranded untitled .s.
+    if (m_tabs->count() == 1) {
+        auto *only = qobject_cast<CodeEditor *>(m_tabs->widget(0));
+        if (isPristineEditor(only)) {
+            m_tabs->removeTab(0);
+            only->deleteLater();
+        }
+    }
+
+    auto *editor = new ImageEditor(this);
+    wireImage(editor);
+    if (!path.isEmpty()) {
+        const bool ok = isPimPath(path) ? editor->loadFile(path) : editor->importFile(path, false);
+        if (!ok) {
+            QMessageBox::warning(this, tr("Open"),
+                                 tr("Could not open %1: %2").arg(path, editor->lastError()));
+            editor->deleteLater();
+            return nullptr;
+        }
     }
     const int index = m_tabs->addTab(editor, editor->displayName());
     m_tabs->setCurrentIndex(index);
@@ -185,11 +229,29 @@ void MainWindow::wireEditor(CodeEditor *editor)
             });
 }
 
+void MainWindow::wireImage(ImageEditor *editor)
+{
+    connect(editor, &ImageEditor::modificationChanged, this, [this, editor](bool) {
+        updateTabTitle(editor);
+        if (editor == m_image)
+            updateModifiedState();
+    });
+}
+
 QList<CodeEditor *> MainWindow::openEditors() const
 {
     QList<CodeEditor *> editors;
     for (int i = 0; i < m_tabs->count(); ++i)
         if (auto *editor = qobject_cast<CodeEditor *>(m_tabs->widget(i)))
+            editors.append(editor);
+    return editors;
+}
+
+QList<ImageEditor *> MainWindow::openImages() const
+{
+    QList<ImageEditor *> editors;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto *editor = qobject_cast<ImageEditor *>(m_tabs->widget(i)))
             editors.append(editor);
     return editors;
 }
@@ -203,36 +265,61 @@ CodeEditor *MainWindow::editorForPath(const QString &path) const
     return nullptr;
 }
 
-void MainWindow::updateTabTitle(CodeEditor *editor)
+ImageEditor *MainWindow::imageForPath(const QString &path) const
 {
-    const int index = m_tabs->indexOf(editor);
+    const QFileInfo wanted(path);
+    for (ImageEditor *editor : openImages())
+        if (QFileInfo(editor->filePath()) == wanted)
+            return editor;
+    return nullptr;
+}
+
+void MainWindow::updateTabTitle(QWidget *widget)
+{
+    const int index = m_tabs->indexOf(widget);
     if (index < 0)
         return;
-    // Qt has no modified marker for tabs, so carry it in the text.
-    m_tabs->setTabText(index, editor->displayName()
-                           + (editor->isModifiedSinceLoad() ? QStringLiteral(" *") : QString()));
+    QString name;
+    bool modified = false;
+    if (auto *editor = qobject_cast<CodeEditor *>(widget)) {
+        name = editor->displayName();
+        modified = editor->isModifiedSinceLoad();
+    } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
+        name = image->displayName();
+        modified = image->isModifiedSinceLoad();
+    }
+    m_tabs->setTabText(index, name + (modified ? QStringLiteral(" *") : QString()));
 }
 
 void MainWindow::onTabChanged(int index)
 {
-    m_editor = qobject_cast<CodeEditor *>(m_tabs->widget(index));
+    QWidget *widget = m_tabs->widget(index);
+    m_editor = qobject_cast<CodeEditor *>(widget);
+    m_image = qobject_cast<ImageEditor *>(widget);
 
-    if (m_editor) {
-        // The browser and the breakpoint gutter follow the visible document.
-        if (!m_editor->filePath().isEmpty() && m_fileBrowser)
-            m_fileBrowser->showFor(m_editor->filePath());
+    if (m_actExportImage)
+        m_actExportImage->setEnabled(m_image != nullptr);
+
+    const QString path = m_editor ? m_editor->filePath()
+                                  : (m_image ? m_image->filePath() : QString());
+    if (!path.isEmpty() && m_fileBrowser)
+        m_fileBrowser->showFor(path);
+    if (m_editor)
         refreshBreakpointMarkers();
-    }
     updateModifiedState();
 }
 
 void MainWindow::onTabCloseRequested(int index)
 {
-    auto *editor = qobject_cast<CodeEditor *>(m_tabs->widget(index));
-    if (editor && !maybeSaveEditor(editor))
-        return;
-
     QWidget *widget = m_tabs->widget(index);
+    if (auto *editor = qobject_cast<CodeEditor *>(widget)) {
+        if (!maybeSaveEditor(editor))
+            return;
+    } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
+        if (!maybeSaveImage(image))
+            return;
+    }
+
     m_tabs->removeTab(index);
     if (widget)
         widget->deleteLater();
@@ -266,6 +353,16 @@ void MainWindow::createActions()
     m_actOpen = new QAction(tr("&Open…"), this);
     m_actOpen->setShortcut(QKeySequence::Open);
     connect(m_actOpen, &QAction::triggered, this, &MainWindow::openFile);
+
+    m_actNewImage = new QAction(tr("New &Image…"), this);
+    connect(m_actNewImage, &QAction::triggered, this, &MainWindow::newImage);
+
+    m_actImportImage = new QAction(tr("&Import Image…"), this);
+    connect(m_actImportImage, &QAction::triggered, this, &MainWindow::importImage);
+
+    m_actExportImage = new QAction(tr("&Export Image…"), this);
+    m_actExportImage->setEnabled(false);
+    connect(m_actExportImage, &QAction::triggered, this, &MainWindow::exportImage);
 
     m_actSave = new QAction(tr("&Save"), this);
     m_actSave->setShortcut(QKeySequence::Save);
@@ -438,8 +535,12 @@ void MainWindow::wireBackend()
 void MainWindow::createMenus()
 {
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
     fileMenu->addAction(m_actSave);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_actImportImage);
+    fileMenu->addAction(m_actExportImage);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -649,6 +750,7 @@ void MainWindow::createDocks()
     addDockWidget(Qt::LeftDockWidgetArea,
                   makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
+    connect(m_fileBrowser, &FileBrowser::newImageRequested, this, &MainWindow::newImageIn);
     connect(m_fileBrowser, &FileBrowser::pathRenamed, this,
             [this](const QString &oldPath, const QString &newPath) {
                 // An open document follows its file; breakpoints are file:line
@@ -661,6 +763,12 @@ void MainWindow::createDocks()
                             m_settings.sourceFile = newPath;
                     }
                 }
+                for (ImageEditor *image : openImages()) {
+                    if (QFileInfo(image->filePath()) == QFileInfo(oldPath)) {
+                        image->setFilePath(newPath);
+                        updateTabTitle(image);
+                    }
+                }
                 updateModifiedState();
             });
     connect(m_fileBrowser, &FileBrowser::pathDeleted, this,
@@ -669,15 +777,24 @@ void MainWindow::createDocks()
                     if (QFileInfo(editor->filePath()) != QFileInfo(path))
                         continue;
                     if (editor->isModifiedSinceLoad()) {
-                        // The user may still want the content: saving recreates
-                        // the file, which is the least surprising behaviour.
                         statusBar()->showMessage(
                             tr("%1 was deleted on disk; your modified copy is still open.")
                                 .arg(QFileInfo(path).fileName()),
                             8000);
                     } else {
-                        // Close the tab rather than pointing at a ghost.
                         onTabCloseRequested(m_tabs->indexOf(editor));
+                    }
+                }
+                for (ImageEditor *image : openImages()) {
+                    if (QFileInfo(image->filePath()) != QFileInfo(path))
+                        continue;
+                    if (image->isModifiedSinceLoad()) {
+                        statusBar()->showMessage(
+                            tr("%1 was deleted on disk; your modified copy is still open.")
+                                .arg(QFileInfo(path).fileName()),
+                            8000);
+                    } else {
+                        onTabCloseRequested(m_tabs->indexOf(image));
                     }
                 }
             });
@@ -764,15 +881,13 @@ void MainWindow::createDocks()
     m_problems->header()->setStretchLastSection(true);
     connect(m_problems, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *item, int) {
         const int line = item->text(1).toInt();
-        if (line > 0)
+        if (line > 0 && m_editor)
             m_editor->gotoLine(line);
     });
 
     m_log = new QPlainTextEdit(this);
     m_log->setReadOnly(true);
-    QFont mono = m_log->font();
-    mono.setFamily(QStringLiteral("monospace"));
-    m_log->setFont(mono);
+    appearance::markMono(m_log);
 
     m_problemsDock = makeDock(tr("Problems"), QStringLiteral("problemsDock"), m_problems);
     addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
@@ -782,7 +897,7 @@ void MainWindow::createDocks()
     // commandFinished handler in wireBackend).
     m_consoleInput = new QLineEdit(this);
     m_consoleInput->setObjectName(QStringLiteral("consoleInput"));
-    m_consoleInput->setFont(mono);
+    appearance::markMono(m_consoleInput);
     m_consoleInput->setPlaceholderText(
         tr("Debugger command (e.g. r, d, m $12596 20)"));
     m_consoleInput->setEnabled(false);
@@ -902,6 +1017,9 @@ void MainWindow::createToolBar()
 {
     auto *bar = addToolBar(tr("Main"));
     bar->setObjectName(QStringLiteral("mainToolBar"));
+    bar->setIconSize(QSize(20, 20));
+    bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    bar->setFloatable(false);
     bar->addAction(m_actOpen);
     bar->addAction(m_actSave);
     bar->addAction(m_actSettings);
@@ -916,6 +1034,44 @@ void MainWindow::createToolBar()
     bar->addAction(m_actStepOver);
     bar->addSeparator();
     bar->addAction(m_actClearBreakpoints);
+}
+
+void MainWindow::applyIcons()
+{
+    using appearance::Icon;
+    m_actOpen->setIcon(appearance::icon(Icon::Open));
+    m_actSave->setIcon(appearance::icon(Icon::Save));
+    m_actSettings->setIcon(appearance::icon(Icon::Settings));
+    m_actBuild->setIcon(appearance::icon(Icon::Build));
+    m_actRun->setIcon(appearance::icon(Icon::Run));
+    m_actStop->setIcon(appearance::icon(Icon::Stop));
+    m_actPause->setIcon(appearance::icon(Icon::Pause));
+    m_actResume->setIcon(appearance::icon(Icon::Continue));
+    m_actStep->setIcon(appearance::icon(Icon::Step));
+    m_actStepOver->setIcon(appearance::icon(Icon::StepOver));
+    m_actClearBreakpoints->setIcon(appearance::icon(Icon::ClearBreakpoints));
+}
+
+void MainWindow::applyAppearance()
+{
+    appearance::applyTheme();
+    setWindowIcon(appearance::windowIcon());
+    applyIcons();
+    appearance::applyMonoFonts(this);
+    for (CodeEditor *editor : openEditors())
+        editor->applyFontPreferences();
+    for (ImageEditor *image : openImages())
+        image->applyAppearance();
+    if (m_registers)
+        m_registers->applyAppearance();
+    if (m_disassembly)
+        m_disassembly->applyAppearance();
+    if (m_stack)
+        m_stack->applyAppearance();
+    if (m_breakpointPanel)
+        m_breakpointPanel->applyAppearance();
+    for (MemoryView *view : m_memoryPanes)
+        view->applyAppearance();
 }
 
 void MainWindow::createStatusBar()
@@ -955,29 +1111,37 @@ QString MainWindow::makeSessionDir()
 
 void MainWindow::updateModifiedState()
 {
-    // With no current text editor (possible once non-text tabs exist) the
-    // title falls back to the bare application name and Save has no target.
-    const QString name = m_editor ? m_editor->displayName() : QStringLiteral("PiST");
-    const bool modified = m_editor && m_editor->isModifiedSinceLoad();
+    QString name = QStringLiteral("PiST");
+    bool modified = false;
+    if (m_editor) {
+        name = m_editor->displayName();
+        modified = m_editor->isModifiedSinceLoad();
+    } else if (m_image) {
+        name = m_image->displayName();
+        modified = m_image->isModifiedSinceLoad();
+    }
 
     // The "[*]" placeholder is replaced by Qt when windowModified is set, which
     // is the platform-correct way to show an unsaved document.
-    setWindowTitle(m_editor ? tr("%1[*] — PiST").arg(name) : name);
+    setWindowTitle(tr("%1[*] — PiST").arg(name));
     setWindowModified(modified);
 
     if (m_actSave)
-        m_actSave->setEnabled(modified);
+        m_actSave->setEnabled(modified || m_image != nullptr || m_editor != nullptr);
 }
 
 bool MainWindow::maybeSave()
 {
-    for (CodeEditor *editor : openEditors()) {
-        // Bring the document being asked about to the front, so the prompt's
-        // context is what the user sees.
-        if (editor->isModifiedSinceLoad())
-            m_tabs->setCurrentWidget(editor);
-        if (!maybeSaveEditor(editor))
-            return false;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        QWidget *widget = m_tabs->widget(i);
+        m_tabs->setCurrentWidget(widget);
+        if (auto *editor = qobject_cast<CodeEditor *>(widget)) {
+            if (!maybeSaveEditor(editor))
+                return false;
+        } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
+            if (!maybeSaveImage(image))
+                return false;
+        }
     }
     return true;
 }
@@ -1020,6 +1184,44 @@ bool MainWindow::maybeSaveEditor(CodeEditor *editor)
     return true;
 }
 
+bool MainWindow::maybeSaveImage(ImageEditor *editor)
+{
+    if (!editor || !editor->isModifiedSinceLoad())
+        return true;
+
+    const auto answer = QMessageBox::warning(
+        this, tr("Unsaved changes"),
+        tr("%1 has unsaved changes.\n\nSave before continuing?")
+            .arg(editor->displayName()),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Discard)
+        return true;
+
+    if (editor->filePath().isEmpty()) {
+        const QString path = QFileDialog::getSaveFileName(
+            this, tr("Save image"), QString(), tr("PiST images (*.pim)"));
+        if (path.isEmpty())
+            return false;
+        if (!editor->saveFile(path)) {
+            QMessageBox::critical(this, tr("Save"),
+                                  tr("Could not write %1: %2").arg(path, editor->lastError()));
+            return false;
+        }
+    } else if (!editor->saveFile(editor->filePath())) {
+        QMessageBox::critical(this, tr("Save"),
+                              tr("Could not write %1: %2")
+                                  .arg(editor->filePath(), editor->lastError()));
+        return false;
+    }
+
+    updateTabTitle(editor);
+    updateModifiedState();
+    return true;
+}
+
 void MainWindow::openRecentSource()
 {
     // Offered when there is nothing open, so a restart lands somewhere useful
@@ -1032,8 +1234,12 @@ void MainWindow::openRecentSource()
 void MainWindow::openFile()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open assembly source"), QString(),
-        tr("Assembly sources (*.s *.S *.asm *.x68);;All files (*)"));
+        this, tr("Open"), QString(),
+        tr("PiST files (*.s *.S *.asm *.x68 *.pim *.pi1 *.PI1 *.neo *.NEO *.iff *.png);;"
+           "Assembly sources (*.s *.S *.asm *.x68);;"
+           "PiST images (*.pim);;"
+           "Atari ST images (*.pi1 *.PI1 *.neo *.NEO *.iff);;"
+           "All files (*)"));
     if (path.isEmpty())
         return;
     openPath(path);
@@ -1048,12 +1254,18 @@ void MainWindow::openPath(const QString &path)
     // history and cursor position in the existing tab are kept.
     if (CodeEditor *open = editorForPath(path)) {
         m_tabs->setCurrentWidget(open);
+    } else if (ImageEditor *open = imageForPath(path)) {
+        m_tabs->setCurrentWidget(open);
+    } else if (isPimPath(path) || isImportableImagePath(path)) {
+        if (!addImageTab(path))
+            return;
     } else if (!addEditorTab(path)) {
         return;
     }
 
     statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
-    loadProjectForSource(path);
+    if (!isPimPath(path) && !isImportableImagePath(path))
+        loadProjectForSource(path);
     updateModifiedState();
 
     if (m_fileBrowser)
@@ -1113,14 +1325,15 @@ void MainWindow::openProject()
 
 void MainWindow::saveProject()
 {
-    if (m_editor->filePath().isEmpty()) {
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
         QMessageBox::information(this, tr("Save project"),
                                  tr("Open an assembly source file first."));
         return;
     }
 
-    m_settings.sourceFile = m_editor->filePath();
-    const QString path = settings::projectFileFor(m_editor->filePath());
+    m_settings.sourceFile = source;
+    const QString path = settings::projectFileFor(source);
 
     QString error;
     if (!settings::save(m_settings, path, &error)) {
@@ -1128,7 +1341,7 @@ void MainWindow::saveProject()
         return;
     }
 
-    settings::rememberLastProject(path, m_editor->filePath());
+    settings::rememberLastProject(path, source);
     statusBar()->showMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 5000);
     m_log->appendPlainText(tr("[project] saved %1").arg(path));
 }
@@ -1143,9 +1356,7 @@ void MainWindow::editSettings()
 
     // The dialog persisted the application-wide appearance preferences on
     // accept; bring them into effect now rather than at next start.
-    appearance::applyTheme();
-    for (CodeEditor *editor : openEditors())
-        editor->applyFontPreferences();
+    applyAppearance();
 
     // Persist immediately when the project is already known, so a settings change
     // is not lost if the session is closed without an explicit save.
@@ -1211,6 +1422,29 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
 
 void MainWindow::saveFile()
 {
+    if (m_image) {
+        if (m_image->filePath().isEmpty()) {
+            const QString path = QFileDialog::getSaveFileName(
+                this, tr("Save image"), QString(), tr("PiST images (*.pim)"));
+            if (path.isEmpty())
+                return;
+            if (!m_image->saveFile(path)) {
+                QMessageBox::critical(this, tr("Save"),
+                                      tr("Could not write %1: %2")
+                                          .arg(path, m_image->lastError()));
+            }
+        } else if (!m_image->saveFile(m_image->filePath())) {
+            QMessageBox::critical(this, tr("Save"),
+                                  tr("Could not write %1: %2")
+                                      .arg(m_image->filePath(), m_image->lastError()));
+        }
+        updateTabTitle(m_image);
+        updateModifiedState();
+        return;
+    }
+
+    if (!m_editor)
+        return;
     if (m_editor->filePath().isEmpty()) {
         const QString path = QFileDialog::getSaveFileName(
             this, tr("Save assembly source"), QString(),
@@ -1223,12 +1457,98 @@ void MainWindow::saveFile()
                               tr("Could not write %1: %2")
                                   .arg(m_editor->filePath(), m_editor->lastError()));
     }
+    updateTabTitle(m_editor);
     updateModifiedState();
+}
+
+QString MainWindow::buildSourcePath() const
+{
+    if (m_editor && !m_editor->filePath().isEmpty())
+        return m_editor->filePath();
+    if (!m_settings.sourceFile.isEmpty() && QFileInfo::exists(m_settings.sourceFile))
+        return m_settings.sourceFile;
+    for (CodeEditor *editor : openEditors()) {
+        if (!editor->filePath().isEmpty())
+            return editor->filePath();
+    }
+    return {};
+}
+
+void MainWindow::newImage()
+{
+    newImageIn(QString());
+}
+
+void MainWindow::newImageIn(const QString &directory)
+{
+    NewImageDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    ImageEditor *editor = addImageTab(QString());
+    if (!editor)
+        return;
+    editor->newDocument(dialog.imageWidth(), dialog.imageHeight(), dialog.paletteKind());
+    if (!directory.isEmpty()) {
+        const QString path = QDir(directory).filePath(QStringLiteral("sprite.pim"));
+        editor->setFilePath(QFileInfo::exists(path) ? QString() : path);
+    }
+    updateTabTitle(editor);
+    updateModifiedState();
+}
+
+void MainWindow::importImage()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import image"), QString(),
+        tr("Atari ST images (*.pi1 *.PI1 *.neo *.NEO *.iff *.png);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    if (m_image) {
+        QMessageBox box(this);
+        box.setWindowTitle(tr("Import image"));
+        box.setText(tr("Add as a new frame, or replace this image?"));
+        QPushButton *add = box.addButton(tr("Add frame"), QMessageBox::AcceptRole);
+        QPushButton *replace = box.addButton(tr("Replace"), QMessageBox::DestructiveRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != add && box.clickedButton() != replace)
+            return;
+        if (!m_image->importFile(path, box.clickedButton() == add)) {
+            QMessageBox::warning(this, tr("Import"),
+                                 tr("Could not import %1: %2").arg(path, m_image->lastError()));
+            return;
+        }
+        updateTabTitle(m_image);
+        updateModifiedState();
+        return;
+    }
+
+    openPath(path);
+}
+
+void MainWindow::exportImage()
+{
+    if (!m_image)
+        return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export image"), QString(),
+        tr("Degas Elite (*.pi1);;NeoChrome (*.neo);;IFF/ILBM (*.iff);;PNG (*.png);;"
+           "STOS sprite bank (*.mbk);;Assembler include (*.s);;Bitplane binary (*.bin)"));
+    if (path.isEmpty())
+        return;
+    if (!m_image->exportFile(path)) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("Could not export %1: %2").arg(path, m_image->lastError()));
+        return;
+    }
+    statusBar()->showMessage(tr("Exported %1").arg(path), 4000);
 }
 
 void MainWindow::build()
 {
-    if (m_editor->filePath().isEmpty()) {
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
         QMessageBox::information(this, tr("Build"),
                                  tr("Open an assembly source file first."));
         return;
@@ -1237,17 +1557,21 @@ void MainWindow::build()
     // A failed save must stop the build: otherwise the assembler runs on the
     // previous on-disk contents and reports a result for code the user is not
     // looking at.
-    if (!m_editor->saveFile(m_editor->filePath())) {
-        QMessageBox::critical(this, tr("Build"),
-                              tr("Could not save %1: %2")
-                                  .arg(m_editor->filePath(), m_editor->lastError()));
-        return;
+    for (CodeEditor *editor : openEditors()) {
+        if (editor->filePath().isEmpty() || !editor->isModifiedSinceLoad())
+            continue;
+        if (!editor->saveFile(editor->filePath())) {
+            QMessageBox::critical(this, tr("Build"),
+                                  tr("Could not save %1: %2")
+                                      .arg(editor->filePath(), editor->lastError()));
+            return;
+        }
     }
 
     m_problems->clear();
     m_log->appendPlainText(tr("--- build ---"));
 
-    const QFileInfo info(m_editor->filePath());
+    const QFileInfo info(source);
     const settings::OutputPaths paths = settings::outputPathsFor(info.absoluteFilePath());
     const QString outPath = paths.program;
     const QString listPath = paths.listing;
@@ -1326,7 +1650,7 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
         item->setText(1, line > 0 ? QString::number(line) : QString());
         item->setText(2, d.message);
         if (d.severity == Diagnostic::Error)
-            item->setForeground(2, QColor(0xc0, 0x20, 0x20));
+            item->setForeground(2, appearance::colors().error);
 
         // Mark the gutter of whichever open editor shows this diagnostic's
         // file (with several documents open, errors are not all in one file).
@@ -1361,7 +1685,7 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
 
 void MainWindow::run()
 {
-    if (m_editor->filePath().isEmpty()) {
+    if (buildSourcePath().isEmpty()) {
         QMessageBox::information(this, tr("Run"), tr("Open an assembly source file first."));
         return;
     }
@@ -1380,7 +1704,7 @@ void MainWindow::run()
 
 void MainWindow::launchEmulator()
 {
-    const QFileInfo info(m_editor->filePath());
+    const QFileInfo info(buildSourcePath());
     const QString prg = settings::outputPathsFor(info.absoluteFilePath()).program;
     if (!QFileInfo::exists(prg)) {
         QMessageBox::warning(this, tr("Run"),
@@ -1712,7 +2036,7 @@ void MainWindow::rebuildProgramMap()
 
     const QStringList listings = m_build->listingFiles();
     const QStringList objects = m_build->objectFiles();
-    QFileInfo sourceInfo(m_editor->filePath());
+    QFileInfo sourceInfo(buildSourcePath());
 
     QStringList sources{sourceInfo.absoluteFilePath()};
     sources += m_settings.additionalSources;
@@ -1740,7 +2064,7 @@ void MainWindow::rebuildProgramMap()
             item->setText(0, tr("(build)"));
             item->setText(2, tr("Could not read the link map, so only the first module "
                                 "can be mapped to source: %1").arg(error));
-            item->setForeground(2, QColor(0xc0, 0x20, 0x20));
+            item->setForeground(2, appearance::colors().error);
         }
     }
 
@@ -1950,7 +2274,7 @@ void MainWindow::refreshBreakpointMarkers()
 
 void MainWindow::toggleBreakpointAtLine(int line)
 {
-    if (m_editor->filePath().isEmpty() || line <= 0)
+    if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
         return;
 
     const QString file = QFileInfo(m_editor->filePath()).fileName();
@@ -1998,14 +2322,15 @@ void MainWindow::goToBreakpoint(const QString &file, int line)
     // Only navigate within the file that is open; switching documents is not
     // supported yet, so silently doing nothing is better than jumping to the
     // wrong line in the wrong file.
-    if (m_editor->filePath().isEmpty() || !LineMap::sameSource(file, m_editor->filePath()))
+    if (!m_editor || m_editor->filePath().isEmpty()
+        || !LineMap::sameSource(file, m_editor->filePath()))
         return;
     m_editor->gotoLine(line);
 }
 
 void MainWindow::editBreakpointCondition(int line)
 {
-    if (m_editor->filePath().isEmpty() || line <= 0)
+    if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
         return;
 
     const QString file = QFileInfo(m_editor->filePath()).fileName();

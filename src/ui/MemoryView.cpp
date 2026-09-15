@@ -5,6 +5,7 @@
 #include "ui/MemoryView.h"
 
 #include "emu/MemoryDump.h"
+#include "ui/Appearance.h"
 
 #include <QApplication>
 #include <QHBoxLayout>
@@ -70,11 +71,9 @@ MemoryView::MemoryView(QWidget *parent)
     m_table->setToolTip(tr("Double-click a byte to edit it; Alt+double-click follows a pointer."));
     m_table->setShowGrid(false);
     m_table->setFocusPolicy(Qt::NoFocus);
+    m_table->setAlternatingRowColors(true);
+    appearance::markMono(m_table);
     m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
-
-    QFont mono = m_table->font();
-    mono.setFamily(QStringLiteral("monospace"));
-    m_table->setFont(mono);
 
     layout->addWidget(m_table);
 
@@ -118,6 +117,7 @@ void MemoryView::goToAddress(quint32 address)
     // The old region's bytes must not survive under the new base: until the
     // fresh dump arrives, blank beats wrong — and a discarded stale dump
     // (applyDump refuses one not starting at m_base) leaves exactly this.
+    m_lastDump.clear();
     clear();
     emit dumpRequested(m_base, kRowBytes * kRows);
 }
@@ -176,6 +176,14 @@ void MemoryView::clear()
     m_status->clear();
 }
 
+void MemoryView::applyAppearance()
+{
+    appearance::markMono(m_table);
+    m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
+    if (!m_lastDump.isEmpty())
+        applyDump(m_lastDump);
+}
+
 void MemoryView::applyDump(const QString &response)
 {
     const QList<MemoryRow> rows = parseMemoryDump(response);
@@ -191,6 +199,8 @@ void MemoryView::applyDump(const QString &response)
     if (rows.first().address != m_base)
         return;
 
+    m_lastDump = response;
+
     // Programmatic rewrites are not user edits: with editing enabled (the
     // stopped state), every setText would otherwise fire itemChanged →
     // onByteEdited → memoryEdited, and each of those is a debugger write plus
@@ -201,6 +211,7 @@ void MemoryView::applyDump(const QString &response)
     clear();
     m_table->setRowCount(kRows);
     m_bytes.clear();
+    const appearance::Colors theme = appearance::colors();
 
     int row = 0;
     for (const MemoryRow &dump : rows) {
@@ -213,6 +224,7 @@ void MemoryView::applyDump(const QString &response)
             m_table->setItem(row, kAddressColumn, addressItem);
         }
         addressItem->setText(hex8(dump.address));
+        addressItem->setForeground(theme.address);
 
         for (int i = 0; i < kRowBytes; ++i) {
             const int column = kFirstByteColumn + i;
@@ -221,9 +233,13 @@ void MemoryView::applyDump(const QString &response)
                 item = new QTableWidgetItem;
                 m_table->setItem(row, column, item);
             }
-            item->setText(i < dump.bytes.size()
-                              ? QStringLiteral("%1").arg(dump.bytes.at(i), 2, 16, QLatin1Char('0')).toUpper()
-                              : QString());
+            if (i < dump.bytes.size()) {
+                const quint8 byte = dump.bytes.at(i);
+                item->setText(QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0')).toUpper());
+                item->setForeground(byte == 0 ? theme.zero : theme.hex);
+            } else {
+                item->setText(QString());
+            }
         }
 
         auto *chars = m_table->item(row, kCharColumn);
@@ -232,6 +248,7 @@ void MemoryView::applyDump(const QString &response)
             m_table->setItem(row, kCharColumn, chars);
         }
         chars->setText(renderMemoryChars(dump.bytes));
+        chars->setForeground(theme.ascii);
 
         // Keep the raw bytes so a cell's pointer can be read back; only the
         // bytes actually shown count, so a short dump does not let a click read

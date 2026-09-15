@@ -33,9 +33,12 @@ public slots:
     void showDirectory(const QString &path);
 
 signals:
-    /// A file was activated (double-clicked or Enter). Only assembly-ish files
-    /// are emitted; the receiver decides what to do with them.
+    /// A file was activated (double-clicked or Enter). The receiver decides
+    /// what to do with the path.
     void fileActivated(const QString &path);
+
+    /// The user asked to create a new `.pim` image in `directory`.
+    void newImageRequested(const QString &directory);
 
     /// A file or directory was renamed through the browser (the model also
     /// emits its own fileRenamed; this one covers renames we initiate).

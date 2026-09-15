@@ -10,7 +10,6 @@
 #include <QContextMenuEvent>
 #include <QFile>
 #include <QFileInfo>
-#include <QFontDatabase>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QTextBlock>
@@ -82,15 +81,14 @@ CodeEditor::CodeEditor(QWidget *parent)
 
 void CodeEditor::applyFontPreferences()
 {
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    // 0 means "no preference": keep the historical default of one point over
-    // the platform's fixed font.
-    const int size = appearance::editorPointSize();
-    font.setPointSize(size > 0 ? size : font.pointSize() + 1);
+    const QFont font = appearance::editorFont();
     setFont(font);
     setTabStopDistance(8 * QFontMetricsF(font).horizontalAdvance(QLatin1Char(' ')));
 
     m_highlighter->setDarkMode(appearance::darkModeActive());
+    refreshExtraSelections();
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
 }
 
 int CodeEditor::lineNumberAreaWidth() const
@@ -101,7 +99,7 @@ int CodeEditor::lineNumberAreaWidth() const
         max /= 10;
         ++digits;
     }
-    return 12 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    return 16 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
 }
 
 void CodeEditor::updateLineNumberAreaWidth(int)
@@ -136,11 +134,23 @@ void CodeEditor::onCursorPositionChanged()
 void CodeEditor::refreshExtraSelections()
 {
     QList<QTextEdit::ExtraSelection> selections;
+    const appearance::Colors c = appearance::colors();
+    const int cursorLine = textCursor().blockNumber() + 1;
+
+    // Cursor line, underneath the debugger's PC highlight when they coincide.
+    if (cursorLine > 0 && cursorLine != m_currentExecutionLine) {
+        QTextEdit::ExtraSelection sel;
+        sel.format.setBackground(c.currentLine);
+        sel.format.setProperty(QTextFormat::FullWidthSelection, true);
+        sel.cursor = textCursor();
+        sel.cursor.clearSelection();
+        selections.append(sel);
+    }
 
     // Current execution line, as reported by the debugger.
     if (m_currentExecutionLine > 0 && m_currentExecutionLine <= blockCount()) {
         QTextEdit::ExtraSelection sel;
-        sel.format.setBackground(QColor(0xff, 0xf3, 0xc4));
+        sel.format.setBackground(c.executionLine);
         sel.format.setProperty(QTextFormat::FullWidthSelection, true);
         sel.cursor = QTextCursor(document()->findBlockByNumber(m_currentExecutionLine - 1));
         sel.cursor.clearSelection();
@@ -153,7 +163,7 @@ void CodeEditor::refreshExtraSelections()
             continue;
         QTextEdit::ExtraSelection sel;
         sel.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
-        sel.format.setUnderlineColor(QColor(0xd0, 0x30, 0x30));
+        sel.format.setUnderlineColor(c.error);
         sel.format.setProperty(QTextFormat::FullWidthSelection, false);
         QTextCursor cursor(document()->findBlockByNumber(line - 1));
         cursor.select(QTextCursor::LineUnderCursor);
@@ -221,7 +231,8 @@ void CodeEditor::gotoLine(int line)
 void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
 {
     QPainter painter(m_lineNumberArea);
-    painter.fillRect(event->rect(), QColor(0xf0, 0xf0, 0xf0));
+    const appearance::Colors c = appearance::colors();
+    painter.fillRect(event->rect(), c.gutter);
 
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
@@ -231,29 +242,39 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
     while (block.isValid() && top <= event->rect().bottom()) {
         if (block.isVisible() && bottom >= event->rect().top()) {
             const int line = blockNumber + 1;
+            const int height = fontMetrics().height();
+
+            if (line == m_currentExecutionLine)
+                painter.fillRect(0, top, 3, bottom - top, c.gutterPc);
 
             if (m_breakpointLines.contains(line)) {
                 // A filled dot, drawn rather than glyph-based so it does not
                 // depend on a font that happens to have the character.
                 painter.setRenderHint(QPainter::Antialiasing, true);
-                painter.setBrush(QColor(0xc0, 0x30, 0x30));
+                painter.setBrush(c.breakpoint);
                 painter.setPen(Qt::NoPen);
-                const int d = fontMetrics().height() - 6;
-                painter.drawEllipse(QRect(2, top + 3, d, d));
+                const int d = qMax(5, height - 6);
+                // Geometrically centred in the text box, then dropped a little
+                // at small type: a tiny disc sits optically high, which was
+                // right at 15pt (top+3) and a few pixels high at 10pt.
+                int y = top + (height - d) / 2;
+                const int pt = font().pointSize();
+                if (pt > 0 && pt < 15)
+                    y += (15 - pt + 1) / 2;
+                painter.drawEllipse(QRect(2, y, d, d));
                 painter.setRenderHint(QPainter::Antialiasing, false);
             }
 
             if (m_errorLines.contains(line)) {
-                painter.setPen(QColor(0xd0, 0x30, 0x30));
+                painter.setPen(c.error);
                 painter.drawText(0, top, m_lineNumberArea->width() - 6,
-                                 fontMetrics().height(), Qt::AlignRight,
+                                 height, Qt::AlignRight,
                                  QStringLiteral("!"));
             }
 
-            painter.setPen(line == m_currentExecutionLine ? QColor(0x00, 0x60, 0x60)
-                                                          : QColor(0x80, 0x80, 0x80));
+            painter.setPen(line == m_currentExecutionLine ? c.gutterPc : c.gutterText);
             painter.drawText(0, top, m_lineNumberArea->width() - 6,
-                             fontMetrics().height(), Qt::AlignRight, QString::number(line));
+                             height, Qt::AlignRight, QString::number(line));
         }
 
         block = block.next();

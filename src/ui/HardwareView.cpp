@@ -4,6 +4,8 @@
 
 #include "ui/HardwareView.h"
 
+#include "ui/Appearance.h"
+
 #include <QComboBox>
 #include <QPlainTextEdit>
 #include <QVBoxLayout>
@@ -24,10 +26,7 @@ HardwareView::HardwareView(QWidget *parent)
 
     m_text = new QPlainTextEdit(this);
     m_text->setReadOnly(true);
-    QFont mono = m_text->font();
-    mono.setFamily(QStringLiteral("monospace"));
-    mono.setStyleHint(QFont::TypeWriter);
-    m_text->setFont(mono);
+    appearance::markMono(m_text);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);

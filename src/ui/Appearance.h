@@ -4,22 +4,105 @@
 
 #pragma once
 
+#include <QColor>
+#include <QCursor>
+#include <QFont>
+#include <QIcon>
 #include <QString>
+#include <QStringList>
 
-class QPalette;
+class QWidget;
 
 namespace pist {
 namespace appearance {
 
-/// The application-wide appearance preferences. These live in QSettings (per
-/// user), never in the project file: a theme is a taste, not a project
-/// property.
+/// Application-wide appearance preferences. These live in QSettings (per user),
+/// never in the project file: a theme is a taste, not a project property.
 ///
-///   appearance/theme     "system" (default) | "light" | "dark"
-///   appearance/fontSize  editor point size; 0/absent = the platform default
+///   appearance/theme       "dark" (default) | "light" | "system"
+///   appearance/fontSize    editor point size; 0/absent = platform default + 1
+///   appearance/fontFamily  monospace family; empty/absent = platform fixed font
+
+enum class Icon {
+    Open,
+    Save,
+    Settings,
+    Build,
+    Run,
+    Stop,
+    Pause,
+    Continue,
+    Step,
+    StepOver,
+    ClearBreakpoints,
+    Brush,
+    Line,
+    Rect,
+    RoundRect,
+    Ellipse,
+    Fill,
+    Eyedropper,
+    Undo,
+    Redo,
+    Grid,
+    Fit,
+    ZoomIn,
+    ZoomOut,
+    Palette,
+    AddFrame,
+    DuplicateFrame,
+    RemoveFrame,
+};
+
+/// Mouse glyph over the sprite canvas. The hotspot is the paint tip
+/// (bristles, spout, dropper point) or the crosshair centre.
+enum class CanvasCursor {
+    Brush,
+    Crosshair,
+    Fill,
+    Eyedropper,
+};
+
+/// Colours that widgets paint with, as opposed to QPalette roles. Driven by
+/// the effective darkness of the current theme (including "system").
+struct Colors
+{
+    QColor gutter;
+    QColor gutterText;
+    QColor gutterPc;
+    QColor breakpoint;
+    QColor error;
+    QColor executionLine;
+    QColor currentLine;
+    QColor pcRow;
+    QColor changed;
+    QColor address;
+    QColor hex;
+    QColor ascii;
+    QColor zero;
+    QColor success;
+    QColor warning;
+    QColor muted;
+    QColor keyword;
+    QColor registerName;
+    QColor number;
+    QColor string;
+    QColor directive;
+    QColor label;
+    QColor comment;
+};
 
 QString theme();
 int editorPointSize();
+QString editorFontFamily();
+
+/// Installed families suitable for the editor: a short preferred list of
+/// programming fonts (when present), then any other fixed-pitch face.
+QStringList editorFontChoices();
+
+/// The monospace font implied by the family and size preferences. Used by the
+/// editor and the debug panes so they stay in one typeface.
+QFont editorFont();
 
 /// Apply the configured theme application-wide. Safe to call again whenever
 /// the preference changes. For "system" the style and palette captured at
@@ -28,8 +111,21 @@ int editorPointSize();
 void applyTheme();
 
 /// The effective darkness of the current theme, resolving "system" by
-/// inspecting the active palette. Drives the editor's syntax colours.
+/// inspecting the active palette. Drives editor and debug-pane colours.
 bool darkModeActive();
+
+Colors colors();
+
+/// Toolbar glyph. For `Icon::Brush`, a valid opaque `paint` fills the brush head.
+QIcon icon(Icon id, const QColor &paint = QColor());
+QIcon windowIcon();
+/// Canvas pointer. For `CanvasCursor::Brush`, `paint` fills the bristle well.
+QCursor canvasCursor(CanvasCursor id, const QColor &paint = QColor());
+
+/// Mark a widget as using the application monospace font, and apply it now.
+/// applyMonoFonts() later walks a tree of these.
+void markMono(QWidget *widget);
+void applyMonoFonts(QWidget *root);
 
 } // namespace appearance
 } // namespace pist

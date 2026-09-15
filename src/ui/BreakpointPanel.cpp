@@ -4,6 +4,8 @@
 
 #include "ui/BreakpointPanel.h"
 
+#include "ui/Appearance.h"
+
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QPushButton>
@@ -36,6 +38,8 @@ BreakpointPanel::BreakpointPanel(QWidget *parent)
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setShowGrid(false);
+    m_table->setAlternatingRowColors(true);
+    appearance::markMono(m_table);
 
     connect(m_table, &QTableWidget::itemDoubleClicked, this,
             [this](QTableWidgetItem *item) {
@@ -111,18 +115,19 @@ void BreakpointPanel::refresh()
         // starts none of them can be resolved.
         QString state;
         QColor colour;
+        const appearance::Colors theme = appearance::colors();
         if (!bp.enabled) {
             state = tr("disabled");
-            colour = QColor(0x80, 0x80, 0x80);
+            colour = theme.muted;
         } else if (bp.resolved) {
             state = QStringLiteral("$%1").arg(bp.address, 0, 16).toUpper();
-            colour = QColor(0x20, 0x70, 0x30);
+            colour = theme.success;
         } else if (m_resolvable) {
             state = tr("no code on this line");
-            colour = QColor(0xc0, 0x60, 0x00);
+            colour = theme.warning;
         } else {
             state = tr("pending (run to resolve)");
-            colour = QColor(0x80, 0x80, 0x80);
+            colour = theme.muted;
         }
         auto *stateItem = new QTableWidgetItem(state);
         stateItem->setForeground(colour);
@@ -140,13 +145,19 @@ void BreakpointPanel::refresh()
         const int row = firstWatch + i;
         m_table->setItem(row, kColLocation, new QTableWidgetItem(wp.label()));
         auto *state = new QTableWidgetItem(tr("armed"));
-        state->setForeground(QColor(0x20, 0x70, 0x30));
+        state->setForeground(appearance::colors().success);
         m_table->setItem(row, kColState, state);
         m_table->setItem(row, kColCondition, new QTableWidgetItem(wp.command().mid(2)));
     }
 
     m_table->resizeColumnsToContents();
     m_clearButton->setEnabled(!m_breakpoints.isEmpty() || !m_watchpoints.isEmpty());
+}
+
+void BreakpointPanel::applyAppearance()
+{
+    appearance::markMono(m_table);
+    refresh();
 }
 
 } // namespace pist

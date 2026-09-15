@@ -37,6 +37,7 @@ class BreakpointPanel;
 class DisassemblyView;
 class FileBrowser;
 class IDebugBackend;
+class ImageEditor;
 class MemoryView;
 class RegistersView;
 class StackView;
@@ -192,24 +193,40 @@ private:
 
     /// The single-document form, for closing one tab.
     bool maybeSaveEditor(CodeEditor *editor);
+    bool maybeSaveImage(ImageEditor *editor);
 
-    /// Create and wire a text-editor tab (the dispatch seam for future
-    /// non-text document kinds), loading `path` into it; empty means a
+    /// Create and wire a text-editor tab, loading `path` into it; empty means a
     /// pristine tab. Reuses a pristine tab when there is exactly one.
     /// Returns null when the file could not be loaded.
     CodeEditor *addEditorTab(const QString &path);
 
+    /// Create and wire an image-editor tab. `path` is a `.pim` or an importable
+    /// ST still-image; empty means a new untitled sprite.
+    ImageEditor *addImageTab(const QString &path);
+
     /// Connect one editor's signals. Runs for every editor tab created.
     void wireEditor(CodeEditor *editor);
+    void wireImage(ImageEditor *editor);
 
     /// Every open text editor, in tab order.
     QList<CodeEditor *> openEditors() const;
+    QList<ImageEditor *> openImages() const;
 
     /// The open editor showing `path`, or null.
     CodeEditor *editorForPath(const QString &path) const;
+    ImageEditor *imageForPath(const QString &path) const;
 
     /// Sync a tab's label with its document's name and modified state.
-    void updateTabTitle(CodeEditor *editor);
+    void updateTabTitle(QWidget *widget);
+
+    /// Assembly source used for Build/Run: the current text editor if it has a
+    /// path, otherwise the project source, otherwise any open `.s`.
+    QString buildSourcePath() const;
+
+    void newImage();
+    void newImageIn(const QString &directory);
+    void importImage();
+    void exportImage();
 
     void openRecentSource();
 
@@ -255,11 +272,17 @@ private:
     /// the user's current arrangement. Invoked from the View menu.
     void resetToDefaultLayout();
 
+    /// Re-apply theme, icons, and monospace fonts after appearance preferences
+    /// change, and once at construction so the first window is already themed.
+    void applyAppearance();
+    void applyIcons();
+
     /// The open documents. m_editor is the *current* text editor and is null
-    /// when the current tab is not a text editor (possible once non-text
-    /// document kinds exist), so every use of it must be guarded.
+    /// when the current tab is not a text editor; m_image is the current image
+    /// editor and is null otherwise.
     QTabWidget *m_tabs = nullptr;
     CodeEditor *m_editor = nullptr;
+    ImageEditor *m_image = nullptr;
     BuildService *m_build = nullptr;
 
 
@@ -353,6 +376,9 @@ private:
     ProjectSettings m_settings;
 
     QAction *m_actOpen = nullptr;
+    QAction *m_actNewImage = nullptr;
+    QAction *m_actImportImage = nullptr;
+    QAction *m_actExportImage = nullptr;
     QAction *m_actOpenProject = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;

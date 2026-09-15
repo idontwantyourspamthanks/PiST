@@ -57,6 +57,13 @@ public:
     /// phase index, or -1 when the sheet has no imported pixels.
     int addPhaseFromSheet(int sheetIndex, const QString &name, int x, int y,
                           int cellW, int cellH, int count);
+    /// Fill a placed phase's still-empty frames from the sheet pixels under
+    /// them (placement and frame adds pull the art; drawn frames survive).
+    void slicePlacedPhaseFrames(int phaseIndex);
+    /// After a phase moved, re-slice the frames that still match the cells
+    /// they were cut from (or are empty) — the strip follows the sheet until
+    /// a frame is edited; edited frames keep their pixels.
+    void reSliceUntouchedFrames(int phaseIndex, int oldSheet, int oldX, int oldY);
 
     QString lastError() const { return m_lastError; }
     QString filePath() const { return m_filePath; }

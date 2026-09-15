@@ -154,6 +154,9 @@ private slots:
     /// A document with unplaced phases and no sheets: New sheet creates the
     /// 320×200 target and staged phases drag straight onto it.
     void newSheetAndStagingDrag();
+    /// The full import journey: staged phase dragged onto the sheet slices
+    /// the art under it, and a frame added afterwards slices the next cell.
+    void stagedPhaseSlicesOnPlacement();
     /// Phase cell size is editable from the panel and adding frames in sheet
     /// mode extends the strip.
     void phaseCellSizeAndStripGrowth();
@@ -2241,6 +2244,89 @@ void TstGui::sheetPixelsSurviveReopen()
     QCOMPARE(previewBox->currentData().toInt(), 0);
     list->setCurrentRow(1);
     QCOMPARE(previewBox->currentData().toInt(), 1);
+}
+
+
+void TstGui::stagedPhaseSlicesOnPlacement()
+{
+    const QString dir = m_work->path() + QStringLiteral("/staged");
+    QVERIFY(QDir().mkpath(dir));
+
+    // Six marked 32x32 cells on a sheet file.
+    ImageDocument strip = ImageDocument::create(192, 32, PaletteKind::Ste);
+    for (int k = 0; k < 6; ++k)
+        strip.setPixel(k * 32, strip.active().at(k + 1));
+    const QString pi1Path = dir + QStringLiteral("/six.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(strip, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    {
+        QFile out(pi1Path);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    }
+
+    MainWindow window;
+    window.openPath(pi1Path);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().size(), 1);
+
+    auto *mode = image->findChild<QAction *>(QStringLiteral("imageSheetMode"));
+    QVERIFY(mode);
+    mode->setChecked(true);
+    auto *sheetCanvas = image->findChild<SheetCanvas *>();
+    QVERIFY(sheetCanvas);
+    const int scale = sheetCanvas->scale();
+
+    // Drag the staged default phase (32x32, one empty frame) to sheet
+    // cell [0, 0]: gutter origin (52, 12), strip at [4, 12].
+    QTest::mousePress(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(6 * scale, 14 * scale));
+    // Keep the pointer 2px right/down of the strip origin so the origin
+    // lands at the sheet's [0, 0].
+    QTest::mouseMove(sheetCanvas, QPoint(54 * scale, 14 * scale));
+    QTest::mouseRelease(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(54 * scale, 14 * scale));
+    QCOMPARE(image->document().phases().at(0).sheet, 0);
+    QCOMPARE(image->document().phases().at(0).x, 0);
+    QCOMPARE(image->document().phases().at(0).y, 0);
+
+    // The placement slices the art under the strip.
+    QCOMPARE(image->document().frame(0).at(0), strip.active().at(1));
+
+    // Adding a frame extends the strip AND slices the next cell.
+    auto *addFrame = image->findChild<QToolButton *>(QStringLiteral("imageAddFrame"));
+    QVERIFY(addFrame);
+    addFrame->click();
+    QCOMPARE(image->document().frameCount(), 2);
+    QCOMPARE(image->document().frame(1).at(0), strip.active().at(2));
+
+    // Dragging the strip re-slices the untouched frames under the new
+    // position (the strip is a window onto the sheet). The placed strip
+    // sits at sheet origin (52, 12) in widget coordinates.
+    QTest::mousePress(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(54 * scale, 14 * scale));
+    QTest::mouseMove(sheetCanvas, QPoint(86 * scale, 14 * scale));
+    QTest::mouseRelease(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(86 * scale, 14 * scale));
+    QCOMPARE(image->document().phases().at(0).x, 32);
+    QCOMPARE(image->document().frame(0).at(0), strip.active().at(2));
+    QCOMPARE(image->document().frame(1).at(0), strip.active().at(3));
+
+    // A frame that has been drawn on keeps its pixels across the move.
+    QVERIFY(image->document().setCurrentFrame(1));
+    image->document().setPixel(0, image->document().active().at(15));
+    QTest::mousePress(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(86 * scale + 2, 14 * scale));
+    QTest::mouseMove(sheetCanvas, QPoint(118 * scale + 2, 14 * scale));
+    QTest::mouseRelease(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(118 * scale + 2, 14 * scale));
+    QCOMPARE(image->document().phases().at(0).x, 64);
+    QCOMPARE(image->document().frame(0).at(0), strip.active().at(3));
+    QCOMPARE(image->document().frame(1).at(0), image->document().active().at(15));
 }
 
 QTEST_MAIN(TstGui)

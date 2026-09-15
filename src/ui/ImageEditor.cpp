@@ -536,8 +536,11 @@ ImageEditor::ImageEditor(QWidget *parent)
     });
     connect(m_sheetCanvas, &SheetCanvas::phaseMoved, this, [this](int index, int x, int y) {
         const ImageDocument before = m_doc;
-        const int sheet = m_doc.phases().at(index).sheet;
-        m_doc.setPhasePlacement(index, sheet, x, y);
+        const int oldSheet = m_doc.phases().at(index).sheet;
+        const int oldX = m_doc.phases().at(index).x;
+        const int oldY = m_doc.phases().at(index).y;
+        m_doc.setPhasePlacement(index, oldSheet, x, y);
+        reSliceUntouchedFrames(index, oldSheet, oldX, oldY);
         pushSnapshot(before, tr("move phase"));
         refreshPhases();
         notifyModified();
@@ -545,6 +548,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_sheetCanvas, &SheetCanvas::phasePlaced, this, [this](int index, int x, int y) {
         const ImageDocument before = m_doc;
         m_doc.setPhasePlacement(index, m_sheetCanvas->sheetIndex(), x, y);
+        slicePlacedPhaseFrames(index);
         pushSnapshot(before, tr("place phase"));
         refreshPhases();
         notifyModified();
@@ -1061,6 +1065,17 @@ void ImageEditor::addFrame()
 {
     const ImageDocument before = m_doc;
     m_doc.addFrame();
+    // A frame added to a placed phase extends the strip: pull the next cell
+    // from the sheet's pixels when they are available.
+    const ImagePhase &phase = m_doc.phases().at(m_doc.currentPhase());
+    if (phase.sheet >= 0 && m_importedSheets.contains(phase.sheet)) {
+        const QVector<QVector<int>> cells =
+            sliceSheetCells(m_importedSheets.value(phase.sheet), phase.x, phase.y,
+                            phase.cellW, phase.cellH, phase.frames.size());
+        const int index = m_doc.currentFrame();
+        if (index < cells.size())
+            m_doc.replaceActiveLayer(cells.at(index));
+    }
     pushSnapshot(before, tr("add frame"));
     refreshChrome();
     notifyModified();
@@ -1389,8 +1404,15 @@ void ImageEditor::onPhasePlacementChanged()
 {
     const int phase = m_doc.currentPhase();
     const int sheet = m_phaseSheet->currentData().toInt();
+    const int oldSheet = m_doc.phases().at(phase).sheet;
+    const int oldX = m_doc.phases().at(phase).x;
+    const int oldY = m_doc.phases().at(phase).y;
     if (!m_doc.setPhasePlacement(phase, sheet, m_phaseX->value(), m_phaseY->value()))
         return;
+    // Attaching or moving a phase slices the art under frames that are
+    // still untouched; drawn frames keep their pixels.
+    slicePlacedPhaseFrames(phase);
+    reSliceUntouchedFrames(phase, oldSheet, oldX, oldY);
     // Placement edits are metadata tweaks, like phase renames: no snapshot.
     refreshPhases();
     refreshSheetView();
@@ -1409,6 +1431,79 @@ void ImageEditor::onPhaseCellSizeChanged()
     refreshCanvas();
     refreshSheetView();
     notifyModified();
+}
+
+void ImageEditor::slicePlacedPhaseFrames(int phaseIndex)
+{
+    if (phaseIndex < 0 || phaseIndex >= m_doc.phases().size())
+        return;
+    const ImagePhase &phase = m_doc.phases().at(phaseIndex);
+    if (phase.sheet < 0 || !m_importedSheets.contains(phase.sheet))
+        return;
+    const QVector<QVector<int>> cells =
+        sliceSheetCells(m_importedSheets.value(phase.sheet), phase.x, phase.y,
+                        phase.cellW, phase.cellH, phase.frames.size());
+    const int savedPhase = m_doc.currentPhase();
+    const int savedFrame = m_doc.currentFrame();
+    bool changed = false;
+    for (int k = 0; k < cells.size() && k < phase.frames.size(); ++k) {
+        // Only frames that are still empty get filled: drawn frames survive
+        // a move or a re-place.
+        bool empty = true;
+        for (int value : phase.frames.at(k).composite)
+            empty &= value < 0;
+        if (!empty || cells.at(k).isEmpty())
+            continue;
+        m_doc.setCurrentPhase(phaseIndex);
+        m_doc.setCurrentFrame(k);
+        m_doc.replaceActiveLayer(cells.at(k));
+        changed = true;
+    }
+    m_doc.setCurrentPhase(savedPhase);
+    m_doc.setCurrentFrame(savedFrame);
+    if (changed) {
+        refreshChrome();
+        refreshPreview();
+        notifyModified();
+    }
+}
+
+void ImageEditor::reSliceUntouchedFrames(int phaseIndex, int oldSheet, int oldX, int oldY)
+{
+    const ImagePhase &phase = m_doc.phases().at(phaseIndex);
+    if (phase.sheet < 0 || !m_importedSheets.contains(phase.sheet))
+        return;
+    const ImportedSheet &imported = m_importedSheets.value(phase.sheet);
+    const int count = phase.frames.size();
+    const QVector<QVector<int>> newCells =
+        sliceSheetCells(imported, phase.x, phase.y, phase.cellW, phase.cellH, count);
+    // Frames are "untouched" when they still match the cells they were cut
+    // from — or when they are empty and there is no older cell to compare.
+    QVector<QVector<int>> oldCells;
+    if (oldSheet >= 0 && m_importedSheets.contains(oldSheet))
+        oldCells = sliceSheetCells(m_importedSheets.value(oldSheet), oldX, oldY,
+                                   phase.cellW, phase.cellH, count);
+    const int savedPhase = m_doc.currentPhase();
+    const int savedFrame = m_doc.currentFrame();
+    bool changed = false;
+    for (int k = 0; k < count && k < newCells.size(); ++k) {
+        const QVector<int> &frame = phase.frames.at(k).composite;
+        const bool untouched = oldCells.isEmpty() || frame == oldCells.at(k)
+            || std::all_of(frame.cbegin(), frame.cend(), [](int value) { return value < 0; });
+        if (!untouched || frame == newCells.at(k))
+            continue;
+        m_doc.setCurrentPhase(phaseIndex);
+        m_doc.setCurrentFrame(k);
+        m_doc.replaceActiveLayer(newCells.at(k));
+        changed = true;
+    }
+    m_doc.setCurrentPhase(savedPhase);
+    m_doc.setCurrentFrame(savedFrame);
+    if (changed) {
+        refreshChrome();
+        refreshPreview();
+        notifyModified();
+    }
 }
 
 void ImageEditor::slicePhaseFromSheet()

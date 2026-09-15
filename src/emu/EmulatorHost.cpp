@@ -243,6 +243,7 @@ void EmulatorHost::resetTransport()
     m_owedPrompts = 0;
     m_stderrBuffer.clear();
     m_stderrAtDispatch = 0;
+    m_continueWhenIdle = false;
     m_embedSocket.close();
     m_commandTimeout->stop();
     m_settleTimer->stop();
@@ -430,7 +431,7 @@ void EmulatorHost::enqueueSnapshotCommand(const QString &command, bool last)
 
 void EmulatorHost::dispatchNext()
 {
-    if (m_haveCurrent || m_queue.isEmpty() || !m_process
+    if (m_haveCurrent || !m_process
         || m_process->state() != QProcess::Running) {
         return;
     }
@@ -446,6 +447,12 @@ void EmulatorHost::dispatchNext()
     // command with the previous command's output.
     if (m_owedPrompts > 0)
         return;
+
+    if (m_queue.isEmpty()) {
+        if (m_continueWhenIdle)
+            finishContinue();
+        return;
+    }
 
     m_current = m_queue.dequeue();
     m_haveCurrent = true;
@@ -587,26 +594,43 @@ void EmulatorHost::stepOver()
     command(QStringLiteral("n"));
 }
 
+void EmulatorHost::finishContinue()
+{
+    m_continueWhenIdle = false;
+    m_stopped = false;
+    emit stoppedChanged(false);
+    m_process->write("c\n");
+}
+
 void EmulatorHost::resume()
 {
     if (!m_process || m_process->state() != QProcess::Running)
         return;
+    if (m_continueWhenIdle)
+        return;
+    if (!m_stopped)
+        return;
 
-    // Discard any command still queued or in flight. Once the machine resumes,
-    // the state it was querying has moved on, and a response captured before the
-    // resume is stale. Left in place, an in-flight command swallows the next
-    // stop's prompt — completing with a stale response instead of that stop
-    // being detected as an entry. The next stop refreshes everything fresh, so
-    // nothing useful is lost.
-    m_queue.clear();
-    m_haveCurrent = false;
-    m_current = Pending();
-    m_commandTimeout->stop();
-    m_settleTimer->stop();
+    // Keep `b` / `b all` / watchpoint commands; drop dumps and register
+    // queries. Continue is enabled at the entry stop, which is before
+    // armBreakpoints() has been flushed, and writing `c` immediately used to
+    // discard those unsent arms so a pre-Run breakpoint never fired.
+    QQueue<Pending> arms;
+    while (!m_queue.isEmpty()) {
+        const Pending p = m_queue.dequeue();
+        if (isBreakpointCommand(p.text))
+            arms.enqueue(p);
+    }
+    m_queue = arms;
 
-    m_stopped = false;
-    emit stoppedChanged(false);
-    m_process->write("c\n");
+    if (!m_haveCurrent && m_queue.isEmpty()) {
+        finishContinue();
+        return;
+    }
+
+    m_continueWhenIdle = true;
+    if (!m_haveCurrent)
+        dispatchNext();
 }
 
 void EmulatorHost::refresh()

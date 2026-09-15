@@ -143,6 +143,7 @@ private:
 
     void dispatchNext();
     void completeCurrent();
+    void finishContinue();
 
     /// Core of command(): report a missing session, then queue and dispatch.
     /// Split out so a refresh batch shares the same guard and reporting rather
@@ -211,6 +212,10 @@ private:
 
     /// Address of the most recent memdump request, so its response can be
     /// reported back with the address it came from.
+
+    /// Continue was requested while breakpoint-arming commands were still
+    /// queued. Keep the debugger stopped until those flush, then write `c`.
+    bool m_continueWhenIdle = false;
 
     MachineState m_state;
     bool m_stopped = false;

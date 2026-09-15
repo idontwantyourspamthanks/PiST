@@ -27,6 +27,14 @@ struct HatariCapabilities;
 ///           probe can tell the two apart.
 enum class BackendKind { Native, Hrdb };
 
+/// Hatari `b all`, `b pc = $addr`, and watchpoint self-inequality (`b ($addr).w ! …`).
+/// Resume must keep these in the queue: Continue is enabled at the entry stop,
+/// which is before `armBreakpoints()` has been flushed to the debugger.
+inline bool isBreakpointCommand(const QString &text)
+{
+    return text.startsWith(QLatin1Char('b'));
+}
+
 /// The debug-transport contract MainWindow drives, independent of how the
 /// emulator is talked to.
 ///

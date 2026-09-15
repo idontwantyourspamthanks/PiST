@@ -697,19 +697,12 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
 
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
 
-    // Wait for the entry stop, which arms the breakpoint as the live bases
-    // arrive. (The attach emits more than one stop signal, so a stop *count* is
-    // not a reliable thing to wait on — the editor's position is the real one.)
-    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
-    QTRY_VERIFY_WITH_TIMEOUT(stoppedSpy.count() >= 1, 30000);
-    QTest::qWait(800);   // let the post-entry arm complete before resuming
-
-    // Resume; the breakpoint at line 3 must fire, and the editor must follow the
-    // PC to it — the behaviour the README and demo promise. Waiting on the
-    // editor reaching line 3 proves both at once, and is immune to the attach's
-    // multiple stop signals.
+    // The editor reaching the entry line means bases arrived and armBreakpoints
+    // has been queued. Resume then flushes those `b` commands before `c` —
+    // a fixed wait after the first stop was racing the attach.
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
-    QTRY_VERIFY_WITH_TIMEOUT(editor->currentExecutionLine() == 3, 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
     host->stop();
 }

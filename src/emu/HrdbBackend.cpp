@@ -737,13 +737,18 @@ void HrdbBackend::resume()
 {
     if (!isRunning())
         return;
+    if (!m_stopped)
+        return;
 
-    // Pending state queries are stale the moment the machine runs, so the
-    // queue is dropped — but the in-flight command completes normally: unlike
-    // the native transport, HRDB replies are typed and arrive in order, so
-    // letting it finish cannot corrupt a later stop's framing. Dropping it
-    // here would also drop a step-over's just-armed breakpoint reply.
-    m_queue.clear();
+    // Keep pending `b` commands (arming after the entry stop); drop dumps.
+    // Writing `run` with those discarded is why a pre-Run breakpoint missed.
+    QQueue<Pending> kept;
+    while (!m_queue.isEmpty()) {
+        const Pending p = m_queue.dequeue();
+        if (isBreakpointCommand(p.text))
+            kept.enqueue(p);
+    }
+    m_queue = kept;
 
     m_stopped = false;
     emit stoppedChanged(false);

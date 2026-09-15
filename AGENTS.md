@@ -40,7 +40,8 @@ These are correctness requirements, learned from real failures (each is detailed
 3. **Frame debugger responses on the `> ` prompt, not on content**, on both stdout and stderr; a
    `> <cmd>` echo is not a prompt; drain the pipe with a `bytesAvailable()`/`waitForReadyRead()` loop.
 4. **Arm breakpoints only after `info basepage` arrives** (`setLiveBases()` → `armBreakpoints()`);
-   breakpoints are file:line, never raw addresses (GEMDOS relocates the program each run).
+   breakpoints are file:line, never raw addresses (GEMDOS relocates the program each run). Resume
+   must not drop queued `b` commands — Continue is live at the entry stop, before arming finishes.
 5. **Capability-probe Hatari by option name, never by version number.**
 6. **Never emit `echo` into a Hatari script file** (aborts 2.6.1).
 7. **Keep tests independent of a real display/emulator** (they must skip cleanly when those are absent).

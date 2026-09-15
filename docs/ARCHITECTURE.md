@@ -245,7 +245,9 @@ These exist because a test or a real failure caught them. Do not break them.
    attributed to it.
 5. **Arm breakpoints only after the basepage arrives.** `setLiveBases()` then `armBreakpoints()` in
    `onStateUpdated()` — never on a zero-delay timer. GEMDOS relocates the program every run, so
-   breakpoints are file:line, never raw addresses; re-arming clears first (`b all`).
+   breakpoints are file:line, never raw addresses; re-arming clears first (`b all`). Resume must
+   not drop those queued `b` commands: Continue is enabled at the first stop, which is *before*
+   arming finishes.
 6. **Capability-probe Hatari by option name, never by version** (`probeHatari`). Gate optional CLI
    flags (`--control-socket`, `--symload`, `--debug-except`) on the probe.
 7. **Never emit `echo` into a Hatari script file** — it aborts Hatari 2.6.1.

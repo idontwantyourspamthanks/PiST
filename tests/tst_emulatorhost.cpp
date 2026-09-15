@@ -91,6 +91,8 @@ private slots:
     void breaksInOnIllegalInstruction();
     void doesNotBreakInOnNormalRun();
     void sourceLineBreakpointFiresAndResolvesBack();
+    /// Continue at the entry stop used to discard unsent `b pc=` commands.
+    void resumeFlushesPendingBreakpointCommands();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -687,6 +689,50 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     QCOMPARE(back.line, 5);
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));
+
+    host.stop();
+}
+
+void TstEmulatorHost::resumeFlushesPendingBreakpointCommands()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    QVERIFY(caps.valid);
+
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/s-resume-arm");
+    if (caps.hasControlSocket)
+        config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &s) { last = s; });
+
+    QVERIFY(host.start(config, nullptr));
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
+
+    host.command(QStringLiteral("r"));
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+    const quint32 entry = last.pc;
+    QVERIFY(entry != 0);
+
+    // Queue the arm and a dump; do not wait for either. Resume must still send
+    // the `b` — dropping the queue used to let Continue at entry miss it.
+    host.command(QStringLiteral("b pc > $%1").arg(entry, 0, 16));
+    host.requestMemoryDump(entry, 64);
+    host.resume();
+
+    // Without the `b`, this loops forever. Stopping again is the proof the arm
+    // survived resume's queue flush.
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
 
     host.stop();
 }

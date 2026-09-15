@@ -56,4 +56,11 @@ QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumbe
 QByteArray exportAssembler(const ImageDocument &doc, int frame, QString *error);
 QByteArray exportBitplanes(const ImageDocument &doc, int frame, QString *error);
 
+/// Export one region of a sprite sheet: crop the frame to `region` (clipped
+/// to the canvas) and produce exactly the bytes the whole-document exporter
+/// produces for that crop. Formats: Assembler (a `dc.w` include) and
+/// BitplaneBin (raw word-padded bitplanes). Empty array on failure.
+QByteArray exportRegion(const ImageDocument &doc, int frame, const ImageRegion &region,
+                        StImageFormat format, QString *error);
+
 } // namespace pist

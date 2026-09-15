@@ -329,17 +329,28 @@ immediate and the test prints normally outside ctest, so one local run shows the
 
 ## 12. Sprite editor: tilemaps, PI2/PI3, other machines
 
-**Status:** deferred. The grid editor now has LemonAndLime's ST-relevant editing: layers, onion-skin,
-animated preview, named phases, flip/rotate/shift, and 8-way rotation bake. That lives in
-`src/image/{ImageDocument,Transform}.*` and `src/ui/ImageEditor`.
+**Status:** sprite-sheet regions in progress; the rest deferred. The grid editor now has
+LemonAndLime's ST-relevant editing: layers, onion-skin, animated preview, named phases,
+flip/rotate/shift, and 8-way rotation bake. That lives in `src/image/{ImageDocument,Transform}.*`
+and `src/ui/ImageEditor`.
+
+**Sprite-sheet regions** — decided 2026-09: go straight to slicing rather than a one-shot import
+dialog. A sheet is a `.pim` with named rectangles: an optional `regions` array (name, x, y, w, h)
+in the existing JSON, so v1 files load unchanged and regions live in the sheet itself, not the
+project file. `ImageDocument::cropped()` yields a region's document and `exportRegion()` emits the
+same bytes as the whole-document `.s` / `.bin` exporters for that crop. Phases: (1) model + export,
+done; (2) region editing UI in the ImageEditor; (3) the Degas loop — a `.pi1` opens as a 320×200
+sheet, from a floppy its saves write back into the image, and a sprite-safe export option keeps
+colour 0 as background so an export re-imports losslessly (the failure `demo/test.pi1` shows).
 
 Still not in PiST, on purpose:
 
-- Tilemaps and sprite-sheet slicing — a second product inside this one.
+- Tilemaps — regions name rectangles on a sheet; a tilemap (a grid of tile indices) is still a
+  second product inside this one.
 - Other machines (C64, Spectrum, CPC, Amiga, 8-bit). This IDE is for the ST.
 - Degas PI2/PI3 (medium/high resolution). The editor is 16-colour low-res, which is the sprite path.
-- Auto-export on Build / an asset list in `.pistproject`. Export is explicit; the assembler
-  consumes whatever `.s` or `.bin` the user wrote.
+- Auto-export on Build / an asset list in `.pistproject`. Regions live in the `.pim` so a sheet is
+  self-contained; export is explicit; the assembler consumes whatever `.s` or `.bin` the user wrote.
 
 v1 `.pim` files (composite `pixels` only) load as a single layer. Saved files still write `pixels`
 so an older PiST can open them.

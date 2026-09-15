@@ -9,6 +9,9 @@
 #include "image/Tools.h"
 #include "image/Transform.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -37,6 +40,9 @@ private slots:
     void layersOccludeAndRoundTrip();
     void phasesFollowInsertDelete();
     void onionAndPreviewIndex();
+    void regionsPersistInPim();
+    void croppedDocumentCopiesTheRegion();
+    void regionExportMatchesCroppedDocument();
 };
 
 void TstImage::cubeSizes()
@@ -315,6 +321,114 @@ void TstImage::onionAndPreviewIndex()
     QCOMPARE(nextPreviewFrame(3, 4, 0, 3), 0);
     QCOMPARE(nextPreviewFrame(5, 8, 2, 5), 2);
     QCOMPARE(nextPreviewFrame(3, 8, 3, 3), 3);
+}
+
+void TstImage::regionsPersistInPim()
+{
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    QVector<ImageRegion> regions;
+    regions.append({QStringLiteral("player"), 0, 0, 16, 16});
+    regions.append({QStringLiteral("hud"), 16, 16, 15, 12});
+    doc.setRegions(regions);
+
+    ImageDocument reloaded;
+    QString error;
+    QVERIFY2(reloaded.fromJson(doc.toJson(), &error), qPrintable(error));
+    QCOMPARE(reloaded.regions().size(), 2);
+    QCOMPARE(reloaded.regions().at(0).name, QStringLiteral("player"));
+    QCOMPARE(reloaded.regions().at(0).w, 16);
+    QCOMPARE(reloaded.regions().at(1).name, QStringLiteral("hud"));
+    QCOMPARE(reloaded.regions().at(1).x, 16);
+    QCOMPARE(reloaded.regions().at(1).h, 12);
+
+    // Regions survive the on-disk form too.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("sheet.pim"));
+    QVERIFY2(doc.save(path, &error), qPrintable(error));
+    ImageDocument loaded;
+    QVERIFY2(loaded.load(path, &error), qPrintable(error));
+    QCOMPARE(loaded.regions().size(), 2);
+    QCOMPARE(loaded.regions().at(0).name, QStringLiteral("player"));
+    QCOMPARE(loaded.regions().at(1).h, 12);
+
+    // A v1-shaped .pim without a regions key loads as no regions.
+    QVERIFY(reloaded.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":1,\"width\":8,\"height\":8,"
+        "\"palette\":\"ste\",\"active\":[3840],\"background\":3840,"
+        "\"frames\":[{\"pixels\":[]}]}")));
+    QVERIFY(reloaded.regions().isEmpty());
+
+    // Malformed region entries are dropped rather than failing the load.
+    QJsonDocument parsed = QJsonDocument::fromJson(doc.toJson());
+    QJsonObject root = parsed.object();
+    QJsonArray bad = root.value(QStringLiteral("regions")).toArray();
+    QJsonObject noise;
+    noise.insert(QStringLiteral("name"), QStringLiteral("broken"));
+    bad.append(noise);
+    root.insert(QStringLiteral("regions"), bad);
+    parsed.setObject(root);
+    QVERIFY2(reloaded.fromJson(parsed.toJson(), &error), qPrintable(error));
+    QCOMPARE(reloaded.regions().size(), 2);
+}
+
+void TstImage::croppedDocumentCopiesTheRegion()
+{
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    doc.setPixel(5 * 32 + 5, doc.active().at(1));
+    doc.setPixel(4 * 32 + 6, doc.active().at(2));
+
+    ImageDocument crop = doc.cropped({QStringLiteral("mark"), 3, 3, 4, 4});
+    QCOMPARE(crop.width(), 4);
+    QCOMPARE(crop.height(), 4);
+    QCOMPARE(crop.paletteKind(), PaletteKind::Ste);
+    QCOMPARE(crop.active(), doc.active());
+    QCOMPARE(crop.pixels().at(2 * 4 + 2), doc.active().at(1));
+    QCOMPARE(crop.pixels().at(1 * 4 + 3), doc.active().at(2));
+    QCOMPARE(crop.pixels().at(0), kTransparent);
+
+    // Cropping clamps to the canvas instead of sliding out of range.
+    const ImageDocument edge = doc.cropped({QStringLiteral("edge"), 30, 30, 16, 16});
+    QCOMPARE(edge.width(), 2);
+    QCOMPARE(edge.height(), 2);
+}
+
+void TstImage::regionExportMatchesCroppedDocument()
+{
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    ImageRegion region{QStringLiteral("half"), 8, 8, 16, 16};
+    // Fill the region with the colour at active position 3: bitplanes 0 and 1 set.
+    for (int y = 8; y < 24; ++y) {
+        for (int x = 8; x < 24; ++x)
+            doc.setPixel(y * 32 + x, doc.active().at(3));
+    }
+
+    ImageDocument crop = doc.cropped(region);
+    QString error;
+    const QByteArray bin = exportRegion(doc, 0, region, StImageFormat::BitplaneBin, &error);
+    QVERIFY2(!bin.isEmpty(), qPrintable(error));
+    QCOMPARE(bin, exportBitplanes(crop, 0, nullptr));
+
+    // Hand-computed bytes: a 16-wide region is one word per plane, 4 planes
+    // per row, 16 rows; index 3 lights planes 0 and 1 only.
+    const QByteArray row = QByteArrayLiteral("\xff\xff\xff\xff\x00\x00\x00\x00");
+    QByteArray expected;
+    for (int i = 0; i < 16; ++i)
+        expected += row;
+    QCOMPARE(bin.size(), 128);
+    QCOMPARE(bin, expected);
+
+    const QByteArray include = exportRegion(doc, 0, region, StImageFormat::Assembler, &error);
+    QVERIFY2(!include.isEmpty(), qPrintable(error));
+    QCOMPARE(include, exportAssembler(crop, 0, nullptr));
+    QVERIFY(include.contains("dc.w"));
+    // The include describes the region, not the sheet it came from.
+    QVERIFY(include.contains("16x16"));
+
+    // A region that misses the canvas is an error, not a silent export.
+    const ImageRegion off{QStringLiteral("off"), 40, 40, 8, 8};
+    QVERIFY(exportRegion(doc, 0, off, StImageFormat::BitplaneBin, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
 }
 
 QTEST_MAIN(TstImage)

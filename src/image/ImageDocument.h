@@ -18,6 +18,17 @@ struct ImageLayer {
     QVector<int> pixels;
 };
 
+/// A named rectangle on the canvas: one sprite of a sprite sheet. Optional
+/// document metadata — a .pim without regions is a plain sprite document,
+/// and v1 files load unchanged.
+struct ImageRegion {
+    QString name;
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+};
+
 /// In-memory sprite: size, ST palette cube, up to 16 active colours, and one
 /// or more frames. Each frame is a bottom-first layer stack plus a maintained
 /// composite (`kTransparent` = empty). Paint lands on the active layer.
@@ -52,6 +63,13 @@ public:
     int activeLayer() const { return m_activeLayer; }
     const QVector<ImageLayer> &layers() const { return m_frames.at(m_current).layers; }
     const QVector<ImagePhase> &phases() const { return m_phases; }
+    const QVector<ImageRegion> &regions() const { return m_regions; }
+    void setRegions(const QVector<ImageRegion> &regions);
+
+    /// The current frame (or `frame`) cropped to `region`, clipped to the
+    /// canvas and sharing the palette: the basis of per-region export. A
+    /// region that misses the canvas yields a 1×1 transparent document.
+    ImageDocument cropped(const ImageRegion &region, int frame = -1) const;
 
     bool isModified() const { return m_modified; }
     void setModified(bool on) { m_modified = on; }
@@ -138,6 +156,7 @@ private:
     int m_background = 0;
     QVector<Frame> m_frames;
     QVector<ImagePhase> m_phases;
+    QVector<ImageRegion> m_regions;
     int m_current = 0;
     int m_activeLayer = 0;
     bool m_modified = false;

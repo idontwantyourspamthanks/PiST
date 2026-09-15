@@ -711,4 +711,31 @@ QByteArray exportAssembler(const ImageDocument &doc, int frame, QString *error)
     return text;
 }
 
+QByteArray exportRegion(const ImageDocument &doc, int frame, const ImageRegion &region,
+                        StImageFormat format, QString *error)
+{
+    const int x = qBound(0, region.x, doc.width());
+    const int y = qBound(0, region.y, doc.height());
+    const int w = qBound(0, region.w, doc.width() - x);
+    const int h = qBound(0, region.h, doc.height() - y);
+    if (w <= 0 || h <= 0) {
+        if (error)
+            *error = QStringLiteral("region %1 does not intersect the image")
+                         .arg(region.name.isEmpty() ? QStringLiteral("(unnamed)") : region.name);
+        return {};
+    }
+
+    const ImageDocument crop = doc.cropped(region, frame);
+    switch (format) {
+    case StImageFormat::Assembler:
+        return exportAssembler(crop, 0, error);
+    case StImageFormat::BitplaneBin:
+        return exportBitplanes(crop, 0, error);
+    default:
+        if (error)
+            *error = QStringLiteral("unsupported region export format");
+        return {};
+    }
+}
+
 } // namespace pist

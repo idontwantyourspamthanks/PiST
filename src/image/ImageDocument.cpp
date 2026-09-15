@@ -394,6 +394,37 @@ bool ImageDocument::setPhaseRange(int index, int start, int end)
     return true;
 }
 
+void ImageDocument::setRegions(const QVector<ImageRegion> &regions)
+{
+    m_regions = regions;
+    touch();
+}
+
+ImageDocument ImageDocument::cropped(const ImageRegion &region, int frame) const
+{
+    const int source = frame < 0 ? m_current : qBound(0, frame, m_frames.size() - 1);
+    const int x = qBound(0, region.x, m_width);
+    const int y = qBound(0, region.y, m_height);
+    const int w = qBound(0, region.w, m_width - x);
+    const int h = qBound(0, region.h, m_height - y);
+
+    ImageDocument out = ImageDocument::create(w > 0 ? w : 1, h > 0 ? h : 1, m_kind);
+    out.m_active = m_active;
+    out.m_background = m_background;
+    if (w <= 0 || h <= 0)
+        return out;
+
+    const QVector<int> &composite = m_frames.at(source).composite;
+    QVector<int> slice(w * h, kTransparent);
+    for (int row = 0; row < h; ++row) {
+        for (int col = 0; col < w; ++col)
+            slice[row * w + col] = composite.at((y + row) * m_width + (x + col));
+    }
+    out.replaceActiveLayer(slice);
+    out.m_modified = false;
+    return out;
+}
+
 void ImageDocument::setActive(const QVector<int> &indices)
 {
     m_active = clampActive(indices, m_kind);
@@ -592,6 +623,19 @@ QByteArray ImageDocument::toJson() const
         }
         root[QStringLiteral("phases")] = phases;
     }
+    if (!m_regions.isEmpty()) {
+        QJsonArray regions;
+        for (const ImageRegion &region : m_regions) {
+            QJsonObject obj;
+            obj[QStringLiteral("name")] = region.name;
+            obj[QStringLiteral("x")] = region.x;
+            obj[QStringLiteral("y")] = region.y;
+            obj[QStringLiteral("w")] = region.w;
+            obj[QStringLiteral("h")] = region.h;
+            regions.append(obj);
+        }
+        root[QStringLiteral("regions")] = regions;
+    }
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
@@ -680,11 +724,28 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
         phases.append(phase);
     }
 
+    // Regions are optional metadata: entries without a name or a positive
+    // size are metadata noise, not worth failing the load over.
+    QVector<ImageRegion> regions;
+    const QJsonArray regionArray = root.value(QStringLiteral("regions")).toArray();
+    for (const QJsonValue &value : regionArray) {
+        const QJsonObject obj = value.toObject();
+        ImageRegion region;
+        region.name = obj.value(QStringLiteral("name")).toString();
+        region.x = obj.value(QStringLiteral("x")).toInt(0);
+        region.y = obj.value(QStringLiteral("y")).toInt(0);
+        region.w = obj.value(QStringLiteral("w")).toInt(0);
+        region.h = obj.value(QStringLiteral("h")).toInt(0);
+        if (!region.name.isEmpty() && region.w > 0 && region.h > 0)
+            regions.append(region);
+    }
+
     m_kind = kind;
     m_active = clampActive(active, kind);
     m_background = root.value(QStringLiteral("background")).toInt(0);
     m_frames = frames;
     m_phases = clampPhases(phases, m_frames.size());
+    m_regions = regions;
     m_current = 0;
     m_activeLayer = 0;
     m_modified = false;

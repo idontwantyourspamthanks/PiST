@@ -13,8 +13,9 @@ namespace pist {
 
 /// The composed sprite sheet: draws every phase placed on the current sheet
 /// at its strip position, outlines each strip, and lets the user select and
-/// drag phases to move their origin. A raw imported sheet can sit underneath
-/// while it is being sliced into phases.
+/// drag phases to move their origin. Unplaced phases wait in a staging
+/// gutter to the left of the sheet and can be dragged straight onto it. A
+/// raw imported sheet can sit underneath while it is being sliced.
 class SheetCanvas : public QWidget
 {
     Q_OBJECT
@@ -30,14 +31,17 @@ public:
     void setSelectedPhase(int index);
     void setScale(int scale);
     int scale() const { return m_scale; }
+    int sheetIndex() const { return m_sheetIndex; }
 
     QSize sizeHint() const override;
 
 signals:
-    /// A strip was pressed. -1 when the press landed on empty sheet.
+    /// A strip was pressed. -1 when the press landed on empty space.
     void phaseSelected(int index);
     /// A drag finished: the phase's new origin, in sheet pixels.
     void phaseMoved(int index, int x, int y);
+    /// An unplaced strip was dropped on the sheet: place it there.
+    void phasePlaced(int index, int x, int y);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -46,8 +50,10 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
-    QRect stripRect(const ImagePhase &phase, int dx, int dy) const;
-    QPoint sheetCellAt(const QPoint &pos) const;
+    QPoint sheetOrigin() const;
+    QRect sheetRect() const;
+    QRect stripRect(const ImagePhase &phase, int ordinal, int dx, int dy) const;
+    int stagingOrdinal(const ImagePhase &phase) const;
     void endDrag();
 
     ImageDocument *m_doc = nullptr;
@@ -56,10 +62,11 @@ private:
     int m_selected = -1;
     QImage m_underlay;
     bool m_dragging = false;
+    bool m_dragFromStaging = false;
     int m_dragPhase = -1;
-    QPoint m_dragOrigin;
-    QPoint m_pressCell;
-    QPoint m_dragOffset;
+    QPoint m_dragOrigin;   // strip origin at press, in scale space
+    QPoint m_pressPos;     // mouse position at press, in scale space
+    QPoint m_dragOffset;   // live translation of the ghost, in scale space
 };
 
 } // namespace pist

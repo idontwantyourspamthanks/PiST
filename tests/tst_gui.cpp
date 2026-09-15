@@ -147,6 +147,9 @@ private slots:
     /// Spritesheet mode: phases place on sheets (numerically and by drag),
     /// the mode toggle shows the composed sheet, and placement persists.
     void phasePlacementAndSheetMode();
+    /// A document with unplaced phases and no sheets: New sheet creates the
+    /// 320×200 target and staged phases drag straight onto it.
+    void newSheetAndStagingDrag();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -2011,12 +2014,16 @@ void TstGui::phasePlacementAndSheetMode()
     mode->setChecked(true);
     auto *sheetCanvas = image->findChild<SheetCanvas *>();
     QVERIFY2(sheetCanvas, "sheet mode must expose the composed sheet view");
+    // Phase 0 (32×32) is unplaced, so the staging gutter shifts the sheet:
+    // gutter = 4 + 32 + 16, plus a 12px top margin.
     const int scale = sheetCanvas->scale();
+    const int originX = (4 + 32 + 16 + 22) * scale;
+    const int originY = (12 + 50) * scale;
     QTest::mousePress(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(22 * scale + 1, 50 * scale + 1));
-    QTest::mouseMove(sheetCanvas, QPoint(32 * scale + 1, 55 * scale + 1));
+                      QPoint(originX + 1, originY + 1));
+    QTest::mouseMove(sheetCanvas, QPoint(originX + 10 * scale + 1, originY + 5 * scale + 1));
     QTest::mouseRelease(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
-                        QPoint(32 * scale + 1, 55 * scale + 1));
+                        QPoint(originX + 10 * scale + 1, originY + 5 * scale + 1));
     QCOMPARE(image->document().phases().at(1).x, 32);
     QCOMPARE(image->document().phases().at(1).y, 55);
 
@@ -2026,6 +2033,53 @@ void TstGui::phasePlacementAndSheetMode()
     QVERIFY2(reloaded.load(pim, &error), qPrintable(error));
     QCOMPARE(reloaded.phases().at(1).x, 32);
     QCOMPARE(reloaded.phases().at(1).y, 55);
+}
+
+
+void TstGui::newSheetAndStagingDrag()
+{
+    // The demo.pim situation: two phases, neither placed, no sheets.
+    ImageDocument doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    QCOMPARE(doc.addPhase(QStringLiteral("Bm"), 16, 16), 1);
+    const QString pim = m_work->path() + QStringLiteral("/unplaced.pim");
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    MainWindow window;
+    window.openPath(pim);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QVERIFY(image->document().sheets().isEmpty());
+
+    auto *mode = image->findChild<QAction *>(QStringLiteral("imageSheetMode"));
+    QVERIFY(mode);
+    mode->setChecked(true);
+    auto *sheetCanvas = image->findChild<SheetCanvas *>();
+    QVERIFY(sheetCanvas);
+
+    // No sheet exists yet: New sheet creates the 320×200 target.
+    auto *newSheet = image->findChild<QAction *>(QStringLiteral("imageNewSheet"));
+    QVERIFY(newSheet);
+    QVERIFY(newSheet->isEnabled());
+    newSheet->trigger();
+    QCOMPARE(image->document().sheets().size(), 1);
+    QCOMPARE(image->document().sheets().at(0).width, 320);
+
+    // The staged "Bm" strip drags from the gutter straight onto the sheet.
+    QVERIFY(image->document().setCurrentPhase(1));
+    const int scale = sheetCanvas->scale();
+    // Both phases are unplaced: Bm is staging ordinal 1, at [4, 12 + 16 + 20].
+    QTest::mousePress(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(6 * scale, 50 * scale));
+    // Drop with the strip origin at sheet cell (10, 10).
+    QTest::mouseMove(sheetCanvas, QPoint(64 * scale, 24 * scale));
+    QTest::mouseRelease(sheetCanvas, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(64 * scale, 24 * scale));
+    QCOMPARE(image->document().phases().at(1).sheet, 0);
+    QCOMPARE(image->document().phases().at(1).x, 10);
+    QCOMPARE(image->document().phases().at(1).y, 10);
 }
 
 QTEST_MAIN(TstGui)

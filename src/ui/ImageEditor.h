@@ -80,6 +80,7 @@ signals:
 
 private slots:
     void setSheetMode(bool on);
+    void onNewSheet();
     void onPhasePlacementChanged();
     void setTool();
     void selectSwatch();
@@ -172,6 +173,7 @@ private:
     QSpinBox *m_phaseX = nullptr;
     QSpinBox *m_phaseY = nullptr;
     QAction *m_actSheetMode = nullptr;
+    QAction *m_actNewSheet = nullptr;
     /// Imported sheet pixels (for slicing) and their display form, per sheet.
     QHash<int, ImportedSheet> m_importedSheets;
     QHash<int, QImage> m_sheetUnderlays;

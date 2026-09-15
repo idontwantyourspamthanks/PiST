@@ -247,6 +247,13 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_actSheetMode->setToolTip(tr("Show the composed sheet and move phases around"));
     connect(m_actSheetMode, &QAction::toggled, this, &ImageEditor::setSheetMode);
 
+    m_actNewSheet = new QAction(tr("New sheet"), this);
+    m_actNewSheet->setObjectName(QStringLiteral("imageNewSheet"));
+    m_actNewSheet->setToolTip(
+        tr("Create a 320×200 sprite sheet to place phases on (the file name "
+           "is chosen on export)"));
+    connect(m_actNewSheet, &QAction::triggered, this, &ImageEditor::onNewSheet);
+
     bar->addSeparator();
     auto *size = new QSlider(Qt::Horizontal, this);
     size->setRange(1, 8);
@@ -317,6 +324,8 @@ ImageEditor::ImageEditor(QWidget *parent)
 
     bar->addSeparator();
     bar->addAction(m_actSheetMode);
+    bar->addAction(m_actNewSheet);
+    m_actNewSheet->setEnabled(false);
 
     bar->addSeparator();
     auto addTransform = [&](QAction *&action, appearance::Icon icon, const QString &name,
@@ -392,14 +401,24 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_modeStack->addWidget(sheetScroll);
     body->addWidget(m_modeStack, 1);
 
-    connect(m_sheetCanvas, &SheetCanvas::phaseSelected, m_phases, [this](int index) {
-        m_phases->setCurrentRow(index);
+    // m_phases does not exist yet at this point in the constructor, so the
+    // lambda guards instead of using it as the context object.
+    connect(m_sheetCanvas, &SheetCanvas::phaseSelected, this, [this](int index) {
+        if (m_phases)
+            m_phases->setCurrentRow(index);
     });
     connect(m_sheetCanvas, &SheetCanvas::phaseMoved, this, [this](int index, int x, int y) {
         const ImageDocument before = m_doc;
         const int sheet = m_doc.phases().at(index).sheet;
         m_doc.setPhasePlacement(index, sheet, x, y);
         pushSnapshot(before, tr("move phase"));
+        refreshPhases();
+        notifyModified();
+    });
+    connect(m_sheetCanvas, &SheetCanvas::phasePlaced, this, [this](int index, int x, int y) {
+        const ImageDocument before = m_doc;
+        m_doc.setPhasePlacement(index, m_sheetCanvas->sheetIndex(), x, y);
+        pushSnapshot(before, tr("place phase"));
         refreshPhases();
         notifyModified();
     });
@@ -1159,8 +1178,20 @@ void ImageEditor::setSheetMode(bool on)
     // Paint tools make no sense over the composed sheet.
     for (QAbstractButton *button : m_tools->buttons())
         button->setEnabled(!on);
+    m_actNewSheet->setEnabled(on);
     if (on)
         refreshSheetView();
+}
+
+void ImageEditor::onNewSheet()
+{
+    const ImageDocument before = m_doc;
+    const int index = m_doc.addSheet(QString(), 320, 200);
+    pushSnapshot(before, tr("new sheet"));
+    m_sheetCanvas->setSheetIndex(index);
+    refreshSheetView();
+    refreshPhases();
+    notifyModified();
 }
 
 void ImageEditor::refreshSheetView()

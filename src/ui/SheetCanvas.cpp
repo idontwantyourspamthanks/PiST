@@ -9,6 +9,12 @@
 
 namespace pist {
 
+namespace {
+constexpr int kMargin = 12;   // around the sheet, in scale units
+constexpr int kStagingX = 4;  // staging gutter strips start here
+constexpr int kStagingGap = 20;
+} // namespace
+
 SheetCanvas::SheetCanvas(QWidget *parent)
     : QWidget(parent)
 {
@@ -49,84 +55,140 @@ void SheetCanvas::setScale(int scale)
     update();
 }
 
-QSize SheetCanvas::sizeHint() const
+QPoint SheetCanvas::sheetOrigin() const
 {
-    if (!m_doc)
-        return {320, 200};
-    const ImageSheet sheet = m_doc->sheets().value(m_sheetIndex);
-    return {sheet.width * m_scale, sheet.height * m_scale};
+    // The staging gutter sits left of the sheet; its width follows the
+    // widest unplaced strip so nothing is clipped.
+    int widest = 0;
+    bool any = false;
+    for (const ImagePhase &phase : m_doc->phases()) {
+        if (phase.sheet != -1)
+            continue;
+        any = true;
+        widest = qMax(widest, phase.frames.size() * phase.cellW);
+    }
+    const int gutter = any ? kStagingX + widest + 16 : kMargin;
+    return {gutter, kMargin};
 }
 
-QRect SheetCanvas::stripRect(const ImagePhase &phase, int dx, int dy) const
+QRect SheetCanvas::sheetRect() const
+{
+    const ImageSheet sheet = m_doc->sheets().value(m_sheetIndex);
+    const QPoint origin = sheetOrigin();
+    return QRect(origin, QSize(sheet.width, sheet.height));
+}
+
+int SheetCanvas::stagingOrdinal(const ImagePhase &phase) const
+{
+    int ordinal = 0;
+    for (const ImagePhase &candidate : m_doc->phases()) {
+        if (&candidate == &phase)
+            break;
+        if (candidate.sheet == -1)
+            ++ordinal;
+    }
+    return ordinal;
+}
+
+QRect SheetCanvas::stripRect(const ImagePhase &phase, int ordinal, int dx, int dy) const
 {
     const int w = phase.frames.size() * phase.cellW;
-    return QRect((phase.x + dx) * m_scale, (phase.y + dy) * m_scale, w * m_scale,
-                 phase.cellH * m_scale);
+    if (phase.sheet == -1) {
+        // Staging: unplaced strips stack top-down in the gutter.
+        const int y = kMargin + ordinal * (phase.cellH + kStagingGap);
+        return QRect(kStagingX + dx, y + dy, w, phase.cellH);
+    }
+    const QPoint origin = sheetOrigin();
+    return QRect(origin.x() + phase.x + dx, origin.y() + phase.y + dy, w, phase.cellH);
 }
 
-QPoint SheetCanvas::sheetCellAt(const QPoint &pos) const
+QSize SheetCanvas::sizeHint() const
 {
-    return {pos.x() / m_scale, pos.y() / m_scale};
+    if (!m_doc || m_sheetIndex < 0 || m_sheetIndex >= m_doc->sheets().size())
+        return {340, 224};
+    const ImageSheet sheet = m_doc->sheets().at(m_sheetIndex);
+    const QPoint origin = sheetOrigin();
+    return {(origin.x() + sheet.width + kMargin) * m_scale,
+            (origin.y() * 2 + sheet.height) * m_scale};
 }
 
 void SheetCanvas::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.fillRect(rect(), QColor(30, 30, 30));
-    if (!m_doc || m_sheetIndex < 0 || m_sheetIndex >= m_doc->sheets().size())
+    if (!m_doc || m_sheetIndex < 0 || m_sheetIndex >= m_doc->sheets().size()) {
+        p.setPen(QColor(255, 255, 255, 140));
+        p.drawText(rect(), Qt::AlignCenter,
+                   tr("No sprite sheet yet — New sheet creates a 320×200 target "
+                      "for the phases."));
         return;
+    }
     const ImageSheet sheet = m_doc->sheets().at(m_sheetIndex);
-    const QRect sheetRect(0, 0, sheet.width * m_scale, sheet.height * m_scale);
-    p.fillRect(sheetRect, QColor(50, 50, 50));
+    const QRect sheetRectPx(sheetRect().x() * m_scale, sheetRect().y() * m_scale,
+                            sheet.width * m_scale, sheet.height * m_scale);
+    p.fillRect(sheetRectPx, QColor(50, 50, 50));
 
     if (!m_underlay.isNull()) {
         // The freshly imported file, dimmed so placed strips stand out.
         p.setOpacity(0.45);
-        p.drawImage(sheetRect, m_underlay);
+        p.drawImage(sheetRectPx, m_underlay);
         p.setOpacity(1.0);
     }
 
     for (int i = 0; i < m_doc->phases().size(); ++i) {
         const ImagePhase &phase = m_doc->phases().at(i);
-        if (phase.sheet != m_sheetIndex)
+        if (phase.sheet != m_sheetIndex && phase.sheet != -1)
             continue;
         const int dx = m_dragging && m_dragPhase == i ? m_dragOffset.x() : 0;
         const int dy = m_dragging && m_dragPhase == i ? m_dragOffset.y() : 0;
+        const QRect stripScale = stripRect(phase, stagingOrdinal(phase), dx, dy);
+        const QRect stripPx(stripScale.x() * m_scale, stripScale.y() * m_scale,
+                            stripScale.width() * m_scale, stripScale.height() * m_scale);
+
         for (int k = 0; k < phase.frames.size(); ++k) {
             const QVector<int> &composite = phase.frames.at(k).composite;
-            const int ox = (phase.x + dx + k * phase.cellW) * m_scale;
-            const int oy = (phase.y + dy) * m_scale;
+            const int ox = stripPx.x() + k * phase.cellW * m_scale;
             for (int row = 0; row < phase.cellH; ++row) {
                 for (int col = 0; col < phase.cellW; ++col) {
                     const int value = composite.at(row * phase.cellW + col);
                     if (value < 0)
                         continue;
                     const Rgb rgb = cubeRgb(m_doc->paletteKind(), value);
-                    p.fillRect(ox + col * m_scale, oy + row * m_scale, m_scale, m_scale,
-                               qRgb(rgb.r, rgb.g, rgb.b));
+                    p.fillRect(ox + col * m_scale, stripPx.y() + row * m_scale, m_scale,
+                               m_scale, qRgb(rgb.r, rgb.g, rgb.b));
                 }
             }
         }
 
-        const QRect strip = stripRect(phase, dx, dy);
+        const bool selected = i == m_selected;
         QPen halo(QColor(0, 0, 0, 160));
         halo.setWidth(3);
         p.setPen(halo);
         p.setBrush(Qt::NoBrush);
-        p.drawRect(strip);
-        QPen outline(i == m_selected ? QColor(255, 220, 0) : QColor(255, 255, 255, 190));
-        outline.setStyle(i == m_selected ? Qt::SolidLine : Qt::DashLine);
+        p.drawRect(stripPx);
+        QPen outline(selected ? QColor(255, 220, 0) : QColor(255, 255, 255, 190));
+        outline.setStyle(selected ? Qt::SolidLine : Qt::DashLine);
         p.setPen(outline);
-        p.drawRect(strip);
-        p.setPen(QColor(255, 255, 255, 220));
-        p.drawText(strip.adjusted(0, -14, 0, 0), phase.name);
+        p.drawRect(stripPx);
+        p.setPen(phase.sheet == -1 ? QColor(255, 255, 255, 130) : QColor(255, 255, 255, 220));
+        p.drawText(stripPx.adjusted(0, -14, 0, 0), phase.name);
 
-        // A strip that runs off the sheet would be clipped by the export.
-        const QRect sheetBounds(0, 0, sheet.width * m_scale, sheet.height * m_scale);
-        if (!sheetBounds.contains(strip)) {
+        // A placed strip that runs off the sheet would be clipped by the
+        // export.
+        if (phase.sheet >= 0 && !sheetRectPx.contains(stripPx)) {
             QPen overflow(QColor(255, 80, 80), 2, Qt::DashLine);
             p.setPen(overflow);
-            p.drawRect(strip);
+            p.drawRect(stripPx);
+        }
+    }
+
+    if (m_doc->sheets().size() > 0) {
+        bool anyUnplaced = false;
+        for (const ImagePhase &phase : m_doc->phases())
+            anyUnplaced |= phase.sheet == -1;
+        if (anyUnplaced) {
+            p.setPen(QColor(255, 255, 255, 120));
+            p.drawText(QRect(0, 0, sheetRectPx.x(), 14), Qt::AlignCenter, tr("unplaced"));
         }
     }
 }
@@ -135,14 +197,16 @@ void SheetCanvas::mousePressEvent(QMouseEvent *event)
 {
     if (!m_doc || event->button() != Qt::LeftButton)
         return;
-    const QPoint cell = sheetCellAt(event->pos());
+    const QPoint pos = event->pos() / m_scale;
     int hit = -1;
+    bool fromStaging = false;
     for (int i = m_doc->phases().size() - 1; i >= 0; --i) {
         const ImagePhase &phase = m_doc->phases().at(i);
-        if (phase.sheet != m_sheetIndex)
+        if (phase.sheet != m_sheetIndex && phase.sheet != -1)
             continue;
-        if (stripRect(phase, 0, 0).contains(event->pos())) {
+        if (stripRect(phase, stagingOrdinal(phase), 0, 0).contains(pos)) {
             hit = i;
+            fromStaging = phase.sheet == -1;
             break;
         }
     }
@@ -151,10 +215,13 @@ void SheetCanvas::mousePressEvent(QMouseEvent *event)
     emit phaseSelected(hit);
     if (hit < 0)
         return;
+    const ImagePhase &phase = m_doc->phases().at(hit);
+    const QRect strip = stripRect(phase, stagingOrdinal(phase), 0, 0);
     m_dragging = true;
     m_dragPhase = hit;
-    m_dragOrigin = QPoint(m_doc->phases().at(hit).x, m_doc->phases().at(hit).y);
-    m_pressCell = cell;
+    m_dragFromStaging = fromStaging;
+    m_dragOrigin = strip.topLeft();
+    m_pressPos = pos;
     m_dragOffset = QPoint();
 }
 
@@ -162,8 +229,7 @@ void SheetCanvas::mouseMoveEvent(QMouseEvent *event)
 {
     if (!m_dragging)
         return;
-    const QPoint cell = sheetCellAt(event->pos());
-    m_dragOffset = cell - m_pressCell;
+    m_dragOffset = event->pos() / m_scale - m_pressPos;
     update();
 }
 
@@ -179,13 +245,28 @@ void SheetCanvas::endDrag()
         return;
     m_dragging = false;
     const int phase = m_dragPhase;
-    const int x = m_dragOrigin.x() + m_dragOffset.x();
-    const int y = m_dragOrigin.y() + m_dragOffset.y();
+    const bool fromStaging = m_dragFromStaging;
+    const QPoint origin = m_dragOrigin + m_dragOffset;
     m_dragPhase = -1;
     m_dragOffset = QPoint();
     update();
-    if (phase >= 0 && (x != m_dragOrigin.x() || y != m_dragOrigin.y()))
-        emit phaseMoved(phase, x, y);
+    if (phase < 0)
+        return;
+
+    if (fromStaging) {
+        // Dropping a staged strip on the sheet places it with its origin at
+        // the drop point; anywhere else leaves it unplaced.
+        if (sheetRect().contains(origin)
+            && sheetRect().contains(origin + QPoint(1, 1))) {
+            const QPoint sheetPos = origin - sheetOrigin();
+            emit phasePlaced(phase, sheetPos.x(), sheetPos.y());
+        }
+        return;
+    }
+    const ImagePhase &moved = m_doc->phases().at(phase);
+    const QPoint sheetPos = origin - sheetOrigin();
+    if (sheetPos.x() != moved.x || sheetPos.y() != moved.y)
+        emit phaseMoved(phase, sheetPos.x(), sheetPos.y());
 }
 
 } // namespace pist

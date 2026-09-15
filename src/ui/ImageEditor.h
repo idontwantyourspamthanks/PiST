@@ -11,10 +11,14 @@
 
 class QAction;
 class QButtonGroup;
+class QComboBox;
 class QEvent;
 class QLabel;
 class QListWidget;
+class QListWidgetItem;
 class QScrollArea;
+class QSpinBox;
+class QTimer;
 class QToolButton;
 class QUndoStack;
 
@@ -22,8 +26,8 @@ namespace pist {
 
 class ImageCanvas;
 
-/// Document tab for a `.pim` sprite: grid canvas, ST palette, frames, and
-/// import/export of Atari ST still-image formats.
+/// Document tab for a `.pim` sprite: grid canvas, ST palette, frames, layers,
+/// onion-skin, animated preview, and import/export of Atari ST still-image formats.
 class ImageEditor : public QWidget
 {
     Q_OBJECT
@@ -61,12 +65,39 @@ private slots:
     void addFrame();
     void removeFrame();
     void duplicateFrame();
+    void moveFrameUp();
+    void moveFrameDown();
     void selectFrame(int row);
     void toggleGrid(bool on);
     void fitToView();
     void zoomIn();
     void zoomOut();
     void zoomBy(int steps);
+    void flipHorizontal();
+    void flipVertical();
+    void rotate90();
+    void generateEightWay();
+    void shiftLeft();
+    void shiftRight();
+    void shiftUp();
+    void shiftDown();
+    void onionChanged();
+    void togglePlay(bool on);
+    void previewTick();
+    void fpsChanged(int fps);
+    void previewPhaseChanged(int index);
+    void addLayer();
+    void removeLayer();
+    void moveLayerUp();
+    void moveLayerDown();
+    void selectLayer(int row);
+    void layerVisibilityChanged(QListWidgetItem *item);
+    void renameLayer();
+    void addPhase();
+    void removePhase();
+    void selectPhase(int row);
+    void renamePhase();
+    void phaseRangeChanged();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -75,13 +106,24 @@ private:
     void rebuildSwatches();
     void refreshBrushIcon();
     void refreshFrames();
+    void refreshLayers();
+    void refreshPhases();
+    void refreshOnion();
+    void refreshPreview();
     void refreshCanvas();
+    void refreshChrome();
     void updateOverspill();
     void paintIndices(const QVector<int> &indices, int colour);
     void finishStroke();
     void pickColour(int cubeIndex);
     void notifyModified();
     void updateStatus();
+    void pushSnapshot(const ImageDocument &before, const QString &text);
+    void applyLayerBuffer(const QVector<int> &before, const QString &text);
+    void shiftBy(ShiftDirection direction);
+    int previewRangeStart() const;
+    int previewRangeEnd() const;
+    int stackIndexFromDisplay(int displayRow) const;
 
     ImageDocument m_doc;
     QString m_filePath;
@@ -92,6 +134,13 @@ private:
     QVector<int> m_strokeIndices;
     QVector<int> m_strokeBefore;
     int m_strokeColour = kTransparent;
+    int m_strokeLayer = 0;
+    int m_strokeFrame = 0;
+    int m_onionDistance = 0;
+    int m_previewFrame = 0;
+    int m_previewPhase = -1;
+    int m_fps = 8;
+    bool m_playing = false;
 
     ImageCanvas *m_canvas = nullptr;
     QScrollArea *m_scroll = nullptr;
@@ -100,6 +149,15 @@ private:
     QWidget *m_swatchBar = nullptr;
     QLabel *m_overspill = nullptr;
     QListWidget *m_frames = nullptr;
+    QListWidget *m_layers = nullptr;
+    QListWidget *m_phases = nullptr;
+    QLabel *m_preview = nullptr;
+    QComboBox *m_onion = nullptr;
+    QComboBox *m_previewPhaseBox = nullptr;
+    QSpinBox *m_fpsBox = nullptr;
+    QSpinBox *m_phaseStart = nullptr;
+    QSpinBox *m_phaseEnd = nullptr;
+    QTimer *m_previewTimer = nullptr;
     QUndoStack *m_undo = nullptr;
     QLabel *m_status = nullptr;
     QAction *m_actUndo = nullptr;
@@ -109,9 +167,25 @@ private:
     QAction *m_actZoomIn = nullptr;
     QAction *m_actZoomOut = nullptr;
     QAction *m_actPalette = nullptr;
+    QAction *m_actFlipH = nullptr;
+    QAction *m_actFlipV = nullptr;
+    QAction *m_actRotate = nullptr;
+    QAction *m_actPlay = nullptr;
+    QAction *m_actShiftLeft = nullptr;
+    QAction *m_actShiftRight = nullptr;
+    QAction *m_actShiftUp = nullptr;
+    QAction *m_actShiftDown = nullptr;
     QToolButton *m_addFrame = nullptr;
     QToolButton *m_dupFrame = nullptr;
     QToolButton *m_removeFrame = nullptr;
+    QToolButton *m_frameUp = nullptr;
+    QToolButton *m_frameDown = nullptr;
+    QToolButton *m_addLayer = nullptr;
+    QToolButton *m_removeLayer = nullptr;
+    QToolButton *m_layerUp = nullptr;
+    QToolButton *m_layerDown = nullptr;
+    QToolButton *m_addPhase = nullptr;
+    QToolButton *m_removePhase = nullptr;
 };
 
 } // namespace pist

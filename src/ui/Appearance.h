@@ -52,6 +52,14 @@ enum class Icon {
     AddFrame,
     DuplicateFrame,
     RemoveFrame,
+    FlipHorizontal,
+    FlipVertical,
+    Rotate,
+    Onion,
+    ShiftLeft,
+    ShiftRight,
+    ShiftUp,
+    ShiftDown,
 };
 
 /// Mouse glyph over the sprite canvas. The hotspot is the paint tip

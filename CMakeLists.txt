@@ -99,6 +99,8 @@ qt_add_executable(pist
     src/image/Tools.h
     src/image/StFormats.cpp
     src/image/StFormats.h
+    src/image/Transform.cpp
+    src/image/Transform.h
 
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
@@ -290,6 +292,8 @@ qt_add_executable(tst_image
     src/image/Tools.h
     src/image/StFormats.cpp
     src/image/StFormats.h
+    src/image/Transform.cpp
+    src/image/Transform.h
 )
 target_include_directories(tst_image PRIVATE src)
 target_link_libraries(tst_image PRIVATE Qt6::Test Qt6::Gui)
@@ -434,6 +438,8 @@ qt_add_executable(tst_gui
     src/image/Tools.h
     src/image/StFormats.cpp
     src/image/StFormats.h
+    src/image/Transform.cpp
+    src/image/Transform.h
     src/ui/ImageCanvas.cpp
     src/ui/ImageCanvas.h
     src/ui/ImageEditor.cpp
@@ -545,6 +551,8 @@ qt_add_executable(tst_remotecontrol
     src/image/Tools.h
     src/image/StFormats.cpp
     src/image/StFormats.h
+    src/image/Transform.cpp
+    src/image/Transform.h
     src/ui/ImageCanvas.cpp
     src/ui/ImageCanvas.h
     src/ui/ImageEditor.cpp

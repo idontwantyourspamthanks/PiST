@@ -7,6 +7,7 @@
 #include "image/Palette.h"
 #include "image/StFormats.h"
 #include "image/Tools.h"
+#include "image/Transform.h"
 
 #include <QTemporaryDir>
 #include <QtTest>
@@ -31,6 +32,11 @@ private slots:
     void iffRoundTrip();
     void assemblerIncludeHasDcW();
     void pngRoundTripOpaque();
+    void flipAndShift();
+    void rotateNinetyAndBake();
+    void layersOccludeAndRoundTrip();
+    void phasesFollowInsertDelete();
+    void onionAndPreviewIndex();
 };
 
 void TstImage::cubeSizes()
@@ -226,6 +232,89 @@ void TstImage::pngRoundTripOpaque()
     QCOMPARE(sheet.width, 4);
     QCOMPARE(sheet.height, 4);
     QCOMPARE(sheet.pixels.at(0), colour);
+}
+
+void TstImage::flipAndShift()
+{
+    const QVector<int> data{1, 2, 3, 4, 5, 6};
+    QCOMPARE(flipData(data, 3, 2, FlipDirection::Horizontal), (QVector<int>{3, 2, 1, 6, 5, 4}));
+    QCOMPARE(flipData(data, 3, 2, FlipDirection::Vertical), (QVector<int>{4, 5, 6, 1, 2, 3}));
+    QCOMPARE(shiftData(QVector<int>{1, 2, 3, 4}, 2, 2, ShiftDirection::Left),
+             (QVector<int>{2, 1, 4, 3}));
+}
+
+void TstImage::rotateNinetyAndBake()
+{
+    const QVector<int> p3{0, 0, 1, 0, 2, 0, 3, 0, 0};
+    QCOMPARE(rotateIndexed(p3, 3, 90), (QVector<int>{3, 0, 0, 0, 2, 0, 0, 0, 1}));
+    QCOMPARE(rotateIndexed(QVector<int>{1, 2, 3, 4}, 2, 90), (QVector<int>{3, 1, 4, 2}));
+    int outW = 0;
+    int outH = 0;
+    QCOMPARE(rotate90Cw(QVector<int>{1, 2, 3, 4}, 2, 2, &outW, &outH),
+             (QVector<int>{3, 1, 4, 2}));
+    QCOMPARE(outW, 2);
+    QCOMPARE(outH, 2);
+
+    ImageDocument doc = ImageDocument::create(2, 2, PaletteKind::Ste);
+    doc.replaceActiveLayer({1, 2, 3, 4});
+    QCOMPARE(doc.generateRotations(4), 3);
+    QCOMPARE(doc.frameCount(), 4);
+    QCOMPARE(doc.frame(1), (QVector<int>{3, 1, 4, 2}));
+}
+
+void TstImage::layersOccludeAndRoundTrip()
+{
+    ImageDocument doc = ImageDocument::create(2, 1, PaletteKind::Ste);
+    QCOMPARE(doc.layerCount(), 1);
+    doc.setPixel(0, 1);
+    QCOMPARE(doc.addLayer(), 1);
+    doc.setPixel(0, 2);
+    QCOMPARE(doc.pixels().at(0), 2);
+    QVERIFY(doc.setLayerVisible(1, false));
+    QCOMPARE(doc.pixels().at(0), 1);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("layers.pim"));
+    QString error;
+    QVERIFY2(doc.save(path, &error), qPrintable(error));
+
+    ImageDocument loaded;
+    QVERIFY2(loaded.load(path, &error), qPrintable(error));
+    QCOMPARE(loaded.layerCount(), 2);
+    QCOMPARE(loaded.layers().at(1).visible, false);
+    QCOMPARE(loaded.pixels().at(0), 1);
+    QVERIFY(loaded.toJson().contains("\"layers\""));
+}
+
+void TstImage::phasesFollowInsertDelete()
+{
+    QVector<ImagePhase> phases{{QStringLiteral("walk-left"), 2, 5},
+                               {QStringLiteral("walk-right"), 6, 9}};
+    const QVector<ImagePhase> afterInsert = insertFramesIntoPhases(phases, 6, 1);
+    QCOMPARE(afterInsert.at(0).end, 6);
+    QCOMPARE(afterInsert.at(1).start, 7);
+    QCOMPARE(afterInsert.at(1).end, 10);
+
+    ImageDocument doc = ImageDocument::create(8, 8, PaletteKind::Ste);
+    doc.addFrame();
+    doc.addFrame();
+    QCOMPARE(doc.addPhase(), 0);
+    QVERIFY(doc.setPhaseRange(0, 0, 1));
+    doc.setCurrentFrame(1);
+    doc.addFrame();
+    QCOMPARE(doc.phases().at(0).end, 2);
+    QVERIFY(doc.removeFrame(0));
+    QCOMPARE(doc.phases().at(0).end, 1);
+}
+
+void TstImage::onionAndPreviewIndex()
+{
+    QCOMPARE(neighbourFrames(2, 5).first().index, 1);
+    QVERIFY(neighbourFrames(0, 3, -1).isEmpty());
+    QCOMPARE(nextPreviewFrame(3, 4, 0, 3), 0);
+    QCOMPARE(nextPreviewFrame(5, 8, 2, 5), 2);
+    QCOMPARE(nextPreviewFrame(3, 8, 3, 3), 3);
 }
 
 QTEST_MAIN(TstImage)

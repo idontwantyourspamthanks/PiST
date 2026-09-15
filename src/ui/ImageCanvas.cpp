@@ -6,6 +6,7 @@
 
 #include "ui/Appearance.h"
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -62,6 +63,13 @@ void ImageCanvas::setPreview(const QVector<int> &indices, int colour)
 void ImageCanvas::clearPreview()
 {
     m_preview.clear();
+    update();
+}
+
+void ImageCanvas::setOnion(const QVector<int> &pixels, qreal opacity)
+{
+    m_onion = pixels;
+    m_onionOpacity = qBound(0.0, opacity, 1.0);
     update();
 }
 
@@ -156,7 +164,26 @@ void ImageCanvas::paintEvent(QPaintEvent *)
     }
 
     p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    p.drawImage(QRect(0, 0, m_doc->width() * m_cellSize, m_doc->height() * m_cellSize), m_logical);
+    const QRect dest(0, 0, m_doc->width() * m_cellSize, m_doc->height() * m_cellSize);
+    p.drawImage(dest, m_logical);
+
+    if (!m_onion.isEmpty() && m_onionOpacity > 0 && m_onion.size() >= m_doc->pixelCount()) {
+        QImage ghost(m_doc->width(), m_doc->height(), QImage::Format_ARGB32);
+        ghost.fill(qRgba(0, 0, 0, 0));
+        for (int y = 0; y < m_doc->height(); ++y) {
+            auto *line = reinterpret_cast<QRgb *>(ghost.scanLine(y));
+            for (int x = 0; x < m_doc->width(); ++x) {
+                const int cube = m_onion.at(y * m_doc->width() + x);
+                if (cube < 0)
+                    continue;
+                const Rgb rgb = cubeRgb(m_doc->paletteKind(), cube);
+                line[x] = qRgba(rgb.r, rgb.g, rgb.b, 255);
+            }
+        }
+        p.setOpacity(m_onionOpacity);
+        p.drawImage(dest, ghost);
+        p.setOpacity(1.0);
+    }
 
     if (m_showGrid && m_cellSize >= 4) {
         p.setPen(QColor(0, 0, 0, 80));
@@ -174,7 +201,7 @@ void ImageCanvas::applyAt(int index, bool erase)
     const int colour = erase ? kTransparent : m_colour;
     QVector<int> indices;
     if (m_tool == DrawTool::Fill)
-        indices = fillIndices(index, m_doc->pixels(), grid());
+        indices = fillIndices(index, m_doc->activeLayerPixels(), grid());
     else if (m_tool == DrawTool::Eyedropper) {
         const int cube = m_doc->pixels().at(index);
         emit colourPicked(cube);
@@ -257,6 +284,27 @@ void ImageCanvas::wheelEvent(QWheelEvent *event)
     }
     emit zoomStepsRequested(event->angleDelta().y() > 0 ? 1 : -1);
     event->accept();
+}
+
+void ImageCanvas::keyPressEvent(QKeyEvent *event)
+{
+    switch (event->key()) {
+    case Qt::Key_Left:
+        emit shiftRequested(ShiftDirection::Left);
+        return;
+    case Qt::Key_Right:
+        emit shiftRequested(ShiftDirection::Right);
+        return;
+    case Qt::Key_Up:
+        emit shiftRequested(ShiftDirection::Up);
+        return;
+    case Qt::Key_Down:
+        emit shiftRequested(ShiftDirection::Down);
+        return;
+    default:
+        QWidget::keyPressEvent(event);
+        break;
+    }
 }
 
 void ImageCanvas::updateCursor()

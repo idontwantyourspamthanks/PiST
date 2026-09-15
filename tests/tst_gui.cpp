@@ -28,11 +28,14 @@
 #include "ui/StackView.h"
 #include "toolchain/ToolFetch.h"
 
+#include <QAction>
+#include <QComboBox>
 #include <QDir>
 #include <QLineEdit>
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QLabel>
+#include <QListWidget>
 #include <QPushButton>
 #include <QMenu>
 #include <QHeaderView>
@@ -1438,6 +1441,19 @@ void TstGui::imageTabsOpenBesideAssembly()
             sawBrush = true;
     }
     QVERIFY(sawBrush);
+
+    auto *onion = image->findChild<QComboBox *>(QStringLiteral("imageOnion"));
+    QVERIFY2(onion, "onion-skin selector is part of the sprite editor");
+    QCOMPARE(onion->count(), 3);
+    auto *layers = image->findChild<QListWidget *>(QStringLiteral("imageLayers"));
+    QVERIFY2(layers, "layer stack is part of the sprite editor");
+    QCOMPARE(layers->count(), 1);
+    QVERIFY(image->findChild<QToolButton *>(QStringLiteral("imagePlay")));
+    QVERIFY2(image->findChild<QAction *>(QStringLiteral("imageShiftLeft")),
+             "transform group must include shift left");
+    QVERIFY(image->findChild<QAction *>(QStringLiteral("imageShiftRight")));
+    QVERIFY(image->findChild<QAction *>(QStringLiteral("imageShiftUp")));
+    QVERIFY(image->findChild<QAction *>(QStringLiteral("imageShiftDown")));
 
     QList<QToolButton *> swatches;
     QToolButton *checkedSwatch = nullptr;

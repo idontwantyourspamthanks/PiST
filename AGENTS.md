@@ -60,7 +60,7 @@ code. Use this table for a quick lookup:
 | A debug panel (registers, memory, stack, …) | the matching `src/ui/<Name>View.{h,cpp}` |
 | The text editor or gutter/breakpoints | `src/editor/CodeEditor.{h,cpp}` |
 | The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
-| `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats}.*` |
+| `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats,Transform}.*` |
 | Syntax highlighting | `src/editor/AsmHighlighter.{h,cpp}` |
 | The build pipeline / diagnostics | `src/build/BuildService.{h,cpp}` |
 | PC ↔ source-line mapping | `src/build/{LineMap,LinkMap,ProgramLineMap}.{h,cpp}` |

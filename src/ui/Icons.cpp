@@ -11,6 +11,7 @@
 #include <QPainterPath>
 #include <QPen>
 #include <QPixmap>
+#include <QPolygonF>
 #include <QTransform>
 #include <QColor>
 
@@ -679,6 +680,96 @@ void paintRemoveFrame(QPainter &p, const QRectF &r, qreal w)
                QPointF(c.x() + r.width() * 0.28, c.y()));
 }
 
+void paintFlipHorizontal(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const QPointF c = r.center();
+    p.drawLine(QPointF(c.x(), r.top() + r.height() * 0.12),
+               QPointF(c.x(), r.bottom() - r.height() * 0.12));
+    QPolygonF left;
+    left << QPointF(c.x() - r.width() * 0.08, c.y())
+         << QPointF(r.left() + r.width() * 0.12, r.top() + r.height() * 0.28)
+         << QPointF(r.left() + r.width() * 0.12, r.bottom() - r.height() * 0.28);
+    QPolygonF right;
+    right << QPointF(c.x() + r.width() * 0.08, c.y())
+          << QPointF(r.right() - r.width() * 0.12, r.top() + r.height() * 0.28)
+          << QPointF(r.right() - r.width() * 0.12, r.bottom() - r.height() * 0.28);
+    p.setBrush(ink());
+    p.drawPolygon(left);
+    p.drawPolygon(right);
+}
+
+void paintFlipVertical(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const QPointF c = r.center();
+    p.drawLine(QPointF(r.left() + r.width() * 0.12, c.y()),
+               QPointF(r.right() - r.width() * 0.12, c.y()));
+    QPolygonF top;
+    top << QPointF(c.x(), c.y() - r.height() * 0.08)
+        << QPointF(r.left() + r.width() * 0.28, r.top() + r.height() * 0.12)
+        << QPointF(r.right() - r.width() * 0.28, r.top() + r.height() * 0.12);
+    QPolygonF bottom;
+    bottom << QPointF(c.x(), c.y() + r.height() * 0.08)
+           << QPointF(r.left() + r.width() * 0.28, r.bottom() - r.height() * 0.12)
+           << QPointF(r.right() - r.width() * 0.28, r.bottom() - r.height() * 0.12);
+    p.setBrush(ink());
+    p.drawPolygon(top);
+    p.drawPolygon(bottom);
+}
+
+void paintRotate(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const QRectF arc = r.adjusted(r.width() * 0.18, r.height() * 0.18, -r.width() * 0.18,
+                                  -r.height() * 0.18);
+    p.drawArc(arc, 40 * 16, 240 * 16);
+    const QPointF tip(arc.right(), arc.center().y());
+    QPolygonF head;
+    head << tip << QPointF(tip.x() - r.width() * 0.18, tip.y() - r.height() * 0.08)
+         << QPointF(tip.x() - r.width() * 0.08, tip.y() + r.height() * 0.16);
+    p.setBrush(ink());
+    p.drawPolygon(head);
+}
+
+void paintOnion(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const QRectF back = r.adjusted(r.width() * 0.08, r.height() * 0.22, -r.width() * 0.28,
+                                   -r.height() * 0.18);
+    const QRectF front = back.translated(r.width() * 0.2, -r.height() * 0.1);
+    p.drawRoundedRect(back, 2, 2);
+    p.drawRoundedRect(front, 2, 2);
+}
+
+void paintShiftArrow(QPainter &p, const QRectF &r, qreal w, int dx, int dy)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(ink());
+    const QPointF c = r.center();
+    const qreal s = r.width() * 0.32;
+    const QPointF tip(c.x() + dx * s, c.y() + dy * s);
+    const QPointF back(c.x() - dx * s * 0.15, c.y() - dy * s * 0.15);
+    QPointF perp(-dy * s * 0.55, dx * s * 0.55);
+    QPolygonF head;
+    head << tip << (back + perp) << (back - perp);
+    p.setPen(Qt::NoPen);
+    p.drawPolygon(head);
+    p.setPen(stroke(ink(), w));
+    const QPointF shaftStart(c.x() - dx * s * 0.55, c.y() - dy * s * 0.55);
+    const QPointF shaftEnd(c.x() + dx * s * 0.05, c.y() + dy * s * 0.05);
+    p.drawLine(shaftStart, shaftEnd);
+}
+
+void paintShiftLeft(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, -1, 0); }
+void paintShiftRight(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 1, 0); }
+void paintShiftUp(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 0, -1); }
+void paintShiftDown(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 0, 1); }
+
 using PaintFn = void (*)(QPainter &, const QRectF &, qreal);
 
 PaintFn painterFor(Icon id)
@@ -712,6 +803,14 @@ PaintFn painterFor(Icon id)
     case Icon::AddFrame: return paintAddFrame;
     case Icon::DuplicateFrame: return paintDuplicateFrame;
     case Icon::RemoveFrame: return paintRemoveFrame;
+    case Icon::FlipHorizontal: return paintFlipHorizontal;
+    case Icon::FlipVertical: return paintFlipVertical;
+    case Icon::Rotate: return paintRotate;
+    case Icon::Onion: return paintOnion;
+    case Icon::ShiftLeft: return paintShiftLeft;
+    case Icon::ShiftRight: return paintShiftRight;
+    case Icon::ShiftUp: return paintShiftUp;
+    case Icon::ShiftDown: return paintShiftDown;
     }
     return paintOpen;
 }

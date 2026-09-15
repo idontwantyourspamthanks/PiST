@@ -28,6 +28,8 @@ public:
     void setShowGrid(bool on);
     void setPreview(const QVector<int> &indices, int colour);
     void clearPreview();
+    /// Overlay a neighbouring frame's composite at `opacity` (empty = off).
+    void setOnion(const QVector<int> &pixels, qreal opacity = 0.5);
     void setCellSize(int size);
     int cellSize() const { return m_cellSize; }
 
@@ -43,6 +45,7 @@ signals:
     void cursorIndexChanged(int index);
     void cellSizeChanged(int size);
     void zoomStepsRequested(int steps);
+    void shiftRequested(ShiftDirection direction);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -50,6 +53,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     Grid grid() const;
@@ -71,6 +75,8 @@ private:
     int m_lastIndex = -1;
     QVector<int> m_preview;
     int m_previewColour = kTransparent;
+    QVector<int> m_onion;
+    qreal m_onionOpacity = 0.5;
     QImage m_logical;
 };
 

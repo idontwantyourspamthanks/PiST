@@ -5,6 +5,7 @@
 #include "ui/ImageEditor.h"
 
 #include "image/StFormats.h"
+#include "image/Transform.h"
 #include "ui/Appearance.h"
 #include "ui/ImageCanvas.h"
 #include "ui/PalettePickerDialog.h"
@@ -13,16 +14,22 @@
 #include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QListWidgetItem>
+#include <QPixmap>
 #include <QScrollArea>
 #include <QSize>
 #include <QSlider>
+#include <QSpinBox>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -38,9 +45,11 @@ namespace {
 class PaintCommand : public QUndoCommand
 {
 public:
-    PaintCommand(ImageDocument *doc, const QVector<int> &indices, const QVector<int> &before,
-                 int colour)
+    PaintCommand(ImageDocument *doc, int frame, int layer, const QVector<int> &indices,
+                 const QVector<int> &before, int colour)
         : m_doc(doc)
+        , m_frame(frame)
+        , m_layer(layer)
         , m_indices(indices)
         , m_before(before)
         , m_colour(colour)
@@ -48,7 +57,11 @@ public:
         setText(QStringLiteral("paint"));
     }
 
-    void undo() override { m_doc->restoreIndices(m_indices, m_before); }
+    void undo() override
+    {
+        m_doc->setCurrentFrame(m_frame);
+        m_doc->restoreIndices(m_indices, m_before, m_layer);
+    }
     void redo() override
     {
         // First redo() is QUndoStack::push; the stroke already painted live.
@@ -56,14 +69,85 @@ public:
             m_virgin = false;
             return;
         }
-        m_doc->fillIndices(m_indices, m_colour);
+        m_doc->setCurrentFrame(m_frame);
+        m_doc->fillIndices(m_indices, m_colour, m_layer);
     }
 
 private:
     ImageDocument *m_doc;
+    int m_frame = 0;
+    int m_layer = 0;
     QVector<int> m_indices;
     QVector<int> m_before;
     int m_colour;
+    bool m_virgin = true;
+};
+
+class LayerPixelsCommand : public QUndoCommand
+{
+public:
+    LayerPixelsCommand(ImageDocument *doc, int frame, int layer, const QVector<int> &before,
+                       const QVector<int> &after, const QString &text)
+        : m_doc(doc)
+        , m_frame(frame)
+        , m_layer(layer)
+        , m_before(before)
+        , m_after(after)
+    {
+        setText(text);
+    }
+
+    void undo() override
+    {
+        m_doc->setCurrentFrame(m_frame);
+        m_doc->setActiveLayer(m_layer);
+        m_doc->replaceActiveLayer(m_before);
+    }
+    void redo() override
+    {
+        if (m_virgin) {
+            m_virgin = false;
+            return;
+        }
+        m_doc->setCurrentFrame(m_frame);
+        m_doc->setActiveLayer(m_layer);
+        m_doc->replaceActiveLayer(m_after);
+    }
+
+private:
+    ImageDocument *m_doc;
+    int m_frame = 0;
+    int m_layer = 0;
+    QVector<int> m_before;
+    QVector<int> m_after;
+    bool m_virgin = true;
+};
+
+class SnapshotCommand : public QUndoCommand
+{
+public:
+    SnapshotCommand(ImageDocument *doc, const ImageDocument &before, const QString &text)
+        : m_doc(doc)
+        , m_before(before)
+        , m_after(*doc)
+    {
+        setText(text);
+    }
+
+    void undo() override { *m_doc = m_before; }
+    void redo() override
+    {
+        if (m_virgin) {
+            m_virgin = false;
+            return;
+        }
+        *m_doc = m_after;
+    }
+
+private:
+    ImageDocument *m_doc;
+    ImageDocument m_before;
+    ImageDocument m_after;
     bool m_virgin = true;
 };
 
@@ -222,6 +306,47 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_actPalette, &QAction::triggered, this, &ImageEditor::openPalettePicker);
     bar->addAction(m_actPalette);
 
+    bar->addSeparator();
+    auto addTransform = [&](QAction *&action, appearance::Icon icon, const QString &name,
+                            const QString &objectName, void (ImageEditor::*method)()) {
+        action = new QAction(name, this);
+        action->setIcon(appearance::icon(icon));
+        action->setObjectName(objectName);
+        action->setToolTip(name);
+        connect(action, &QAction::triggered, this, method);
+        addAction(action);
+        bar->addAction(action);
+    };
+    addTransform(m_actShiftLeft, appearance::Icon::ShiftLeft, tr("Shift left"),
+                 QStringLiteral("imageShiftLeft"), &ImageEditor::shiftLeft);
+    m_actShiftLeft->setToolTip(tr("Shift left (wraps around)"));
+    addTransform(m_actShiftRight, appearance::Icon::ShiftRight, tr("Shift right"),
+                 QStringLiteral("imageShiftRight"), &ImageEditor::shiftRight);
+    m_actShiftRight->setToolTip(tr("Shift right (wraps around)"));
+    addTransform(m_actShiftUp, appearance::Icon::ShiftUp, tr("Shift up"),
+                 QStringLiteral("imageShiftUp"), &ImageEditor::shiftUp);
+    m_actShiftUp->setToolTip(tr("Shift up (wraps around)"));
+    addTransform(m_actShiftDown, appearance::Icon::ShiftDown, tr("Shift down"),
+                 QStringLiteral("imageShiftDown"), &ImageEditor::shiftDown);
+    m_actShiftDown->setToolTip(tr("Shift down (wraps around)"));
+    addTransform(m_actFlipH, appearance::Icon::FlipHorizontal, tr("Flip horizontal"),
+                 QStringLiteral("imageFlipH"), &ImageEditor::flipHorizontal);
+    m_actFlipH->setShortcut(QKeySequence(Qt::Key_H));
+    m_actFlipH->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    addTransform(m_actFlipV, appearance::Icon::FlipVertical, tr("Flip vertical"),
+                 QStringLiteral("imageFlipV"), &ImageEditor::flipVertical);
+    m_actFlipV->setShortcut(QKeySequence(Qt::Key_V));
+    m_actFlipV->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    addTransform(m_actRotate, appearance::Icon::Rotate, tr("Bake 8-way rotations"),
+                 QStringLiteral("imageRotate"), &ImageEditor::generateEightWay);
+    m_actRotate->setToolTip(tr("Insert 7 clockwise rotations of this square frame"));
+
+    auto *rotate90 = new QAction(tr("Rotate 90° clockwise"), this);
+    rotate90->setShortcut(QKeySequence(Qt::Key_R));
+    rotate90->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(rotate90, &QAction::triggered, this, &ImageEditor::rotate90);
+    addAction(rotate90);
+
     layout->addWidget(bar);
 
     auto *body = new QHBoxLayout;
@@ -252,6 +377,9 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_canvas, &ImageCanvas::colourPicked, this, &ImageEditor::pickColour);
     connect(m_canvas, &ImageCanvas::cellSizeChanged, this, &ImageEditor::updateStatus);
     connect(m_canvas, &ImageCanvas::zoomStepsRequested, this, &ImageEditor::zoomBy);
+    connect(m_canvas, &ImageCanvas::shiftRequested, this, [this](ShiftDirection direction) {
+        shiftBy(direction);
+    });
     connect(m_canvas, &ImageCanvas::cursorIndexChanged, this, [this](int index) {
         if (!m_status)
             return;
@@ -273,42 +401,169 @@ ImageEditor::ImageEditor(QWidget *parent)
     });
 
     auto *right = new QVBoxLayout;
+    right->setSpacing(4);
+
     right->addWidget(new QLabel(tr("Frames"), this));
     m_frames = new QListWidget(this);
-    m_frames->setMaximumWidth(120);
+    m_frames->setObjectName(QStringLiteral("imageFrames"));
+    m_frames->setMaximumWidth(160);
     connect(m_frames, &QListWidget::currentRowChanged, this, &ImageEditor::selectFrame);
     right->addWidget(m_frames, 1);
-    m_addFrame = new QToolButton(this);
-    m_addFrame->setIcon(appearance::icon(appearance::Icon::AddFrame));
-    m_addFrame->setToolTip(tr("Add frame"));
-    m_addFrame->setAutoRaise(true);
-    m_addFrame->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
+    auto makeIconButton = [this](appearance::Icon icon, const QString &tip) {
+        auto *button = new QToolButton(this);
+        button->setIcon(appearance::icon(icon));
+        button->setToolTip(tip);
+        button->setAutoRaise(true);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        return button;
+    };
+    m_addFrame = makeIconButton(appearance::Icon::AddFrame, tr("Add frame"));
     connect(m_addFrame, &QToolButton::clicked, this, &ImageEditor::addFrame);
-    m_dupFrame = new QToolButton(this);
-    m_dupFrame->setIcon(appearance::icon(appearance::Icon::DuplicateFrame));
-    m_dupFrame->setToolTip(tr("Duplicate frame"));
-    m_dupFrame->setAutoRaise(true);
-    m_dupFrame->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_dupFrame = makeIconButton(appearance::Icon::DuplicateFrame, tr("Duplicate frame"));
     connect(m_dupFrame, &QToolButton::clicked, this, &ImageEditor::duplicateFrame);
-    m_removeFrame = new QToolButton(this);
-    m_removeFrame->setIcon(appearance::icon(appearance::Icon::RemoveFrame));
-    m_removeFrame->setToolTip(tr("Delete frame"));
-    m_removeFrame->setAutoRaise(true);
-    m_removeFrame->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_removeFrame = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete frame"));
     connect(m_removeFrame, &QToolButton::clicked, this, &ImageEditor::removeFrame);
+    m_frameUp = new QToolButton(this);
+    m_frameUp->setText(QStringLiteral("▲"));
+    m_frameUp->setToolTip(tr("Move frame up"));
+    m_frameUp->setAutoRaise(true);
+    connect(m_frameUp, &QToolButton::clicked, this, &ImageEditor::moveFrameUp);
+    m_frameDown = new QToolButton(this);
+    m_frameDown->setText(QStringLiteral("▼"));
+    m_frameDown->setToolTip(tr("Move frame down"));
+    m_frameDown->setAutoRaise(true);
+    connect(m_frameDown, &QToolButton::clicked, this, &ImageEditor::moveFrameDown);
     auto *frameBtns = new QHBoxLayout;
     frameBtns->addWidget(m_addFrame);
     frameBtns->addWidget(m_dupFrame);
     frameBtns->addWidget(m_removeFrame);
+    frameBtns->addWidget(m_frameUp);
+    frameBtns->addWidget(m_frameDown);
     right->addLayout(frameBtns);
+
+    m_preview = new QLabel(this);
+    m_preview->setObjectName(QStringLiteral("imagePreview"));
+    m_preview->setMinimumSize(96, 96);
+    m_preview->setAlignment(Qt::AlignCenter);
+    m_preview->setScaledContents(false);
+    right->addWidget(m_preview);
+
+    auto *playRow = new QHBoxLayout;
+    m_actPlay = new QAction(tr("Play"), this);
+    m_actPlay->setIcon(appearance::icon(appearance::Icon::Run));
+    m_actPlay->setCheckable(true);
+    m_actPlay->setToolTip(tr("Play animation"));
+    connect(m_actPlay, &QAction::toggled, this, &ImageEditor::togglePlay);
+    auto *playBtn = new QToolButton(this);
+    playBtn->setObjectName(QStringLiteral("imagePlay"));
+    playBtn->setDefaultAction(m_actPlay);
+    playBtn->setAutoRaise(true);
+    playRow->addWidget(playBtn);
+    m_fpsBox = new QSpinBox(this);
+    m_fpsBox->setObjectName(QStringLiteral("imageFps"));
+    m_fpsBox->setRange(1, 60);
+    m_fpsBox->setValue(m_fps);
+    m_fpsBox->setSuffix(QStringLiteral(" fps"));
+    m_fpsBox->setMaximumWidth(88);
+    connect(m_fpsBox, qOverload<int>(&QSpinBox::valueChanged), this, &ImageEditor::fpsChanged);
+    playRow->addWidget(m_fpsBox);
+    playRow->addStretch();
+    right->addLayout(playRow);
+
+    m_onion = new QComboBox(this);
+    m_onion->setObjectName(QStringLiteral("imageOnion"));
+    m_onion->addItem(tr("Onion: off"), 0);
+    m_onion->addItem(tr("Onion: previous"), -1);
+    m_onion->addItem(tr("Onion: next"), 1);
+    m_onion->setToolTip(tr("Ghost a neighbouring frame over the canvas"));
+    connect(m_onion, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &ImageEditor::onionChanged);
+    right->addWidget(m_onion);
+
+    m_previewPhaseBox = new QComboBox(this);
+    m_previewPhaseBox->setObjectName(QStringLiteral("imagePreviewPhase"));
+    connect(m_previewPhaseBox, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &ImageEditor::previewPhaseChanged);
+    right->addWidget(m_previewPhaseBox);
+
+    right->addWidget(new QLabel(tr("Layers"), this));
+    m_layers = new QListWidget(this);
+    m_layers->setObjectName(QStringLiteral("imageLayers"));
+    m_layers->setMaximumWidth(160);
+    m_layers->setMaximumHeight(140);
+    connect(m_layers, &QListWidget::currentRowChanged, this, &ImageEditor::selectLayer);
+    connect(m_layers, &QListWidget::itemChanged, this, &ImageEditor::layerVisibilityChanged);
+    connect(m_layers, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
+        renameLayer();
+    });
+    right->addWidget(m_layers);
+    m_addLayer = makeIconButton(appearance::Icon::AddFrame, tr("Add layer"));
+    connect(m_addLayer, &QToolButton::clicked, this, &ImageEditor::addLayer);
+    m_removeLayer = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete layer"));
+    connect(m_removeLayer, &QToolButton::clicked, this, &ImageEditor::removeLayer);
+    m_layerUp = new QToolButton(this);
+    m_layerUp->setText(QStringLiteral("▲"));
+    m_layerUp->setToolTip(tr("Move layer up"));
+    m_layerUp->setAutoRaise(true);
+    connect(m_layerUp, &QToolButton::clicked, this, &ImageEditor::moveLayerUp);
+    m_layerDown = new QToolButton(this);
+    m_layerDown->setText(QStringLiteral("▼"));
+    m_layerDown->setToolTip(tr("Move layer down"));
+    m_layerDown->setAutoRaise(true);
+    connect(m_layerDown, &QToolButton::clicked, this, &ImageEditor::moveLayerDown);
+    auto *layerBtns = new QHBoxLayout;
+    layerBtns->addWidget(m_addLayer);
+    layerBtns->addWidget(m_removeLayer);
+    layerBtns->addWidget(m_layerUp);
+    layerBtns->addWidget(m_layerDown);
+    right->addLayout(layerBtns);
+
+    right->addWidget(new QLabel(tr("Phases"), this));
+    m_phases = new QListWidget(this);
+    m_phases->setObjectName(QStringLiteral("imagePhases"));
+    m_phases->setMaximumWidth(160);
+    m_phases->setMaximumHeight(100);
+    connect(m_phases, &QListWidget::currentRowChanged, this, &ImageEditor::selectPhase);
+    connect(m_phases, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
+        renamePhase();
+    });
+    right->addWidget(m_phases);
+    m_addPhase = makeIconButton(appearance::Icon::AddFrame, tr("Add phase"));
+    connect(m_addPhase, &QToolButton::clicked, this, &ImageEditor::addPhase);
+    m_removePhase = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete phase"));
+    connect(m_removePhase, &QToolButton::clicked, this, &ImageEditor::removePhase);
+    auto *phaseBtns = new QHBoxLayout;
+    phaseBtns->addWidget(m_addPhase);
+    phaseBtns->addWidget(m_removePhase);
+    right->addLayout(phaseBtns);
+    auto *rangeRow = new QHBoxLayout;
+    m_phaseStart = new QSpinBox(this);
+    m_phaseStart->setObjectName(QStringLiteral("imagePhaseStart"));
+    m_phaseStart->setMinimum(1);
+    m_phaseStart->setPrefix(tr("start "));
+    m_phaseEnd = new QSpinBox(this);
+    m_phaseEnd->setObjectName(QStringLiteral("imagePhaseEnd"));
+    m_phaseEnd->setMinimum(1);
+    m_phaseEnd->setPrefix(tr("end "));
+    connect(m_phaseStart, qOverload<int>(&QSpinBox::valueChanged), this,
+            &ImageEditor::phaseRangeChanged);
+    connect(m_phaseEnd, qOverload<int>(&QSpinBox::valueChanged), this,
+            &ImageEditor::phaseRangeChanged);
+    rangeRow->addWidget(m_phaseStart);
+    rangeRow->addWidget(m_phaseEnd);
+    right->addLayout(rangeRow);
+
+    m_previewTimer = new QTimer(this);
+    connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
+
     body->addLayout(right);
 
     m_status = new QLabel(this);
     layout->addWidget(m_status);
 
     rebuildSwatches();
-    refreshFrames();
-    refreshCanvas();
+    refreshChrome();
     QTimer::singleShot(0, this, &ImageEditor::fitToView);
 }
 
@@ -317,12 +572,13 @@ void ImageEditor::newDocument(int width, int height, PaletteKind kind)
     m_doc = ImageDocument::create(width, height, kind);
     m_filePath.clear();
     m_undo->clear();
+    if (m_actPlay)
+        m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
     m_canvas->setDocument(&m_doc);
     m_canvas->setCurrentColour(m_colour);
     rebuildSwatches();
-    refreshFrames();
-    refreshCanvas();
+    refreshChrome();
     notifyModified();
     fitToView();
 }
@@ -336,12 +592,13 @@ bool ImageEditor::loadFile(const QString &path)
     }
     m_filePath = path;
     m_undo->clear();
+    if (m_actPlay)
+        m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
     m_canvas->setDocument(&m_doc);
     m_canvas->setCurrentColour(m_colour);
     rebuildSwatches();
-    refreshFrames();
-    refreshCanvas();
+    refreshChrome();
     notifyModified();
     fitToView();
     return true;
@@ -381,8 +638,7 @@ bool ImageEditor::importFile(const QString &path, bool append)
     m_undo->clear();
     m_canvas->setDocument(&m_doc);
     rebuildSwatches();
-    refreshFrames();
-    refreshCanvas();
+    refreshChrome();
     notifyModified();
     fitToView();
     return true;
@@ -473,12 +729,36 @@ void ImageEditor::applyAppearance()
         m_actZoomOut->setIcon(appearance::icon(Icon::ZoomOut));
     if (m_actPalette)
         m_actPalette->setIcon(appearance::icon(Icon::Palette));
+    if (m_actFlipH)
+        m_actFlipH->setIcon(appearance::icon(Icon::FlipHorizontal));
+    if (m_actFlipV)
+        m_actFlipV->setIcon(appearance::icon(Icon::FlipVertical));
+    if (m_actRotate)
+        m_actRotate->setIcon(appearance::icon(Icon::Rotate));
+    if (m_actShiftLeft)
+        m_actShiftLeft->setIcon(appearance::icon(Icon::ShiftLeft));
+    if (m_actShiftRight)
+        m_actShiftRight->setIcon(appearance::icon(Icon::ShiftRight));
+    if (m_actShiftUp)
+        m_actShiftUp->setIcon(appearance::icon(Icon::ShiftUp));
+    if (m_actShiftDown)
+        m_actShiftDown->setIcon(appearance::icon(Icon::ShiftDown));
+    if (m_actPlay)
+        m_actPlay->setIcon(appearance::icon(m_playing ? Icon::Pause : Icon::Run));
     if (m_addFrame)
         m_addFrame->setIcon(appearance::icon(Icon::AddFrame));
     if (m_dupFrame)
         m_dupFrame->setIcon(appearance::icon(Icon::DuplicateFrame));
     if (m_removeFrame)
         m_removeFrame->setIcon(appearance::icon(Icon::RemoveFrame));
+    if (m_addLayer)
+        m_addLayer->setIcon(appearance::icon(Icon::AddFrame));
+    if (m_removeLayer)
+        m_removeLayer->setIcon(appearance::icon(Icon::RemoveFrame));
+    if (m_addPhase)
+        m_addPhase->setIcon(appearance::icon(Icon::AddFrame));
+    if (m_removePhase)
+        m_removePhase->setIcon(appearance::icon(Icon::RemoveFrame));
     rebuildSwatches();
     if (m_canvas) {
         m_canvas->setTool(m_tool);
@@ -489,14 +769,14 @@ void ImageEditor::applyAppearance()
 void ImageEditor::undo()
 {
     m_undo->undo();
-    refreshCanvas();
+    refreshChrome();
     notifyModified();
 }
 
 void ImageEditor::redo()
 {
     m_undo->redo();
-    refreshCanvas();
+    refreshChrome();
     notifyModified();
 }
 
@@ -535,26 +815,55 @@ void ImageEditor::openPalettePicker()
 
 void ImageEditor::addFrame()
 {
+    const ImageDocument before = m_doc;
     m_doc.addFrame();
-    refreshFrames();
-    refreshCanvas();
+    pushSnapshot(before, tr("add frame"));
+    refreshChrome();
     notifyModified();
 }
 
 void ImageEditor::removeFrame()
 {
+    const ImageDocument before = m_doc;
     if (!m_doc.removeFrame(m_doc.currentFrame()))
         return;
-    refreshFrames();
-    refreshCanvas();
+    pushSnapshot(before, tr("delete frame"));
+    refreshChrome();
     notifyModified();
 }
 
 void ImageEditor::duplicateFrame()
 {
+    const ImageDocument before = m_doc;
     m_doc.duplicateFrame(m_doc.currentFrame());
-    refreshFrames();
-    refreshCanvas();
+    pushSnapshot(before, tr("duplicate frame"));
+    refreshChrome();
+    notifyModified();
+}
+
+void ImageEditor::moveFrameUp()
+{
+    const int from = m_doc.currentFrame();
+    if (from <= 0)
+        return;
+    const ImageDocument before = m_doc;
+    if (!m_doc.moveFrame(from, from - 1))
+        return;
+    pushSnapshot(before, tr("move frame"));
+    refreshChrome();
+    notifyModified();
+}
+
+void ImageEditor::moveFrameDown()
+{
+    const int from = m_doc.currentFrame();
+    if (from >= m_doc.frameCount() - 1)
+        return;
+    const ImageDocument before = m_doc;
+    if (!m_doc.moveFrame(from, from + 1))
+        return;
+    pushSnapshot(before, tr("move frame"));
+    refreshChrome();
     notifyModified();
 }
 
@@ -563,6 +872,11 @@ void ImageEditor::selectFrame(int row)
     if (row < 0)
         return;
     m_doc.setCurrentFrame(row);
+    if (!m_playing)
+        m_previewFrame = row;
+    refreshLayers();
+    refreshOnion();
+    refreshPreview();
     refreshCanvas();
     updateOverspill();
 }
@@ -684,6 +998,8 @@ void ImageEditor::refreshBrushIcon()
 
 void ImageEditor::refreshFrames()
 {
+    if (!m_frames)
+        return;
     m_frames->blockSignals(true);
     m_frames->clear();
     for (int i = 0; i < m_doc.frameCount(); ++i)
@@ -692,13 +1008,129 @@ void ImageEditor::refreshFrames()
     m_frames->blockSignals(false);
 }
 
+void ImageEditor::refreshLayers()
+{
+    if (!m_layers)
+        return;
+    m_layers->blockSignals(true);
+    m_layers->clear();
+    const QVector<ImageLayer> &layers = m_doc.layers();
+    for (int display = 0; display < layers.size(); ++display) {
+        const int stack = stackIndexFromDisplay(display);
+        const ImageLayer &layer = layers.at(stack);
+        auto *item = new QListWidgetItem(layer.name, m_layers);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(layer.visible ? Qt::Checked : Qt::Unchecked);
+        item->setData(Qt::UserRole, stack);
+        if (stack == m_doc.activeLayer())
+            m_layers->setCurrentItem(item);
+    }
+    m_layers->blockSignals(false);
+}
+
+void ImageEditor::refreshPhases()
+{
+    if (!m_phases || !m_previewPhaseBox)
+        return;
+    m_phases->blockSignals(true);
+    const int selected = m_phases->currentRow();
+    m_phases->clear();
+    for (int i = 0; i < m_doc.phases().size(); ++i) {
+        const ImagePhase &phase = m_doc.phases().at(i);
+        m_phases->addItem(tr("%1  %2–%3").arg(phase.name).arg(phase.start + 1).arg(phase.end + 1));
+    }
+    if (selected >= 0 && selected < m_phases->count())
+        m_phases->setCurrentRow(selected);
+    m_phases->blockSignals(false);
+
+    m_previewPhaseBox->blockSignals(true);
+    m_previewPhaseBox->clear();
+    m_previewPhaseBox->addItem(tr("All frames"), -1);
+    for (int i = 0; i < m_doc.phases().size(); ++i)
+        m_previewPhaseBox->addItem(m_doc.phases().at(i).name, i);
+    const int phaseIndex = m_previewPhaseBox->findData(m_previewPhase);
+    m_previewPhaseBox->setCurrentIndex(phaseIndex >= 0 ? phaseIndex : 0);
+    if (phaseIndex < 0)
+        m_previewPhase = -1;
+    m_previewPhaseBox->blockSignals(false);
+
+    const int last = qMax(1, m_doc.frameCount());
+    m_phaseStart->blockSignals(true);
+    m_phaseEnd->blockSignals(true);
+    m_phaseStart->setMaximum(last);
+    m_phaseEnd->setMaximum(last);
+    const int row = m_phases->currentRow();
+    const bool has = row >= 0 && row < m_doc.phases().size();
+    m_phaseStart->setEnabled(has);
+    m_phaseEnd->setEnabled(has);
+    if (has) {
+        m_phaseStart->setValue(m_doc.phases().at(row).start + 1);
+        m_phaseEnd->setValue(m_doc.phases().at(row).end + 1);
+    }
+    m_phaseStart->blockSignals(false);
+    m_phaseEnd->blockSignals(false);
+}
+
+void ImageEditor::refreshOnion()
+{
+    if (!m_canvas)
+        return;
+    const QVector<OnionGhost> ghosts = neighbourFrames(m_doc.currentFrame(), m_doc.frameCount(),
+                                                       m_onionDistance);
+    if (ghosts.isEmpty()) {
+        m_canvas->setOnion({});
+        return;
+    }
+    m_canvas->setOnion(m_doc.frame(ghosts.first().index));
+}
+
+void ImageEditor::refreshPreview()
+{
+    if (!m_preview)
+        return;
+    if (!m_playing)
+        m_previewFrame = m_doc.currentFrame();
+    m_previewFrame = qBound(0, m_previewFrame, m_doc.frameCount() - 1);
+    QImage image(m_doc.width(), m_doc.height(), QImage::Format_ARGB32);
+    const QVector<int> &pixels = m_doc.frame(m_previewFrame);
+    for (int y = 0; y < m_doc.height(); ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < m_doc.width(); ++x) {
+            const int cube = pixels.value(y * m_doc.width() + x, kTransparent);
+            if (cube < 0) {
+                const bool checker = ((x + y) & 1) == 0;
+                line[x] = checker ? qRgb(40, 40, 40) : qRgb(70, 70, 70);
+            } else {
+                const Rgb rgb = cubeRgb(m_doc.paletteKind(), cube);
+                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
+            }
+        }
+    }
+    const QSize box = m_preview->size().expandedTo(QSize(96, 96));
+    m_preview->setPixmap(QPixmap::fromImage(
+        image.scaled(box, Qt::KeepAspectRatio, Qt::FastTransformation)));
+    if (m_actRotate)
+        m_actRotate->setEnabled(m_doc.width() == m_doc.height());
+}
+
 void ImageEditor::refreshCanvas()
 {
     m_canvas->setDocument(&m_doc);
     m_canvas->updateGeometry();
     m_canvas->adjustSize();
     m_canvas->update();
+    refreshOnion();
     updateStatus();
+}
+
+void ImageEditor::refreshChrome()
+{
+    refreshFrames();
+    refreshLayers();
+    refreshPhases();
+    refreshCanvas();
+    refreshPreview();
+    updateOverspill();
 }
 
 void ImageEditor::updateStatus()
@@ -735,16 +1167,21 @@ void ImageEditor::paintIndices(const QVector<int> &indices, int colour)
 {
     if (indices.isEmpty())
         return;
-    if (m_strokeIndices.isEmpty())
+    if (m_strokeIndices.isEmpty()) {
         m_strokeColour = colour;
+        m_strokeLayer = m_doc.activeLayer();
+        m_strokeFrame = m_doc.currentFrame();
+    }
+    const QVector<int> &layer = m_doc.activeLayerPixels();
     for (int index : indices) {
         if (m_strokeIndices.contains(index))
             continue;
         m_strokeIndices.append(index);
-        m_strokeBefore.append(m_doc.pixels().value(index, kTransparent));
+        m_strokeBefore.append(layer.value(index, kTransparent));
     }
-    m_doc.fillIndices(indices, colour);
+    m_doc.fillIndices(indices, colour, m_strokeLayer);
     refreshCanvas();
+    refreshPreview();
     updateOverspill();
     notifyModified();
 }
@@ -753,7 +1190,8 @@ void ImageEditor::finishStroke()
 {
     if (m_strokeIndices.isEmpty())
         return;
-    m_undo->push(new PaintCommand(&m_doc, m_strokeIndices, m_strokeBefore, m_strokeColour));
+    m_undo->push(new PaintCommand(&m_doc, m_strokeFrame, m_strokeLayer, m_strokeIndices,
+                                  m_strokeBefore, m_strokeColour));
     m_strokeIndices.clear();
     m_strokeBefore.clear();
 }
@@ -771,6 +1209,326 @@ void ImageEditor::pickColour(int cubeIndex)
 void ImageEditor::notifyModified()
 {
     emit modificationChanged(m_doc.isModified());
+}
+
+void ImageEditor::pushSnapshot(const ImageDocument &before, const QString &text)
+{
+    m_undo->push(new SnapshotCommand(&m_doc, before, text));
+}
+
+void ImageEditor::applyLayerBuffer(const QVector<int> &before, const QString &text)
+{
+    m_undo->push(new LayerPixelsCommand(&m_doc, m_doc.currentFrame(), m_doc.activeLayer(), before,
+                                        m_doc.activeLayerPixels(), text));
+}
+
+void ImageEditor::shiftBy(ShiftDirection direction)
+{
+    const QVector<int> before = m_doc.activeLayerPixels();
+    if (!m_doc.shiftActiveLayer(direction))
+        return;
+    applyLayerBuffer(before, tr("shift"));
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+int ImageEditor::previewRangeStart() const
+{
+    if (m_previewPhase >= 0 && m_previewPhase < m_doc.phases().size())
+        return m_doc.phases().at(m_previewPhase).start;
+    return 0;
+}
+
+int ImageEditor::previewRangeEnd() const
+{
+    if (m_previewPhase >= 0 && m_previewPhase < m_doc.phases().size())
+        return m_doc.phases().at(m_previewPhase).end;
+    return m_doc.frameCount() - 1;
+}
+
+int ImageEditor::stackIndexFromDisplay(int displayRow) const
+{
+    return m_doc.layerCount() - 1 - displayRow;
+}
+
+void ImageEditor::flipHorizontal()
+{
+    const QVector<int> before = m_doc.activeLayerPixels();
+    if (!m_doc.flipActiveLayer(FlipDirection::Horizontal))
+        return;
+    applyLayerBuffer(before, tr("flip horizontal"));
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::flipVertical()
+{
+    const QVector<int> before = m_doc.activeLayerPixels();
+    if (!m_doc.flipActiveLayer(FlipDirection::Vertical))
+        return;
+    applyLayerBuffer(before, tr("flip vertical"));
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::rotate90()
+{
+    if (m_doc.width() != m_doc.height())
+        return;
+    const QVector<int> before = m_doc.activeLayerPixels();
+    if (!m_doc.replaceActiveLayer(rotateIndexed(before, m_doc.width(), 90)))
+        return;
+    applyLayerBuffer(before, tr("rotate 90"));
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::generateEightWay()
+{
+    const ImageDocument before = m_doc;
+    if (m_doc.generateRotations(8) <= 0)
+        return;
+    pushSnapshot(before, tr("bake rotations"));
+    refreshChrome();
+    notifyModified();
+}
+
+void ImageEditor::shiftLeft()
+{
+    shiftBy(ShiftDirection::Left);
+}
+
+void ImageEditor::shiftRight()
+{
+    shiftBy(ShiftDirection::Right);
+}
+
+void ImageEditor::shiftUp()
+{
+    shiftBy(ShiftDirection::Up);
+}
+
+void ImageEditor::shiftDown()
+{
+    shiftBy(ShiftDirection::Down);
+}
+
+void ImageEditor::onionChanged()
+{
+    if (!m_onion)
+        return;
+    m_onionDistance = m_onion->currentData().toInt();
+    refreshOnion();
+}
+
+void ImageEditor::togglePlay(bool on)
+{
+    m_playing = on;
+    if (m_playing) {
+        m_previewFrame = previewRangeStart();
+        m_previewTimer->start(qMax(1, 1000 / qMax(1, m_fps)));
+        m_actPlay->setIcon(appearance::icon(appearance::Icon::Pause));
+        m_actPlay->setToolTip(tr("Pause animation"));
+        refreshPreview();
+    } else {
+        m_previewTimer->stop();
+        m_previewFrame = m_doc.currentFrame();
+        m_actPlay->setIcon(appearance::icon(appearance::Icon::Run));
+        m_actPlay->setToolTip(tr("Play animation"));
+        refreshPreview();
+    }
+}
+
+void ImageEditor::previewTick()
+{
+    m_previewFrame = nextPreviewFrame(m_previewFrame, m_doc.frameCount(), previewRangeStart(),
+                                      previewRangeEnd());
+    refreshPreview();
+}
+
+void ImageEditor::fpsChanged(int fps)
+{
+    m_fps = qBound(1, fps, 60);
+    if (m_playing)
+        m_previewTimer->start(qMax(1, 1000 / m_fps));
+}
+
+void ImageEditor::previewPhaseChanged(int index)
+{
+    if (!m_previewPhaseBox || index < 0)
+        return;
+    m_previewPhase = m_previewPhaseBox->itemData(index).toInt();
+    if (m_playing)
+        m_previewFrame = previewRangeStart();
+    refreshPreview();
+}
+
+void ImageEditor::addLayer()
+{
+    const ImageDocument before = m_doc;
+    m_doc.addLayer();
+    pushSnapshot(before, tr("add layer"));
+    refreshLayers();
+    refreshCanvas();
+    notifyModified();
+}
+
+void ImageEditor::removeLayer()
+{
+    const ImageDocument before = m_doc;
+    if (!m_doc.removeLayer(m_doc.activeLayer()))
+        return;
+    pushSnapshot(before, tr("delete layer"));
+    refreshLayers();
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::moveLayerUp()
+{
+    const int from = m_doc.activeLayer();
+    if (from >= m_doc.layerCount() - 1)
+        return;
+    const ImageDocument before = m_doc;
+    if (!m_doc.moveLayer(from, from + 1))
+        return;
+    pushSnapshot(before, tr("move layer"));
+    refreshLayers();
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::moveLayerDown()
+{
+    const int from = m_doc.activeLayer();
+    if (from <= 0)
+        return;
+    const ImageDocument before = m_doc;
+    if (!m_doc.moveLayer(from, from - 1))
+        return;
+    pushSnapshot(before, tr("move layer"));
+    refreshLayers();
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::selectLayer(int row)
+{
+    if (row < 0)
+        return;
+    m_doc.setActiveLayer(stackIndexFromDisplay(row));
+}
+
+void ImageEditor::layerVisibilityChanged(QListWidgetItem *item)
+{
+    if (!item)
+        return;
+    const int stack = item->data(Qt::UserRole).toInt();
+    if (stack < 0 || stack >= m_doc.layerCount())
+        return;
+    const bool visible = item->checkState() == Qt::Checked;
+    if (m_doc.layers().at(stack).visible == visible)
+        return;
+    const ImageDocument before = m_doc;
+    m_doc.setLayerVisible(stack, visible);
+    pushSnapshot(before, tr("layer visibility"));
+    refreshCanvas();
+    refreshPreview();
+    notifyModified();
+}
+
+void ImageEditor::renameLayer()
+{
+    const int index = m_doc.activeLayer();
+    if (index < 0 || index >= m_doc.layerCount())
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Rename layer"), tr("Name:"),
+                                               QLineEdit::Normal, m_doc.layers().at(index).name,
+                                               &ok);
+    if (!ok)
+        return;
+    const ImageDocument before = m_doc;
+    if (!m_doc.renameLayer(index, name))
+        return;
+    pushSnapshot(before, tr("rename layer"));
+    refreshLayers();
+    notifyModified();
+}
+
+void ImageEditor::addPhase()
+{
+    const ImageDocument before = m_doc;
+    const int index = m_doc.addPhase();
+    pushSnapshot(before, tr("add phase"));
+    refreshPhases();
+    m_phases->setCurrentRow(index);
+    notifyModified();
+}
+
+void ImageEditor::removePhase()
+{
+    const int row = m_phases->currentRow();
+    const ImageDocument before = m_doc;
+    if (!m_doc.removePhase(row))
+        return;
+    if (m_previewPhase == row)
+        m_previewPhase = -1;
+    else if (m_previewPhase > row)
+        --m_previewPhase;
+    pushSnapshot(before, tr("delete phase"));
+    refreshPhases();
+    notifyModified();
+}
+
+void ImageEditor::selectPhase(int row)
+{
+    if (row < 0 || row >= m_doc.phases().size())
+        return;
+    m_phaseStart->blockSignals(true);
+    m_phaseEnd->blockSignals(true);
+    m_phaseStart->setEnabled(true);
+    m_phaseEnd->setEnabled(true);
+    m_phaseStart->setValue(m_doc.phases().at(row).start + 1);
+    m_phaseEnd->setValue(m_doc.phases().at(row).end + 1);
+    m_phaseStart->blockSignals(false);
+    m_phaseEnd->blockSignals(false);
+}
+
+void ImageEditor::renamePhase()
+{
+    const int row = m_phases->currentRow();
+    if (row < 0 || row >= m_doc.phases().size())
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Rename phase"), tr("Name:"),
+                                               QLineEdit::Normal, m_doc.phases().at(row).name, &ok);
+    if (!ok)
+        return;
+    const ImageDocument before = m_doc;
+    if (!m_doc.renamePhase(row, name))
+        return;
+    pushSnapshot(before, tr("rename phase"));
+    refreshPhases();
+    notifyModified();
+}
+
+void ImageEditor::phaseRangeChanged()
+{
+    const int row = m_phases->currentRow();
+    if (row < 0)
+        return;
+    m_doc.setPhaseRange(row, m_phaseStart->value() - 1, m_phaseEnd->value() - 1);
+    refreshPhases();
+    m_phases->setCurrentRow(row);
+    notifyModified();
 }
 
 } // namespace pist

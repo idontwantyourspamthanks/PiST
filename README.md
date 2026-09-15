@@ -35,7 +35,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
-  multiple frames, and export to those formats plus STOS `.MBK` and an assembler include
+  layers, onion-skin, frames with an animated preview, and export to those formats
+  plus STOS `.MBK` and an assembler include
 - **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
   monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
@@ -178,7 +179,8 @@ cmake --build build
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
-through to see the whole loop. It always uses your real display; run the tests
+through to see the whole loop. `demo/demo.pim` is a sample sprite for the image
+editor. It always uses your real display; run the tests
 (below) for the headless checks.
 
 Run the tests:

@@ -33,7 +33,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/main.cpp` | Entry point. Pins `QT_QPA_PLATFORM=xcb` when `DISPLAY` is set (needed for X11 embedding), parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
 | `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor) and every debug panel, plus the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons; preferences in QSettings), and the sprite editor (`ImageEditor`, `ImageCanvas`). |
 | `src/editor/` | `CodeEditor` (the editor widget: line-number gutter, breakpoint dots, execution-line highlight, error markers) and `AsmHighlighter` (m68k Motorola syntax, with light and dark colour sets). |
-| `src/image/` | Sprite document and ST graphics: `ImageDocument` (`.pim` JSON), `Palette` (STfm 512 / STe 4096 cubes and colour words), `Tools` (brush/line/rect/fill), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include). |
+| `src/image/` | Sprite document and ST graphics: `ImageDocument` (`.pim` JSON, layers, frames, phases), `Palette` (STfm 512 / STe 4096 cubes and colour words), `Tools` (brush/line/rect/fill), `Transform` (flip, rotate, onion/phase math), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include). |
 | `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (the AUTO-folder FAT12 writer for pre-1.04 TOS). |
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `HatariTextParse` (their shared `d` parser), `SessionConfig` (one session's argv), `HatariProbe` (capability detection), `TosRom` (ROM discovery + version), `Machine` (ST/STe/TT/Falcon model), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
@@ -41,7 +41,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings). |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
 | `tests/` | Parser and image unit tests (always run) and the offscreen GUI/emulator integration tests (gated on tools being present). |
-| `demo/` | `hello.s` — a tiny program used by `run.sh` and the first-run experience. |
+| `demo/` | `hello.s` — a tiny program used by `run.sh` and the first-run experience; `demo.pim` — a sample sprite. |
 
 ### Per-file detail
 
@@ -68,8 +68,8 @@ Everything else in this document is a consequence of that rule. The debug transp
 - **`editor/CodeEditor.{h,cpp}`** — `QPlainTextEdit` subclass with a `LineNumberArea` gutter.
   Emits `gutterClicked` (breakpoint toggle) and `gutterContextMenuRequested`; paints the execution
   line and error underlines via extra selections.
-- **`image/`** — palette cubes, `.pim` load/save, paint geometry, and ST file codecs. No widgets.
-  **`ui/ImageEditor.{h,cpp}`** is the document tab; **`ui/ImageCanvas`** paints the grid.
+- **`image/`** — palette cubes, `.pim` load/save, paint geometry, layers/phases, and ST file codecs. No widgets.
+  **`ui/ImageEditor.{h,cpp}`** is the document tab; **`ui/ImageCanvas`** paints the grid with onion-skin.
 - **`build/BuildService.{h,cpp}`** — `planSteps()` chooses a single-file `-Ftos` build or a
   per-module `-Fvobj` build plus a `vlink -b ataritos` link; `runNextStep()` streams output and
   parses vasm/linker diagnostics. Emits `finished(success, diagnostics)`.
@@ -293,8 +293,9 @@ be proven against a real emulator run, not a mock (see PLAN.md §11 "Definition 
 - **Add a machine**: extend the `Machine` enum and the TOS-compatibility table in
   `src/emu/Machine.cpp`; the settings UI and ROM selection pick it up from there.
 - **Add an ST image format**: decode/encode in `src/image/StFormats.{h,cpp}` with a round-trip in
-  `tst_image`, then offer it from `ImageEditor::exportFile` / `importFile`. Keep the `.pim` schema
-  stable; new editor features (layers, onion-skin, PI2/PI3) belong in [FUTURE.md](FUTURE.md).
+  `tst_image`, then offer it from `ImageEditor::exportFile` / `importFile`. Keep `pixels` on each
+  `.pim` frame so older readers still load the composite; extra keys (`layers`, `phases`) are
+  ignored by v1. Tilemaps, sprite-sheet slicing, and PI2/PI3 belong in [FUTURE.md](FUTURE.md).
 
 ## Where to look next
 

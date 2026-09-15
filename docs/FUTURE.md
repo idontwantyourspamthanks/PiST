@@ -326,21 +326,19 @@ immediate and the test prints normally outside ctest, so one local run shows the
 
 ---
 
-## 12. Sprite editor: layers, onion-skin, PI2/PI3, other machines
+## 12. Sprite editor: tilemaps, PI2/PI3, other machines
 
-**Status:** deferred. v1 is a grid editor for `.pim` files: STfm/STe palettes, a 16-colour active
-set, add/delete/select frames, brush/line/rect/ellipse/fill, and import/export of ST low-res
-formats (PI1, NEO, IFF, PNG, STOS MBK, assembler include). That is enough to draw sprites next to
-the assembler.
+**Status:** deferred. The grid editor now has LemonAndLime's ST-relevant editing: layers, onion-skin,
+animated preview, named phases, flip/rotate/shift, and 8-way rotation bake. That lives in
+`src/image/{ImageDocument,Transform}.*` and `src/ui/ImageEditor`.
 
-Not in v1, on purpose:
+Still not in PiST, on purpose:
 
-- Layers, onion-skin, animated preview, named phases, tilemaps, sprite-sheet slicing — LemonAndLime
-  has them; they are a second product inside this one.
+- Tilemaps and sprite-sheet slicing — a second product inside this one.
 - Other machines (C64, Spectrum, CPC, Amiga, 8-bit). This IDE is for the ST.
-- Degas PI2/PI3 (medium/high resolution). v1 is 16-colour low-res, which is the sprite path.
+- Degas PI2/PI3 (medium/high resolution). The editor is 16-colour low-res, which is the sprite path.
 - Auto-export on Build / an asset list in `.pistproject`. Export is explicit; the assembler
   consumes whatever `.s` or `.bin` the user wrote.
 
-The `.pim` schema already has a `frames` array so animation work does not need a format break.
-Start from `src/image/ImageDocument` and `src/ui/ImageEditor`.
+v1 `.pim` files (composite `pixels` only) load as a single layer. Saved files still write `pixels`
+so an older PiST can open them.

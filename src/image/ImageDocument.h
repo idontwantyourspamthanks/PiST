@@ -5,14 +5,22 @@
 #pragma once
 
 #include "image/Palette.h"
+#include "image/Transform.h"
 
 #include <QString>
 #include <QVector>
 
 namespace pist {
 
+struct ImageLayer {
+    QString name;
+    bool visible = true;
+    QVector<int> pixels;
+};
+
 /// In-memory sprite: size, ST palette cube, up to 16 active colours, and one
-/// or more frames of cube indices (`kTransparent` = empty).
+/// or more frames. Each frame is a bottom-first layer stack plus a maintained
+/// composite (`kTransparent` = empty). Paint lands on the active layer.
 class ImageDocument
 {
 public:
@@ -33,8 +41,17 @@ public:
     int background() const { return m_background; }
     int frameCount() const { return m_frames.size(); }
     int currentFrame() const { return m_current; }
-    const QVector<int> &pixels() const { return m_frames.at(m_current); }
-    const QVector<int> &frame(int index) const { return m_frames.at(index); }
+    /// Composite of the current frame (what the viewer sees).
+    const QVector<int> &pixels() const { return m_frames.at(m_current).composite; }
+    /// Composite of frame `index`.
+    const QVector<int> &frame(int index) const { return m_frames.at(index).composite; }
+    /// Active layer's pixels (fill / stroke source).
+    const QVector<int> &activeLayerPixels() const;
+
+    int layerCount() const;
+    int activeLayer() const { return m_activeLayer; }
+    const QVector<ImageLayer> &layers() const { return m_frames.at(m_current).layers; }
+    const QVector<ImagePhase> &phases() const { return m_phases; }
 
     bool isModified() const { return m_modified; }
     void setModified(bool on) { m_modified = on; }
@@ -50,30 +67,68 @@ public:
     void replaceWith(const ImageDocument &other);
 
     bool setCurrentFrame(int index);
-    /// Append a blank (transparent) frame and select it.
+    /// Insert a blank frame after the current one (matching its layer names)
+    /// and select it.
     int addFrame();
-    /// Append a copy of `source` and select it. Returns the new index, or -1.
+    /// Insert a copy of `source` after the current frame and select it.
     int duplicateFrame(int source);
     /// Remove `index` when more than one frame remains.
     bool removeFrame(int index);
+    /// Move the frame at `from` to `to`. Current-frame selection follows.
+    bool moveFrame(int from, int to);
+
+    bool setActiveLayer(int index);
+    int addLayer();
+    bool removeLayer(int index);
+    bool moveLayer(int from, int to);
+    bool renameLayer(int index, const QString &name);
+    bool setLayerVisible(int index, bool visible);
+
+    int addPhase();
+    bool removePhase(int index);
+    bool renamePhase(int index, const QString &name);
+    bool setPhaseRange(int index, int start, int end);
 
     void setActive(const QVector<int> &indices);
     bool toggleActive(int cubeIndex);
     void setBackground(int cubeIndex);
     void setPaletteKind(PaletteKind kind);
 
+    /// Paint on the active layer of the current frame (or `layer` if >= 0).
     void setPixel(int index, int cubeIndex);
-    void fillIndices(const QVector<int> &indices, int cubeIndex);
-    void restoreIndices(const QVector<int> &indices, const QVector<int> &values);
+    void fillIndices(const QVector<int> &indices, int cubeIndex, int layer = -1);
+    void restoreIndices(const QVector<int> &indices, const QVector<int> &values, int layer = -1);
+    /// Replace the active layer's buffer, then remesh the composite.
+    bool replaceActiveLayer(const QVector<int> &pixels);
 
-    /// Cube indices painted in the current frame that are not in `active()`.
+    bool flipActiveLayer(FlipDirection direction);
+    bool shiftActiveLayer(ShiftDirection direction);
+    /// Insert `count-1` rotated copies of the current frame after it. Square only.
+    int generateRotations(int count);
+
+    /// Cube indices painted in the current composite that are not in `active()`.
     QVector<int> overspill() const;
 
     QColor displayColor(int cubeIndex) const;
 
 private:
+    struct Frame {
+        QVector<ImageLayer> layers;
+        QVector<int> composite;
+    };
+
     bool setGeometry(int width, int height, QString *error);
-    QVector<int> blankFrame() const;
+    QVector<int> blankPixels() const;
+    ImageLayer makeLayer(const QString &name) const;
+    Frame blankFrame() const;
+    Frame blankFrameFrom(const Frame &templateFrame) const;
+    void remesh(Frame &frame) const;
+    void remeshCurrent();
+    void clampActiveLayer();
+    int resolvedLayer(int layer) const;
+    ImageLayer *layerAt(int layer);
+    const ImageLayer *layerAt(int layer) const;
+    static int mergedPixel(const Frame &frame, int index);
     void touch() { m_modified = true; }
 
     int m_width = 32;
@@ -81,8 +136,10 @@ private:
     PaletteKind m_kind = PaletteKind::Ste;
     QVector<int> m_active;
     int m_background = 0;
-    QVector<QVector<int>> m_frames;
+    QVector<Frame> m_frames;
+    QVector<ImagePhase> m_phases;
     int m_current = 0;
+    int m_activeLayer = 0;
     bool m_modified = false;
     mutable QString m_lastError;
 };

@@ -358,6 +358,12 @@ FileBrowser::FileBrowser(QWidget *parent)
         pane.view->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(pane.view, &QTreeView::customContextMenuRequested, this,
                 &FileBrowser::onFloppyContextMenu);
+        connect(pane.view, &QTreeView::activated, this,
+                [this, driveIndex](const QModelIndex &index) {
+                    const QString entry = index.data(Qt::UserRole).toString();
+                    if (!entry.isEmpty())
+                        emit floppyEntryActivated(driveIndex, entry);
+                });
         qobject_cast<QVBoxLayout *>(group->layout())->addWidget(pane.view, 1);
         split->addWidget(group);
         refreshFloppy(drive);

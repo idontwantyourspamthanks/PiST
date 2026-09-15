@@ -36,6 +36,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -55,6 +56,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QSet>
 #include <QSize>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -74,6 +76,40 @@ bool isPristineEditor(CodeEditor *editor)
 {
     return editor && editor->filePath().isEmpty() && !editor->isModifiedSinceLoad()
         && editor->document()->isEmpty();
+}
+
+// Suffixes that name text worth opening straight off a floppy disk. Assembly
+// sources are deliberately absent: building one would run vasm on the session
+// copy, so the flow is to copy it to the hard drive first (the file browser
+// can do that directly).
+bool suffixIsEditableText(const QString &suffix)
+{
+    static const QSet<QString> text = {
+        QStringLiteral("txt"), QStringLiteral("doc"), QStringLiteral("me"),
+        QStringLiteral("1st"), QStringLiteral("nfo"), QStringLiteral("inf"),
+        QStringLiteral("h"),   QStringLiteral("c"),   QStringLiteral("i"),
+        QStringLiteral("mac"),
+    };
+    return text.contains(suffix);
+}
+
+bool suffixIsKnownBinary(const QString &suffix)
+{
+    static const QSet<QString> binary = {
+        // Executables and object code.
+        QStringLiteral("prg"), QStringLiteral("tos"), QStringLiteral("ttp"),
+        QStringLiteral("bin"), QStringLiteral("sys"), QStringLiteral("o"),
+        // Disk and still-image formats the IDE recognises.
+        QStringLiteral("st"),  QStringLiteral("msa"), QStringLiteral("img"),
+        QStringLiteral("dim"), QStringLiteral("ipf"), QStringLiteral("pi1"),
+        QStringLiteral("pi2"), QStringLiteral("pi3"), QStringLiteral("neo"),
+        QStringLiteral("iff"), QStringLiteral("ilbm"), QStringLiteral("png"),
+        QStringLiteral("mbk"), QStringLiteral("pim"),
+        // Sources that must be edited from the hard drive.
+        QStringLiteral("s"),   QStringLiteral("asm"),
+        QStringLiteral("pistproject"), QStringLiteral("lst"),
+    };
+    return binary.contains(suffix);
 }
 
 } // namespace
@@ -366,6 +402,7 @@ void MainWindow::createActions()
     connect(m_actExportImage, &QAction::triggered, this, &MainWindow::exportImage);
 
     m_actSave = new QAction(tr("&Save"), this);
+    m_actSave->setObjectName(QStringLiteral("saveAction"));
     m_actSave->setShortcut(QKeySequence::Save);
     connect(m_actSave, &QAction::triggered, this, &MainWindow::saveFile);
 
@@ -751,6 +788,8 @@ void MainWindow::createDocks()
     addDockWidget(Qt::LeftDockWidgetArea,
                   makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
+    connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
+            [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });
     connect(m_fileBrowser, &FileBrowser::newImageRequested, this, &MainWindow::newImageIn);
     connect(m_fileBrowser, &FileBrowser::floppyImageChanged, this,
             [this](int drive, const QString &path) {
@@ -1189,6 +1228,7 @@ bool MainWindow::maybeSaveEditor(CodeEditor *editor)
                               tr("Could not write %1").arg(editor->filePath()));
         return false;
     }
+    writeBackFloppyDoc(editor->filePath());
 
     updateTabTitle(editor);
     updateModifiedState();
@@ -1281,6 +1321,142 @@ void MainWindow::openPath(const QString &path)
 
     if (m_fileBrowser)
         m_fileBrowser->showFor(path);
+}
+
+QString MainWindow::extractedFloppyPath(const QString &imagePath, const QString &entryPath) const
+{
+    // Deterministic, so reopening the same entry raises its existing tab. The
+    // image is identified by a content hash of its path, so two disks called
+    // disk.st from different folders never share an extracted file.
+    const QString imageKey = QString::fromLatin1(
+        QCryptographicHash::hash(imagePath.toUtf8(), QCryptographicHash::Sha1)
+            .toHex()
+            .left(8));
+    const QString name = QFileInfo(imagePath).completeBaseName();
+    const QString dir = QDir(paths::sessionBaseDir())
+                            .absoluteFilePath(QStringLiteral("docs/%1-%2")
+                                                  .arg(name, imageKey));
+    return QDir(dir).absoluteFilePath(QString(entryPath).replace(QLatin1Char('/'),
+                                                                 QLatin1Char('_')));
+}
+
+CodeEditor *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
+{
+    const QString imagePath = m_fileBrowser ? m_fileBrowser->floppyImages().value(drive)
+                                            : QString();
+    if (imagePath.isEmpty() || entryPath.isEmpty())
+        return nullptr;
+
+    // Already open documents are raised, not reloaded: the extracted file is
+    // deterministic per image entry, so the existing tab is found by path.
+    const QString extracted = extractedFloppyPath(imagePath, entryPath);
+    if (CodeEditor *open = editorForPath(extracted)) {
+        m_tabs->setCurrentWidget(open);
+        return open;
+    }
+
+    QString error;
+    QByteArray raw;
+    if (!floppy::loadRaw(imagePath, &raw, &error)) {
+        QMessageBox::warning(this, tr("Open"),
+                             tr("Could not read %1:\n%2")
+                                 .arg(QFileInfo(imagePath).fileName(), error));
+        return nullptr;
+    }
+    QByteArray data;
+    if (!floppy::readFileRaw(raw, entryPath, &data, &error)) {
+        QMessageBox::warning(this, tr("Open"),
+                             tr("Could not read %1 from %2:\n%3")
+                                 .arg(entryPath, QFileInfo(imagePath).fileName(), error));
+        return nullptr;
+    }
+
+    const QString suffix = QFileInfo(entryPath).suffix().toLower();
+    if (QStringList{QStringLiteral("pi1"), QStringLiteral("pi2"), QStringLiteral("pi3"),
+                    QStringLiteral("neo"), QStringLiteral("iff"), QStringLiteral("ilbm"),
+                    QStringLiteral("png"), QStringLiteral("mbk"), QStringLiteral("pim")}
+            .contains(suffix)) {
+        QMessageBox::information(
+            this, tr("Open"),
+            tr("Opening images from a floppy disk is not supported yet. Copy the file "
+               "to the hard drive to open it."));
+        return nullptr;
+    }
+    if (QStringLiteral("s") == suffix || QStringLiteral("asm") == suffix) {
+        QMessageBox::information(
+            this, tr("Open"),
+            tr("Assembly sources are built from the hard drive, so copy %1 out of the "
+               "disk first (Copy on the disk, Paste on the hard drive).").arg(entryPath));
+        return nullptr;
+    }
+    const bool editable = suffixIsEditableText(suffix)
+        || (!suffixIsKnownBinary(suffix) && !data.contains('\0'));
+    if (!editable) {
+        QMessageBox::information(this, tr("Open"),
+                                 tr("%1 is not a text document.").arg(entryPath));
+        return nullptr;
+    }
+
+    if (!paths::ensureDirectory(QFileInfo(extracted).absolutePath(), &error)) {
+        QMessageBox::warning(this, tr("Open"), error);
+        return nullptr;
+    }
+    {
+        // Scoped so the file is closed — its bytes on disk — before the
+        // editor tab below reads it.
+        QFile out(extracted);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)
+            || out.write(data) != data.size()) {
+            QMessageBox::warning(this, tr("Open"),
+                                 tr("Could not write %1").arg(extracted));
+            return nullptr;
+        }
+    }
+
+    CodeEditor *editor = addEditorTab(extracted);
+    if (!editor)
+        return nullptr;
+    FloppyDoc doc;
+    doc.imagePath = QFileInfo(imagePath).absoluteFilePath();
+    doc.entryPath = entryPath;
+    m_floppyDocs.insert(QFileInfo(extracted).absoluteFilePath(), doc);
+    const int index = m_tabs->indexOf(editor);
+    m_tabs->setTabToolTip(index, tr("%1 — edited inside %2")
+                                    .arg(entryPath, QFileInfo(imagePath).fileName()));
+    return editor;
+}
+
+void MainWindow::writeBackFloppyDoc(const QString &path)
+{
+    const auto it = m_floppyDocs.constFind(QFileInfo(path).absoluteFilePath());
+    if (it == m_floppyDocs.constEnd())
+        return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QByteArray data = file.readAll();
+
+    // Replace, not add: the entry exists on the disk, and updateImage would
+    // otherwise give the saved copy a numbered name beside the original.
+    floppy::Item item;
+    item.destPath = it->entryPath;
+    item.data = data;
+    QString error;
+    if (!floppy::updateImage(it->imagePath, {item}, {it->entryPath}, &error)) {
+        QMessageBox::warning(this, tr("Save"),
+                             tr("The text was saved to the session copy, but could not be "
+                                "written back into %1:\n%2")
+                                 .arg(QFileInfo(it->imagePath).fileName(), error));
+        return;
+    }
+    // Refresh the panes in place from the browser's own mounted images: the
+    // settings mirror is only updated by the Change/Eject flows.
+    if (m_fileBrowser)
+        m_fileBrowser->refreshFloppyImages();
+    statusBar()->showMessage(tr("Saved %1 into %2")
+                                 .arg(it->entryPath, QFileInfo(it->imagePath).fileName()),
+                             4000);
 }
 
 void MainWindow::openProject()
@@ -1495,6 +1671,8 @@ void MainWindow::saveFile()
         QMessageBox::critical(this, tr("Save"),
                               tr("Could not write %1: %2")
                                   .arg(m_editor->filePath(), m_editor->lastError()));
+    } else {
+        writeBackFloppyDoc(m_editor->filePath());
     }
     updateTabTitle(m_editor);
     updateModifiedState();
@@ -1643,6 +1821,7 @@ void MainWindow::build()
                                       .arg(editor->filePath(), editor->lastError()));
             return;
         }
+        writeBackFloppyDoc(editor->filePath());
     }
 
     m_problems->clear();

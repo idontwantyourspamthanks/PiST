@@ -168,6 +168,13 @@ public:
     /// it without a prompt. Returns false and sets error on a bad address.
     bool addWatchpointAddress(const QString &text, QString *error);
 
+    /// Open a text entry from a mounted floppy image (the file browser's
+    /// double-click). The entry is extracted to a file in the session
+    /// directory and opened in a text tab; saving that tab writes the text
+    /// back into the image. Returns the editor, or null when the entry cannot
+    /// be opened (no disk, not text, read error).
+    CodeEditor *openFloppyEntry(int drive, const QString &entryPath);
+
 private:
     void createActions();
     void createMenus();
@@ -189,6 +196,21 @@ private:
 
     /// Keep the project-files pane's Disk A/B groups in line with settings.
     void syncFileBrowserDisks();
+
+    /// A text document opened from a floppy image: where the extracted file
+    /// lives on the host, and which image entry it writes back to on save.
+    struct FloppyDoc {
+        QString imagePath;
+        QString entryPath;
+    };
+
+    /// The deterministic session file for an image entry, so reopening an
+    /// entry raises its existing tab instead of extracting a second copy.
+    QString extractedFloppyPath(const QString &imagePath, const QString &entryPath) const;
+
+    /// After a successful save of an extracted floppy document, write the
+    /// text back into its image and refresh the pane. No-op for other paths.
+    void writeBackFloppyDoc(const QString &path);
 
     /// Update the title and the Save action to reflect the modified state.
     void updateModifiedState();
@@ -337,6 +359,10 @@ private:
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QDockWidget *m_problemsDock = nullptr;
+
+    /// Text documents currently edited out of a floppy image, keyed by the
+    /// extracted session file the editor tab holds open.
+    QHash<QString, FloppyDoc> m_floppyDocs;
 
     QLabel *m_statusToolchain = nullptr;
     QLabel *m_statusEmulator = nullptr;

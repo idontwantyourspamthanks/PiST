@@ -45,6 +45,7 @@
 #include <QLabel>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QProcess>
 #include <QTreeView>
@@ -132,6 +133,10 @@ private slots:
     /// the hard drive (with pathRenamed for open documents), and across the
     /// hard-drive and floppy panes.
     void fileBrowserCopyMovePanes();
+    /// A text entry activated on a disk opens in an editor tab and saves back
+    /// into the image, replacing its entry; binaries are refused and
+    /// reopening raises the existing tab.
+    void floppyTextOpensAndSavesBack();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -1360,6 +1365,88 @@ void TstGui::fileBrowserCopyMovePanes()
         leftOnA.append(e.path);
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY(!leftOnA.contains(QStringLiteral("ONE.TXT")));
+}
+
+void TstGui::floppyTextOpensAndSavesBack()
+{
+    const QString dir = m_work->path() + QStringLiteral("/floppytext");
+    QVERIFY(QDir().mkpath(dir));
+
+    QVector<floppy::Item> items;
+    floppy::Item docsDir;
+    docsDir.destPath = QStringLiteral("DOCS");
+    docsDir.isDirectory = true;
+    items.append(docsDir);
+    floppy::Item doc;
+    doc.destPath = QStringLiteral("DOC.TXT");
+    doc.data = QByteArrayLiteral("hello");
+    items.append(doc);
+    floppy::Item nested;
+    nested.destPath = QStringLiteral("DOCS/NOTE.TXT");
+    nested.data = QByteArrayLiteral("note");
+    items.append(nested);
+    floppy::Item readme;
+    readme.destPath = QStringLiteral("README");
+    readme.data = QByteArrayLiteral("readme text");
+    items.append(readme);
+    floppy::Item prg;
+    prg.destPath = QStringLiteral("PROG.PRG");
+    prg.data = QByteArray(64, '\0');
+    items.append(prg);
+
+    const QString image = dir + QStringLiteral("/text.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->setFloppyImages({image, QString()});
+
+    // Opening extracts to the session and lands in a text tab.
+    CodeEditor *editor = window.openFloppyEntry(0, QStringLiteral("DOC.TXT"));
+    QVERIFY2(editor, "a text entry must open in an editor tab");
+    QCOMPARE(editor->toPlainText(), QStringLiteral("hello"));
+    const int editorsAfterOpen = window.findChildren<CodeEditor *>().size();
+
+    // Reopening raises the same tab instead of extracting a second copy.
+    QCOMPARE(window.openFloppyEntry(0, QStringLiteral("DOC.TXT")), editor);
+    QCOMPARE(window.findChildren<CodeEditor *>().size(), editorsAfterOpen);
+
+    // A suffix-less text file is sniffed open; a binary is refused. The
+    // refusal note is modal, so the test dismisses it from a single-shot
+    // timer that fires inside the dialog's own event loop.
+    QVERIFY(window.openFloppyEntry(0, QStringLiteral("README")));
+    QTimer::singleShot(0, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    QVERIFY(!window.openFloppyEntry(0, QStringLiteral("PROG.PRG")));
+
+    // Editing and saving writes back into the image, replacing its entry.
+    editor->setPlainText(QStringLiteral("changed\n"));
+    // Raise the DOC.TXT tab (the README tab opened above is current) and save.
+    QCOMPARE(window.openFloppyEntry(0, QStringLiteral("DOC.TXT")), editor);
+    auto *saveAction = window.findChild<QAction *>(QStringLiteral("saveAction"));
+    QVERIFY(saveAction);
+    saveAction->trigger();
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    QByteArray saved;
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("DOC.TXT"), &saved, &error),
+             qPrintable(error));
+    QCOMPARE(saved, QByteArray("changed\n"));
+    QVERIFY(!floppy::readFileRaw(raw, QStringLiteral("DOC1.TXT"), &saved, &error));
+
+    // An entry inside a folder round-trips through its subdirectory.
+    CodeEditor *note = window.openFloppyEntry(0, QStringLiteral("DOCS/NOTE.TXT"));
+    QVERIFY(note);
+    note->setPlainText(QStringLiteral("edited"));
+    saveAction->trigger();
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("DOCS/NOTE.TXT"), &saved, &error),
+             qPrintable(error));
+    QCOMPARE(saved, QByteArray("edited"));
 }
 
 // The editor's modified state drives the window title and the save prompt, and

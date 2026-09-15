@@ -63,7 +63,7 @@ Everything else in this document is a consequence of that rule. The debug transp
   `DisassemblyView` (current PC highlighted), `MemoryView` (hex, byte editing, address navigation),
   `StackView` (longs at SP, return-address annotation), `HardwareView` (`info <subject>` output),
   `PcHistoryView` (`history` output), `BreakpointPanel` (breakpoint + watchpoint table),
-  `FileBrowser` (hard-drive project tree plus Disk A/B floppy listings, with a browser-wide clipboard and drag & drop that copy and move entries within and between the panes — onto a disk this rewrites the image via `floppy::updateImage`). Each is a thin view;
+  `FileBrowser` (hard-drive project tree plus Disk A/B floppy listings, with a browser-wide clipboard and drag & drop that copy and move entries within and between the panes — onto a disk this rewrites the image via `floppy::updateImage`; double-clicking a text entry on a disk extracts it to the session directory, and saving that tab writes it back through `MainWindow::writeBackFloppyDoc`). Each is a thin view;
   `MainWindow` feeds it parsed state and routes its edit/activation signals to debugger writes.
 - **`editor/CodeEditor.{h,cpp}`** — `QPlainTextEdit` subclass with a `LineNumberArea` gutter.
   Emits `gutterClicked` (breakpoint toggle) and `gutterContextMenuRequested`; paints the execution

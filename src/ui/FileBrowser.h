@@ -51,6 +51,15 @@ public slots:
     void setFloppyImages(const QStringList &images);
     QStringList floppyImages() const;
 
+    /// Re-read the mounted images into their panes, after their contents
+    /// changed on disk behind the browser's back (e.g. a document edited out
+    /// of a disk was saved back into it).
+    void refreshFloppyImages()
+    {
+        refreshFloppy(0);
+        refreshFloppy(1);
+    }
+
     /// Host paths selected in the hard-drive tree (files and folders).
     QStringList selectedHardDrivePaths() const;
 
@@ -65,6 +74,11 @@ signals:
     /// A file was activated (double-clicked or Enter). The receiver decides
     /// what to do with the path.
     void fileActivated(const QString &path);
+
+    /// An entry inside a mounted floppy image was activated (double-clicked
+    /// or Enter). `drive` is 0 (A:) or 1 (B:); `entryPath` is image-relative,
+    /// as `listImage` reports it (`AUTO/PROG.PRG`).
+    void floppyEntryActivated(int drive, const QString &entryPath);
 
     /// The user asked to create a new `.pim` image in `directory`.
     void newImageRequested(const QString &directory);

@@ -10,9 +10,10 @@ records *why* it isn't done, so a future decision has the context rather than ju
 **Status:** pause is delivered on both transports — natively via `hatari-debug b pc ! 0 :once`
 over the control socket (entering the debugger properly; `hatari-stop` alone only halts the VBL
 loop and wedges the session), and over HRDB's `break` on the fork, which works on Windows too.
-Live breakpoint editing works on both as well. What remains uncovered on Windows: runtime disk
-swapping and `hatari-option` changes. The upstream patch below remains the right route for
-those, and for anyone on stock Hatari.
+Live breakpoint editing works on both as well. Live floppy insert/eject in a *stopped* session
+uses debugger `setopt` (stdin / HRDB `console`) and is not socket-bound. What remains uncovered
+on Windows for stock Hatari: floppy swap and other `hatari-option` changes while the program is
+*running*. The upstream patch below remains the right route for those.
 
 ### The gap
 

@@ -35,6 +35,10 @@ private slots:
     void lineMapRejectsUnknownLine();
     void lineMapMatchesAbsoluteListingPaths();
     void floppyImageGeometry();
+    void floppyListsAutoFolder();
+    void floppyWritesAndListsFiles();
+    void floppyMsaRoundTrip();
+    void floppyRejectsOversizedExport();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -416,6 +420,110 @@ void TstParsers::floppyImageGeometry()
 
     // PRG content lands at cluster 3 (sector 16) and reads back whole.
     QCOMPARE(image.mid(16 * 512, 1500), QByteArray(1500, '\x41'));
+}
+
+static bool entryNamed(const QVector<floppy::Entry> &entries, const QString &path, bool isDir)
+{
+    for (const floppy::Entry &e : entries) {
+        if (e.path.compare(path, Qt::CaseInsensitive) == 0 && e.isDirectory == isDir)
+            return true;
+    }
+    return false;
+}
+
+void TstParsers::floppyListsAutoFolder()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString prgPath = tmp.path() + QStringLiteral("/hello.prg");
+    {
+        QFile f(prgPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QCOMPARE(f.write(QByteArray(64, 'A')), qint64(64));
+    }
+    const QString imgPath = tmp.path() + QStringLiteral("/auto.st");
+    QString error;
+    QVERIFY(floppy::writeAutoFolderImage(imgPath, prgPath, &error));
+    const QVector<floppy::Entry> entries = floppy::listImage(imgPath, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entryNamed(entries, QStringLiteral("AUTO"), true));
+    QVERIFY(entryNamed(entries, QStringLiteral("AUTO/PROG.PRG"), false));
+    QVERIFY(entryNamed(entries, QStringLiteral("EMUDESK.INF"), false));
+}
+
+void TstParsers::floppyWritesAndListsFiles()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item dir;
+    dir.destPath = QStringLiteral("DATA");
+    dir.isDirectory = true;
+    items.append(dir);
+    floppy::Item file;
+    file.destPath = QStringLiteral("DATA/HELLO.TXT");
+    file.data = QByteArrayLiteral("hello");
+    items.append(file);
+    floppy::Item root;
+    root.destPath = QStringLiteral("readme.md");
+    root.data = QByteArrayLiteral("readme");
+    items.append(root);
+
+    const QString img = tmp.path() + QStringLiteral("/out.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(img, items, &error), qPrintable(error));
+    QCOMPARE(QFileInfo(img).size(), qint64(720 * 1024));
+
+    const QVector<floppy::Entry> entries = floppy::listImage(img, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entryNamed(entries, QStringLiteral("DATA"), true));
+    QVERIFY(entryNamed(entries, QStringLiteral("DATA/HELLO.TXT"), false));
+    QVERIFY(entryNamed(entries, QStringLiteral("README.MD"), false));
+}
+
+void TstParsers::floppyMsaRoundTrip()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("A.PRG");
+    file.data = QByteArray(200, '\x42');
+    items.append(file);
+
+    const QString st = tmp.path() + QStringLiteral("/disk.st");
+    const QString msa = tmp.path() + QStringLiteral("/disk.msa");
+    QString error;
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+    QVERIFY2(floppy::writeImage(msa, items, &error), qPrintable(error));
+    QVERIFY(QFileInfo(msa).size() > 10);
+    QVERIFY(QFileInfo(msa).size() < QFileInfo(st).size());
+
+    QByteArray rawSt;
+    QByteArray rawMsa;
+    QVERIFY2(floppy::loadRaw(st, &rawSt, &error), qPrintable(error));
+    QVERIFY2(floppy::loadRaw(msa, &rawMsa, &error), qPrintable(error));
+    QCOMPARE(rawMsa.size(), rawSt.size());
+    QCOMPARE(rawMsa, rawSt);
+
+    const QVector<floppy::Entry> entries = floppy::listImage(msa, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entryNamed(entries, QStringLiteral("A.PRG"), false));
+}
+
+void TstParsers::floppyRejectsOversizedExport()
+{
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("HUGE.BIN");
+    file.data = QByteArray(800 * 1024, 'X');
+    items.append(file);
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString img = tmp.path() + QStringLiteral("/huge.st");
+    QString error;
+    QVERIFY(!floppy::writeImage(img, items, &error));
+    QVERIFY(!error.isEmpty());
 }
 
 QTEST_MAIN(TstParsers)

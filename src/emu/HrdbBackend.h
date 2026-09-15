@@ -57,6 +57,7 @@ public:
     /// `break`, serviced at the next VBL — works while running, which is what
     /// HRDB exists for here (docs/FUTURE.md §1).
     void pause() override;
+    void setFloppyImage(int drive, const QString &path) override;
     void refresh() override;
 
     void consoleCommand(const QString &command) override;
@@ -138,6 +139,7 @@ private:
 
     QString m_stderrText;
     qint64 m_stderrConsumed = 0;
+    QString m_sessionDir;
 
     MachineState m_state;
     bool m_stopped = false;

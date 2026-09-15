@@ -651,6 +651,39 @@ void EmulatorHost::pause()
     m_embedSocket.writeLine("hatari-debug b pc ! 0 :once\n");
 }
 
+void EmulatorHost::setFloppyImage(int drive, const QString &path)
+{
+    if (drive < 0 || drive > 1)
+        return;
+    const QChar letter(QLatin1Char('A' + drive));
+    if (!isRunning()) {
+        emit logLine(tr("Floppy %1: %2 (applies when the emulator starts)")
+                         .arg(letter, path.isEmpty() ? tr("empty") : path));
+        return;
+    }
+    // Default Run stops at entry: Hatari is in the debugger and does not
+    // service the control socket. `setopt` is the debugger command that
+    // applies --disk-a/--disk-b (and `none` to eject). Paths with spaces are
+    // staged first because Hatari tokenizes with strtok. While emulation is
+    // running stdin is unread, so that case uses hatari-debug (the same
+    // socket path as pause) rather than hatari-option.
+    const QString staged = floppyImageForDebugger(m_config.sessionDir, drive, path);
+    const QString cmd = floppySetoptCommand(drive, staged);
+    if (cmd.isEmpty())
+        return;
+    emit logLine(tr("Floppy %1: %2").arg(letter, path.isEmpty() ? tr("ejected") : path));
+    if (isStopped()) {
+        command(cmd);
+        return;
+    }
+    if (!m_embedSocket.connected()) {
+        emit logLine(tr("Pause the program (or stop at a breakpoint) to change floppy %1.")
+                         .arg(letter));
+        return;
+    }
+    m_embedSocket.writeLine(QByteArray("hatari-debug ") + cmd.toUtf8() + '\n');
+}
+
 void EmulatorHost::armBreakpoint(const QString &condition)
 {
     command(condition);

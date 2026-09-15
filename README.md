@@ -37,6 +37,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats
   plus STOS `.MBK` and an assembler include
+- **Project files** — the left pane groups the host project (the GEMDOS hard drive) with Disk A
+  and Disk B. Change or eject a floppy there (the same paths as in project settings); export
+  selected hard-drive files to a new `.st` or `.msa` image
 - **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
   monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
@@ -253,12 +256,14 @@ of an upstream Hatari limitation rather than anything in `PiST`:
 | Break in when the program faults | ✓ | ✓ | ✓ |
 | Pause a healthy running program | ✓ | ✗\* | ✓ |
 | Change breakpoints while running | ✓ | ✗\* | ✓ |
-| Swap disk images at runtime | ✓ | ✗ | ✓ |
+| Swap disk images while stopped | ✓ | ✓ | ✓ |
+| Swap disk images while the program is running | ✓ | ✗\* | ✓ |
 
-\* Pause on Windows, and live breakpoint changes there, work when the debug transport is the
-[hrdb-main fork](https://github.com/tattlemuss/hatari) (Project Settings → Debug transport),
-which speaks typed TCP instead of the POSIX-only control socket. Stock Hatari on Windows still
-lacks them.
+\* Pause on Windows, and live breakpoint / running-disk changes there, work when the debug
+transport is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (Project Settings → Debug
+transport), which speaks typed TCP instead of the POSIX-only control socket. Stock Hatari on
+Windows still lacks those *while the program is running*; a stopped session can still insert or
+eject a floppy via the debugger (`setopt`).
 
 The three gaps are all downstream of one thing: Hatari's control channel is compiled only on
 POSIX systems (`HAVE_UNIX_DOMAIN_SOCKETS`), and it is the only way to command an *already running*

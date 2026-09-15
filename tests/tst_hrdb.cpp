@@ -68,6 +68,9 @@ private slots:
     /// Pause must break into a running emulation over HRDB's `break`, which is
     /// the capability this backend exists to provide (the Windows pause gap).
     void pauseStopsARunningProgram();
+    /// Sidebar Change while stopped must use `console setopt`, not
+    /// hatari-option (SDL does not pump the control socket in the break loop).
+    void floppyInsertsWhileStopped();
 
     /// The path the shipping build uses for memory editing: a `w b` write is
     /// translated to the fork's 3-arity `memset`, and the byte must read back
@@ -360,6 +363,36 @@ void TstHrdb::pauseStopsARunningProgram()
     QVERIFY2(state.pc >= state.textBase && state.pc < state.textBase + 0x20,
              qPrintable(QStringLiteral("PC %1 outside program text")
                             .arg(state.pc, 0, 16)));
+    host.stop();
+}
+
+void TstHrdb::floppyInsertsWhileStopped()
+{
+    const QString image = m_sourceDir
+        + QStringLiteral("/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st");
+    QFile img(image);
+    QVERIFY(img.open(QIODevice::WriteOnly));
+    QByteArray data(737280, '\0');
+    data[0] = static_cast<char>(0x60);
+    data[1] = static_cast<char>(0x1c);
+    img.write(data);
+    img.close();
+
+    HrdbBackend host;
+    MachineState state;
+    QVERIFY2(startToEntry(&host, &state), "no entry stop over HRDB");
+    QVERIFY(host.isStopped());
+
+    QSignalSpy finished(&host, &IDebugBackend::commandFinished);
+    host.setFloppyImage(0, image);
+    QVERIFY2(finished.wait(15000), "console setopt --disk-a did not complete");
+
+    bool inserted = false;
+    for (const QString &line : m_log) {
+        if (line.contains(QLatin1String("Inserted disk")))
+            inserted = true;
+    }
+    QVERIFY2(inserted, qPrintable("live insert did not reach Hatari:\n" + m_log.join(QLatin1Char('\n'))));
     host.stop();
 }
 

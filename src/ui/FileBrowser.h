@@ -6,18 +6,29 @@
 
 #include <QWidget>
 
+#include <QStringList>
+
 class QFileSystemModel;
+class QLabel;
 class QLineEdit;
+class QPushButton;
+class QStandardItemModel;
 class QTreeView;
 
 namespace pist {
 
-/// Browsable view of the project's directory.
+/// Browsable view of the project's host directory (the GEMDOS hard drive)
+/// plus the floppy images mounted as A: and B:.
 ///
-/// Scoped to the directory of the open source file rather than the whole
-/// filesystem: the useful set of files is the project's own, and an unbounded
-/// tree makes it harder to find them. A ".." style escape is deliberately not
-/// offered — the location can be set directly in the path field.
+/// The hard-drive pane is scoped to the directory of the open source file
+/// rather than the whole filesystem: the useful set of files is the
+/// project's own, and an unbounded tree makes it harder to find them. A ".."
+/// style escape is deliberately not offered — the location can be set
+/// directly in the path field.
+///
+/// Disk A/B list the FAT12 contents of the inserted `.st` / `.msa` image.
+/// Changing or ejecting a disk updates the project settings (the same paths
+/// the emulator settings page stores); live insertion is the MainWindow's job.
 class FileBrowser : public QWidget
 {
     Q_OBJECT
@@ -35,6 +46,16 @@ public slots:
     /// The directory currently shown, or empty before the first show.
     QString directory() const;
 
+    /// Inserted floppy images, index 0 => drive A. Empty string = ejected.
+    void setFloppyImages(const QStringList &images);
+    QStringList floppyImages() const;
+
+    /// Host paths selected in the hard-drive tree (files and folders).
+    QStringList selectedHardDrivePaths() const;
+
+    /// Write the current hard-drive selection to a `.st` or `.msa` image.
+    bool exportHardDriveSelection(const QString &imagePath, QString *error);
+
 signals:
     /// A file was activated (double-clicked or Enter). The receiver decides
     /// what to do with the path.
@@ -50,6 +71,9 @@ signals:
     /// A file or directory is about to be deleted through the browser, so an
     /// open document on it can be dealt with before it vanishes.
     void pathDeleted(const QString &path);
+
+    /// Drive 0 is A:, drive 1 is B:. An empty path means the drive was ejected.
+    void floppyImageChanged(int drive, const QString &path);
 
 public slots:
     /// Create an empty file in `dir`. Returns the new path, or empty on
@@ -72,6 +96,9 @@ private slots:
     void onActivated(const QModelIndex &index);
     void onContextMenu(const QPoint &pos);
     void onModelPathRenamed(const QString &path, const QString &oldName, const QString &newName);
+    void onExportFloppy();
+    void onChangeFloppy();
+    void onEjectFloppy();
 
 private:
     /// The directory context menu actions apply to: the selected directory,
@@ -82,9 +109,23 @@ private:
     /// deletePath. Returns true when the path is gone.
     bool confirmAndDelete(const QString &path);
 
+    void refreshFloppy(int drive);
+    int driveOfSender() const;
+
+    struct FloppyPane {
+        QPushButton *change = nullptr;
+        QPushButton *eject = nullptr;
+        QTreeView *view = nullptr;
+        QStandardItemModel *model = nullptr;
+        QLabel *diskName = nullptr;
+    };
+
     QFileSystemModel *m_model = nullptr;
     QTreeView *m_view = nullptr;
     QLineEdit *m_pathEdit = nullptr;
+    QPushButton *m_export = nullptr;
+    FloppyPane m_floppy[2];
+    QString m_floppyPath[2];
 };
 
 } // namespace pist

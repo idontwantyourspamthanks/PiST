@@ -34,7 +34,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor) and every debug panel, plus the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons; preferences in QSettings), and the sprite editor (`ImageEditor`, `ImageCanvas`). |
 | `src/editor/` | `CodeEditor` (the editor widget: line-number gutter, breakpoint dots, execution-line highlight, error markers) and `AsmHighlighter` (m68k Motorola syntax, with light and dark colour sets). |
 | `src/image/` | Sprite document and ST graphics: `ImageDocument` (`.pim` JSON, layers, frames, phases), `Palette` (STfm 512 / STe 4096 cubes and colour words), `Tools` (brush/line/rect/fill), `Transform` (flip, rotate, onion/phase math), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include). |
-| `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (the AUTO-folder FAT12 writer for pre-1.04 TOS). |
+| `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (AUTO-folder FAT12 writer for pre-1.04 TOS, plus `.st` / `.msa` listing and export). |
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `HatariTextParse` (their shared `d` parser), `SessionConfig` (one session's argv), `HatariProbe` (capability detection), `TosRom` (ROM discovery + version), `Machine` (ST/STe/TT/Falcon model), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
 | `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent. |
@@ -63,8 +63,8 @@ Everything else in this document is a consequence of that rule. The debug transp
   `DisassemblyView` (current PC highlighted), `MemoryView` (hex, byte editing, address navigation),
   `StackView` (longs at SP, return-address annotation), `HardwareView` (`info <subject>` output),
   `PcHistoryView` (`history` output), `BreakpointPanel` (breakpoint + watchpoint table),
-  `FileBrowser` (project tree). Each is a thin view; `MainWindow` feeds it parsed state and routes
-  its edit/activation signals to debugger writes.
+  `FileBrowser` (hard-drive project tree plus Disk A/B floppy listings). Each is a thin view;
+  `MainWindow` feeds it parsed state and routes its edit/activation signals to debugger writes.
 - **`editor/CodeEditor.{h,cpp}`** — `QPlainTextEdit` subclass with a `LineNumberArea` gutter.
   Emits `gutterClicked` (breakpoint toggle) and `gutterContextMenuRequested`; paints the execution
   line and error underlines via extra selections.
@@ -140,6 +140,21 @@ channels it actually offers. Two channels, deliberately **not interchangeable**:
   is the only channel Hatari reads while the debugger is *stopped*.
 - **the control socket is for control commands** (`hatari-stop`, `hatari-option`) and works **only
   while emulation is running**, because Hatari services it solely from its SDL event pump.
+
+Live floppy insert/eject (`IDebugBackend::setFloppyImage`) follows that split. A stopped session
+sends Hatari's debugger command `setopt --disk-a|--disk-b <path>` (`none` ejects) over stdin
+(native) or `console setopt …` (HRDB). A native session that is *running* uses `hatari-option` on
+the control socket instead, because stdin is unread then. HRDB uses `console setopt` in both
+states (its TCP channel is serviced in the break loop and while emulating; `needsStop` is false
+so a running insert is not deferred). Paths with spaces cannot be given to `setopt` as-is
+(Hatari tokenizes with `strtok` and treats quotes as expressions), so they are staged as a
+symlink under the session directory. A running native session sends that `setopt` via
+`hatari-debug` (the same control-socket path as pause). The AUTO-folder floppy used for TOS
+< 1.04 autostart must not overwrite a user image already in A: — that image is moved to B:
+and the log says so. Fast-forward is omitted while a user floppy is mounted, because TOS
+floppy I/O misses sectors under turbo. The Disk A/B listings in the project pane are a
+host-side FAT12 parse of the image file — they update even when no emulator is running, and
+they do not mean Hatari has mounted the disk.
 
 **Completion is framed by the `> ` prompt, not by content.** The debugger prints `> ` before each
 blocking read and cannot print the next one until the current command finishes, so a prompt is a

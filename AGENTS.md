@@ -61,6 +61,8 @@ code. Use this table for a quick lookup:
 | The text editor or gutter/breakpoints | `src/editor/CodeEditor.{h,cpp}` |
 | The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
 | `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats,Transform}.*` |
+| Project files / Disk A / Disk B | `src/ui/FileBrowser.{h,cpp}` |
+| `.st` / `.msa` floppy images | `src/build/FloppyImage.{h,cpp}` |
 | Syntax highlighting | `src/editor/AsmHighlighter.{h,cpp}` |
 | The build pipeline / diagnostics | `src/build/BuildService.{h,cpp}` |
 | PC ↔ source-line mapping | `src/build/{LineMap,LinkMap,ProgramLineMap}.{h,cpp}` |

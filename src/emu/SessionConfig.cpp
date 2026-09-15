@@ -28,9 +28,13 @@ QStringList SessionConfig::toArgv() const
 
     // Floppy drives are individually addressed; there is no generic --disk.
     static const char *const floppyOpts[] = {"--disk-a", "--disk-b"};
+    bool userFloppy = false;
+    const bool userDiskA = floppyImages.size() > 0 && !floppyImages.at(0).isEmpty();
     for (int i = 0; i < floppyImages.size() && i < 2; ++i) {
-        if (!floppyImages.at(i).isEmpty())
+        if (!floppyImages.at(i).isEmpty()) {
             argv << QString::fromLatin1(floppyOpts[i]) << floppyImages.at(i);
+            userFloppy = true;
+        }
     }
 
     // A reset-requiring option change raises a modal dialog inside the emulator
@@ -40,7 +44,9 @@ QStringList SessionConfig::toArgv() const
     argv << QStringLiteral("--confirm-quit") << QStringLiteral("off");
     argv << QStringLiteral("--sound") << QStringLiteral("off");
 
-    if (fastForward)
+    // Cover disks (and TOS floppy I/O in general) miss sectors under
+    // fast-forward. Keep turbo only when no user image is mounted.
+    if (fastForward && !userFloppy)
         argv << QStringLiteral("--fast-forward") << QStringLiteral("yes");
 
     // `-d <dir>` sets the GEMDOS HD directory. Note that `--gemdos-drive` only
@@ -48,7 +54,12 @@ QStringList SessionConfig::toArgv() const
     // directory normally comes from the program positional below. On the
     // AUTO-folder path GEMDOS HD does not exist (TOS < 1.04 rejects it), so
     // the floppy replaces both it and the positional.
-    if (!bootFloppyPath.isEmpty()) {
+    //
+    // `--disk-a` is last-wins. A user image on A: must not be overwritten by
+    // the AUTO-folder boot floppy; launchEmulator clears A: and shifts that
+    // image to B: when TOS actually needs A: for autostart.
+    const bool autoBoot = !bootFloppyPath.isEmpty() && !userDiskA;
+    if (autoBoot) {
         argv << QStringLiteral("--disk-a") << bootFloppyPath;
         if (debugToggle)
             argv << QStringLiteral("--debug");
@@ -76,7 +87,7 @@ QStringList SessionConfig::toArgv() const
     // in turn is what makes Hatari load its symbols (docs/PLAN.md §5 rule 1).
     // On the AUTO-folder path there is no positional: the program boots from
     // the floppy (and a positional would wrongly also mount a GEMDOS HD).
-    if (!programPath.isEmpty() && bootFloppyPath.isEmpty())
+    if (!programPath.isEmpty() && !autoBoot)
         argv << programPath;
 
     return argv;

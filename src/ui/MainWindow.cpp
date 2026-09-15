@@ -752,6 +752,16 @@ void MainWindow::createDocks()
                   makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
     connect(m_fileBrowser, &FileBrowser::newImageRequested, this, &MainWindow::newImageIn);
+    connect(m_fileBrowser, &FileBrowser::floppyImageChanged, this,
+            [this](int drive, const QString &path) {
+                while (m_settings.floppyImages.size() <= drive)
+                    m_settings.floppyImages.append(QString());
+                if (drive >= 0 && drive < m_settings.floppyImages.size())
+                    m_settings.floppyImages[drive] = path;
+                persistSettings();
+                if (m_host)
+                    m_host->setFloppyImage(drive, path);
+            });
     connect(m_fileBrowser, &FileBrowser::pathRenamed, this,
             [this](const QString &oldPath, const QString &newPath) {
                 // An open document follows its file; breakpoints are file:line
@@ -1320,6 +1330,7 @@ void MainWindow::openProject()
 
     m_settings = loaded;
     settings::rememberLastProject(path, source);
+    syncFileBrowserDisks();
     statusBar()->showMessage(tr("Opened project %1").arg(QFileInfo(path).fileName()), 5000);
     m_log->appendPlainText(tr("[project] loaded %1").arg(path));
 }
@@ -1347,6 +1358,27 @@ void MainWindow::saveProject()
     m_log->appendPlainText(tr("[project] saved %1").arg(path));
 }
 
+void MainWindow::persistSettings()
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty())
+        return;
+    m_settings.sourceFile = source;
+    QString error;
+    const QString path = settings::projectFileFor(source);
+    if (!settings::save(m_settings, path, &error)) {
+        statusBar()->showMessage(tr("Could not save project settings: %1").arg(error), 8000);
+        return;
+    }
+    settings::rememberLastProject(path, source);
+}
+
+void MainWindow::syncFileBrowserDisks()
+{
+    if (m_fileBrowser)
+        m_fileBrowser->setFloppyImages(m_settings.floppyImages);
+}
+
 void MainWindow::editSettings()
 {
     SettingsDialog dialog(m_settings, this);
@@ -1358,6 +1390,11 @@ void MainWindow::editSettings()
     // The dialog persisted the application-wide appearance preferences on
     // accept; bring them into effect now rather than at next start.
     applyAppearance();
+    syncFileBrowserDisks();
+    if (m_host) {
+        m_host->setFloppyImage(0, m_settings.floppyImages.value(0));
+        m_host->setFloppyImage(1, m_settings.floppyImages.value(1));
+    }
 
     // Persist immediately when the project is already known, so a settings change
     // is not lost if the session is closed without an explicit save.
@@ -1413,6 +1450,7 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
     m_settings = loaded;
 
     settings::rememberLastProject(projectPath, sourcePath);
+    syncFileBrowserDisks();
     m_log->appendPlainText(tr("[project] loaded %1").arg(projectPath));
     statusBar()->showMessage(
         tr("Project settings: %1, %2, %3 MiB")
@@ -1963,6 +2001,26 @@ void MainWindow::launchEmulator()
         }
         config.gemdosDir.clear();
         config.debugToggle = true;
+
+        // TOS < 1.04 boots from A:. A user image already in A: would be
+        // overwritten by auto.st (Hatari's last --disk-a wins) — the sidebar
+        // would still list the magazine while Hatari ran the AUTO floppy.
+        const QString userA = config.floppyImages.value(0);
+        if (!userA.isEmpty()) {
+            while (config.floppyImages.size() < 2)
+                config.floppyImages.append(QString());
+            if (config.floppyImages.at(1).isEmpty()) {
+                config.floppyImages[1] = userA;
+                m_log->appendPlainText(
+                    tr("[run] TOS %1 autostarts from drive A:, so '%2' is in B:.")
+                        .arg(rom.versionText(), QFileInfo(userA).fileName()));
+            } else {
+                m_log->appendPlainText(
+                    tr("[run] TOS %1 needs drive A: to autostart; '%2' was not mounted.")
+                        .arg(rom.versionText(), QFileInfo(userA).fileName()));
+            }
+            config.floppyImages[0].clear();
+        }
     }
     config.tosPath = rom.path;
 
@@ -1979,6 +2037,13 @@ void MainWindow::launchEmulator()
     }
 
     m_log->appendPlainText(tr("Session started in %1").arg(sessionDir));
+    const QString diskA = !config.floppyImages.value(0).isEmpty()
+        ? config.floppyImages.at(0)
+        : config.bootFloppyPath;
+    if (!diskA.isEmpty())
+        m_log->appendPlainText(tr("[run] Floppy A: %1").arg(diskA));
+    if (!config.floppyImages.value(1).isEmpty())
+        m_log->appendPlainText(tr("[run] Floppy B: %1").arg(config.floppyImages.at(1)));
 }
 
 void MainWindow::stopSession()

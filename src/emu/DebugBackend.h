@@ -88,6 +88,18 @@ public:
     /// through command() instead and stay silent.
     virtual void consoleCommand(const QString &commandText) { command(commandText); }
 
+    /// Insert or eject a floppy in a live session. Drive 0 is A:. An empty
+    /// path ejects (`none`). While the debugger is stopped this is Hatari's
+    /// `setopt --disk-a|--disk-b` (stdin / HRDB `console`); while native
+    /// emulation is running it is `hatari-option` on the control socket,
+    /// which is otherwise unread. No session: a no-op — the path is already
+    /// in project settings for the next Run. Default is a no-op.
+    virtual void setFloppyImage(int drive, const QString &path)
+    {
+        Q_UNUSED(drive);
+        Q_UNUSED(path);
+    }
+
     /// The backend this is, for the log and for diagnostics.
     virtual BackendKind kind() const = 0;
 

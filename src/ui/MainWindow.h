@@ -184,6 +184,12 @@ private:
     /// Load the project settings that sit beside a source file, if any.
     void loadProjectForSource(const QString &sourcePath);
 
+    /// Persist `m_settings` beside the current source, if a source is known.
+    void persistSettings();
+
+    /// Keep the project-files pane's Disk A/B groups in line with settings.
+    void syncFileBrowserDisks();
+
     /// Update the title and the Save action to reflect the modified state.
     void updateModifiedState();
 

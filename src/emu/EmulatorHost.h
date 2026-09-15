@@ -79,6 +79,7 @@ public:
     /// `hatari-stop` over the control socket — the only channel serviced
     /// while emulation is running (docs/PLAN.md §3.3).
     void pause() override;
+    void setFloppyImage(int drive, const QString &path) override;
 
     /// Queue the commands needed to render a full state snapshot.
     void refresh() override;

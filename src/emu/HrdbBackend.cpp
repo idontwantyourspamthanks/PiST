@@ -116,6 +116,7 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
 
     if (!paths::ensureDirectory(config.sessionDir, error))
         return false;
+    m_sessionDir = config.sessionDir;
 
     m_process = new QProcess(this);
 
@@ -220,7 +221,7 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
 void HrdbBackend::stop()
 {
     const bool hadSession = m_process != nullptr || m_stopped;
-
+    m_sessionDir.clear();
 
     m_embedSocket.close();
     m_connectRetry->stop();
@@ -699,6 +700,36 @@ void HrdbBackend::pause()
     Pending p;
     p.text = QStringLiteral("break");
     p.wire = QStringLiteral("break");
+    enqueue(p);
+}
+
+void HrdbBackend::setFloppyImage(int drive, const QString &path)
+{
+    if (drive < 0 || drive > 1)
+        return;
+    if (!isRunning()) {
+        emit logLine(tr("Floppy %1: %2 (applies when the emulator starts)")
+                         .arg(QChar(QLatin1Char('A' + drive)),
+                              path.isEmpty() ? tr("empty") : path));
+        return;
+    }
+    // The control socket is SDL-pumped and unread in the remote break loop
+    // (the typical session: stopped at entry). `console setopt` is serviced
+    // both there and while running. needsStop is false so a running session
+    // is not deferred until the next breakpoint — translateCommand would
+    // otherwise gate console passthroughs on a stop.
+    const QString cmd =
+        floppySetoptCommand(drive, floppyImageForDebugger(m_sessionDir, drive, path));
+    if (cmd.isEmpty())
+        return;
+    emit logLine(tr("Floppy %1: %2")
+                     .arg(QChar(QLatin1Char('A' + drive)),
+                          path.isEmpty() ? tr("ejected") : path));
+    Pending p;
+    p.text = cmd;
+    p.wire = QStringLiteral("console ") + cmd;
+    p.captureStderr = true;
+    p.needsStop = false;
     enqueue(p);
 }
 

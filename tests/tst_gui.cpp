@@ -20,6 +20,7 @@
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
 #include "ui/MainWindow.h"
+#include "build/FloppyImage.h"
 #include "ui/MemoryView.h"
 #include "ui/SetupDialog.h"
 #include "ui/Appearance.h"
@@ -31,6 +32,7 @@
 #include <QAction>
 #include <QComboBox>
 #include <QDir>
+#include <QFileSystemModel>
 #include <QLineEdit>
 #include <QDockWidget>
 #include <QFileInfo>
@@ -39,16 +41,22 @@
 #include <QPushButton>
 #include <QMenu>
 #include <QHeaderView>
+#include <QItemSelectionModel>
+#include <QLabel>
 #include <QTabBar>
 #include <QTableWidget>
 #include <QToolButton>
 #include <QProcess>
 #include <QTreeView>
+#include <QAbstractItemModel>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QFontDatabase>
 #include <QSettings>
 #include <QtTest>
+
+#include <functional>
 
 using namespace pist;
 
@@ -113,6 +121,9 @@ private slots:
     /// Create/rename/delete through the project files panel, including what
     /// happens to the open document when its file is renamed or deleted.
     void fileBrowserFileOperations();
+    /// Disk A/B groups list a mounted image, eject it, and export the
+    /// hard-drive selection to a new .st / .msa floppy.
+    void fileBrowserFloppyGroups();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -1012,6 +1023,28 @@ void TstGui::floppyImagesReachTheCommandLine()
     const QString joinedA = onlyA.toArgv().join(QLatin1Char(' '));
     QVERIFY(joinedA.contains(QLatin1String("--disk-a")));
     QVERIFY2(!joinedA.contains(QLatin1String("--disk-b")), qPrintable(joinedA));
+
+    // Last --disk-a wins. A user image on A: must survive the AUTO-folder path
+    // that TOS < 1.04 uses to autostart — otherwise the sidebar lists a
+    // magazine while Hatari boots auto.st.
+    SessionConfig clash;
+    clash.hatariPath = QStringLiteral("hatari");
+    clash.programPath = QStringLiteral("/tmp/prog.prg");
+    clash.floppyImages = {QStringLiteral("/disks/magazine.st"), QString()};
+    clash.bootFloppyPath = QStringLiteral("/tmp/auto.st");
+    const QStringList clashArgv = clash.toArgv();
+    QVERIFY2(clashArgv.contains(QStringLiteral("/disks/magazine.st")),
+             qPrintable(clashArgv.join(QLatin1Char(' '))));
+    QVERIFY2(!clashArgv.contains(QStringLiteral("/tmp/auto.st")),
+             qPrintable(clashArgv.join(QLatin1Char(' '))));
+
+    SessionConfig spaced;
+    spaced.hatariPath = QStringLiteral("hatari");
+    spaced.programPath = QStringLiteral("/tmp/prog.prg");
+    spaced.floppyImages = {
+        QStringLiteral("/home/ryan/Code/AtariST/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st")
+    };
+    QVERIFY(spaced.toArgv().contains(spaced.floppyImages.at(0)));
 }
 
 void TstGui::fileBrowserShowsTheProjectDirectory()
@@ -1034,7 +1067,7 @@ void TstGui::fileBrowserShowsTheProjectDirectory()
     // browser and the editor never disagree about which project is open.
     window.openPath(src);
 
-    auto *view = browser->findChild<QTreeView *>();
+    auto *view = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
     QVERIFY(view);
     QVERIFY2(view->model(), "the browser must have a model");
     const QString rootPath = view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString();
@@ -1099,6 +1132,102 @@ void TstGui::fileBrowserFileOperations()
     }
     QVERIFY(browser->deletePath(folder));
     QVERIFY(!QFileInfo(folder).exists());
+}
+
+void TstGui::fileBrowserFloppyGroups()
+{
+    const QString dir = m_work->path() + QStringLiteral("/disks");
+    QVERIFY(QDir().mkpath(dir));
+    const QString src = dir + QStringLiteral("/prog.s");
+    {
+        QFile f(src);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\tnop\n");
+    }
+    const QString payload = dir + QStringLiteral("/hello.txt");
+    {
+        QFile f(payload);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hi");
+    }
+
+    const QString prgPath = dir + QStringLiteral("/boot.prg");
+    {
+        QFile f(prgPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(32, 'A'));
+    }
+    const QString image = dir + QStringLiteral("/boot.st");
+    QString error;
+    QVERIFY2(floppy::writeAutoFolderImage(image, prgPath, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    window.openPath(src);
+
+    QVERIFY(browser->findChild<QTreeView *>(QStringLiteral("hardDriveView")));
+    auto *diskA = browser->findChild<QTreeView *>(QStringLiteral("diskAView"));
+    auto *diskB = browser->findChild<QTreeView *>(QStringLiteral("diskBView"));
+    auto *exportBtn = browser->findChild<QPushButton *>(QStringLiteral("hardDriveExport"));
+    auto *changeA = browser->findChild<QPushButton *>(QStringLiteral("diskAChange"));
+    auto *ejectA = browser->findChild<QPushButton *>(QStringLiteral("diskAEject"));
+    QVERIFY(diskA && diskB && exportBtn && changeA && ejectA);
+
+    QSignalSpy spy(browser, &FileBrowser::floppyImageChanged);
+    browser->setFloppyImages({image, QString()});
+    QCOMPARE(browser->floppyImages().at(0), image);
+    QVERIFY(ejectA->isEnabled());
+    auto *nameA = browser->findChild<QLabel *>(QStringLiteral("diskAName"));
+    QVERIFY(nameA);
+    QCOMPARE(nameA->text(), QStringLiteral("boot.st"));
+
+    std::function<bool(QAbstractItemModel *, const QModelIndex &, const QString &)> findInTree;
+    findInTree = [&](QAbstractItemModel *model, const QModelIndex &parent,
+                     const QString &text) -> bool {
+        const int rows = model->rowCount(parent);
+        for (int r = 0; r < rows; ++r) {
+            const QModelIndex idx = model->index(r, 0, parent);
+            if (idx.data().toString().compare(text, Qt::CaseInsensitive) == 0)
+                return true;
+            if (findInTree(model, idx, text))
+                return true;
+        }
+        return false;
+    };
+    QVERIFY2(findInTree(diskA->model(), QModelIndex(), QStringLiteral("AUTO")),
+             "Disk A must list the AUTO folder from the mounted image");
+    QVERIFY(findInTree(diskA->model(), QModelIndex(), QStringLiteral("PROG.PRG")));
+
+    ejectA->click();
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toInt(), 0);
+    QVERIFY(spy.at(0).at(1).toString().isEmpty());
+    QVERIFY(browser->floppyImages().at(0).isEmpty());
+    QVERIFY(!ejectA->isEnabled());
+
+    auto *hd = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
+    QVERIFY(hd);
+    auto *fs = qobject_cast<QFileSystemModel *>(hd->model());
+    QVERIFY(fs);
+    const QModelIndex found = fs->index(payload);
+    QVERIFY2(found.isValid(), "hello.txt must be visible on the hard drive");
+    hd->selectionModel()->select(found, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+
+    const QString exported = dir + QStringLiteral("/out.st");
+    QVERIFY2(browser->exportHardDriveSelection(exported, &error), qPrintable(error));
+    const QVector<floppy::Entry> listed = floppy::listImage(exported, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    bool haveHello = false;
+    for (const floppy::Entry &e : listed) {
+        if (e.path.compare(QStringLiteral("HELLO.TXT"), Qt::CaseInsensitive) == 0)
+            haveHello = true;
+    }
+    QVERIFY2(haveHello, "exported image must contain the selected hard-drive file");
+
+    const QString exportedMsa = dir + QStringLiteral("/out.msa");
+    QVERIFY2(browser->exportHardDriveSelection(exportedMsa, &error), qPrintable(error));
+    QVERIFY(QFileInfo(exportedMsa).size() > 10);
 }
 
 // The editor's modified state drives the window title and the save prompt, and

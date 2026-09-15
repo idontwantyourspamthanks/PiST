@@ -50,6 +50,27 @@ QString findTos()
     return chosen.path;
 }
 
+QString liveInsertImage(const QString &fallbackDir)
+{
+    // The path that failed in the wild: spaces (and parentheses) that Hatari's
+    // setopt strtok / unescaped hatari-option split apart.
+    const QString magazine = QStringLiteral(
+        "/home/ryan/Code/AtariST/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st");
+    if (QFileInfo::exists(magazine))
+        return magazine;
+
+    const QString dest = fallbackDir + QStringLiteral(
+        "/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st");
+    QFile img(dest);
+    if (!img.open(QIODevice::WriteOnly))
+        return {};
+    QByteArray data(737280, '\0');
+    data[0] = static_cast<char>(0x60);
+    data[1] = static_cast<char>(0x1c);
+    img.write(data);
+    return dest;
+}
+
 } // namespace
 
 class TstEmulatorHost : public QObject
@@ -72,6 +93,12 @@ private slots:
     void sourceLineBreakpointFiresAndResolvesBack();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
+    /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
+    /// not `hatari-option` (the control socket is unread then).
+    void floppyInsertsWhileStopped();
+    /// The same Change while the program is running goes over hatari-option,
+    /// which must keep spaces in the image path (`\ `).
+    void floppyInsertsWhileRunning();
     /// Pause must enter the debugger on a running program (a hatari-debug
     /// one-shot breakpoint over the control socket), not merely halt the VBL
     /// loop — hatari-stop alone would wedge the session with no prompt.
@@ -913,6 +940,98 @@ void TstEmulatorHost::floppyIsMountedInTheEmulator()
             inserted = true;
     }
     QVERIFY2(inserted, qPrintable("the floppy was not mounted:\n" + log.join(QLatin1Char('\n'))));
+
+    host.stop();
+}
+
+void TstEmulatorHost::floppyInsertsWhileStopped()
+{
+    const QString image = liveInsertImage(m_sourceDir);
+    QVERIFY2(QFileInfo::exists(image), qPrintable(image));
+
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/floppy-live");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+    QStringList log;
+    connect(&host, &EmulatorHost::logLine, this,
+            [&log](const QString &line) { log.append(line); });
+
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "no entry stop");
+    QVERIFY(host.isStopped());
+
+    const QString staged = floppyImageForDebugger(config.sessionDir, 0, image);
+    QVERIFY2(!staged.contains(QLatin1Char(' ')), qPrintable(staged));
+
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+    host.setFloppyImage(0, image);
+    QVERIFY2(finished.wait(15000), "setopt --disk-a did not complete");
+
+    bool inserted = false;
+    for (const QString &line : log) {
+        if (line.contains(QLatin1String("Inserted disk")))
+            inserted = true;
+    }
+    QVERIFY2(inserted, qPrintable("live insert did not reach Hatari:\n" + log.join(QLatin1Char('\n'))));
+
+    host.stop();
+}
+
+void TstEmulatorHost::floppyInsertsWhileRunning()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    QVERIFY(caps.valid);
+    if (!caps.hasControlSocket)
+        QSKIP("running insert needs the control socket");
+
+    const QString image = liveInsertImage(m_sourceDir);
+    QVERIFY2(QFileInfo::exists(image), qPrintable(image));
+
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/floppy-run");
+    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+    QStringList log;
+    connect(&host, &EmulatorHost::logLine, this,
+            [&log](const QString &line) { log.append(line); });
+
+    QVERIFY(host.start(config, nullptr));
+    QTRY_VERIFY_WITH_TIMEOUT(host.isStopped(), 20000);
+
+    host.resume();
+    QVERIFY(!host.isStopped());
+
+    host.setFloppyImage(0, image);
+
+    auto inserted = [&log] {
+        for (const QString &line : log) {
+            if (line.contains(QLatin1String("Inserted disk")))
+                return true;
+        }
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(inserted(), 15000);
+    QVERIFY2(inserted(), qPrintable("running insert did not reach Hatari:\n" + log.join(QLatin1Char('\n'))));
 
     host.stop();
 }

@@ -17,7 +17,7 @@ complete (installers open).
 | vasm m68k (Motorola syntax) assembler integration | C/C++ toolchain (m68k-atari-mint, vlink multi-module) |
 | Embedded Hatari, driven as a subprocess | Falcon DSP *source-level* debugging |
 | Editor with 68k assembly syntax highlighting | Cycle-accurate profiling tooling |
-| File/project browser | Floppy image authoring |
+| File/project browser (hard drive + Disk A/B) | IPF/Pasti floppy authoring |
 | Emulator setup UI (machine, TOS, RAM, monitor, drives) | |
 | Build diagnostics in a Problems pane | |
 | Breakpoints, stepping, disassembly, registers, memory, hardware views | |
@@ -583,7 +583,8 @@ writes to any real `hatari.cfg`.
 - Session directories are cleaned up rather than accumulating one per run
 
 Deliberately deferred: a ROM SHA-256 known-good table and EmuTOS shipping (§7 packaging), and
-multi-file/vlink builds. Floppy *authoring* remains out of scope.
+multi-file/vlink builds. Floppy *listing* and *export* of 720 KiB `.st` / `.msa` images is
+implemented in the project-files pane; writing into an existing image, and IPF/Pasti, are not.
 
 ### Phase 2 — full debug UI on the native backend
 
@@ -668,8 +669,11 @@ Remaining assessments:
 - **libretro in-process core for macOS**: unchanged — licence-compatible, deferred for macOS
   polish; see `docs/FUTURE.md` §4.
 - **Windows control channel**: HRDB supersedes it for pause/live breakpoints (works over TCP
-  everywhere). Runtime disk swapping and `hatari-option` changes remain native-socket-only;
-  the upstream-patch route in `docs/FUTURE.md` §1 stays for those.
+  everywhere). Live floppy insert/eject uses debugger `setopt` while stopped (stdin / HRDB
+  `console`), so that path is not socket-bound. A *running* native session still needs
+  `hatari-option` on the control socket; HRDB can `console setopt` while running. Other
+  live `hatari-option` changes stay native-socket-only; the upstream-patch route in
+  `docs/FUTURE.md` §1 stays for those.
 
 ### Phase 4 — packaging
 
@@ -956,7 +960,9 @@ project; everything before it was either Linux-only or read from source.
    inside the IDE window
 4. ~~Viability of the AUTO-folder / floppy fallback for TOS 1.00/1.02~~ — **verified and
    implemented** (§5 rule 3): TOS 1.02 boots a generated AUTO-folder floppy, the entry breakpoint
-   fires, and with `--debug` arming the mask an illegal instruction breaks in
+   fires, and with `--debug` arming the mask an illegal instruction breaks in.
+   Floppy *listing* and *export* of 720 KiB `.st` / `.msa` images from the project-files pane
+   is also implemented (`src/build/FloppyImage.cpp`); IPF/Pasti and in-place image edits are not.
 5. Windows and macOS behaviour of the embedding paths and `SetParent`
 6. Behaviour of `--control-socket` alternatives on Windows (only stdio is available)
 

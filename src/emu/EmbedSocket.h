@@ -54,6 +54,11 @@ public:
     /// decide whether the session embeds.
     void requestEmbedSize() { writeLine("hatari-embed-info\n"); }
 
+    /// `hatari-option --disk-a|--disk-b <path>` (or `none` to eject). Spaces in
+    /// the path are escaped with `\`, which is what Change_ApplyCommandline
+    /// requires. Dropped when no emulator is connected.
+    void setFloppyImage(int drive, const QString &path);
+
 signals:
     /// A "WxH" video-size report arrived and parsed.
     void sizeReported(int width, int height);
@@ -69,5 +74,16 @@ private:
     QLocalSocket *m_socket = nullptr;
     QByteArray m_buffer;
 };
+
+/// Debugger `setopt` line that inserts or ejects a floppy. `path` must already
+/// be safe for Hatari's space-splitting tokenizer (`floppyImageForDebugger`);
+/// `none` ejects. Used while the debugger is stopped (stdin / HRDB), because
+/// the control socket is not serviced then (docs/PLAN.md §3.3).
+QString floppySetoptCommand(int drive, const QString &path);
+
+/// A path `setopt` can tokenize. Hatari's debugger splits on spaces and
+/// treats quotes as expressions, so a live image whose host path contains
+/// whitespace is staged as a symlink (or copy) under `sessionDir`.
+QString floppyImageForDebugger(const QString &sessionDir, int drive, const QString &path);
 
 } // namespace pist

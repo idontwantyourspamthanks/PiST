@@ -4,8 +4,11 @@
 
 #include "emu/EmbedSocket.h"
 
+#include <QDir>
+#include <QFile>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QtGlobal>
 
 namespace pist {
 
@@ -107,8 +110,70 @@ void EmbedSocket::close()
 
 void EmbedSocket::writeLine(const QByteArray &line)
 {
-    if (m_socket)
-        m_socket->write(line);
+    if (!m_socket)
+        return;
+    m_socket->write(line);
+    // Hatari only reads the socket from the SDL pump; an unflushed write can
+    // sit in Qt's buffer until a later event, which is too late for a live
+    // disk swap the user expects immediately.
+    m_socket->flush();
+}
+
+void EmbedSocket::setFloppyImage(int drive, const QString &path)
+{
+    if (!m_socket || drive < 0 || drive > 1)
+        return;
+    // Change_ApplyCommandline splits on whitespace unless the preceding
+    // character is `\`. Without that, a magazine image whose name contains
+    // spaces is parsed as several arguments and never inserted.
+    QByteArray line = "hatari-option ";
+    line += (drive == 0) ? "--disk-a " : "--disk-b ";
+    const QByteArray raw = path.isEmpty() ? QByteArray("none") : QFile::encodeName(path);
+    for (char c : raw) {
+        if (c == ' ' || c == '\t')
+            line += '\\';
+        line += c;
+    }
+    line += '\n';
+    writeLine(line);
+}
+
+QString floppySetoptCommand(int drive, const QString &path)
+{
+    if (drive < 0 || drive > 1)
+        return {};
+    const char *opt = drive == 0 ? "--disk-a" : "--disk-b";
+    const QString arg = path.isEmpty() ? QStringLiteral("none") : path;
+    return QStringLiteral("setopt %1 %2").arg(QLatin1String(opt), arg);
+}
+
+QString floppyImageForDebugger(const QString &sessionDir, int drive, const QString &path)
+{
+    if (path.isEmpty())
+        return QStringLiteral("none");
+    bool needsStage = false;
+    for (const QChar c : path) {
+        if (c.isSpace()) {
+            needsStage = true;
+            break;
+        }
+    }
+    if (!needsStage || sessionDir.isEmpty() || drive < 0 || drive > 1)
+        return path;
+
+    // DebugUI_ParseCommand tokenizes with strtok(" \t") and evaluates quoted
+    // spans as expressions, so a host path with spaces cannot be passed as-is.
+    // A symlink in the (space-free) session dir keeps writes on the original.
+    const QString staged = QDir(sessionDir).filePath(drive == 0 ? QStringLiteral("disk-a.st")
+                                                                : QStringLiteral("disk-b.st"));
+    QFile::remove(staged);
+#ifndef Q_OS_WIN
+    if (QFile::link(path, staged))
+        return staged;
+#endif
+    if (QFile::copy(path, staged))
+        return staged;
+    return path;
 }
 
 void EmbedSocket::onData()

@@ -29,6 +29,10 @@ public:
     /// it is being sliced; empty when there is none (reopened documents).
     void setUnderlay(const QImage &image);
     void setSelectedPhase(int index);
+    /// Cells about to be sliced into a new phase, drawn as yellow boxes so
+    /// the dialog's numbers can be checked against the art. Image-space.
+    void setSlicePreview(const QVector<QRect> &cells);
+    void clearSlicePreview();
     void setScale(int scale);
     int scale() const { return m_scale; }
     int sheetIndex() const { return m_sheetIndex; }
@@ -61,6 +65,7 @@ private:
     int m_scale = 1;
     int m_selected = -1;
     QImage m_underlay;
+    QVector<QRect> m_slicePreview;
     bool m_dragging = false;
     bool m_dragFromStaging = false;
     int m_dragPhase = -1;

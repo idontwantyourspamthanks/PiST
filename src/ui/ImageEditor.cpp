@@ -28,6 +28,8 @@
 #include <QListWidgetItem>
 #include <QPixmap>
 #include <QPushButton>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QStackedWidget>
 #include <QScrollArea>
 #include <QSize>
@@ -182,6 +184,89 @@ QString swatchStyleSheet(const QColor &color)
                           "QToolButton:checked { border: 3px solid %3; }")
         .arg(color.name(), mute.name(), ring.name());
 }
+
+/// The "slice a phase out of the imported sheet" dialog. Every field change
+/// repaints the preview boxes on the sheet canvas, so the numbers can be
+/// checked against the art before anything is cut.
+class SlicePhaseDialog : public QDialog
+{
+public:
+    SlicePhaseDialog(QWidget *parent, const QString &suggestedName, int defaultW,
+                     int defaultH, int sheetWidth)
+    {
+        setWindowTitle(tr("Slice phase from sheet"));
+        auto *form = new QFormLayout(this);
+
+        m_name = new QLineEdit(suggestedName, this);
+        m_name->setObjectName(QStringLiteral("sliceName"));
+        form->addRow(tr("Name:"), m_name);
+
+        m_w = makeSpin(QStringLiteral("sliceCellW"), defaultW, 1, 320);
+        form->addRow(tr("Sprite width:"), m_w);
+        m_h = makeSpin(QStringLiteral("sliceCellH"), defaultH, 1, 200);
+        form->addRow(tr("Sprite height:"), m_h);
+        m_x = makeSpin(QStringLiteral("sliceX"), 0, 0, sheetWidth - 1);
+        form->addRow(tr("First cell x:"), m_x);
+        m_y = makeSpin(QStringLiteral("sliceY"), 0, 0, 199);
+        form->addRow(tr("First cell y:"), m_y);
+        // A strip runs left to right, so pre-fill how many whole cells fit.
+        m_count = makeSpin(QStringLiteral("sliceCount"),
+                           qMax(1, (sheetWidth - m_x->value()) / qMax(1, m_w->value())), 1, 99);
+        form->addRow(tr("Frame count:"), m_count);
+
+        auto connect_ = [this](QSpinBox *box) {
+            connect(box, qOverload<int>(&QSpinBox::valueChanged), this,
+                    [this] { if (onChanged) onChanged(values()); });
+        };
+        connect_(m_w);
+        connect_(m_h);
+        connect_(m_x);
+        connect_(m_y);
+        connect_(m_count);
+        connect(m_name, &QLineEdit::textChanged, this,
+                [this] { if (onChanged) onChanged(values()); });
+
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                             this);
+        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        form->addRow(buttons);
+    }
+
+    struct Values {
+        QString name;
+        int x = 0;
+        int y = 0;
+        int cellW = 32;
+        int cellH = 32;
+        int count = 1;
+    };
+
+    Values values() const
+    {
+        return {m_name->text().trimmed(), m_x->value(), m_y->value(), m_w->value(),
+                m_h->value(), m_count->value()};
+    }
+
+    std::function<void(const Values &)> onChanged;
+
+private:
+    QSpinBox *makeSpin(const QString &objectName, int value, int min, int max)
+    {
+        auto *box = new QSpinBox(this);
+        box->setObjectName(objectName);
+        box->setRange(min, max);
+        box->setValue(value);
+        return box;
+    }
+
+    QLineEdit *m_name = nullptr;
+    QSpinBox *m_w = nullptr;
+    QSpinBox *m_h = nullptr;
+    QSpinBox *m_x = nullptr;
+    QSpinBox *m_y = nullptr;
+    QSpinBox *m_count = nullptr;
+};
 
 appearance::Icon iconForTool(DrawTool tool)
 {
@@ -582,6 +667,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     });
     right->addWidget(m_phases);
     m_addPhase = makeIconButton(appearance::Icon::AddFrame, tr("Add phase"));
+    m_addPhase->setObjectName(QStringLiteral("imageAddPhase"));
     connect(m_addPhase, &QToolButton::clicked, this, &ImageEditor::addPhase);
     m_removePhase = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete phase"));
     connect(m_removePhase, &QToolButton::clicked, this, &ImageEditor::removePhase);
@@ -1294,6 +1380,45 @@ void ImageEditor::onPhaseCellSizeChanged()
     notifyModified();
 }
 
+void ImageEditor::slicePhaseFromSheet()
+{
+    const int sheet = m_sheetCanvas->sheetIndex();
+    const ImagePhase &current = m_doc.phases().at(m_doc.currentPhase());
+    SlicePhaseDialog dialog(this, tr("Phase %1").arg(m_doc.phaseCount() + 1),
+                            current.cellW, current.cellH,
+                            m_doc.sheets().at(sheet).width);
+    dialog.onChanged = [this, sheet](const SlicePhaseDialog::Values &v) {
+        QVector<QRect> cells;
+        for (int k = 0; k < v.count; ++k)
+            cells.append(QRect(v.x + k * v.cellW, v.y, v.cellW, v.cellH));
+        m_sheetCanvas->setSlicePreview(cells);
+    };
+    dialog.onChanged(dialog.values());
+
+    if (dialog.exec() != QDialog::Accepted) {
+        m_sheetCanvas->clearSlicePreview();
+        return;
+    }
+    const SlicePhaseDialog::Values v = dialog.values();
+    m_sheetCanvas->clearSlicePreview();
+    const int index = addPhaseFromSheet(sheet, v.name, v.x, v.y, v.cellW, v.cellH, v.count);
+    if (index < 0)
+        return;
+    // Cut cells that came out entirely empty are almost always a misplaced
+    // slice: say so instead of failing silently.
+    const QVector<ImageFrame> &frames = m_doc.phases().at(index).frames;
+    bool anyContent = false;
+    for (const ImageFrame &frame : frames)
+        for (int value : frame.composite)
+            anyContent |= value >= 0;
+    if (m_status) {
+        m_status->setText(anyContent
+            ? tr("Sliced %1 frame(s) from the sheet.").arg(frames.size())
+            : tr("Sliced %1 frame(s), but they are all empty — check the position "
+                 "and size against the sheet.").arg(frames.size()));
+    }
+}
+
 int ImageEditor::addPhaseFromSheet(int sheetIndex, const QString &name, int x, int y,
                                    int cellW, int cellH, int count)
 {
@@ -1772,39 +1897,8 @@ void ImageEditor::addPhase()
 {
     // Over a freshly imported sheet, adding a phase slices cells out of it.
     const int sheet = m_sheetCanvas ? m_sheetCanvas->sheetIndex() : -1;
-    const bool canSlice = m_actSheetMode->isChecked()
-        && sheet >= 0 && m_importedSheets.contains(sheet);
-    if (canSlice) {
-        bool ok = false;
-        const QString name = QInputDialog::getText(
-            this, tr("Slice phase from sheet"), tr("Name:"), QLineEdit::Normal,
-            tr("Phase %1").arg(m_doc.phaseCount() + 1), &ok);
-        if (!ok)
-            return;
-        const int cellW = QInputDialog::getInt(this, tr("Slice phase from sheet"),
-                                               tr("Sprite width:"), 32, 1, 320, 1, &ok);
-        if (!ok)
-            return;
-        const int cellH = QInputDialog::getInt(this, tr("Slice phase from sheet"),
-                                               tr("Sprite height:"), 32, 1, 200, 1, &ok);
-        if (!ok)
-            return;
-        const int x = QInputDialog::getInt(this, tr("Slice phase from sheet"),
-                                           tr("First cell x:"), 0, 0, 319, 1, &ok);
-        if (!ok)
-            return;
-        const int y = QInputDialog::getInt(this, tr("Slice phase from sheet"),
-                                           tr("First cell y:"), 0, 0, 199, 1, &ok);
-        if (!ok)
-            return;
-        const int count = QInputDialog::getInt(this, tr("Slice phase from sheet"),
-                                               tr("Frame count:"), 1, 1, 99, 1, &ok);
-        if (!ok)
-            return;
-        const int index = addPhaseFromSheet(sheet, name, x, y, cellW, cellH, count);
-        if (index < 0)
-            return;
-        m_sheetCanvas->setUnderlay(m_sheetUnderlays.value(sheet));
+    if (m_actSheetMode->isChecked() && sheet >= 0 && m_importedSheets.contains(sheet)) {
+        slicePhaseFromSheet();
         return;
     }
 

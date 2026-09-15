@@ -47,6 +47,18 @@ void SheetCanvas::setSelectedPhase(int index)
     update();
 }
 
+void SheetCanvas::setSlicePreview(const QVector<QRect> &cells)
+{
+    m_slicePreview = cells;
+    update();
+}
+
+void SheetCanvas::clearSlicePreview()
+{
+    m_slicePreview.clear();
+    update();
+}
+
 void SheetCanvas::setScale(int scale)
 {
     m_scale = qBound(1, scale, 8);
@@ -180,6 +192,15 @@ void SheetCanvas::paintEvent(QPaintEvent *)
             p.setPen(overflow);
             p.drawRect(stripPx);
         }
+    }
+
+    // Pending slice: one yellow box per cell the dialog will cut.
+    for (const QRect &cell : m_slicePreview) {
+        QPen pen(QColor(255, 220, 0), 2, Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(QColor(255, 220, 0, 40));
+        p.drawRect(cell.x() * m_scale, cell.y() * m_scale, cell.width() * m_scale,
+                   cell.height() * m_scale);
     }
 
     if (m_doc->sheets().size() > 0) {

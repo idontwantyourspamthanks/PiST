@@ -81,6 +81,7 @@ signals:
 private slots:
     void setSheetMode(bool on);
     void onNewSheet();
+    void slicePhaseFromSheet();
     void onPhasePlacementChanged();
     void onPhaseCellSizeChanged();
     void setTool();

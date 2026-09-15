@@ -153,6 +153,9 @@ private slots:
     /// Phase cell size is editable from the panel and adding frames in sheet
     /// mode extends the strip.
     void phaseCellSizeAndStripGrowth();
+    /// The slice dialog cuts an N-frame strip out of an imported sheet into a
+    /// new phase's frames.
+    void sliceDialogBuildsPhaseFromSheet();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -2129,6 +2132,58 @@ void TstGui::phaseCellSizeAndStripGrowth()
     composed = composeSheet(image->document(), 0, &composeError);
     QVERIFY2(composeError.isEmpty(), qPrintable(composeError));
     QCOMPARE(composed.pixels().at(16), image->document().active().at(2));
+}
+
+
+void TstGui::sliceDialogBuildsPhaseFromSheet()
+{
+    const QString dir = m_work->path() + QStringLiteral("/slice");
+    QVERIFY(QDir().mkpath(dir));
+
+    // A 192x32 strip: six 32x32 cells, each marked with its own colour.
+    ImageDocument strip = ImageDocument::create(192, 32, PaletteKind::Ste);
+    for (int k = 0; k < 6; ++k)
+        strip.setPixel(k * 32, strip.active().at(k + 1));
+    const QString pi1Path = dir + QStringLiteral("/strip.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(strip, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    {
+        QFile out(pi1Path);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    }
+
+    MainWindow window;
+    window.openPath(pi1Path);
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().size(), 1);
+
+    // Add phase opens the slice dialog over the imported sheet; fill it in
+    // from a single-shot timer that runs inside the dialog's event loop.
+    QTimer::singleShot(0, image, [image]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto *count = dialog->findChild<QSpinBox *>(QStringLiteral("sliceCount"));
+        auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("sliceName"));
+        QVERIFY(count && name);
+        name->setText(QStringLiteral("walk"));
+        count->setValue(6);
+        dialog->accept();
+    });
+    auto *addBtn = image->findChild<QToolButton *>(QStringLiteral("imageAddPhase"));
+    QVERIFY(addBtn);
+    addBtn->click();
+
+    // The sliced phase carries all six marked frames.
+    QVERIFY(image->document().setCurrentPhase(1));
+    QCOMPARE(image->document().phases().at(1).name, QStringLiteral("walk"));
+    QCOMPARE(image->document().frameCount(), 6);
+    for (int k = 0; k < 6; ++k)
+        QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
 }
 
 QTEST_MAIN(TstGui)

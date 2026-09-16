@@ -1247,15 +1247,13 @@ QPoint paintCrosshairCursor(QPainter &p)
 
 QCursor canvasCursor(CanvasCursor id, const QColor &paint)
 {
-    const qreal ratio = dpr();
-    const int logical = 32;
-    const int px = qMax(1, int(std::lround(logical * ratio)));
-    QPixmap pm(px, px);
-    pm.setDevicePixelRatio(ratio);
+    // X11 clips custom cursors to the server's cursor size (typically 32px),
+    // which would cut a dpr-scaled bitmap back to its top-left corner. Build
+    // the bitmap at flat 32 device pixels so the whole glyph always shows.
+    QPixmap pm(32, 32);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.scale(ratio, ratio);
 
     QPoint hotspot(16, 16);
     switch (id) {

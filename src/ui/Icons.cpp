@@ -401,52 +401,132 @@ void paintFill(QPainter &p, const QRectF &r, qreal w)
     p.drawPath(xf.map(paintBucketGlyph()));
 }
 
+/// Solid bulb, outlined tube and drop from docs/dropper-2-svgrepo-com.svg (viewBox 512²).
+QPainterPath dropperGlyph()
+{
+    QPainterPath p;
+    p.setFillRule(Qt::OddEvenFill);
+    p.moveTo(224.658, 54.926);
+    p.cubicTo(213.618, 46.916, 198.162, 49.38, 190.159, 60.42);
+    p.cubicTo(184.361, 68.408, 188.295, 62.981, 184.813, 67.777);
+    p.cubicTo(172.869, 84.243, 154.464, 79.039, 147.657, 58.905);
+    p.cubicTo(143.492, 46.551, 133.543, 25.185, 118.057, 13.945);
+    p.cubicTo(85.339, -9.781, 39.585, -2.498, 15.857, 30.212);
+    p.cubicTo(-7.87, 62.914, -0.586, 108.677, 32.124, 132.403);
+    p.cubicTo(47.61, 143.644, 71.01, 146.457, 84.048, 146.591);
+    p.cubicTo(105.303, 146.814, 115.964, 162.693, 104.018, 179.159);
+    p.cubicTo(100.536, 183.955, 104.471, 178.528, 98.68, 186.517);
+    p.cubicTo(90.67, 197.557, 93.127, 213.021, 104.174, 221.024);
+    p.cubicTo(115.206, 229.034, 130.663, 226.576, 138.681, 215.53);
+    p.lineTo(230.152, 89.434);
+    p.cubicTo(238.161, 78.394, 235.697, 62.937, 224.658, 54.926);
+    p.closeSubpath();
+    p.moveTo(451.082, 365.643);
+    p.cubicTo(451.068, 365.643, 448.773, 363.973, 443.889, 360.432);
+    p.cubicTo(439.011, 356.89, 431.557, 351.486, 421.26, 344.01);
+    p.cubicTo(393.524, 323.772, 369.916, 318.108, 350.472, 314.522);
+    p.cubicTo(340.739, 312.696, 332.082, 311.27, 323.976, 308.812);
+    p.cubicTo(315.847, 306.348, 308.186, 302.97, 299.796, 296.904);
+    p.cubicTo(280.858, 283.17, 248.816, 259.918, 221.495, 240.096);
+    p.cubicTo(207.842, 230.192, 195.37, 221.142, 186.313, 214.572);
+    p.cubicTo(177.248, 208.002, 171.629, 203.919, 171.613, 203.904);
+    p.lineTo(158.22, 222.36);
+    p.cubicTo(158.287, 222.419, 248.541, 287.891, 286.402, 315.36);
+    p.cubicTo(296.959, 323.043, 307.382, 327.646, 317.39, 330.653);
+    p.cubicTo(332.461, 335.137, 346.196, 336.355, 360.3, 339.925);
+    p.cubicTo(374.443, 343.488, 389.343, 349.079, 407.858, 362.471);
+    p.cubicTo(428.452, 377.415, 437.68, 384.105, 437.68, 384.105);
+    p.lineTo(451.082, 365.643);
+    p.closeSubpath();
+    p.moveTo(244.027, 135.009);
+    p.cubicTo(271.199, 154.727, 329.106, 196.725, 357.51, 217.333);
+    p.cubicTo(365.884, 223.429, 371.482, 229.657, 376.353, 236.621);
+    p.cubicTo(383.643, 247, 389.048, 259.472, 397.882, 273.63);
+    p.cubicTo(406.701, 287.743, 419.144, 303.096, 439.998, 318.181);
+    p.cubicTo(450.295, 325.643, 457.757, 331.047, 462.634, 334.595);
+    p.cubicTo(467.518, 338.129, 469.813, 339.807, 469.82, 339.807);
+    p.lineTo(483.22, 321.351);
+    p.cubicTo(483.22, 321.344, 473.984, 314.647, 453.398, 299.711);
+    p.cubicTo(441.067, 290.765, 432.559, 282.22, 425.936, 273.905);
+    p.cubicTo(416.011, 261.448, 410.28, 249.251, 403.048, 236.429);
+    p.cubicTo(395.868, 223.69, 386.804, 210.357, 370.902, 198.879);
+    p.cubicTo(333.024, 171.395, 242.712, 105.886, 242.712, 105.886);
+    p.lineTo(229.326, 124.357);
+    p.cubicTo(229.394, 124.4, 234.999, 128.461, 244.027, 135.009);
+    p.closeSubpath();
+    p.moveTo(472.389, 399.748);
+    p.cubicTo(472.181, 399.748, 434.697, 453.483, 434.697, 474.308);
+    p.cubicTo(434.697, 495.124, 451.572, 512, 472.389, 512);
+    p.cubicTo(493.206, 512, 510.088, 495.125, 510.088, 474.308);
+    p.cubicTo(510.088, 453.484, 472.604, 399.748, 472.389, 399.748);
+    p.closeSubpath();
+    return p;
+}
+
 void paintEyedropper(QPainter &p, const QRectF &r, qreal w)
 {
-    p.setPen(stroke(ink(), w));
-    p.setBrush(Qt::NoBrush);
-    p.drawLine(QPointF(r.left() + r.width() * 0.28, r.top() + r.height() * 0.78),
-               QPointF(r.left() + r.width() * 0.62, r.top() + r.height() * 0.38));
-    p.drawEllipse(QPointF(r.left() + r.width() * 0.72, r.top() + r.height() * 0.26),
-                  r.width() * 0.12, r.height() * 0.12);
-    p.drawLine(QPointF(r.left() + r.width() * 0.28, r.top() + r.height() * 0.78),
-               QPointF(r.left() + r.width() * 0.18, r.top() + r.height() * 0.86));
+    Q_UNUSED(w);
+    const qreal s = qMin(r.width(), r.height()) / 512.0;
+    QTransform xf;
+    xf.translate(r.center().x() - 256.0 * s, r.center().y() - 256.0 * s);
+    xf.scale(s, s);
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink());
+    p.drawPath(xf.map(dropperGlyph()));
+}
+
+/// Rounded undo arrow from docs/undo-left-round-svgrepo-com.svg (viewBox 24²).
+QPainterPath undoGlyph()
+{
+    QPainterPath p;
+    p.setFillRule(Qt::OddEvenFill);
+    p.moveTo(7.5303, 3.4697);
+    p.cubicTo(7.8232, 3.7626, 7.8232, 4.2374, 7.5303, 4.5303);
+    p.lineTo(5.8107, 6.25);
+    p.lineTo(15, 6.25);
+    p.cubicTo(18.1756, 6.25, 20.75, 8.8244, 20.75, 12);
+    p.cubicTo(20.75, 15.1756, 18.1756, 17.75, 15, 17.75);
+    p.lineTo(8, 17.75);
+    p.cubicTo(7.5858, 17.75, 7.25, 17.4142, 7.25, 17);
+    p.cubicTo(7.25, 16.5858, 7.5858, 16.25, 8, 16.25);
+    p.lineTo(15, 16.25);
+    p.cubicTo(17.3472, 16.25, 19.25, 14.3472, 19.25, 12);
+    p.cubicTo(19.25, 9.6528, 17.3472, 7.75, 15, 7.75);
+    p.lineTo(5.8107, 7.75);
+    p.lineTo(7.5303, 9.4697);
+    p.cubicTo(7.8232, 9.7626, 7.8232, 10.2374, 7.5303, 10.5303);
+    p.cubicTo(7.2374, 10.8232, 6.7626, 10.8232, 6.4697, 10.5303);
+    p.lineTo(3.4697, 7.5303);
+    p.cubicTo(3.1768, 7.2374, 3.1768, 6.7626, 3.4697, 6.4697);
+    p.lineTo(6.4697, 3.4697);
+    p.cubicTo(6.7626, 3.1768, 7.2374, 3.1768, 7.5303, 3.4697);
+    p.closeSubpath();
+    return p;
 }
 
 void paintUndo(QPainter &p, const QRectF &r, qreal w)
 {
-    p.setPen(stroke(ink(), w));
-    p.setBrush(Qt::NoBrush);
-    QPainterPath arc;
-    const QRectF box(r.left() + r.width() * 0.20, r.top() + r.height() * 0.28,
-                     r.width() * 0.60, r.height() * 0.46);
-    arc.moveTo(box.right(), box.bottom());
-    arc.quadTo(QPointF(box.center().x(), box.top() - r.height() * 0.04),
-               QPointF(box.left(), box.center().y()));
-    p.drawPath(arc);
-    const qreal ah = r.width() * 0.14;
-    p.drawLine(QPointF(box.left(), box.center().y()),
-               QPointF(box.left() + ah, box.center().y() - ah * 0.35));
-    p.drawLine(QPointF(box.left(), box.center().y()),
-               QPointF(box.left() + ah * 0.25, box.center().y() + ah));
+    Q_UNUSED(w);
+    const qreal s = qMin(r.width(), r.height()) / 24.0;
+    QTransform xf;
+    xf.translate(r.center().x() - 12.0 * s, r.center().y() - 12.0 * s);
+    xf.scale(s, s);
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink());
+    p.drawPath(xf.map(undoGlyph()));
 }
 
 void paintRedo(QPainter &p, const QRectF &r, qreal w)
 {
-    p.setPen(stroke(ink(), w));
-    p.setBrush(Qt::NoBrush);
-    QPainterPath arc;
-    const QRectF box(r.left() + r.width() * 0.20, r.top() + r.height() * 0.28,
-                     r.width() * 0.60, r.height() * 0.46);
-    arc.moveTo(box.left(), box.bottom());
-    arc.quadTo(QPointF(box.center().x(), box.top() - r.height() * 0.04),
-               QPointF(box.right(), box.center().y()));
-    p.drawPath(arc);
-    const qreal ah = r.width() * 0.14;
-    p.drawLine(QPointF(box.right(), box.center().y()),
-               QPointF(box.right() - ah, box.center().y() - ah * 0.35));
-    p.drawLine(QPointF(box.right(), box.center().y()),
-               QPointF(box.right() - ah * 0.25, box.center().y() + ah));
+    Q_UNUSED(w);
+    // The undo arrow mirrored horizontally.
+    const qreal s = qMin(r.width(), r.height()) / 24.0;
+    QTransform xf;
+    xf.translate(r.center().x() + 12.0 * s, r.center().y() - 12.0 * s);
+    xf.scale(-s, s);
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink());
+    p.drawPath(xf.map(undoGlyph()));
 }
 
 void paintGrid(QPainter &p, const QRectF &r, qreal w)

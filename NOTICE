@@ -128,11 +128,12 @@ The ST colour-word layout, Degas/NeoChrome/IFF/STOS bitplane packing, and paint-
 `src/image/` were reimplemented from the known file formats and from the behaviour of the
 LemonAndLime sprite editor (a separate project; not vendored, not linked).
 
-The flood-fill, palette, and brush toolbar glyphs follow the silhouettes of the
-SVG Repo paint-bucket, paint-palette, and paint-brush icons in
-docs/paint-bucket-fill-svgrepo-com.svg, docs/paint-palette-svgrepo-com.svg and
-docs/paint-brush-svgrepo-com.svg; they are redrawn as themed QPainterPaths rather
-than loading those files at runtime.
+The flood-fill, palette, brush, eyedropper, and undo toolbar glyphs follow the silhouettes of the
+SVG Repo paint-bucket, paint-palette, paint-brush, dropper-2, and undo-left-round icons in
+docs/paint-bucket-fill-svgrepo-com.svg, docs/paint-palette-svgrepo-com.svg,
+docs/paint-brush-svgrepo-com.svg, docs/dropper-2-svgrepo-com.svg, and
+docs/undo-left-round-svgrepo-com.svg; they are redrawn as themed QPainterPaths rather
+than loading those files at runtime (the redo glyph mirrors the undo one).
 
 
 Bundled licence texts

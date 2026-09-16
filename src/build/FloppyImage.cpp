@@ -942,7 +942,10 @@ bool readFileRaw(const QByteArray &raw, const QString &entryPath, QByteArray *da
     const int rootBytes = g.rootSectors * g.sectorSize;
     QByteArray dirBytes = raw.mid(rootStart, rootBytes);
     for (int i = 0; i < parts.size(); ++i) {
-        const RawDirEntry *found = dirEntryNamed(parseDirBytes(dirBytes), parts.at(i));
+        // `found` points into `entries`: the vector must outlive the entry's
+        // use, not be the temporary this used to parse inline.
+        const QVector<RawDirEntry> entries = parseDirBytes(dirBytes);
+        const RawDirEntry *found = dirEntryNamed(entries, parts.at(i));
         if (!found) {
             setError(error, QStringLiteral("%1 is not on the floppy").arg(clean));
             return false;

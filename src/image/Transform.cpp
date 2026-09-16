@@ -56,6 +56,74 @@ QVector<int> shiftData(const QVector<int> &data, int width, int height, ShiftDir
     return out;
 }
 
+QVector<int> regionData(const QVector<int> &data, int width, int height, const QRect &rect)
+{
+    const QRect grid(0, 0, width, height);
+    const QRect clip = rect.intersected(grid);
+    if (width <= 0 || height <= 0 || data.size() < width * height || clip.isEmpty())
+        return {};
+    QVector<int> out(clip.width() * clip.height(), kTransparent);
+    for (int row = 0; row < clip.height(); ++row) {
+        for (int col = 0; col < clip.width(); ++col)
+            out[row * clip.width() + col] = data[(clip.y() + row) * width + clip.x() + col];
+    }
+    return out;
+}
+
+QVector<int> clearRegion(const QVector<int> &data, int width, int height, const QRect &rect,
+                         int value)
+{
+    QVector<int> out = data;
+    const QRect grid(0, 0, width, height);
+    const QRect clip = rect.intersected(grid);
+    if (width <= 0 || height <= 0 || data.size() < width * height || clip.isEmpty())
+        return out;
+    for (int row = clip.y(); row < clip.y() + clip.height(); ++row) {
+        for (int col = clip.x(); col < clip.x() + clip.width(); ++col)
+            out[row * width + col] = value;
+    }
+    return out;
+}
+
+QVector<int> stampRegion(const QVector<int> &data, int width, int height,
+                         const QVector<int> &patch, int patchWidth, const QPoint &pos)
+{
+    QVector<int> out = data;
+    const int patchHeight = patchWidth > 0 ? patch.size() / patchWidth : 0;
+    if (width <= 0 || height <= 0 || data.size() < width * height || patchWidth <= 0
+        || patchHeight <= 0)
+        return out;
+    for (int row = 0; row < patchHeight; ++row) {
+        const int gy = pos.y() + row;
+        if (gy < 0 || gy >= height)
+            continue;
+        for (int col = 0; col < patchWidth; ++col) {
+            const int gx = pos.x() + col;
+            if (gx < 0 || gx >= width)
+                continue;
+            const int cube = patch.at(row * patchWidth + col);
+            if (cube == kTransparent)
+                continue;
+            out[gy * width + gx] = cube;
+        }
+    }
+    return out;
+}
+
+QVector<int> moveRegion(const QVector<int> &data, int width, int height, const QRect &rect,
+                        const QPoint &delta)
+{
+    if (delta.isNull())
+        return data;
+    const QVector<int> patch = regionData(data, width, height, rect);
+    if (patch.isEmpty())
+        return data;
+    const QRect grid(0, 0, width, height);
+    const QRect clip = rect.intersected(grid);
+    return stampRegion(clearRegion(data, width, height, clip, kTransparent), width, height,
+                       patch, clip.width(), clip.topLeft() + delta);
+}
+
 QVector<int> rotate90Cw(const QVector<int> &data, int width, int height, int *outWidth,
                         int *outHeight)
 {

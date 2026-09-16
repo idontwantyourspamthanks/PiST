@@ -163,6 +163,10 @@ private slots:
     /// The slice dialog cuts an N-frame strip out of an imported sheet into a
     /// new phase's frames.
     void sliceDialogBuildsPhaseFromSheet();
+    /// The select tool: a marquee drag sets the selection, dragging inside it
+    /// moves the pixels, and copy/paste/nudge/delete edit the active layer
+    /// through the undo stack.
+    void imageSelectionCopyPaste();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -2270,6 +2274,87 @@ void TstGui::sliceDialogBuildsPhaseFromSheet()
     QCOMPARE(image->document().frameCount(), 6);
     for (int k = 0; k < 6; ++k)
         QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
+}
+
+void TstGui::imageSelectionCopyPaste()
+{
+    ImageEditor editor;
+    editor.show();
+    editor.newDocument(8, 8, PaletteKind::Ste);
+    auto *canvas = editor.findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    const auto idx = [](int x, int y) { return y * 8 + x; };
+    // Centre of a cell in widget coordinates, at whatever zoom the editor
+    // settled on (the deferred fit-to-view may override an explicit size).
+    const auto cellPoint = [&canvas](int x, int y) {
+        const int c = canvas->cellSize();
+        return QPoint(x * c + c / 2, y * c + c / 2);
+    };
+
+    // A solid 2x2 block at (1,1)-(2,2).
+    for (int y = 1; y <= 2; ++y)
+        for (int x = 1; x <= 2; ++x)
+            editor.document().setPixel(idx(x, y), 1);
+
+    QToolButton *selectButton = nullptr;
+    for (auto *button : editor.findChildren<QToolButton *>()) {
+        if (button->property("tool").isValid()
+            && button->property("tool").toInt() == int(DrawTool::Select))
+            selectButton = button;
+    }
+    QVERIFY2(selectButton, "the select tool joins the toolbar");
+    QTest::mouseClick(selectButton, Qt::LeftButton);
+
+    // A marquee drag around the block selects it.
+    QTest::mouseMove(canvas, cellPoint(1, 1));
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(1, 1));
+    QTest::mouseMove(canvas, cellPoint(2, 2));
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(2, 2));
+    QCOMPARE(canvas->selection(), QRect(1, 1, 2, 2));
+
+    // Dragging inside the selection moves the block two cells down-right.
+    QVERIFY(QMetaObject::invokeMethod(&editor, "copySelection"));
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(1, 1));
+    QTest::mouseMove(canvas, cellPoint(3, 3));
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(3, 3));
+    QCOMPARE(canvas->selection(), QRect(3, 3, 2, 2));
+    for (int y = 1; y <= 2; ++y)
+        for (int x = 1; x <= 2; ++x)
+            QCOMPARE(editor.document().pixels().at(idx(x, y)), kTransparent);
+    for (int y = 3; y <= 4; ++y)
+        for (int x = 3; x <= 4; ++x)
+            QCOMPARE(editor.document().pixels().at(idx(x, y)), 1);
+
+    // Copy the moved block, deselect, then paste: the patch lands at the
+    // origin and becomes the selection.
+    QVERIFY(QMetaObject::invokeMethod(&editor, "copySelection"));
+    QAction *deselect = editor.findChild<QAction *>(QStringLiteral("imageDeselect"));
+    QVERIFY(deselect);
+    deselect->trigger();
+    QVERIFY(canvas->selection().isEmpty());
+    QVERIFY(QMetaObject::invokeMethod(&editor, "pasteClipboard"));
+    QCOMPARE(canvas->selection(), QRect(0, 0, 2, 2));
+    for (int y = 0; y <= 1; ++y)
+        for (int x = 0; x <= 1; ++x)
+            QCOMPARE(editor.document().pixels().at(idx(x, y)), 1);
+
+    // Arrow keys nudge the selection's pixels one cell.
+    QTest::keyClick(canvas, Qt::Key_Right);
+    QCOMPARE(canvas->selection(), QRect(1, 0, 2, 2));
+    QCOMPARE(editor.document().pixels().at(idx(0, 0)), kTransparent);
+    QCOMPARE(editor.document().pixels().at(idx(0, 1)), kTransparent);
+    QCOMPARE(editor.document().pixels().at(idx(2, 0)), 1);
+    QCOMPARE(editor.document().pixels().at(idx(2, 1)), 1);
+
+    // Delete clears the selection contents; undo brings the pixels back.
+    QVERIFY(QMetaObject::invokeMethod(&editor, "deleteSelection"));
+    QCOMPARE(editor.document().pixels().at(idx(2, 0)), kTransparent);
+    editor.undo();
+    QCOMPARE(editor.document().pixels().at(idx(2, 0)), 1);
+
+    // A click outside the selection collapses it.
+    QTest::mouseClick(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(7, 7));
+    QVERIFY(canvas->selection().isEmpty());
 }
 
 void TstGui::sheetPixelsSurviveReopen()

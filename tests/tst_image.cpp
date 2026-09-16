@@ -36,6 +36,7 @@ private slots:
     void assemblerIncludeHasDcW();
     void pngRoundTripOpaque();
     void flipAndShift();
+    void regionClearStampMove();
     void rotateNinetyAndBake();
     void layersOccludeAndRoundTrip();
     void onionAndPreviewIndex();
@@ -256,6 +257,39 @@ void TstImage::flipAndShift()
     QCOMPARE(flipData(data, 3, 2, FlipDirection::Vertical), (QVector<int>{4, 5, 6, 1, 2, 3}));
     QCOMPARE(shiftData(QVector<int>{1, 2, 3, 4}, 2, 2, ShiftDirection::Left),
              (QVector<int>{2, 1, 4, 3}));
+}
+
+void TstImage::regionClearStampMove()
+{
+    // 3×2 grid, transparent (−1) background.
+    const QVector<int> data{1, -1, 3,
+                            4, 5, -1};
+
+    // Region extraction is row-major and clips to the grid.
+    QCOMPARE(regionData(data, 3, 2, QRect(0, 0, 2, 2)), (QVector<int>{1, -1, 4, 5}));
+    QVERIFY(regionData(data, 3, 2, QRect(5, 5, 2, 2)).isEmpty());
+    QCOMPARE(regionData(data, 3, 2, QRect(1, 0, 9, 9)), (QVector<int>{-1, 3, 5, -1}));
+
+    // Clearing wipes only the rectangle.
+    QCOMPARE(clearRegion(data, 3, 2, QRect(0, 0, 2, 1), 7), (QVector<int>{7, 7, 3, 4, 5, -1}));
+    QCOMPARE(clearRegion(data, 3, 2, QRect(0, 0, 3, 2), kTransparent),
+             (QVector<int>{-1, -1, -1, -1, -1, -1}));
+
+    // Stamping is transparency-aware: holes keep the destination…
+    QCOMPARE(stampRegion(data, 3, 2, QVector<int>{9, 9, 9, kTransparent}, 2, QPoint(1, 0)),
+             (QVector<int>{1, 9, 9, 4, 9, -1}));
+    // …and clips at the grid edge.
+    QCOMPARE(stampRegion(data, 3, 2, QVector<int>{8, 8, 8, 8}, 2, QPoint(2, 1)),
+             (QVector<int>{1, -1, 3, 4, 5, 8}));
+
+    // Move = clear the source, then stamp at the offset; untouched pixels stay.
+    QCOMPARE(moveRegion(data, 3, 2, QRect(0, 0, 2, 2), QPoint(1, 0)),
+             (QVector<int>{-1, 1, 3, -1, 4, 5}));
+    // Pixels pushed off the grid are dropped.
+    QCOMPARE(moveRegion(data, 3, 2, QRect(0, 0, 2, 2), QPoint(2, 1)),
+             (QVector<int>{-1, -1, 3, -1, -1, 1}));
+    // A zero delta is a no-op.
+    QCOMPARE(moveRegion(data, 3, 2, QRect(0, 0, 2, 2), QPoint(0, 0)), data);
 }
 
 void TstImage::rotateNinetyAndBake()

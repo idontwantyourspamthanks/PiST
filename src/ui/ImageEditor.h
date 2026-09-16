@@ -94,6 +94,12 @@ private slots:
     void setTool();
     void selectSwatch();
     void openPalettePicker();
+    void copySelection();
+    void cutSelection();
+    void pasteClipboard();
+    void deleteSelection();
+    void moveSelection(const QRect &source, const QPoint &delta);
+    void nudgeSelection(const QPoint &step);
     void addFrame();
     void removeFrame();
     void duplicateFrame();
@@ -154,6 +160,11 @@ private:
     void updateStatus();
     void pushSnapshot(const ImageDocument &before, const QString &text);
     void applyLayerBuffer(const QVector<int> &before, const QString &text);
+    /// Replace the active layer's buffer as one undoable command; no-op when
+    /// the buffers are equal. Returns whether anything changed.
+    bool applyLayerEdit(const QVector<int> &before, const QVector<int> &after,
+                        const QString &text);
+    void clearSelection();
     void shiftBy(ShiftDirection direction);
     int stackIndexFromDisplay(int displayRow) const;
 
@@ -173,6 +184,9 @@ private:
     int m_previewPhase = -1;
     int m_fps = 8;
     bool m_playing = false;
+    /// Internal clipboard: cube indices of the last copy/cut, `m_clipWidth` wide.
+    QVector<int> m_clip;
+    int m_clipWidth = 0;
 
     ImageCanvas *m_canvas = nullptr;
     QScrollArea *m_scroll = nullptr;
@@ -205,6 +219,11 @@ private:
     QLabel *m_status = nullptr;
     QAction *m_actUndo = nullptr;
     QAction *m_actRedo = nullptr;
+    QAction *m_actCopy = nullptr;
+    QAction *m_actCut = nullptr;
+    QAction *m_actPaste = nullptr;
+    QAction *m_actDeleteSelection = nullptr;
+    QAction *m_actDeselect = nullptr;
     QAction *m_actGrid = nullptr;
     QAction *m_actFit = nullptr;
     QAction *m_actZoomIn = nullptr;

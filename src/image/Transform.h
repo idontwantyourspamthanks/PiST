@@ -6,6 +6,8 @@
 
 #include "image/Palette.h"
 
+#include <QPoint>
+#include <QRect>
 #include <QString>
 #include <QVector>
 
@@ -31,6 +33,26 @@ struct OnionGhost {
 
 QVector<int> flipData(const QVector<int> &data, int width, int height, FlipDirection direction);
 QVector<int> shiftData(const QVector<int> &data, int width, int height, ShiftDirection direction);
+
+/// Values of `rect` (clipped to the grid), row by row. An empty result means
+/// the rectangle lies outside the grid.
+QVector<int> regionData(const QVector<int> &data, int width, int height, const QRect &rect);
+
+/// Copy of `data` with `rect` (clipped to the grid) set to `value`.
+QVector<int> clearRegion(const QVector<int> &data, int width, int height, const QRect &rect,
+                         int value);
+
+/// Copy of `data` with `patch` (`patchWidth` wide, height implied) stamped at
+/// `pos`, clipped to the grid. Transparent patch pixels leave the destination
+/// underneath untouched, so a sprite can be dropped onto existing art.
+QVector<int> stampRegion(const QVector<int> &data, int width, int height,
+                         const QVector<int> &patch, int patchWidth, const QPoint &pos);
+
+/// Move `rect` by `delta`: the source rectangle is cleared and its previous
+/// contents stamped at the offset position, both clipped to the grid (pixels
+/// pushed off the canvas are dropped).
+QVector<int> moveRegion(const QVector<int> &data, int width, int height, const QRect &rect,
+                        const QPoint &delta);
 
 /// Clockwise 90° of a (possibly rectangular) buffer. `outWidth`/`outHeight`
 /// receive the swapped dimensions.

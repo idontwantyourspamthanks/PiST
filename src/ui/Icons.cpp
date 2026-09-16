@@ -850,6 +850,57 @@ void paintShiftRight(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p,
 void paintShiftUp(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 0, -1); }
 void paintShiftDown(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 0, 1); }
 
+void paintSelect(QPainter &p, const QRectF &r, qreal w)
+{
+    QPen dash(ink(), w, Qt::DashLine, Qt::FlatCap, Qt::RoundJoin);
+    dash.setDashPattern({2.4, 2.4});
+    p.setPen(dash);
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(r.adjusted(r.width() * 0.16, r.height() * 0.20, -r.width() * 0.16,
+                          -r.height() * 0.20));
+}
+
+void paintCopy(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const QRectF back(r.left() + r.width() * 0.24, r.top() + r.height() * 0.18,
+                      r.width() * 0.52, r.height() * 0.52);
+    const QRectF front = back.translated(r.width() * 0.14, r.height() * 0.16);
+    p.drawRect(back);
+    p.drawRect(front);
+}
+
+void paintCut(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const qreal rad = r.width() * 0.11;
+    const QPointF left(r.left() + r.width() * 0.26, r.bottom() - r.height() * 0.24);
+    const QPointF right(r.right() - r.width() * 0.26, r.bottom() - r.height() * 0.24);
+    p.drawEllipse(left, rad, rad);
+    p.drawEllipse(right, rad, rad);
+    // Blades cross above the handles; the tips reach the icon's top corners.
+    p.drawLine(QPointF(left.x() + rad * 0.7, left.y() - rad * 0.7),
+               QPointF(r.right() - r.width() * 0.12, r.top() + r.height() * 0.14));
+    p.drawLine(QPointF(right.x() - rad * 0.7, right.y() - rad * 0.7),
+               QPointF(r.left() + r.width() * 0.12, r.top() + r.height() * 0.14));
+}
+
+void paintPaste(QPainter &p, const QRectF &r, qreal w)
+{
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const QRectF board(r.left() + r.width() * 0.20, r.top() + r.height() * 0.20,
+                       r.width() * 0.60, r.height() * 0.66);
+    p.drawRoundedRect(board, 1, 1);
+    // Clip tab across the top edge.
+    const QRectF tab(r.center().x() - r.width() * 0.13, r.top() + r.height() * 0.10,
+                     r.width() * 0.26, r.height() * 0.16);
+    p.setBrush(ink());
+    p.drawRoundedRect(tab, 1, 1);
+}
+
 using PaintFn = void (*)(QPainter &, const QRectF &, qreal);
 
 PaintFn painterFor(Icon id)
@@ -891,6 +942,10 @@ PaintFn painterFor(Icon id)
     case Icon::ShiftRight: return paintShiftRight;
     case Icon::ShiftUp: return paintShiftUp;
     case Icon::ShiftDown: return paintShiftDown;
+    case Icon::Select: return paintSelect;
+    case Icon::Copy: return paintCopy;
+    case Icon::Cut: return paintCut;
+    case Icon::Paste: return paintPaste;
     }
     return paintOpen;
 }

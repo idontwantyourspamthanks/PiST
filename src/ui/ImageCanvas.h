@@ -32,6 +32,11 @@ public:
     void setOnion(const QVector<int> &pixels, qreal opacity = 0.5);
     void setCellSize(int size);
     int cellSize() const { return m_cellSize; }
+    /// Cell-space rectangle of the selection (empty = none). Stored clamped
+    /// to the grid.
+    void setSelection(const QRect &rect);
+    QRect selection() const { return m_selection; }
+    bool hasSelection() const;
 
     static constexpr int kMinCellSize = 1;
     static constexpr int kMaxCellSize = 128;
@@ -46,6 +51,13 @@ signals:
     void cellSizeChanged(int size);
     void zoomStepsRequested(int steps);
     void shiftRequested(ShiftDirection direction);
+    /// Marquee drag finished; `rect` is empty when the drag was a click.
+    void selectionMade(const QRect &rect);
+    /// A drag inside the selection moved its pixels: `source` is the rect the
+    /// patch was cut from, `delta` the offset it was dropped at.
+    void selectionMoved(const QRect &source, const QPoint &delta);
+    /// Arrow keys with the select tool: move the selection's pixels one cell.
+    void selectionNudged(const QPoint &step);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -59,9 +71,13 @@ private:
     Grid grid() const;
     int indexAt(const QPoint &pos) const;
     QRect cellRect(int index) const;
+    QPoint clampedCell(const QPoint &pos) const;
+    QRect gridRect() const;
     void rebuildImage();
     void applyAt(int index, bool erase);
     void updateCursor();
+    QImage movePatch() const;
+    void drawMarchingAnts(QPainter &p, const QRect &cells) const;
 
     ImageDocument *m_doc = nullptr;
     DrawTool m_tool = DrawTool::Brush;
@@ -78,6 +94,14 @@ private:
     QVector<int> m_onion;
     qreal m_onionOpacity = 0.5;
     QImage m_logical;
+    QRect m_selection;
+    bool m_selecting = false;
+    QPoint m_selectStart;
+    QRect m_marquee;
+    bool m_moving = false;
+    QPoint m_moveStartCell;
+    QPoint m_moveDelta;
+    QImage m_movePatch;
 };
 
 } // namespace pist

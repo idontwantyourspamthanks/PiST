@@ -328,6 +328,8 @@ appearance::Icon iconForTool(DrawTool tool)
         return Icon::Fill;
     case DrawTool::Eyedropper:
         return Icon::Eyedropper;
+    case DrawTool::Select:
+        return Icon::Select;
     }
     return Icon::Brush;
 }
@@ -366,6 +368,8 @@ ImageEditor::ImageEditor(QWidget *parent)
     addTool(DrawTool::Ellipse, tr("Ellipse outline"));
     addTool(DrawTool::Fill, tr("Flood fill"));
     addTool(DrawTool::Eyedropper, tr("Eyedropper"));
+    addTool(DrawTool::Select,
+            tr("Select — drag a rectangle, drag inside it to move, Ctrl+C/X/V, arrows to nudge"));
     connect(m_tools, &QButtonGroup::buttonClicked, this, &ImageEditor::setTool);
 
     m_actSheetMode = new QAction(tr("Sprite sheet"), this);
@@ -418,6 +422,43 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_actRedo, &QAction::triggered, this, &ImageEditor::redo);
     addAction(m_actRedo);
     bar->addAction(m_actRedo);
+
+    bar->addSeparator();
+    auto addEditAction = [&](QAction *&action, appearance::Icon icon, const QString &name,
+                             const QString &objectName, const QKeySequence &shortcut,
+                             void (ImageEditor::*method)()) {
+        action = new QAction(name, this);
+        action->setIcon(appearance::icon(icon));
+        action->setObjectName(objectName);
+        action->setToolTip(name);
+        if (!shortcut.isEmpty())
+            action->setShortcut(shortcut);
+        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        connect(action, &QAction::triggered, this, method);
+        addAction(action);
+        bar->addAction(action);
+    };
+    addEditAction(m_actCopy, appearance::Icon::Copy, tr("Copy selection (Ctrl+C)"),
+                  QStringLiteral("imageCopy"), QKeySequence::Copy, &ImageEditor::copySelection);
+    addEditAction(m_actCut, appearance::Icon::Cut, tr("Cut selection (Ctrl+X)"),
+                  QStringLiteral("imageCut"), QKeySequence::Cut, &ImageEditor::cutSelection);
+    addEditAction(m_actPaste, appearance::Icon::Paste, tr("Paste (Ctrl+V)"),
+                  QStringLiteral("imagePaste"), QKeySequence::Paste,
+                  &ImageEditor::pasteClipboard);
+
+    m_actDeleteSelection = new QAction(tr("Delete selection (Del)"), this);
+    m_actDeleteSelection->setObjectName(QStringLiteral("imageDeleteSelection"));
+    m_actDeleteSelection->setShortcut(QKeySequence(Qt::Key_Delete));
+    m_actDeleteSelection->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(m_actDeleteSelection, &QAction::triggered, this, &ImageEditor::deleteSelection);
+    addAction(m_actDeleteSelection);
+
+    m_actDeselect = new QAction(tr("Deselect (Esc)"), this);
+    m_actDeselect->setObjectName(QStringLiteral("imageDeselect"));
+    m_actDeselect->setShortcut(QKeySequence(Qt::Key_Escape));
+    m_actDeselect->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(m_actDeselect, &QAction::triggered, this, [this] { clearSelection(); });
+    addAction(m_actDeselect);
 
     m_actGrid = new QAction(tr("Grid"), this);
     m_actGrid->setIcon(appearance::icon(appearance::Icon::Grid));
@@ -572,6 +613,18 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_canvas, &ImageCanvas::colourPicked, this, &ImageEditor::pickColour);
     connect(m_canvas, &ImageCanvas::cellSizeChanged, this, &ImageEditor::updateStatus);
     connect(m_canvas, &ImageCanvas::zoomStepsRequested, this, &ImageEditor::zoomBy);
+    connect(m_canvas, &ImageCanvas::selectionMoved, this, &ImageEditor::moveSelection);
+    connect(m_canvas, &ImageCanvas::selectionNudged, this, &ImageEditor::nudgeSelection);
+    connect(m_canvas, &ImageCanvas::selectionMade, this, [this](const QRect &rect) {
+        if (!m_status)
+            return;
+        if (rect.isEmpty())
+            m_status->setText(tr("Selection cleared."));
+        else
+            m_status->setText(tr("Selected %1 × %2 — drag inside to move, arrows to nudge.")
+                                  .arg(rect.width())
+                                  .arg(rect.height()));
+    });
     connect(m_canvas, &ImageCanvas::shiftRequested, this, [this](ShiftDirection direction) {
         shiftBy(direction);
     });
@@ -797,6 +850,9 @@ void ImageEditor::newDocument(int width, int height, PaletteKind kind)
         m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
     m_canvas->setDocument(&m_doc);
+    clearSelection();
+    clearSelection();
+    clearSelection();
     m_canvas->setCurrentColour(m_colour);
     rebuildSwatches();
     refreshChrome();
@@ -980,6 +1036,12 @@ void ImageEditor::applyAppearance()
         m_actUndo->setIcon(appearance::icon(Icon::Undo));
     if (m_actRedo)
         m_actRedo->setIcon(appearance::icon(Icon::Redo));
+    if (m_actCopy)
+        m_actCopy->setIcon(appearance::icon(Icon::Copy));
+    if (m_actCut)
+        m_actCut->setIcon(appearance::icon(Icon::Cut));
+    if (m_actPaste)
+        m_actPaste->setIcon(appearance::icon(Icon::Paste));
     if (m_actGrid)
         m_actGrid->setIcon(appearance::icon(Icon::Grid));
     if (m_actFit)
@@ -1072,6 +1134,96 @@ void ImageEditor::openPalettePicker()
     rebuildSwatches();
     updateOverspill();
     notifyModified();
+}
+
+void ImageEditor::copySelection()
+{
+    if (!m_canvas || !m_canvas->hasSelection()) {
+        if (m_status)
+            m_status->setText(tr("Nothing selected — drag a rectangle with the select tool."));
+        return;
+    }
+    const QRect rect = m_canvas->selection();
+    m_clip = regionData(m_doc.activeLayerPixels(), m_doc.width(), m_doc.height(), rect);
+    m_clipWidth = rect.width();
+    if (m_status)
+        m_status->setText(tr("Copied %1 × %2.").arg(rect.width()).arg(rect.height()));
+}
+
+void ImageEditor::cutSelection()
+{
+    if (m_actSheetMode->isChecked() || !m_canvas || !m_canvas->hasSelection()) {
+        if (m_status)
+            m_status->setText(tr("Nothing selected — drag a rectangle with the select tool."));
+        return;
+    }
+    const QRect rect = m_canvas->selection();
+    const QVector<int> before = m_doc.activeLayerPixels();
+    m_clip = regionData(before, m_doc.width(), m_doc.height(), rect);
+    m_clipWidth = rect.width();
+    const QVector<int> after =
+        clearRegion(before, m_doc.width(), m_doc.height(), rect, kTransparent);
+    applyLayerEdit(before, after, tr("cut selection"));
+    if (m_status)
+        m_status->setText(tr("Cut %1 × %2.").arg(rect.width()).arg(rect.height()));
+}
+
+void ImageEditor::pasteClipboard()
+{
+    if (m_actSheetMode->isChecked())
+        return;
+    if (m_clip.isEmpty() || m_clipWidth <= 0) {
+        if (m_status)
+            m_status->setText(tr("Clipboard is empty — copy or cut a selection first."));
+        return;
+    }
+    const QPoint anchor =
+        m_canvas->hasSelection() ? m_canvas->selection().topLeft() : QPoint(0, 0);
+    const QVector<int> before = m_doc.activeLayerPixels();
+    const QVector<int> after =
+        stampRegion(before, m_doc.width(), m_doc.height(), m_clip, m_clipWidth, anchor);
+    const QRect pasted = QRect(anchor, QSize(m_clipWidth, m_clip.size() / m_clipWidth))
+                             .intersected(QRect(0, 0, m_doc.width(), m_doc.height()));
+    if (applyLayerEdit(before, after, tr("paste"))) {
+        // The pasted patch becomes the selection so it can be nudged into place.
+        m_canvas->setSelection(pasted);
+        if (m_status)
+            m_status->setText(tr("Pasted %1 × %2 at %3, %4.")
+                                  .arg(pasted.width())
+                                  .arg(pasted.height())
+                                  .arg(pasted.x())
+                                  .arg(pasted.y()));
+    }
+}
+
+void ImageEditor::deleteSelection()
+{
+    if (m_actSheetMode->isChecked() || !m_canvas || !m_canvas->hasSelection())
+        return;
+    const QRect rect = m_canvas->selection();
+    const QVector<int> before = m_doc.activeLayerPixels();
+    const QVector<int> after =
+        clearRegion(before, m_doc.width(), m_doc.height(), rect, kTransparent);
+    if (applyLayerEdit(before, after, tr("delete selection")) && m_status)
+        m_status->setText(tr("Cleared %1 × %2.").arg(rect.width()).arg(rect.height()));
+}
+
+void ImageEditor::moveSelection(const QRect &source, const QPoint &delta)
+{
+    if (m_actSheetMode->isChecked() || source.isEmpty() || delta.isNull())
+        return;
+    const QVector<int> before = m_doc.activeLayerPixels();
+    const QVector<int> after =
+        moveRegion(before, m_doc.width(), m_doc.height(), source, delta);
+    if (applyLayerEdit(before, after, tr("move selection")))
+        m_canvas->setSelection(source.translated(delta));
+}
+
+void ImageEditor::nudgeSelection(const QPoint &step)
+{
+    if (!m_canvas || !m_canvas->hasSelection())
+        return;
+    moveSelection(m_canvas->selection(), step);
 }
 
 void ImageEditor::addFrame()
@@ -1337,6 +1489,8 @@ void ImageEditor::setSheetMode(bool on)
     if (!m_modeStack)
         return;
     m_modeStack->setCurrentIndex(on ? 1 : 0);
+    if (on)
+        clearSelection();
     // Paint tools make no sense over the composed sheet.
     for (QAbstractButton *button : m_tools->buttons())
         button->setEnabled(!on);
@@ -1442,6 +1596,7 @@ void ImageEditor::onPhaseCellSizeChanged()
         return;
     }
     pushSnapshot(before, tr("change cell size"));
+    clearSelection();
     refreshCanvas();
     refreshSheetView();
     notifyModified();
@@ -1804,6 +1959,26 @@ void ImageEditor::applyLayerBuffer(const QVector<int> &before, const QString &te
                                         m_doc.activeLayerPixels(), text));
 }
 
+bool ImageEditor::applyLayerEdit(const QVector<int> &before, const QVector<int> &after,
+                                 const QString &text)
+{
+    if (after == before)
+        return false;
+    m_doc.replaceActiveLayer(after);
+    applyLayerBuffer(before, text);
+    refreshCanvas();
+    refreshPreview();
+    updateOverspill();
+    notifyModified();
+    return true;
+}
+
+void ImageEditor::clearSelection()
+{
+    if (m_canvas)
+        m_canvas->setSelection(QRect());
+}
+
 void ImageEditor::shiftBy(ShiftDirection direction)
 {
     const QVector<int> before = m_doc.activeLayerPixels();
@@ -2089,6 +2264,9 @@ void ImageEditor::selectPhase(int row)
     // canvas and the preview all follow the phase's own frames.
     if (row < 0 || row >= m_doc.phases().size() || !m_doc.setCurrentPhase(row))
         return;
+    // The selection is a rectangle in the old phase's grid; the new phase may
+    // have a different cell size, so start clean.
+    clearSelection();
     // The animation preview plays the selected phase, not whatever was
     // previewed before.
     if (m_previewPhase != row) {

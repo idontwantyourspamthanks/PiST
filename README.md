@@ -36,7 +36,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats
-  plus STOS `.MBK` and an assembler include
+  plus STOS `.MBK` and an assembler include. The select tool drags a rectangle you
+  can move (drag inside it or nudge with the arrows), and copy, cut, paste
+  (Ctrl+C/X/V) and delete; pasting keeps transparent pixels see-through.
 - **Project files** — the left pane groups the host project (the GEMDOS hard drive) with Disk A
   and Disk B. Change or eject a floppy there (the same paths as in project settings); export
   selected hard-drive files to a new `.st` or `.msa` image

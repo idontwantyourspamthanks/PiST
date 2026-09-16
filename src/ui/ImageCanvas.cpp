@@ -85,6 +85,18 @@ void ImageCanvas::setCellSize(int size)
     emit cellSizeChanged(m_cellSize);
 }
 
+void ImageCanvas::setSelection(const QRect &rect)
+{
+    const QRect clipped = rect.isNull() ? QRect() : rect.normalized().intersected(gridRect());
+    m_selection = clipped.isEmpty() ? QRect() : clipped;
+    update();
+}
+
+bool ImageCanvas::hasSelection() const
+{
+    return !m_selection.isEmpty();
+}
+
 QSize ImageCanvas::sizeHint() const
 {
     if (!m_doc)
@@ -119,6 +131,60 @@ QRect ImageCanvas::cellRect(int index) const
     return {col * m_cellSize, row * m_cellSize, m_cellSize, m_cellSize};
 }
 
+QPoint ImageCanvas::clampedCell(const QPoint &pos) const
+{
+    if (!m_doc || m_cellSize <= 0)
+        return {};
+    return {qBound(0, pos.x() / m_cellSize, m_doc->width() - 1),
+            qBound(0, pos.y() / m_cellSize, m_doc->height() - 1)};
+}
+
+QRect ImageCanvas::gridRect() const
+{
+    if (!m_doc)
+        return {};
+    return {0, 0, m_doc->width(), m_doc->height()};
+}
+
+QImage ImageCanvas::movePatch() const
+{
+    if (!m_doc || !hasSelection())
+        return QImage();
+    QImage patch(m_selection.width(), m_selection.height(), QImage::Format_ARGB32);
+    patch.fill(Qt::transparent);
+    const QVector<int> &layer = m_doc->activeLayerPixels();
+    for (int y = 0; y < m_selection.height(); ++y) {
+        for (int x = 0; x < m_selection.width(); ++x) {
+            const int cube = layer.value((m_selection.y() + y) * m_doc->width()
+                                             + m_selection.x() + x,
+                                         kTransparent);
+            if (cube < 0)
+                continue;
+            const Rgb rgb = cubeRgb(m_doc->paletteKind(), cube);
+            patch.setPixel(x, y, qRgb(rgb.r, rgb.g, rgb.b));
+        }
+    }
+    return patch;
+}
+
+void ImageCanvas::drawMarchingAnts(QPainter &p, const QRect &cells) const
+{
+    if (cells.isEmpty())
+        return;
+    const QRectF r(cells.left() * m_cellSize + 0.5, cells.top() * m_cellSize + 0.5,
+                   cells.width() * m_cellSize - 1.0, cells.height() * m_cellSize - 1.0);
+    QPen white(Qt::white, 1, Qt::CustomDashLine, Qt::SquareCap, Qt::MiterJoin);
+    white.setDashPattern({3, 3});
+    QPen black(Qt::black, 1, Qt::CustomDashLine, Qt::SquareCap, Qt::MiterJoin);
+    black.setDashPattern({3, 3});
+    black.setDashOffset(3);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(white);
+    p.drawRect(r);
+    p.setPen(black);
+    p.drawRect(r);
+}
+
 void ImageCanvas::rebuildImage()
 {
     if (!m_doc) {
@@ -150,6 +216,15 @@ void ImageCanvas::paintEvent(QPaintEvent *)
         return;
 
     rebuildImage();
+    // While a move drag is live the source area reads as cut out already.
+    if (m_moving && hasSelection()) {
+        for (int y = m_selection.top(); y <= m_selection.bottom(); ++y) {
+            for (int x = m_selection.left(); x <= m_selection.right(); ++x) {
+                const bool checker = ((x + y) & 1) == 0;
+                m_logical.setPixel(x, y, checker ? qRgb(40, 40, 40) : qRgb(70, 70, 70));
+            }
+        }
+    }
     if (!m_preview.isEmpty()) {
         const Rgb rgb = m_previewColour < 0 ? Rgb{70, 70, 70}
                                             : cubeRgb(m_doc->paletteKind(), m_previewColour);
@@ -166,6 +241,13 @@ void ImageCanvas::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::SmoothPixmapTransform, false);
     const QRect dest(0, 0, m_doc->width() * m_cellSize, m_doc->height() * m_cellSize);
     p.drawImage(dest, m_logical);
+
+    if (m_moving && !m_movePatch.isNull()) {
+        const QRectF drop(m_selection.translated(m_moveDelta));
+        p.drawImage(QRectF(drop.left() * m_cellSize, drop.top() * m_cellSize,
+                           drop.width() * m_cellSize, drop.height() * m_cellSize),
+                    m_movePatch);
+    }
 
     if (!m_onion.isEmpty() && m_onionOpacity > 0 && m_onion.size() >= m_doc->pixelCount()) {
         QImage ghost(m_doc->width(), m_doc->height(), QImage::Format_ARGB32);
@@ -192,6 +274,9 @@ void ImageCanvas::paintEvent(QPaintEvent *)
         for (int y = 0; y <= m_doc->height(); ++y)
             p.drawLine(0, y * m_cellSize, m_doc->width() * m_cellSize, y * m_cellSize);
     }
+
+    drawMarchingAnts(p, m_moving ? m_selection.translated(m_moveDelta)
+                                 : (m_marquee.isEmpty() ? m_selection : m_marquee));
 }
 
 void ImageCanvas::applyAt(int index, bool erase)
@@ -230,6 +315,24 @@ void ImageCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_tool == DrawTool::Select) {
+        if (event->button() != Qt::LeftButton)
+            return;
+        const QPoint cell(index % m_doc->width(), index / m_doc->width());
+        if (hasSelection() && m_selection.contains(cell)) {
+            m_moving = true;
+            m_moveStartCell = cell;
+            m_moveDelta = QPoint(0, 0);
+            m_movePatch = movePatch();
+        } else {
+            m_selecting = true;
+            m_selectStart = cell;
+            m_marquee = QRect();
+        }
+        update();
+        return;
+    }
+
     m_erase = event->button() == Qt::RightButton;
     m_painting = true;
     m_lastIndex = -1;
@@ -247,6 +350,16 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *event)
 {
     const int index = indexAt(event->pos());
     emit cursorIndexChanged(index);
+    if (m_selecting) {
+        m_marquee = QRect(m_selectStart, clampedCell(event->pos())).normalized();
+        update();
+        return;
+    }
+    if (m_moving) {
+        m_moveDelta = clampedCell(event->pos()) - m_moveStartCell;
+        update();
+        return;
+    }
     if (!m_painting)
         return;
     if (isShapeTool(m_tool)) {
@@ -262,6 +375,30 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_selecting) {
+        m_selecting = false;
+        // Recompute from the release position: move events can be compressed
+        // (or missed), so the release point is authoritative. A drag that
+        // never left the start cell is a click, which collapses the selection.
+        const QPoint end = clampedCell(event->pos());
+        m_marquee = m_selectStart == end ? QRect() : QRect(m_selectStart, end).normalized();
+        m_selection = m_marquee;
+        m_marquee = QRect();
+        update();
+        emit selectionMade(m_selection);
+        return;
+    }
+    if (m_moving) {
+        m_moving = false;
+        const QRect source = m_selection;
+        const QPoint delta = clampedCell(event->pos()) - m_moveStartCell;
+        m_moveDelta = QPoint(0, 0);
+        m_movePatch = QImage();
+        update();
+        if (!delta.isNull() && !source.isEmpty())
+            emit selectionMoved(source, delta);
+        return;
+    }
     if (!m_painting)
         return;
     m_painting = false;
@@ -288,17 +425,36 @@ void ImageCanvas::wheelEvent(QWheelEvent *event)
 
 void ImageCanvas::keyPressEvent(QKeyEvent *event)
 {
+    // With the select tool and an active selection the arrows move the
+    // selection's pixels instead of shifting the whole layer.
+    const bool moveSelection = m_tool == DrawTool::Select && hasSelection();
     switch (event->key()) {
     case Qt::Key_Left:
+        if (moveSelection) {
+            emit selectionNudged(QPoint(-1, 0));
+            return;
+        }
         emit shiftRequested(ShiftDirection::Left);
         return;
     case Qt::Key_Right:
+        if (moveSelection) {
+            emit selectionNudged(QPoint(1, 0));
+            return;
+        }
         emit shiftRequested(ShiftDirection::Right);
         return;
     case Qt::Key_Up:
+        if (moveSelection) {
+            emit selectionNudged(QPoint(0, -1));
+            return;
+        }
         emit shiftRequested(ShiftDirection::Up);
         return;
     case Qt::Key_Down:
+        if (moveSelection) {
+            emit selectionNudged(QPoint(0, 1));
+            return;
+        }
         emit shiftRequested(ShiftDirection::Down);
         return;
     default:
@@ -324,6 +480,7 @@ void ImageCanvas::updateCursor()
     case DrawTool::Rect:
     case DrawTool::RoundRect:
     case DrawTool::Ellipse:
+    case DrawTool::Select:
         kind = appearance::CanvasCursor::Crosshair;
         break;
     }

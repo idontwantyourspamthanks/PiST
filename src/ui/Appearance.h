@@ -60,6 +60,10 @@ enum class Icon {
     ShiftRight,
     ShiftUp,
     ShiftDown,
+    Select,
+    Copy,
+    Cut,
+    Paste,
 };
 
 /// Mouse glyph over the sprite canvas. The hotspot is the paint tip

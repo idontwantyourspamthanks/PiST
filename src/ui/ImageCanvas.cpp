@@ -480,8 +480,10 @@ void ImageCanvas::updateCursor()
     case DrawTool::Rect:
     case DrawTool::RoundRect:
     case DrawTool::Ellipse:
-    case DrawTool::Select:
         kind = appearance::CanvasCursor::Crosshair;
+        break;
+    case DrawTool::Select:
+        kind = appearance::CanvasCursor::Selection;
         break;
     }
     QColor paint;

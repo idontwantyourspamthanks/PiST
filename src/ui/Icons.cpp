@@ -401,8 +401,10 @@ void paintFill(QPainter &p, const QRectF &r, qreal w)
     p.drawPath(xf.map(paintBucketGlyph()));
 }
 
-/// Solid bulb, outlined tube and drop from docs/dropper-2-svgrepo-com.svg (viewBox 512²).
-QPainterPath dropperGlyph()
+/// Solid bulb, outlined tube and (optionally) the drop, from
+/// docs/dropper-2-svgrepo-com.svg (viewBox 512²). The cursor drops the drop:
+/// without it the tube tip is the image's bottom-right corner.
+QPainterPath dropperGlyph(bool includeDrop)
 {
     QPainterPath p;
     p.setFillRule(Qt::OddEvenFill);
@@ -454,12 +456,14 @@ QPainterPath dropperGlyph()
     p.lineTo(229.326, 124.357);
     p.cubicTo(229.394, 124.4, 234.999, 128.461, 244.027, 135.009);
     p.closeSubpath();
-    p.moveTo(472.389, 399.748);
-    p.cubicTo(472.181, 399.748, 434.697, 453.483, 434.697, 474.308);
-    p.cubicTo(434.697, 495.124, 451.572, 512, 472.389, 512);
-    p.cubicTo(493.206, 512, 510.088, 495.125, 510.088, 474.308);
-    p.cubicTo(510.088, 453.484, 472.604, 399.748, 472.389, 399.748);
-    p.closeSubpath();
+    if (includeDrop) {
+        p.moveTo(472.389, 399.748);
+        p.cubicTo(472.181, 399.748, 434.697, 453.483, 434.697, 474.308);
+        p.cubicTo(434.697, 495.124, 451.572, 512, 472.389, 512);
+        p.cubicTo(493.206, 512, 510.088, 495.125, 510.088, 474.308);
+        p.cubicTo(510.088, 453.484, 472.604, 399.748, 472.389, 399.748);
+        p.closeSubpath();
+    }
     return p;
 }
 
@@ -472,7 +476,7 @@ void paintEyedropper(QPainter &p, const QRectF &r, qreal w)
     xf.scale(s, s);
     p.setPen(Qt::NoPen);
     p.setBrush(ink());
-    p.drawPath(xf.map(dropperGlyph()));
+    p.drawPath(xf.map(dropperGlyph(true)));
 }
 
 /// Rounded undo arrow from docs/undo-left-round-svgrepo-com.svg (viewBox 24²).
@@ -1140,22 +1144,91 @@ void outlinePath(QPainter &p, const QPainterPath &path, qreal width)
     p.drawPath(path);
 }
 
-void paintBrushCursor(QPainter &p, const QColor &paint)
+/// Fit `glyph` inside the 32×32 cursor box with a margin and centred, so no
+/// part of the art clips at the pixmap edges whatever its viewBox margins.
+QTransform cursorGlyphTransform(const QPainterPath &glyph)
 {
-    // Tip / hotspot at (3, 25) in 32×32 logical pixels (SVG bristle tip).
+    const QRectF bounds = glyph.boundingRect();
+    const qreal s = qMin(28.0 / bounds.width(), 28.0 / bounds.height());
     QTransform xf;
-    xf.scale(32.0 / 24.0, 32.0 / 24.0);
-    p.setPen(QPen(Qt::black, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    xf.translate(16.0 - bounds.center().x() * s, 16.0 - bounds.center().y() * s);
+    xf.scale(s, s);
+    return xf;
+}
+
+/// White silhouette with a black outline: readable on any canvas colour.
+void drawCursorGlyph(QPainter &p, const QPainterPath &glyph, const QTransform &xf)
+{
+    p.setPen(QPen(Qt::black, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p.setBrush(Qt::white);
-    p.drawPath(xf.map(paintBrushGlyph()));
+    p.drawPath(xf.map(glyph));
+}
+
+/// The glyph vertex farthest in direction (dx, dy) — the visual tip a cursor
+/// hotspot should sit on.
+QPointF glyphTip(const QPainterPath &glyph, qreal dx, qreal dy)
+{
+    const QPolygonF poly = glyph.toFillPolygon();
+    QPointF best = poly.isEmpty() ? QPointF() : poly.first();
+    qreal bestScore = best.x() * dx + best.y() * dy;
+    for (const QPointF &pt : poly) {
+        const qreal score = pt.x() * dx + pt.y() * dy;
+        if (score > bestScore) {
+            bestScore = score;
+            best = pt;
+        }
+    }
+    return best;
+}
+
+QPoint cursorHotspot(const QTransform &xf, const QPointF &glyphPoint)
+{
+    const QPointF mapped = xf.map(glyphPoint);
+    return QPoint(qRound(mapped.x()), qRound(mapped.y()));
+}
+
+QPoint paintBrushCursor(QPainter &p, const QColor &paint)
+{
+    const QPainterPath glyph = paintBrushGlyph();
+    const QTransform xf = cursorGlyphTransform(glyph);
+    drawCursorGlyph(p, glyph, xf);
     if (paint.alpha() > 0) {
         p.setPen(Qt::NoPen);
         p.setBrush(paint);
         p.drawPath(xf.map(paintBrushHeadGlyph()));
     }
+    // The activating pixel is the bristle tip, bottom left of the pointer.
+    return cursorHotspot(xf, glyphTip(glyph, -1.0, 1.0));
 }
 
-void paintCrosshairCursor(QPainter &p)
+QPoint paintSelectionCursor(QPainter &p)
+{
+    const QPainterPath glyph = selectionGlyph();
+    const QTransform xf = cursorGlyphTransform(glyph);
+    drawCursorGlyph(p, glyph, xf);
+    // A marquee starts on the pixel under the pointer's centre.
+    return QPoint(16, 16);
+}
+
+QPoint paintFillCursor(QPainter &p)
+{
+    const QPainterPath glyph = paintBucketGlyph();
+    const QTransform xf = cursorGlyphTransform(glyph);
+    drawCursorGlyph(p, glyph, xf);
+    // The drop marks the pixel being flooded, bottom right of the pointer.
+    return cursorHotspot(xf, glyphTip(glyph, 1.0, 1.0));
+}
+
+QPoint paintEyedropperCursor(QPainter &p)
+{
+    const QPainterPath glyph = dropperGlyph(false);
+    const QTransform xf = cursorGlyphTransform(glyph);
+    drawCursorGlyph(p, glyph, xf);
+    // The tube tip, bottom right of the pointer, picks the colour.
+    return cursorHotspot(xf, glyphTip(glyph, 1.0, 1.0));
+}
+
+QPoint paintCrosshairCursor(QPainter &p)
 {
     QPainterPath path;
     path.moveTo(16, 3);
@@ -1167,28 +1240,7 @@ void paintCrosshairCursor(QPainter &p)
     path.moveTo(20, 16);
     path.lineTo(29, 16);
     outlinePath(p, path, 1.6);
-}
-
-void paintFillCursor(QPainter &p)
-{
-    QTransform xf;
-    xf.scale(32.0 / 256.0, 32.0 / 256.0);
-    p.setPen(QPen(Qt::black, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.setBrush(Qt::white);
-    p.drawPath(xf.map(paintBucketGlyph()));
-}
-
-void paintEyedropperCursor(QPainter &p)
-{
-    // Tip / hotspot at (5, 27).
-    QPainterPath tube;
-    tube.moveTo(5, 27);
-    tube.lineTo(18, 12);
-    outlinePath(p, tube, 2.2);
-
-    p.setPen(QPen(Qt::black, 1.6));
-    p.setBrush(Qt::white);
-    p.drawEllipse(QPointF(22, 8), 4.2, 4.2);
+    return QPoint(16, 16);
 }
 
 } // namespace
@@ -1208,20 +1260,19 @@ QCursor canvasCursor(CanvasCursor id, const QColor &paint)
     QPoint hotspot(16, 16);
     switch (id) {
     case CanvasCursor::Brush:
-        paintBrushCursor(p, paint);
-        hotspot = QPoint(3, 25);
+        hotspot = paintBrushCursor(p, paint);
         break;
     case CanvasCursor::Fill:
-        paintFillCursor(p);
-        hotspot = QPoint(29, 29);
+        hotspot = paintFillCursor(p);
         break;
     case CanvasCursor::Eyedropper:
-        paintEyedropperCursor(p);
-        hotspot = QPoint(5, 27);
+        hotspot = paintEyedropperCursor(p);
+        break;
+    case CanvasCursor::Selection:
+        hotspot = paintSelectionCursor(p);
         break;
     case CanvasCursor::Crosshair:
-        paintCrosshairCursor(p);
-        hotspot = QPoint(16, 16);
+        hotspot = paintCrosshairCursor(p);
         break;
     }
     p.end();

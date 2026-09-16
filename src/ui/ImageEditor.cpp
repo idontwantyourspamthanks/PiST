@@ -937,6 +937,15 @@ bool ImageEditor::importFile(const QString &path, bool append)
         return false;
     }
 
+    // Adopt the imported file's palette: phases sliced from this sheet paint
+    // with its registers, so the swatch bar follows the file instead of the
+    // sliced colours being reported as overspill.
+    if (!sheet.active.isEmpty()) {
+        m_doc.setActive(sheet.active);
+        if (!m_doc.active().contains(m_colour))
+            m_colour = m_doc.active().first();
+    }
+
     // A still image becomes a sprite-sheet target: the sheet mode shows it
     // and phases are sliced out of it, rather than the pixels being edited
     // in place.
@@ -946,6 +955,8 @@ bool ImageEditor::importFile(const QString &path, bool append)
 
     m_actSheetMode->setChecked(true);
     m_sheetCanvas->setSheetIndex(index);
+    rebuildSwatches();
+    m_canvas->setCurrentColour(m_colour);
     refreshSheetView();
     notifyModified();
     return true;

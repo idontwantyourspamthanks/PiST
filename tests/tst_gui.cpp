@@ -167,6 +167,9 @@ private slots:
     /// moves the pixels, and copy/paste/nudge/delete edit the active layer
     /// through the undo stack.
     void imageSelectionCopyPaste();
+    /// Importing an ST image adopts the file's palette registers as the
+    /// active set, so the colours its pixels use are not overspill.
+    void importAdoptsTheFilePalette();
     /// A debugger command typed into the console's entry line must be sent
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
@@ -2355,6 +2358,42 @@ void TstGui::imageSelectionCopyPaste()
     // A click outside the selection collapses it.
     QTest::mouseClick(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(7, 7));
     QVERIFY(canvas->selection().isEmpty());
+}
+
+void TstGui::importAdoptsTheFilePalette()
+{
+    // A PI1 whose 16 registers are deliberately not the editor default:
+    // importing must adopt the file's registers, in file order, so the
+    // colours its pixels use are not reported as overspill.
+    ImageDocument art = ImageDocument::create(8, 8, PaletteKind::Ste);
+    QVector<int> custom;
+    for (int i = 0; i < 15; ++i)
+        custom.append(0x111 * (i + 1));
+    custom.append(0x001);
+    QVERIFY2(art.active() != custom, "test palette must differ from the default");
+
+    art.setActive(custom);
+    art.setPixel(0, custom.at(3));
+    const QString dir = m_work->path() + QStringLiteral("/importpal");
+    QVERIFY(QDir().mkpath(dir));
+    const QString pi1Path = dir + QStringLiteral("/pal.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(art, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    QFile out(pi1Path);
+    QVERIFY(out.open(QIODevice::WriteOnly));
+    QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    out.close();
+
+    ImageEditor editor;
+    editor.show();
+    QVERIFY(editor.importFile(pi1Path, false));
+    QCOMPARE(editor.document().active(), custom);
+
+    // The whole point: a phase sliced out of the imported sheet paints with
+    // the file's registers, none of which are overspill now.
+    QVERIFY(editor.addPhaseFromSheet(0, QStringLiteral("cut"), 0, 0, 4, 4, 1) >= 0);
+    QVERIFY(editor.document().overspill().isEmpty());
 }
 
 void TstGui::sheetPixelsSurviveReopen()

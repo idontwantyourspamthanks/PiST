@@ -850,14 +850,114 @@ void paintShiftRight(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p,
 void paintShiftUp(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 0, -1); }
 void paintShiftDown(QPainter &p, const QRectF &r, qreal w) { paintShiftArrow(p, r, w, 0, 1); }
 
+/// Dashed selection frame with a plus, from docs/selection-plus-duotone-svgrepo-com.svg
+/// (viewBox 256²).
+QPainterPath selectionGlyph()
+{
+    QPainterPath p;
+    p.setFillRule(Qt::OddEvenFill);
+    p.moveTo(148, 48);
+    p.cubicTo(148.0001, 50.1218, 147.1572, 52.1566, 145.6569, 53.6569);
+    p.cubicTo(144.1566, 55.1572, 142.1218, 56.0001, 140, 56);
+    p.lineTo(116, 56);
+    p.cubicTo(111.5817, 56, 108, 52.4183, 108, 48);
+    p.cubicTo(108, 43.5817, 111.5817, 40, 116, 40);
+    p.lineTo(140, 40);
+    p.cubicTo(142.1218, 39.9999, 144.1566, 40.8428, 145.6569, 42.3431);
+    p.cubicTo(147.1572, 43.8434, 148.0001, 45.8782, 148, 48);
+    p.closeSubpath();
+    p.moveTo(140, 200);
+    p.lineTo(116, 200);
+    p.cubicTo(111.5817, 200, 108, 203.5817, 108, 208);
+    p.cubicTo(108, 212.4183, 111.5817, 216, 116, 216);
+    p.lineTo(140, 216);
+    p.cubicTo(144.4183, 216, 148, 212.4183, 148, 208);
+    p.cubicTo(148, 203.5817, 144.4183, 200, 140, 200);
+    p.closeSubpath();
+    p.moveTo(180, 56);
+    p.lineTo(200, 56);
+    p.lineTo(200, 76);
+    p.cubicTo(200, 80.4183, 203.5817, 84, 208, 84);
+    p.cubicTo(212.4183, 84, 216, 80.4183, 216, 76);
+    p.lineTo(216, 56);
+    p.cubicTo(215.9899, 47.1676, 208.8324, 40.0101, 200, 40);
+    p.lineTo(180, 40);
+    p.cubicTo(175.5817, 40, 172, 43.5817, 172, 48);
+    p.cubicTo(172, 52.4183, 175.5817, 56, 180, 56);
+    p.closeSubpath();
+    p.moveTo(208, 107.9995);
+    p.cubicTo(205.8782, 107.9994, 203.8434, 108.8423, 202.3431, 110.3426);
+    p.cubicTo(200.8428, 111.8429, 199.9999, 113.8778, 200, 115.9995);
+    p.lineTo(200, 139.9995);
+    p.cubicTo(200, 144.4178, 203.5817, 147.9995, 208, 147.9995);
+    p.cubicTo(212.4183, 147.9995, 216, 144.4178, 216, 139.9995);
+    p.lineTo(216, 115.9995);
+    p.cubicTo(216.0001, 113.8778, 215.1572, 111.8429, 213.6569, 110.3426);
+    p.cubicTo(212.1566, 108.8423, 210.1218, 107.9994, 208, 107.9995);
+    p.closeSubpath();
+    p.moveTo(48, 147.9995);
+    p.cubicTo(50.1218, 147.9996, 52.1566, 147.1567, 53.6569, 145.6564);
+    p.cubicTo(55.1572, 144.1561, 56.0001, 142.1213, 56, 139.9995);
+    p.lineTo(56, 115.9995);
+    p.cubicTo(56, 111.5812, 52.4183, 107.9995, 48, 107.9995);
+    p.cubicTo(43.5817, 107.9995, 40, 111.5812, 40, 115.9995);
+    p.lineTo(40, 139.9995);
+    p.cubicTo(39.9999, 142.1213, 40.8428, 144.1561, 42.3431, 145.6564);
+    p.cubicTo(43.8434, 147.1567, 45.8782, 147.9996, 48, 147.9995);
+    p.closeSubpath();
+    p.moveTo(76, 200);
+    p.lineTo(56, 200);
+    p.lineTo(56, 180);
+    p.cubicTo(56, 175.5817, 52.4183, 172, 48, 172);
+    p.cubicTo(43.5817, 172, 40, 175.5817, 40, 180);
+    p.lineTo(40, 200);
+    p.cubicTo(40.0101, 208.8324, 47.1676, 215.9899, 56, 216);
+    p.lineTo(76, 216);
+    p.cubicTo(80.4183, 216, 84, 212.4183, 84, 208);
+    p.cubicTo(84, 203.5817, 80.4183, 200, 76, 200);
+    p.closeSubpath();
+    p.moveTo(76, 40);
+    p.lineTo(56, 40);
+    p.cubicTo(47.1676, 40.0101, 40.0101, 47.1676, 40, 56);
+    p.lineTo(40, 76);
+    p.cubicTo(40, 80.4183, 43.5817, 84, 48, 84);
+    p.cubicTo(52.4183, 84, 56, 80.4183, 56, 76);
+    p.lineTo(56, 56);
+    p.lineTo(76, 56);
+    p.cubicTo(80.4183, 56, 84, 52.4183, 84, 48);
+    p.cubicTo(84, 43.5817, 80.4183, 40, 76, 40);
+    p.closeSubpath();
+    p.moveTo(236, 200);
+    p.lineTo(216, 200);
+    p.lineTo(216, 180);
+    p.cubicTo(216, 175.5817, 212.4183, 172, 208, 172);
+    p.cubicTo(203.5817, 172, 200, 175.5817, 200, 180);
+    p.lineTo(200, 200);
+    p.lineTo(180, 200);
+    p.cubicTo(175.5817, 200, 172, 203.5817, 172, 208);
+    p.cubicTo(172, 212.4183, 175.5817, 216, 180, 216);
+    p.lineTo(200, 216);
+    p.lineTo(200, 236);
+    p.cubicTo(200, 240.4183, 203.5817, 244, 208, 244);
+    p.cubicTo(212.4183, 244, 216, 240.4183, 216, 236);
+    p.lineTo(216, 216);
+    p.lineTo(236, 216);
+    p.cubicTo(240.4183, 216, 244, 212.4183, 244, 208);
+    p.cubicTo(244, 203.5817, 240.4183, 200, 236, 200);
+    p.closeSubpath();
+    return p;
+}
+
 void paintSelect(QPainter &p, const QRectF &r, qreal w)
 {
-    QPen dash(ink(), w, Qt::DashLine, Qt::FlatCap, Qt::RoundJoin);
-    dash.setDashPattern({2.4, 2.4});
-    p.setPen(dash);
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(r.adjusted(r.width() * 0.16, r.height() * 0.20, -r.width() * 0.16,
-                          -r.height() * 0.20));
+    Q_UNUSED(w);
+    const qreal s = qMin(r.width(), r.height()) / 256.0;
+    QTransform xf;
+    xf.translate(r.center().x() - 128.0 * s, r.center().y() - 128.0 * s);
+    xf.scale(s, s);
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink());
+    p.drawPath(xf.map(selectionGlyph()));
 }
 
 void paintCopy(QPainter &p, const QRectF &r, qreal w)

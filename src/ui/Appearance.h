@@ -67,8 +67,8 @@ enum class Icon {
 };
 
 /// Mouse glyph over the sprite canvas. The hotspot is the paint tip
-/// (bristles, spout, dropper point), the selection frame's centre, or the
-/// crosshair centre.
+/// (bristles, spout, dropper point), the selection frame's bottom-right
+/// corner, or the crosshair centre.
 enum class CanvasCursor {
     Brush,
     Crosshair,

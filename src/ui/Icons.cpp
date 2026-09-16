@@ -1206,8 +1206,9 @@ QPoint paintSelectionCursor(QPainter &p)
     const QPainterPath glyph = selectionGlyph();
     const QTransform xf = cursorGlyphTransform(glyph);
     drawCursorGlyph(p, glyph, xf);
-    // A marquee starts on the pixel under the pointer's centre.
-    return QPoint(16, 16);
+    // The click lands on the pointer's bottom-right corner, so the marquee
+    // start cell reads unambiguously even at high zoom.
+    return cursorHotspot(xf, glyphTip(glyph, 1.0, 1.0));
 }
 
 QPoint paintFillCursor(QPainter &p)

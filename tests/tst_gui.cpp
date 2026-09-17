@@ -126,6 +126,9 @@ private slots:
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
     void fileBrowserShowsTheProjectDirectory();
+    /// Pointing the hard-drive pane at another folder moves the selection to
+    /// that folder, so new files and pastes land where the user is looking.
+    void fileBrowserDirectorySwitchMovesSelection();
     /// Create/rename/delete through the project files panel, including what
     /// happens to the open document when its file is renamed or deleted.
     void fileBrowserFileOperations();
@@ -1161,6 +1164,38 @@ void TstGui::fileBrowserShowsTheProjectDirectory()
     // The file being edited is the selected entry.
     const QString selected = view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString();
     QCOMPARE(selected, src);
+}
+
+
+void TstGui::fileBrowserDirectorySwitchMovesSelection()
+{
+    // Two project directories, the first with the file the IDE opens.
+    const QString dirA = m_work->path() + QStringLiteral("/switchA");
+    const QString dirB = m_work->path() + QStringLiteral("/switchB");
+    QVERIFY(QDir().mkpath(dirA));
+    QVERIFY(QDir().mkpath(dirB));
+    const QString src = dirA + QStringLiteral("/prog.s");
+    QFile f(src);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write("\tnop\n");
+    f.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY2(browser, "MainWindow must own a FileBrowser");
+    window.openPath(src);
+
+    auto *view = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
+    QVERIFY(view);
+    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), src);
+
+    // Typing another folder into the path field moves the selection to that
+    // folder: the context menu (New File…, Paste) acts on the current index,
+    // so with the old selection left in place a new file was created in dirA
+    // while the user was looking at dirB.
+    browser->showDirectory(dirB);
+    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), dirB);
+    QCOMPARE(browser->selectedHardDrivePaths(), QStringList{dirB});
 }
 
 

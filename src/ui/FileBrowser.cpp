@@ -407,7 +407,12 @@ void FileBrowser::showDirectory(const QString &path)
 
     const QString root = info.absoluteFilePath();
     m_model->setRootPath(root);
-    m_view->setRootIndex(m_model->index(root));
+    const QModelIndex rootIndex = m_model->index(root);
+    m_view->setRootIndex(rootIndex);
+    // Make the shown directory the current entry. Otherwise the context menu
+    // and the clipboard keep acting on the previous folder's selection, which
+    // is no longer visible — a "New File…" would land there, not here.
+    m_view->setCurrentIndex(rootIndex);
     m_pathEdit->setText(root);
 }
 

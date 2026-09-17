@@ -1925,7 +1925,8 @@ void MainWindow::exportBitplaneData()
         phases.append(BitplaneExportPhase{phase.name, phase.cellW, phase.cellH,
                                           int(phase.frames.size())});
     }
-    BitplaneExportDialog dialog(phases, doc.currentPhase(), this);
+    BitplaneExportDialog dialog(phases, doc.currentPhase(), doc.paletteKind(), doc.active(),
+                                stColourIndex(doc.background(), doc.active()), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
 

@@ -2004,9 +2004,10 @@ void TstGui::bitplaneExportDialogMapsChoices()
 {
     // Two phases, the second an animation, and the animation selected: the
     // export follows the editor's phase, not a fixed frame.
+    const QVector<int> active = defaultActiveIndices(PaletteKind::Ste);
     BitplaneExportDialog dialog({{QStringLiteral("Atlas"), 16, 16, 1},
                                  {QStringLiteral("Walk"), 16, 16, 3}},
-                                1);
+                                1, PaletteKind::Ste, active, 0);
     const auto box = [&dialog](const char *name) {
         auto *check = dialog.findChild<QCheckBox *>(QString::fromLatin1(name));
         Q_ASSERT(check);
@@ -2017,7 +2018,19 @@ void TstGui::bitplaneExportDialogMapsChoices()
     auto *phases = dialog.findChild<QComboBox *>(QStringLiteral("bitplanePhase"));
     auto *combo = dialog.findChild<QComboBox *>(QStringLiteral("bitplanePreShifts"));
     auto *buttons = dialog.findChild<QDialogButtonBox *>();
-    QVERIFY(map && source && phases && combo && buttons);
+    auto *transparent = dialog.findChild<QComboBox *>(QStringLiteral("bitplaneTransparent"));
+    QVERIFY(map && source && phases && combo && transparent && buttons);
+
+    // The transparent colour is chosen from the document's palette, and starts
+    // on the background register: "None" plus one entry per active colour.
+    QCOMPARE(transparent->count(), active.size() + 1);
+    QCOMPARE(transparent->currentData().toInt(), 0);
+    QCOMPARE(dialog.options().transparent, 0);
+    transparent->setCurrentIndex(transparent->findData(3));
+    QCOMPARE(dialog.options().transparent, 3);
+    transparent->setCurrentIndex(0); // None
+    QCOMPARE(dialog.options().transparent, -1);
+    transparent->setCurrentIndex(transparent->findData(0));
 
     QCOMPARE(phases->count(), 2);
     QVERIFY(phases->currentText().startsWith(QStringLiteral("Walk")));

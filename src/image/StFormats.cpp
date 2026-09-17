@@ -189,8 +189,8 @@ bool isPreShiftCount(int count)
 /// everything else — including the pixels a shift pushes past the frame's
 /// right edge — is not drawn.
 void encodeSpritePlanes(const QVector<int> &src, int srcW, int srcH,
-                        const QVector<int> &active, int shift, bool masked, uchar *out,
-                        int outW)
+                        const QVector<int> &active, int transparent, int shift, bool masked,
+                        uchar *out, int outW)
 {
     const int groups = outW / 16;
     uchar *p = out;
@@ -206,9 +206,10 @@ void encodeSpritePlanes(const QVector<int> &src, int srcW, int srcH,
                                       ? src.at(at)
                                       : kTransparent;
                 const int colour = stColourIndex(value, active);
-                // A pixel that is not drawn — transparent, or the background
-                // register — is what the blitter must keep the screen under.
-                if (value < 0 || colour == 0) {
+                // A pixel the blitter must keep the screen under: one that is
+                // not painted at all, or the palette colour the export was told
+                // to leave out (the background register, unless changed).
+                if (value < 0 || (transparent >= 0 && colour == transparent)) {
                     mask |= quint16(1u << bit);
                     continue;
                 }
@@ -956,18 +957,20 @@ QByteArray exportBitplaneData(const ImageDocument &doc, int phase,
             break;
         }
         case BitplaneBlock::Kind::Sprite:
-            encodeSpritePlanes(pixels, w, h, doc.active(), 0, false, p, planeRowWidth(w, false));
+            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent, 0, false, p,
+                               planeRowWidth(w, false));
             break;
         case BitplaneBlock::Kind::Masked:
-            encodeSpritePlanes(pixels, w, h, doc.active(), 0, true, p, planeRowWidth(w, false));
+            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent, 0, true, p,
+                               planeRowWidth(w, false));
             break;
         case BitplaneBlock::Kind::Shifted:
-            encodeSpritePlanes(pixels, w, h, doc.active(), block.shift * step, false, p,
-                               planeRowWidth(w, true));
+            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent,
+                               block.shift * step, false, p, planeRowWidth(w, true));
             break;
         case BitplaneBlock::Kind::ShiftedMasked:
-            encodeSpritePlanes(pixels, w, h, doc.active(), block.shift * step, true, p,
-                               planeRowWidth(w, true));
+            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent,
+                               block.shift * step, true, p, planeRowWidth(w, true));
             break;
         }
     }
@@ -1098,6 +1101,14 @@ QByteArray exportScrollDemo(const ImageDocument &doc, int phase,
     line("; A 16-pixel group is four plane words (and a mask word in front of them");
     line("; where the data is masked). The blit ANDs the mask into the screen and ORs");
     line("; the planes over it, which is why a set mask bit keeps what was there.");
+    if (options.transparent >= 0) {
+        line(QByteArrayLiteral("; The mask leaves out palette colour ") + number(options.transparent)
+             + QByteArrayLiteral(", on top of the pixels that are not painted:"));
+        line("; the blit keeps the screen under both.");
+    } else {
+        line("; The mask leaves out only the pixels that are not painted: every painted");
+        line("; colour is opaque.");
+    }
     if (shifted) {
         line(QByteArrayLiteral("; The drawing is driven by ") + block->name.toLatin1()
              + QByteArrayLiteral(": ") + number(shifts) + " copies, " + number(step)

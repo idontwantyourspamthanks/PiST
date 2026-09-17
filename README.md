@@ -317,9 +317,12 @@ group wider than the frame so the pixels a shift pushes off its right edge still
 pre-shifted block has the same stride, so the source for shift k is `base + k × copyStride`, and copy
 0 is the unshifted picture in that wider row — no shift needs a special case.
 
-A mask bit is set where the pixel is *not* drawn — transparent, or a colour that maps to ST colour
-0, the background register. The blit therefore ANDs the screen with the mask and ORs the planes over
-it, with no complement step:
+A mask bit is set where the pixel is *not* drawn — a pixel that is not painted, or the palette
+colour the dialog nominates as the **transparent** one (colour 0, the background register, unless
+changed; it can also be set to `None`, which leaves only unpainted pixels out). A colour that is left
+out is absent from the planes as well, so the blit keeps the screen there and has nothing to OR over
+it. The blit therefore ANDs the screen with the mask and ORs the planes over it, with no complement
+step:
 
 ```asm
         move.w  (a0)+,d3        ; mask: a 1 bit keeps the screen underneath

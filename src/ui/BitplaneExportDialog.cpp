@@ -6,11 +6,13 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QPixmap>
 #include <QDialogButtonBox>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QFontMetrics>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -60,7 +62,9 @@ QVector<MapRow> mapRows(const QVector<BitplaneBlock> &blocks)
 } // namespace
 
 BitplaneExportDialog::BitplaneExportDialog(const QVector<BitplaneExportPhase> &phases,
-                                           int current, QWidget *parent)
+                                           int current, PaletteKind kind,
+                                           const QVector<int> &active, int transparent,
+                                           QWidget *parent)
     : QDialog(parent)
     , m_phases(phases)
 {
@@ -131,6 +135,24 @@ BitplaneExportDialog::BitplaneExportDialog(const QVector<BitplaneExportPhase> &p
     connect(m_preShifts, qOverload<int>(&QComboBox::currentIndexChanged), this,
             &BitplaneExportDialog::refreshMap);
     steps->addRow(tr("Pre-shift:"), m_preShifts);
+
+    m_transparent = new QComboBox(this);
+    m_transparent->setObjectName(QStringLiteral("bitplaneTransparent"));
+    m_transparent->addItem(tr("None — every painted colour is opaque"), -1);
+    for (int i = 0; i < active.size(); ++i) {
+        QPixmap swatch(14, 14);
+        swatch.fill(cubeColor(kind, active.at(i)));
+        m_transparent->addItem(QIcon(swatch), tr("%1 — treated as background").arg(i), i);
+    }
+    m_transparent->setToolTip(
+        tr("Pixels of this colour are left out of the mask, so a blit keeps the screen "
+           "under them — the ST's background register, which is what a sprite is "
+           "normally cut against. Pixels that are not painted are always left out"));
+    const int choice = m_transparent->findData(transparent);
+    m_transparent->setCurrentIndex(choice > 0 ? choice : 0);
+    connect(m_transparent, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &BitplaneExportDialog::refreshMap);
+    steps->addRow(tr("Transparent:"), m_transparent);
     layout->addLayout(steps);
 
     m_scrollDemo = new QCheckBox(tr("Also write a scroller (.s)"), this);
@@ -151,6 +173,11 @@ BitplaneExportDialog::BitplaneExportDialog(const QVector<BitplaneExportPhase> &p
     m_map->setReadOnly(true);
     m_map->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_map->setMinimumHeight(120);
+    // The map is columns, so it must not wrap: scroll sideways instead, and be
+    // wide enough that the numbers are not the first thing to fall off.
+    m_map->setLineWrapMode(QPlainTextEdit::NoWrap);
+    const QFontMetrics metrics(m_map->font());
+    m_map->setMinimumWidth(metrics.horizontalAdvance(QStringLiteral("x").repeated(50)));
     mapLayout->addWidget(m_map);
     layout->addWidget(mapGroup);
 
@@ -177,6 +204,7 @@ BitplaneDataOptions BitplaneExportDialog::options() const
     options.shifted = m_shifted->isChecked();
     options.shiftedMasked = m_shiftedMasked->isChecked();
     options.preShifts = m_preShifts->currentData().toInt();
+    options.transparent = m_transparent->currentData().toInt();
     return options;
 }
 

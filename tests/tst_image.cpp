@@ -614,8 +614,8 @@ void TstImage::bitplaneDataPlanesAndMask()
     QCOMPARE(wordAt(data, maskBlock), quint16(0x7FFF));    // 15 pixels kept
     QCOMPARE(wordAt(data, maskBlock + 2), quint16(0x8000));
 
-    // The mask keeps the screen where nothing is drawn: a transparent pixel,
-    // or the pixel that maps to ST colour 0 — the background register.
+    // The mask keeps the screen where nothing is drawn: an unpainted pixel, or
+    // the palette colour the export nominates as the background.
     ImageDocument art = ImageDocument::create(16, 16, PaletteKind::Ste);
     art.setPixel(1, art.active().at(2));    // ST colour 2 → plane 1
     art.setPixel(2, art.active().at(0));    // ST colour 0 → not drawn
@@ -628,6 +628,26 @@ void TstImage::bitplaneDataPlanesAndMask()
     QCOMPARE(wordAt(masked, 0), quint16(0xBFFF));          // only column 1 opaque
     QCOMPARE(wordAt(masked, 2), quint16(0));               // plane 0
     QCOMPARE(wordAt(masked, 4), quint16(0x4000));          // plane 1, column 1
+
+    // Nominating a different colour moves what is left out: with colour 2 as the
+    // background, the column painted in it is masked and colour 0 becomes opaque.
+    BitplaneDataOptions other = maskOnly;
+    other.transparent = 2;
+    const QByteArray recoloured = exportBitplaneData(art, 0, other, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(wordAt(recoloured, 0), quint16(0xDFFF));      // columns 0 and 2 opaque
+    // A colour left out is absent from the planes as well as from the mask: the
+    // blit keeps the screen there and has nothing to OR over it.
+    QCOMPARE(wordAt(recoloured, 4), quint16(0));
+
+    // "None" leaves only the unpainted pixels out: every painted colour, colour
+    // 0 included, is opaque.
+    BitplaneDataOptions opaque = maskOnly;
+    opaque.transparent = -1;
+    const QByteArray none = exportBitplaneData(art, 0, opaque, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(wordAt(none, 0), quint16(0x9FFF));            // columns 1 and 2 opaque
+    QCOMPARE(wordAt(none, 2), quint16(0));                 // colour 0 draws nothing
 }
 
 void TstImage::bitplaneDataPreShift()
@@ -721,6 +741,8 @@ void TstImage::bitplaneScrollDemo()
     // frame plus the spare group), so a copy is 20 bytes a row.
     QVERIFY(text.contains("kSpriteRowBytes\tequ\t20"));
     QVERIFY(text.contains("kCopyStride\tequ\t320"));
+    // and says which colour the mask leaves out
+    QVERIFY(text.contains("palette colour 0"));
 
     // The screen is 320x200 pixels of four planes — 32,000 bytes, not 64,000.
     // Clearing pixels' worth ran 32 KB past the screen.

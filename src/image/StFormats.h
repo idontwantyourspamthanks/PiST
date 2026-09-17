@@ -88,6 +88,11 @@ struct BitplaneDataOptions {
     /// sits 16/count pixels to the right of the one before it. Ignored unless
     /// a shifted block is selected.
     int preShifts = 4;
+    /// The ST colour register the mask leaves out, on top of the pixels that
+    /// are not painted at all: a blit keeps the screen under both. 0 is the
+    /// background register, which is what a sprite is normally cut against;
+    /// -1 means every painted colour is opaque.
+    int transparent = 0;
 };
 
 /// One block of an exported file: the label the assembler source uses for it,
@@ -136,8 +141,9 @@ QVector<BitplaneBlock> bitplaneLayout(int width, int height, int frameCount,
 /// Frames are laid out the same way, so frame f of a block is
 /// `base + f * frameStride` with the same stride for every frame.
 ///
-/// A mask bit is set where the pixel is *not* drawn — transparent, or a colour
-/// that maps to ST colour 0 — so the blitter keeps the screen there:
+/// A mask bit is set where the pixel is *not* drawn — unpainted, or the palette
+/// colour `options.transparent` nominates — so the blitter keeps the screen
+/// there:
 ///
 ///     move.w (a0)+,d0 / and.w d0,(a1)     ; mask: a 1 bit keeps the screen
 ///     move.w (a0)+,d0 / or.w  d0,(a1)+    ; plane 0, then 1..3

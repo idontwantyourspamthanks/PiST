@@ -34,7 +34,11 @@ class BitplaneExportDialog : public QDialog
     Q_OBJECT
 
 public:
+    /// `kind` and `active` are the document's palette, so the transparent
+    /// colour can be offered as its swatches; `transparent` is the register to
+    /// start on (the document's background).
     BitplaneExportDialog(const QVector<BitplaneExportPhase> &phases, int current,
+                         PaletteKind kind, const QVector<int> &active, int transparent,
                          QWidget *parent = nullptr);
 
     /// The phase to export, indexing the list handed to the constructor.
@@ -58,6 +62,7 @@ private:
     QCheckBox *m_shiftedMasked = nullptr;
     QCheckBox *m_scrollDemo = nullptr;
     QComboBox *m_preShifts = nullptr;
+    QComboBox *m_transparent = nullptr;
     QPlainTextEdit *m_map = nullptr;
     QPushButton *m_ok = nullptr;
 };

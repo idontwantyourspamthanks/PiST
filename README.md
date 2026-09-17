@@ -32,7 +32,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
                                                    registers, disassembly
 ```
 
-- **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line
+- **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
+  and find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
+  match-case and whole-word options)
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats

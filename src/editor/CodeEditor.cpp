@@ -10,10 +10,18 @@
 #include <QContextMenuEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPushButton>
+#include <QShortcut>
 #include <QTextBlock>
 #include <QTextStream>
+#include <QToolButton>
+#include <QVBoxLayout>
 
 namespace pist {
 
@@ -55,6 +63,11 @@ private:
     CodeEditor *m_editor;
 };
 
+bool isWordCharacter(const QChar &character)
+{
+    return character.isLetterOrNumber() || character == QLatin1Char('_');
+}
+
 } // namespace
 
 CodeEditor::CodeEditor(QWidget *parent)
@@ -76,7 +89,115 @@ CodeEditor::CodeEditor(QWidget *parent)
     connect(document(), &QTextDocument::modificationChanged, this,
             &CodeEditor::modificationChanged);
 
+    buildFindBar();
+
     updateLineNumberAreaWidth(0);
+}
+
+void CodeEditor::buildFindBar()
+{
+    m_findBar = new QFrame(this);
+    m_findBar->setObjectName(QStringLiteral("editorFindBar"));
+    m_findBar->setFrameShape(QFrame::StyledPanel);
+    m_findBar->hide();
+
+    auto *rows = new QVBoxLayout(m_findBar);
+    rows->setContentsMargins(6, 4, 6, 4);
+    rows->setSpacing(4);
+
+    auto *findRow = new QHBoxLayout;
+    findRow->setSpacing(4);
+    m_findEdit = new QLineEdit(m_findBar);
+    m_findEdit->setObjectName(QStringLiteral("editorFindText"));
+    m_findEdit->setPlaceholderText(tr("Find"));
+    m_findEdit->setClearButtonEnabled(true);
+    findRow->addWidget(m_findEdit, 1);
+
+    auto addToggle = [this, findRow](QToolButton *&button, const QString &objectName,
+                                     const QString &text, const QString &tip) {
+        button = new QToolButton(m_findBar);
+        button->setObjectName(objectName);
+        button->setText(text);
+        button->setToolTip(tip);
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        findRow->addWidget(button);
+    };
+    addToggle(m_findCase, QStringLiteral("editorFindCase"), tr("Aa"),
+              tr("Match case"));
+    addToggle(m_findWord, QStringLiteral("editorFindWord"), tr("Word"),
+              tr("Match whole words only"));
+
+    m_previous = new QToolButton(m_findBar);
+    m_previous->setObjectName(QStringLiteral("editorFindPrevious"));
+    m_previous->setText(QStringLiteral("\u25b2"));
+    m_previous->setToolTip(tr("Previous hit (Shift+Enter)"));
+    m_previous->setAutoRaise(true);
+    findRow->addWidget(m_previous);
+
+    m_next = new QToolButton(m_findBar);
+    m_next->setObjectName(QStringLiteral("editorFindNext"));
+    m_next->setText(QStringLiteral("\u25bc"));
+    m_next->setToolTip(tr("Next hit (Enter, F3)"));
+    m_next->setAutoRaise(true);
+    findRow->addWidget(m_next);
+
+    m_findStatus = new QLabel(m_findBar);
+    m_findStatus->setObjectName(QStringLiteral("editorFindStatus"));
+    m_findStatus->setMinimumWidth(fontMetrics().horizontalAdvance(QStringLiteral("000 of 000")));
+    findRow->addWidget(m_findStatus);
+
+    auto *close = new QToolButton(m_findBar);
+    close->setObjectName(QStringLiteral("editorFindClose"));
+    close->setText(QStringLiteral("\u2715"));
+    close->setToolTip(tr("Close (Esc)"));
+    close->setAutoRaise(true);
+    findRow->addWidget(close);
+
+    rows->addLayout(findRow);
+
+    m_replaceRow = new QWidget(m_findBar);
+    auto *replaceRow = new QHBoxLayout(m_replaceRow);
+    replaceRow->setContentsMargins(0, 0, 0, 0);
+    replaceRow->setSpacing(4);
+    m_replaceEdit = new QLineEdit(m_replaceRow);
+    m_replaceEdit->setObjectName(QStringLiteral("editorReplaceText"));
+    m_replaceEdit->setPlaceholderText(tr("Replace with"));
+    replaceRow->addWidget(m_replaceEdit, 1);
+    auto *replaceButton = new QPushButton(tr("Replace"), m_replaceRow);
+    replaceButton->setObjectName(QStringLiteral("editorReplaceOne"));
+    replaceRow->addWidget(replaceButton);
+    auto *replaceAllButton = new QPushButton(tr("Replace All"), m_replaceRow);
+    replaceAllButton->setObjectName(QStringLiteral("editorReplaceAll"));
+    replaceRow->addWidget(replaceAllButton);
+    m_replaceRow->hide();
+    rows->addWidget(m_replaceRow);
+
+    connect(m_findEdit, &QLineEdit::textChanged, this, &CodeEditor::findTextChanged);
+    connect(m_findEdit, &QLineEdit::returnPressed, this, &CodeEditor::findNext);
+    connect(m_findCase, &QToolButton::toggled, this, &CodeEditor::findOptionsChanged);
+    connect(m_findWord, &QToolButton::toggled, this, &CodeEditor::findOptionsChanged);
+    connect(m_next, &QToolButton::clicked, this, &CodeEditor::findNext);
+    connect(m_previous, &QToolButton::clicked, this, &CodeEditor::findPrevious);
+    connect(close, &QToolButton::clicked, this, &CodeEditor::hideFindBar);
+    connect(replaceButton, &QPushButton::clicked, this, &CodeEditor::replaceOne);
+    connect(replaceAllButton, &QPushButton::clicked, this, &CodeEditor::replaceAll);
+    connect(m_replaceEdit, &QLineEdit::returnPressed, this, &CodeEditor::replaceOne);
+
+    // Escape from inside the bar, and Shift+Enter for the other direction: the
+    // line edits would otherwise swallow both.
+    auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), m_findBar);
+    escape->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(escape, &QShortcut::activated, this, &CodeEditor::hideFindBar);
+    m_findEdit->installEventFilter(this);
+    m_replaceEdit->installEventFilter(this);
+
+    // An edit can add or remove hits, so the highlights have to follow. The
+    // selection is left where the user left it.
+    connect(document(), &QTextDocument::contentsChanged, this, [this] {
+        if (findBarVisible())
+            refreshMatches(m_findAnchor, false);
+    });
 }
 
 void CodeEditor::applyFontPreferences()
@@ -104,7 +225,13 @@ int CodeEditor::lineNumberAreaWidth() const
 
 void CodeEditor::updateLineNumberAreaWidth(int)
 {
-    setViewportMargins(lineNumberAreaWidth(), 0, 0, 0);
+    updateViewportMargins();
+}
+
+void CodeEditor::updateViewportMargins()
+{
+    const int bottom = findBarVisible() ? m_findBarHeight : 0;
+    setViewportMargins(lineNumberAreaWidth(), 0, 0, bottom);
 }
 
 void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
@@ -124,6 +251,17 @@ void CodeEditor::resizeEvent(QResizeEvent *event)
     const QRect cr = contentsRect();
     m_lineNumberArea->setGeometry(
         QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
+    layoutFindBar();
+}
+
+void CodeEditor::layoutFindBar()
+{
+    if (!m_findBar || !findBarVisible())
+        return;
+    const QRect cr = contentsRect();
+    const int left = cr.left() + lineNumberAreaWidth();
+    m_findBar->setGeometry(left, cr.bottom() - m_findBarHeight + 1,
+                           qMax(0, cr.width() - lineNumberAreaWidth()), m_findBarHeight);
 }
 
 void CodeEditor::onCursorPositionChanged()
@@ -155,6 +293,20 @@ void CodeEditor::refreshExtraSelections()
         sel.cursor = QTextCursor(document()->findBlockByNumber(m_currentExecutionLine - 1));
         sel.cursor.clearSelection();
         selections.append(sel);
+    }
+
+    // Find hits, except the one the selection is on: that one wears the
+    // selection colour, and an extra selection would paint over it.
+    if (findBarVisible()) {
+        for (int i = 0; i < m_matches.size(); ++i) {
+            if (i == m_matchIndex)
+                continue;
+            QTextEdit::ExtraSelection sel;
+            sel.format.setBackground(c.searchMatch);
+            sel.format.setProperty(QTextFormat::FullWidthSelection, false);
+            sel.cursor = m_matches.at(i);
+            selections.append(sel);
+        }
     }
 
     // Build errors.
@@ -282,6 +434,263 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
         bottom = top + qRound(blockBoundingRect(block).height());
         ++blockNumber;
     }
+}
+
+bool CodeEditor::findBarVisible() const
+{
+    return m_findBar && m_findBar->isVisible();
+}
+
+QString CodeEditor::findNeedle() const
+{
+    return m_findEdit ? m_findEdit->text() : QString();
+}
+
+void CodeEditor::showFindBar(bool withReplace)
+{
+    if (!m_findBar)
+        return;
+    const bool wasVisible = findBarVisible();
+
+    // Seeded from a single-line selection, the way every editor does it, but
+    // only the first time: reopening must not clobber what is being searched.
+    if (!wasVisible) {
+        const QTextCursor cursor = textCursor();
+        const QString selected = cursor.selectedText();
+        if (!selected.isEmpty() && !selected.contains(QChar::ParagraphSeparator))
+            m_findEdit->setText(selected);
+        m_findAnchor = cursor.selectionStart();
+    }
+
+    m_replaceRow->setVisible(withReplace);
+    m_findBarHeight = m_findBar->sizeHint().height();
+    m_findBar->show();
+    layoutFindBar();
+    updateViewportMargins();
+    if (withReplace)
+        m_replaceEdit->setFocus();
+    else
+        m_findEdit->setFocus();
+    m_findEdit->selectAll();
+    refreshMatches(m_findAnchor, true);
+}
+
+void CodeEditor::hideFindBar()
+{
+    if (!findBarVisible())
+        return;
+    m_findBar->hide();
+    m_matches.clear();
+    m_matchIndex = -1;
+    m_replaceNote.clear();
+    m_findBarHeight = 0;
+    updateViewportMargins();
+    refreshExtraSelections();
+    setFocus();
+}
+
+void CodeEditor::findTextChanged()
+{
+    m_replaceNote.clear();
+    // As-you-type searches from where the bar was opened, not from the hit the
+    // caret was last moved to, so refining the needle does not wander.
+    refreshMatches(findBarVisible() ? m_findAnchor : textCursor().position(), true);
+}
+
+void CodeEditor::findOptionsChanged()
+{
+    m_replaceNote.clear();
+    refreshMatches(m_findAnchor, true);
+}
+
+bool CodeEditor::isWholeWord(const QTextCursor &hit) const
+{
+    const int start = hit.selectionStart();
+    const int end = hit.selectionEnd();
+    if (start > 0 && isWordCharacter(document()->characterAt(start - 1)))
+        return false;
+    return !isWordCharacter(document()->characterAt(end));
+}
+
+void CodeEditor::refreshMatches(int anchor, bool selectHit)
+{
+    m_matches.clear();
+    const QString needle = findNeedle();
+    if (!needle.isEmpty()) {
+        QTextDocument::FindFlags flags;
+        if (m_findCase && m_findCase->isChecked())
+            flags |= QTextDocument::FindCaseSensitively;
+        const bool wholeWord = m_findWord && m_findWord->isChecked();
+        QTextCursor at(document());
+        while (true) {
+            const QTextCursor hit = document()->find(needle, at, flags);
+            if (hit.isNull())
+                break;
+            at = hit;
+            if (wholeWord && !isWholeWord(hit))
+                continue;
+            m_matches.append(hit);
+        }
+    }
+
+    m_matchIndex = m_matches.isEmpty() ? -1 : matchIndexAtOrAfter(qMax(0, anchor));
+    if (selectHit && m_matchIndex >= 0)
+        selectMatch(m_matchIndex);
+    else
+        refreshExtraSelections();
+
+    if (!m_findStatus)
+        return;
+    if (!m_replaceNote.isEmpty())
+        m_findStatus->setText(m_replaceNote);
+    else if (needle.isEmpty())
+        m_findStatus->clear();
+    else if (m_matches.isEmpty())
+        m_findStatus->setText(tr("no matches"));
+    else
+        m_findStatus->setText(tr("%1 of %2").arg(m_matchIndex + 1).arg(m_matches.size()));
+}
+
+int CodeEditor::matchIndexAtOrAfter(int position) const
+{
+    for (int i = 0; i < m_matches.size(); ++i) {
+        if (m_matches.at(i).selectionStart() >= position)
+            return i;
+    }
+    return m_matches.isEmpty() ? -1 : 0; // wrap
+}
+
+void CodeEditor::selectMatch(int index)
+{
+    if (index < 0 || index >= m_matches.size())
+        return;
+    m_matchIndex = index;
+    setTextCursor(m_matches.at(index));
+    ensureCursorVisible();
+    refreshExtraSelections();
+    if (m_findStatus && m_replaceNote.isEmpty())
+        m_findStatus->setText(tr("%1 of %2").arg(index + 1).arg(m_matches.size()));
+}
+
+void CodeEditor::findNext()
+{
+    if (!findBarVisible()) {
+        showFindBar(false);
+        return;
+    }
+    if (m_matches.isEmpty())
+        return;
+    const int from = m_matchIndex >= 0 ? m_matches.at(m_matchIndex).selectionEnd()
+                                       : textCursor().position();
+    const int next = matchIndexAtOrAfter(from);
+    // matchIndexAtOrAfter wraps to the first hit once past the last one; only
+    // when the caret is already on it does that mean "the same hit again".
+    selectMatch(next == m_matchIndex ? (next + 1) % m_matches.size() : next);
+}
+
+void CodeEditor::findPrevious()
+{
+    if (!findBarVisible()) {
+        showFindBar(false);
+        return;
+    }
+    if (m_matches.isEmpty())
+        return;
+    const int from = m_matchIndex >= 0 ? m_matches.at(m_matchIndex).selectionStart()
+                                       : textCursor().position();
+    for (int i = m_matches.size() - 1; i >= 0; --i) {
+        if (m_matches.at(i).selectionStart() < from) {
+            selectMatch(i);
+            return;
+        }
+    }
+    selectMatch(m_matches.size() - 1); // wrap to the last
+}
+
+int CodeEditor::currentMatchFromSelection() const
+{
+    const QTextCursor selection = textCursor();
+    if (!selection.hasSelection())
+        return -1;
+    for (int i = 0; i < m_matches.size(); ++i) {
+        if (m_matches.at(i).selectionStart() == selection.selectionStart()
+            && m_matches.at(i).selectionEnd() == selection.selectionEnd())
+            return i;
+    }
+    return -1;
+}
+
+void CodeEditor::replaceOne()
+{
+    if (!findBarVisible())
+        showFindBar(true);
+    if (m_matches.isEmpty())
+        return;
+    int index = currentMatchFromSelection();
+    if (index < 0) {
+        findNext();
+        index = m_matchIndex;
+        if (index < 0)
+            return;
+    }
+
+    QTextCursor hit = m_matches.at(index);
+    hit.insertText(m_replaceEdit->text());
+    m_replaceNote = tr("1 replaced");
+    // The document change re-ran the search; come back to the next hit after
+    // the text that was just written.
+    refreshMatches(hit.position(), true);
+    m_findEdit->setFocus();
+}
+
+void CodeEditor::replaceAll()
+{
+    if (!findBarVisible())
+        showFindBar(true);
+    if (m_matches.isEmpty())
+        return;
+
+    // Backwards, so the replacements do not shift the positions still to come,
+    // and inside one edit block so the lot undoes as a single step.
+    QTextCursor undo(document());
+    undo.beginEditBlock();
+    const int count = m_matches.size();
+    for (int i = count - 1; i >= 0; --i) {
+        QTextCursor hit = m_matches.at(i);
+        hit.insertText(m_replaceEdit->text());
+    }
+    undo.endEditBlock();
+
+    m_replaceNote = tr("%1 replaced").arg(count);
+    refreshMatches(m_findAnchor, false);
+    m_findStatus->setText(m_replaceNote);
+    m_findEdit->setFocus();
+}
+
+void CodeEditor::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Escape && findBarVisible()) {
+        hideFindBar();
+        return;
+    }
+    QPlainTextEdit::keyPressEvent(event);
+}
+
+bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
+{
+    if ((watched == m_findEdit || watched == m_replaceEdit) && event->type() == QEvent::KeyPress) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Escape) {
+            hideFindBar();
+            return true;
+        }
+        if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
+            && (key->modifiers() & Qt::ShiftModifier)) {
+            findPrevious();
+            return true;
+        }
+    }
+    return QPlainTextEdit::eventFilter(watched, event);
 }
 
 bool CodeEditor::loadFile(const QString &path)

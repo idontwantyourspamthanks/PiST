@@ -179,6 +179,10 @@ MainWindow::MainWindow(QWidget *parent)
     refreshToolchain();
 
     updateModifiedState();
+    // The actions exist only now, and the pristine tab was added before them —
+    // so run the per-tab pass once, or Find would stay greyed out until the
+    // first tab switch.
+    onTabChanged(m_tabs->currentIndex());
     resize(1280, 860);
 }
 
@@ -352,6 +356,14 @@ void MainWindow::onTabChanged(int index)
                                            && m_image->currentSheetIndex() >= 0);
         m_actExportBitplanes->setEnabled(m_image != nullptr);
     }
+    // Find and replace act on the text editor, so they come and go with it: an
+    // image tab has nothing to search.
+    if (m_actFind) {
+        m_actFind->setEnabled(m_editor != nullptr);
+        m_actFindNext->setEnabled(m_editor != nullptr);
+        m_actFindPrevious->setEnabled(m_editor != nullptr);
+        m_actReplace->setEnabled(m_editor != nullptr);
+    }
 
     const QString path = m_editor ? m_editor->filePath()
                                   : (m_image ? m_image->filePath() : QString());
@@ -431,6 +443,30 @@ void MainWindow::createActions()
         tr("Compose the current phase's sheet from its placed phases"));
     connect(m_actExportSpriteSheet, &QAction::triggered, this,
             &MainWindow::exportSpriteSheet);
+
+    m_actFind = new QAction(tr("&Find…"), this);
+    m_actFind->setObjectName(QStringLiteral("findAction"));
+    m_actFind->setShortcut(QKeySequence::Find);
+    m_actFind->setEnabled(false);
+    connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
+
+    m_actFindNext = new QAction(tr("Find &Next"), this);
+    m_actFindNext->setObjectName(QStringLiteral("findNextAction"));
+    m_actFindNext->setShortcut(QKeySequence(Qt::Key_F3));
+    m_actFindNext->setEnabled(false);
+    connect(m_actFindNext, &QAction::triggered, this, &MainWindow::findNextInEditor);
+
+    m_actFindPrevious = new QAction(tr("Find &Previous"), this);
+    m_actFindPrevious->setObjectName(QStringLiteral("findPreviousAction"));
+    m_actFindPrevious->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
+    m_actFindPrevious->setEnabled(false);
+    connect(m_actFindPrevious, &QAction::triggered, this, &MainWindow::findPreviousInEditor);
+
+    m_actReplace = new QAction(tr("Find and &Replace…"), this);
+    m_actReplace->setObjectName(QStringLiteral("replaceAction"));
+    m_actReplace->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
+    m_actReplace->setEnabled(false);
+    connect(m_actReplace, &QAction::triggered, this, &MainWindow::showReplaceBar);
 
     m_actExportBitplanes = new QAction(tr("Export Bitplane &Data…"), this);
     m_actExportBitplanes->setEnabled(false);
@@ -645,6 +681,13 @@ void MainWindow::createMenus()
 
     m_viewMenu = menuBar()->addMenu(tr("&View"));
     m_viewMenu->addAction(m_actEmbedDisplay);
+
+    auto *searchMenu = menuBar()->addMenu(tr("&Search"));
+    searchMenu->addAction(m_actFind);
+    searchMenu->addAction(m_actFindNext);
+    searchMenu->addAction(m_actFindPrevious);
+    searchMenu->addSeparator();
+    searchMenu->addAction(m_actReplace);
 
     auto *toolsMenu = menuBar()->addMenu(tr("&Tools"));
     toolsMenu->addAction(tr("Set up tools and ROMs…"), this, &MainWindow::showToolSetup);
@@ -1843,6 +1886,30 @@ void MainWindow::importImage()
     }
 
     openPath(path);
+}
+
+void MainWindow::showFindBar()
+{
+    if (m_editor)
+        m_editor->showFindBar(false);
+}
+
+void MainWindow::showReplaceBar()
+{
+    if (m_editor)
+        m_editor->showFindBar(true);
+}
+
+void MainWindow::findNextInEditor()
+{
+    if (m_editor)
+        m_editor->findNext();
+}
+
+void MainWindow::findPreviousInEditor()
+{
+    if (m_editor)
+        m_editor->findPrevious();
 }
 
 void MainWindow::exportImage()

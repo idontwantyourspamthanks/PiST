@@ -89,6 +89,7 @@ struct Colors
     QColor error;
     QColor executionLine;
     QColor currentLine;
+    QColor searchMatch;
     QColor pcRow;
     QColor changed;
     QColor address;

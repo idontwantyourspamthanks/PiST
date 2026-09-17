@@ -4,14 +4,21 @@
 
 #pragma once
 
+#include <QList>
 #include <QPlainTextEdit>
+
+class QFrame;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QToolButton;
 
 namespace pist {
 
 class AsmHighlighter;
 
-/// A plain-text assembly editor with line numbers, current-line highlighting
-/// and an error gutter marker.
+/// A plain-text assembly editor with line numbers, current-line highlighting,
+/// an error gutter marker, and a find/replace bar over its bottom edge.
 class CodeEditor : public QPlainTextEdit
 {
     Q_OBJECT
@@ -59,6 +66,14 @@ public:
 
     void gotoLine(int line);
 
+    /// Whether the find bar is showing, and how many hits the current search
+    /// has. Exposed so a test can assert what the user sees without reaching
+    /// into the bar's widgets.
+    bool findBarVisible() const;
+    int findMatchCount() const { return m_matches.size(); }
+    /// The hit the selection is currently on, 0-based, or -1.
+    int findMatchIndex() const { return m_matchIndex; }
+
     int lineNumberAreaWidth() const;
     void lineNumberAreaPaintEvent(QPaintEvent *event);
 
@@ -72,16 +87,45 @@ signals:
     void gutterClicked(int line, Qt::MouseButton button);
     void gutterContextMenuRequested(int line, const QPoint &globalPos);
 
+public slots:
+    /// Show the find bar over the bottom of the editor — the replace row too
+    /// when `withReplace` — seeded from the selection, and search as the text
+    /// is typed. No-op-free: calling it again just refocuses the bar.
+    void showFindBar(bool withReplace = false);
+    /// Hide the bar, drop the highlights and put the caret back in the text.
+    void hideFindBar();
+    /// Move to the next/previous hit, wrapping around the document.
+    void findNext();
+    void findPrevious();
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void updateLineNumberAreaWidth(int newBlockCount);
     void updateLineNumberArea(const QRect &rect, int dy);
     void onCursorPositionChanged();
+    void findTextChanged();
+    void findOptionsChanged();
+    void replaceOne();
+    void replaceAll();
 
 private:
     void refreshExtraSelections();
+    void buildFindBar();
+    void updateViewportMargins();
+    void layoutFindBar();
+    /// Recompute the hits and, when `selectHit` is set, put the selection on
+    /// the first one at or after `anchor` (wrapping to the start).
+    void refreshMatches(int anchor, bool selectHit);
+    void selectMatch(int index);
+    /// The hit the selection is on when it is one of ours, else -1.
+    int currentMatchFromSelection() const;
+    int matchIndexAtOrAfter(int position) const;
+    bool isWholeWord(const QTextCursor &hit) const;
+    QString findNeedle() const;
 
     QString m_filePath;
     AsmHighlighter *m_highlighter = nullptr;
@@ -90,6 +134,22 @@ private:
     QList<int> m_errorLines;
     QList<int> m_breakpointLines;
     QString m_lastError;
+
+    QFrame *m_findBar = nullptr;
+    QWidget *m_replaceRow = nullptr;
+    QLineEdit *m_findEdit = nullptr;
+    QLineEdit *m_replaceEdit = nullptr;
+    QToolButton *m_findCase = nullptr;
+    QToolButton *m_findWord = nullptr;
+    QToolButton *m_next = nullptr;
+    QToolButton *m_previous = nullptr;
+    QLabel *m_findStatus = nullptr;
+    QList<QTextCursor> m_matches;
+    int m_matchIndex = -1;
+    /// Where the search began, so as-you-type searching holds its place.
+    int m_findAnchor = 0;
+    int m_findBarHeight = 0;
+    QString m_replaceNote;
 };
 
 } // namespace pist

@@ -272,6 +272,12 @@ private:
     /// Ask which blocks a `.dat` should hold, then write them for the current
     /// frame of the focused sprite tab.
     void exportBitplaneData();
+    /// Find / find-and-replace in the focused text editor, from the Search menu
+    /// (the editor owns the bar; these follow the current tab).
+    void showFindBar();
+    void showReplaceBar();
+    void findNextInEditor();
+    void findPreviousInEditor();
 
     void openRecentSource();
 
@@ -431,6 +437,10 @@ private:
     QAction *m_actExportImageSafe = nullptr;
     QAction *m_actExportSpriteSheet = nullptr;
     QAction *m_actExportBitplanes = nullptr;
+    QAction *m_actFind = nullptr;
+    QAction *m_actFindNext = nullptr;
+    QAction *m_actFindPrevious = nullptr;
+    QAction *m_actReplace = nullptr;
     QAction *m_actOpenProject = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;

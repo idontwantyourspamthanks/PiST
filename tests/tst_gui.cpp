@@ -208,6 +208,12 @@ private slots:
     /// The bitplane export dialog's boxes and pre-shift picker are what the
     /// encoder is handed, and its map is the file's block table.
     void bitplaneExportDialogMapsChoices();
+    /// Find and replace in the editor: incremental hits, case/word options,
+    /// wrapping, one-step undo for Replace All, and the bar closing cleanly.
+    void editorFindAndReplace();
+    /// The Search menu exists, its shortcuts land on the focused editor, and an
+    /// image tab has nothing to search.
+    void searchMenuFollowsTheEditor();
 
 private:
     QString m_vasm;
@@ -2624,6 +2630,170 @@ void TstGui::sheetPixelsSurviveReopen()
     QCOMPARE(previewBox->currentData().toInt(), 1);
 }
 
+
+void TstGui::editorFindAndReplace()
+{
+    CodeEditor editor;
+    editor.show();
+    editor.activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(&editor));
+    editor.setPlainText(QStringLiteral("move.w d0,d1\nmovem.l d2-d7,-(sp)\nmoveq #0,d0\nMOVE d0,d1\n"));
+    editor.showFindBar(false);
+    QVERIFY(editor.findBarVisible());
+
+    auto *find = editor.findChild<QLineEdit *>(QStringLiteral("editorFindText"));
+    auto *status = editor.findChild<QLabel *>(QStringLiteral("editorFindStatus"));
+    QVERIFY(find && status);
+
+    // As the needle is typed the hits are counted and the first one at or after
+    // the caret is selected: "move", "movem", "moveq" and the shouted "MOVE".
+    find->setText(QStringLiteral("move"));
+    QCOMPARE(editor.findMatchCount(), 4);
+    QCOMPARE(editor.findMatchIndex(), 0);
+    QCOMPARE(editor.textCursor().selectedText(), QStringLiteral("move"));
+    QVERIFY(status->text().contains(QLatin1String("1 of 4")));
+
+    // Next walks them and wraps; Previous walks back and wraps the other way.
+    editor.findNext();
+    QCOMPARE(editor.findMatchIndex(), 1);
+    QCOMPARE(editor.textCursor().selectionStart(), 13);   // "movem", second line
+    editor.findNext();
+    editor.findNext();
+    editor.findNext();
+    QCOMPARE(editor.findMatchIndex(), 0);   // wrapped
+    editor.findPrevious();
+    QCOMPARE(editor.findMatchIndex(), 3);   // wrapped backwards
+
+    // Whole words only: not the "move" inside "movem" or "moveq", but "move.w"
+    // and a bare "MOVE" are words.
+    auto *word = editor.findChild<QToolButton *>(QStringLiteral("editorFindWord"));
+    QVERIFY(word);
+    word->setChecked(true);
+    QCOMPARE(editor.findMatchCount(), 2);
+
+    // Case sensitivity, on the other hand, drops the shouted one.
+    auto *caseBox = editor.findChild<QToolButton *>(QStringLiteral("editorFindCase"));
+    QVERIFY(caseBox);
+    caseBox->setChecked(true);
+    QCOMPARE(editor.findMatchCount(), 1);
+    caseBox->setChecked(false);
+    word->setChecked(false);
+    QCOMPARE(editor.findMatchCount(), 4);
+
+    // A needle with no hits says so, and does not leave a stale selection.
+    find->setText(QStringLiteral("nothing here"));
+    QCOMPARE(editor.findMatchCount(), 0);
+    QCOMPARE(editor.findMatchIndex(), -1);
+    QVERIFY(status->text().contains(QLatin1String("no matches")));
+
+    // Replace one: the replace row belongs to the replace form, and the hit under
+    // the selection is swapped, then the search steps on to the next one.
+    auto *replace = editor.findChild<QLineEdit *>(QStringLiteral("editorReplaceText"));
+    auto *replaceOne = editor.findChild<QPushButton *>(QStringLiteral("editorReplaceOne"));
+    auto *replaceAll = editor.findChild<QPushButton *>(QStringLiteral("editorReplaceAll"));
+    QVERIFY(replace && replaceOne && replaceAll);
+    QVERIFY(!replace->isVisible());
+    editor.showFindBar(true);
+    QVERIFY(replace->isVisible());
+    find->setText(QStringLiteral("move"));
+    replace->setText(QStringLiteral("jump"));
+    replaceOne->click();
+    QVERIFY(editor.toPlainText().startsWith(QStringLiteral("jump.w d0,d1")));
+    QVERIFY(status->text().contains(QLatin1String("replaced")));
+    QCOMPARE(editor.findMatchCount(), 3);   // the one just written is gone
+
+    // Replace All: every remaining hit, back to front, as one undo step — and
+    // only one, so the single replace above survives its undo.
+    replaceAll->click();
+    QVERIFY(!editor.toPlainText().contains(QStringLiteral("move")));
+    QVERIFY(editor.toPlainText().contains(QStringLiteral("jumpq #0,d0")));
+    QCOMPARE(editor.findMatchCount(), 0);
+    editor.undo();
+    QCOMPARE(editor.toPlainText(),
+             QStringLiteral("jump.w d0,d1\nmovem.l d2-d7,-(sp)\nmoveq #0,d0\nMOVE d0,d1\n"));
+
+    // Escape from the find field closes the bar, drops the highlights and puts
+    // the caret back in the text.
+    find->setText(QStringLiteral("d0"));
+    QVERIFY(editor.findMatchCount() > 0);
+    QTest::keyClick(find, Qt::Key_Escape);
+    QVERIFY(!editor.findBarVisible());
+    QCOMPARE(editor.findMatchCount(), 0);
+    QVERIFY(editor.hasFocus());
+
+    // Shift+Enter in the field is the other direction, and the replace row only
+    // shows when it was asked for.
+    editor.showFindBar(true);
+    find->setText(QStringLiteral("d1"));
+    QCOMPARE(editor.findMatchIndex(), 0);
+    QTest::keyClick(find, Qt::Key_Return, Qt::ShiftModifier);
+    QCOMPARE(editor.findMatchIndex(), editor.findMatchCount() - 1);
+    editor.hideFindBar();
+    editor.showFindBar(false);
+    QVERIFY(!editor.findChild<QWidget *>(QStringLiteral("editorReplaceText"))->isVisible());
+}
+
+void TstGui::searchMenuFollowsTheEditor()
+{
+    MainWindow window;
+    window.show();
+    window.activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    auto *findAction = window.findChild<QAction *>(QStringLiteral("findAction"));
+    auto *replaceAction = window.findChild<QAction *>(QStringLiteral("replaceAction"));
+    auto *nextAction = window.findChild<QAction *>(QStringLiteral("findNextAction"));
+    auto *previousAction = window.findChild<QAction *>(QStringLiteral("findPreviousAction"));
+    QVERIFY(findAction && replaceAction && nextAction && previousAction);
+
+    // The menu is there, and the shortcuts are the ones asked for.
+    bool inSearchMenu = false;
+    for (QAction *menu : window.menuBar()->actions()) {
+        if (!menu->menu() || !menu->text().contains(QLatin1String("Search")))
+            continue;
+        inSearchMenu = menu->menu()->actions().contains(findAction)
+                       && menu->menu()->actions().contains(replaceAction);
+    }
+    QVERIFY2(inSearchMenu, "Find and Replace belong to the Search menu");
+    QCOMPARE(findAction->shortcut(), QKeySequence(QKeySequence::Find));
+    QCOMPARE(replaceAction->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_H));
+    QCOMPARE(nextAction->shortcut(), QKeySequence(Qt::Key_F3));
+
+    // A session starts on a text tab, so they are live from the first frame.
+    QVERIFY(findAction->isEnabled());
+    QVERIFY(replaceAction->isEnabled());
+
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    editor->setFocus();
+
+    // The shortcut itself, not just the action: Ctrl+F opens the bar, Ctrl+H
+    // opens it with the replace row, F3 walks on.
+    QTest::keyClick(editor, Qt::Key_F, Qt::ControlModifier);
+    QVERIFY(editor->findBarVisible());
+    editor->hideFindBar();
+    QTest::keyClick(editor, Qt::Key_H, Qt::ControlModifier);
+    QVERIFY(editor->findBarVisible());
+    QVERIFY(editor->findChild<QWidget *>(QStringLiteral("editorReplaceText"))->isVisible());
+    editor->hideFindBar();
+
+    // An image tab has nothing to search, so the actions go away with it.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pim = dir.filePath(QStringLiteral("sprite.pim"));
+    QString error;
+    QVERIFY2(ImageDocument::create(8, 8, PaletteKind::Ste).save(pim, &error), qPrintable(error));
+    window.openPath(pim);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QVERIFY(!findAction->isEnabled());
+    QVERIFY(!replaceAction->isEnabled());
+
+    // ...and come back with the editor.
+    tabs->setCurrentIndex(tabs->indexOf(editor));
+    QVERIFY(findAction->isEnabled());
+}
 
 QTEST_MAIN(TstGui)
 

@@ -110,6 +110,8 @@ qt_add_library(pist_core OBJECT
     src/ui/RegistersView.h
     src/ui/BreakpointPanel.cpp
     src/ui/BreakpointPanel.h
+    src/ui/BitplaneExportDialog.cpp
+    src/ui/BitplaneExportDialog.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
     src/ui/EmulatorDisplayWidget.cpp

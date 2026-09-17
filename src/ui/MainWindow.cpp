@@ -18,6 +18,7 @@
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
 #include "ui/BreakpointPanel.h"
+#include "ui/BitplaneExportDialog.h"
 #include "ui/DisassemblyView.h"
 #include "ui/EmulatorDisplayWidget.h"
 #include "ui/EmbedX11.h"
@@ -349,6 +350,7 @@ void MainWindow::onTabChanged(int index)
         m_actExportImageSafe->setEnabled(m_image != nullptr);
         m_actExportSpriteSheet->setEnabled(m_image != nullptr
                                            && m_image->currentSheetIndex() >= 0);
+        m_actExportBitplanes->setEnabled(m_image != nullptr);
     }
 
     const QString path = m_editor ? m_editor->filePath()
@@ -429,6 +431,14 @@ void MainWindow::createActions()
         tr("Compose the current phase's sheet from its placed phases"));
     connect(m_actExportSpriteSheet, &QAction::triggered, this,
             &MainWindow::exportSpriteSheet);
+
+    m_actExportBitplanes = new QAction(tr("Export Bitplane &Data…"), this);
+    m_actExportBitplanes->setEnabled(false);
+    m_actExportBitplanes->setToolTip(
+        tr("Write a .dat of raw ST bitplanes to incbin: palette, sprite, masked "
+           "sprite and pre-shifted copies"));
+    connect(m_actExportBitplanes, &QAction::triggered, this,
+            &MainWindow::exportBitplaneData);
 
     m_actSave = new QAction(tr("&Save"), this);
     m_actSave->setObjectName(QStringLiteral("saveAction"));
@@ -620,6 +630,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actExportImage);
     fileMenu->addAction(m_actExportImageSafe);
     fileMenu->addAction(m_actExportSpriteSheet);
+    fileMenu->addAction(m_actExportBitplanes);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -1902,6 +1913,87 @@ bool MainWindow::exportSpriteSheetTo(const QString &path)
     writeBackFloppyDoc(path);
     statusBar()->showMessage(tr("Exported %1").arg(path), 4000);
     return true;
+}
+
+void MainWindow::exportBitplaneData()
+{
+    if (!m_image)
+        return;
+    const ImageDocument &doc = m_image->document();
+    QVector<BitplaneExportPhase> phases;
+    for (const ImagePhase &phase : doc.phases()) {
+        phases.append(BitplaneExportPhase{phase.name, phase.cellW, phase.cellH,
+                                          int(phase.frames.size())});
+    }
+    BitplaneExportDialog dialog(phases, doc.currentPhase(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export bitplane data"), QString(), tr("Bitplane data (*.dat)"));
+    if (path.isEmpty())
+        return;
+
+    const BitplaneDataOptions options = dialog.options();
+    const int phase = dialog.phase();
+
+    // The scroller goes beside the .dat, taking the .dat's name, so it is not a
+    // file the user picked in the dialog — and a `.s` that is already there is
+    // somebody's source. Ask before it goes.
+    const QFileInfo info(path);
+    QString scroller;
+    const bool wantsScroller = dialog.writesScrollDemo();
+    if (wantsScroller) {
+        scroller = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+                   + QStringLiteral(".s");
+        if (QFileInfo::exists(scroller)
+            && QMessageBox::question(this, tr("Export"),
+                                     tr("%1 already exists. Overwrite it with the scroller?")
+                                         .arg(QFileInfo(scroller).fileName()),
+                                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                   != QMessageBox::Yes) {
+            scroller.clear(); // the .dat still goes out; that file is left alone
+        }
+    }
+
+    if (!m_image->exportBitplaneFile(path, phase, options)) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("Could not export %1: %2").arg(path, m_image->lastError()));
+        return;
+    }
+    if (!scroller.isEmpty()
+        && !m_image->exportScrollDemoFile(scroller, phase, options, info.fileName())) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("Wrote %1, but could not write the scroller %2: %3")
+                                 .arg(info.fileName(), scroller, m_image->lastError()));
+        return;
+    }
+
+    // The blob carries no offsets of its own, and the source needs them for its
+    // `equ`s — so leave the map where it can still be read after the dialog
+    // closes. `bitplaneLayout()` is what the encoder walked, so these are the
+    // real offsets.
+    const QVector<BitplaneBlock> blocks =
+        bitplaneLayout(doc.phases().at(phase).cellW, doc.phases().at(phase).cellH,
+                       doc.phases().at(phase).frames.size(), options);
+    if (m_log) {
+        m_log->appendPlainText(tr("--- bitplane data: %1 ---").arg(info.fileName()));
+        for (const BitplaneBlock &block : blocks)
+            m_log->appendPlainText(QStringLiteral("%1 equ $%2")
+                                       .arg(block.name, -20)
+                                       .arg(block.offset, 4, 16, QLatin1Char('0')));
+        m_log->appendPlainText(tr("total %1 bytes").arg(blocks.last().offset + blocks.last().bytes));
+        if (!scroller.isEmpty())
+            m_log->appendPlainText(tr("%1 — press F7 to assemble it and watch this sprite scroll")
+                                       .arg(QFileInfo(scroller).fileName()));
+        else if (wantsScroller)
+            m_log->appendPlainText(tr("no scroller written — %1 was left as it is")
+                                       .arg(info.completeBaseName() + QStringLiteral(".s")));
+    }
+    statusBar()->showMessage(scroller.isEmpty()
+                                 ? tr("Exported %1").arg(info.fileName())
+                                 : tr("Exported %1 and %2").arg(info.fileName(), scroller),
+                             4000);
 }
 
 void MainWindow::build()

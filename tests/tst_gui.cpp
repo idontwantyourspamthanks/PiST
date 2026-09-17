@@ -17,6 +17,7 @@
 #include "ui/ImageCanvas.h"
 #include "ui/SheetCanvas.h"
 #include "ui/NewImageDialog.h"
+#include "ui/BitplaneExportDialog.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -33,8 +34,10 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFileSystemModel>
 #include <QLineEdit>
@@ -42,6 +45,7 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QMenu>
 #include <QMenuBar>
@@ -201,6 +205,9 @@ private slots:
     /// New Image… requires a file name and writes the blank `.pim` before
     /// the editor opens, rather than defaulting every sprite to sprite.pim.
     void newImageDialogResolvesFileName();
+    /// The bitplane export dialog's boxes and pre-shift picker are what the
+    /// encoder is handed, and its map is the file's block table.
+    void bitplaneExportDialogMapsChoices();
 
 private:
     QString m_vasm;
@@ -1993,6 +2000,91 @@ void TstGui::newImageDialogResolvesFileName()
     QCOMPARE(QFileInfo(path).absolutePath(), QFileInfo(tmp.path()).absoluteFilePath());
 }
 
+void TstGui::bitplaneExportDialogMapsChoices()
+{
+    // Two phases, the second an animation, and the animation selected: the
+    // export follows the editor's phase, not a fixed frame.
+    BitplaneExportDialog dialog({{QStringLiteral("Atlas"), 16, 16, 1},
+                                 {QStringLiteral("Walk"), 16, 16, 3}},
+                                1);
+    const auto box = [&dialog](const char *name) {
+        auto *check = dialog.findChild<QCheckBox *>(QString::fromLatin1(name));
+        Q_ASSERT(check);
+        return check;
+    };
+    auto *map = dialog.findChild<QPlainTextEdit *>(QStringLiteral("bitplaneMap"));
+    auto *source = dialog.findChild<QLabel *>(QStringLiteral("bitplaneSource"));
+    auto *phases = dialog.findChild<QComboBox *>(QStringLiteral("bitplanePhase"));
+    auto *combo = dialog.findChild<QComboBox *>(QStringLiteral("bitplanePreShifts"));
+    auto *buttons = dialog.findChild<QDialogButtonBox *>();
+    QVERIFY(map && source && phases && combo && buttons);
+
+    QCOMPARE(phases->count(), 2);
+    QVERIFY(phases->currentText().startsWith(QStringLiteral("Walk")));
+    QCOMPARE(dialog.phase(), 1);
+    QVERIFY(source->text().contains(QStringLiteral("3 frame")));
+
+    // Defaults: the palette, the sprite and its mask — not the (much larger)
+    // pre-shifted copies.
+    BitplaneDataOptions options = dialog.options();
+    QVERIFY(options.palette);
+    QVERIFY(options.sprite);
+    QVERIFY(options.masked);
+    QVERIFY(!options.shifted);
+    QVERIFY(!options.shiftedMasked);
+    QCOMPARE(options.preShifts, 4);
+
+    // The map is the file's block table with the labels the source will use:
+    // pre-shift rows stay out until one is asked for, and every frame past the
+    // first is a stride away rather than listed again.
+    QVERIFY(map->toPlainText().contains(QStringLiteral("sprite_masked_f0")));
+    QVERIFY(!map->toPlainText().contains(QStringLiteral("sprite_shift0")));
+    QVERIFY(map->toPlainText().contains(QStringLiteral("each further frame is")));
+    QVERIFY(!combo->isEnabled());
+
+    // Eight pre-shifts means eight copies at 2 px steps, and the run arrives in
+    // the map as one row naming them all.
+    box("bitplaneShifted")->setChecked(true);
+    box("bitplaneShiftedMasked")->setChecked(true);
+    combo->setCurrentIndex(combo->count() - 1);
+    options = dialog.options();
+    QVERIFY(options.shifted && options.shiftedMasked);
+    QCOMPARE(options.preShifts, 8);
+    QVERIFY(map->toPlainText().contains(QStringLiteral("sprite_shift0..7_f0")));
+    QVERIFY(map->toPlainText().contains(QStringLiteral("sprite_masked_shift0..7_f0")));
+    QVERIFY(combo->isEnabled());
+
+    // A single-frame phase has nothing to animate, so the map says nothing
+    // about frames.
+    phases->setCurrentIndex(0);
+    QCOMPARE(dialog.phase(), 0);
+    QVERIFY(!map->toPlainText().contains(QStringLiteral("each further frame is")));
+
+    // Nothing selected is not a file: Ok goes away rather than writing a
+    // zero-byte blob.
+    for (const char *name : {"bitplanePalette", "bitplaneSprite", "bitplaneMasked",
+                             "bitplaneShifted", "bitplaneShiftedMasked"})
+        box(name)->setChecked(false);
+    QVERIFY(!buttons->button(QDialogButtonBox::Ok)->isEnabled());
+    QVERIFY(buttons->button(QDialogButtonBox::Cancel)->isEnabled());
+
+    // A scroller needs a sprite to scroll: with every sprite block off the
+    // option greys out and cannot be requested.
+    auto *demo = dialog.findChild<QCheckBox *>(QStringLiteral("bitplaneScrollDemo"));
+    QVERIFY(demo);
+    box("bitplanePalette")->setChecked(true);
+    QVERIFY(!demo->isEnabled());
+    QVERIFY(!dialog.writesScrollDemo());
+
+    box("bitplaneSprite")->setChecked(true);
+    QVERIFY(demo->isEnabled());
+    demo->setChecked(true);
+    QVERIFY(dialog.writesScrollDemo());
+    // ...and taking the sprite away again withdraws it.
+    box("bitplaneSprite")->setChecked(false);
+    QVERIFY(!demo->isChecked());
+    QVERIFY(!dialog.writesScrollDemo());
+}
 
 void TstGui::floppyImageOpensAndSavesBack()
 {

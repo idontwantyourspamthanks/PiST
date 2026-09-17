@@ -344,6 +344,14 @@ sheet with drag-to-move strips and numeric placement. A `.pi1` opened from a dis
 sheet whose saves recompose and write back; Export Sprite-Safe keeps colour 0 as background so an
 export re-imports losslessly (the failure `demo/test.pi1` shows).
 
+**Sprite data export** — delivered: the bitplane `.dat` (`bitplaneLayout()` /
+`exportBitplaneData()`) writes one phase's selected blocks in screen format for *every* frame of
+that phase, so a frame and a pre-shift are strides rather than pointer tables, and
+`exportScrollDemo()` writes a ready-to-assemble `-Ftos` scroller that `incbin`s that `.dat`,
+animates the frames and scrolls them across an ST low-resolution screen until a key is pressed.
+The dialog picks the phase, the blocks and the pre-shift count, and prints the file map the
+assembler source's `equ`s come from.
+
 Still not in PiST, on purpose:
 
 - Tilemaps — regions name rectangles on a sheet; a tilemap (a grid of tile indices) is still a

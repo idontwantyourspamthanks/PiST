@@ -49,6 +49,14 @@ public:
     bool exportFile(const QString &path, bool spriteSafe = false);
     /// Compose sheet `sheetIndex` from its placed phases and write it.
     bool exportSheetFile(const QString &path, int sheetIndex, bool spriteSafe);
+    /// Write a `.dat` of raw bitplanes for `phase` — all of its frames;
+    /// `options` picks the blocks. See `exportBitplaneData` for the layout.
+    bool exportBitplaneFile(const QString &path, int phase, const BitplaneDataOptions &options);
+    /// Write the ready-to-assemble scroller for `phase`: a program that
+    /// animates its frames across the screen, `incbin`-ing `dataFile` (the
+    /// `.dat` written beside it).
+    bool exportScrollDemoFile(const QString &path, int phase, const BitplaneDataOptions &options,
+                              const QString &dataFile);
     /// The sheet the current phase is placed on (0 when unplaced); -1 when
     /// the document has no sheets at all.
     int currentSheetIndex() const;

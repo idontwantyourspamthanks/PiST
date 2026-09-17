@@ -12,6 +12,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QDir>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -45,6 +48,13 @@ private slots:
     void phasesOwnTheirFrames();
     void v2PersistsPlacementAndSheets();
     void sheetComposeAndSlice();
+    void bitplaneDataLayout();
+    void bitplaneDataPlanesAndMask();
+    void bitplaneDataPreShift();
+    void bitplaneScrollDemo();
+    void bitplaneScrollDemoAnimatesFrames();
+    void bitplaneDataExportsTheChosenPhase();
+    void bitplaneScrollDemoAssembles();
 };
 
 void TstImage::cubeSizes()
@@ -524,6 +534,411 @@ void TstImage::sheetComposeAndSlice()
     // Unknown sheet index is an error.
     error.clear();
     composeSheet(doc, 3, &error);
+    QVERIFY(!error.isEmpty());
+}
+
+void TstImage::bitplaneDataLayout()
+{
+    // Every block on, four pre-shifts: the map is the file, in order.
+    BitplaneDataOptions opt;
+    opt.masked = true;
+    opt.shifted = true;
+    opt.shiftedMasked = true;
+    const QVector<BitplaneBlock> blocks = bitplaneLayout(16, 16, 1, opt);
+    QCOMPARE(blocks.size(), 11);   // palette + sprite + masked + 4 + 4
+    QCOMPARE(blocks.at(0).name, QStringLiteral("palette"));
+    QCOMPARE(blocks.at(0).offset, 0);
+    QCOMPARE(blocks.at(0).bytes, 32);
+    QCOMPARE(blocks.at(1).name, QStringLiteral("sprite_f0"));
+    QCOMPARE(blocks.at(1).offset, 32);
+    QCOMPARE(blocks.at(1).bytes, 16 * 8);        // one 16-pixel group per row
+    QCOMPARE(blocks.at(2).name, QStringLiteral("sprite_masked_f0"));
+    QCOMPARE(blocks.at(2).offset, 32 + 16 * 8);
+    QCOMPARE(blocks.at(2).bytes, 16 * 10);       // mask word per group
+    // Pre-shifted copies are one group wider, and all have the same stride.
+    QCOMPARE(blocks.at(3).name, QStringLiteral("sprite_shift0_f0"));
+    QCOMPARE(blocks.at(3).bytes, 16 * 16);       // two groups per row
+    QCOMPARE(blocks.at(4).offset, blocks.at(3).offset + blocks.at(3).bytes);
+    QCOMPARE(blocks.at(7).name, QStringLiteral("sprite_masked_shift0_f0"));
+    QCOMPARE(blocks.at(7).bytes, 16 * 20);
+
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    const QVector<quint16> table = stColourTable(doc.paletteKind(), doc.active());
+    QString error;
+    const QByteArray data = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(data.size(), blocks.last().offset + blocks.last().bytes);
+    for (int i = 0; i < 16; ++i) {
+        const quint16 word = quint16((uchar(data.at(i * 2)) << 8) | uchar(data.at(i * 2 + 1)));
+        QCOMPARE(word, table.at(i));
+    }
+
+    // A width that is not a whole number of groups is padded, not wrapped.
+    const QVector<BitplaneBlock> padded = bitplaneLayout(20, 4, 1, opt);
+    QCOMPARE(padded.at(1).bytes, 4 * 16);        // 32 px wide → two groups a row
+
+    // Nothing selected, or a pre-shift count the format does not offer, is
+    // refused instead of written as an empty or ragged blob.
+    BitplaneDataOptions none;
+    none.palette = none.sprite = none.masked = false;
+    QVERIFY(exportBitplaneData(doc, 0, none, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    BitplaneDataOptions bad = opt;
+    bad.preShifts = 3;
+    QVERIFY(exportBitplaneData(doc, 0, bad, &error).isEmpty());
+    QVERIFY(error.contains(QLatin1String("pre-shift")));
+}
+
+void TstImage::bitplaneDataPlanesAndMask()
+{
+    const auto wordAt = [](const QByteArray &bytes, int offset) {
+        return quint16((uchar(bytes.at(offset)) << 8) | uchar(bytes.at(offset + 1)));
+    };
+
+    // Colour 1 on the top-left pixel: screen format, plane 0 first, column 0
+    // in the top bit.
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    BitplaneDataOptions opt;
+    opt.palette = false;
+    opt.masked = true;
+    QString error;
+    const QByteArray data = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(wordAt(data, 0), quint16(0x8000));            // plane 0
+    QCOMPARE(wordAt(data, 2), quint16(0));                 // plane 1
+    QCOMPARE(wordAt(data, 4), quint16(0));
+    QCOMPARE(wordAt(data, 6), quint16(0));
+    const int maskBlock = 16 * 8;                          // after the sprite block
+    QCOMPARE(wordAt(data, maskBlock), quint16(0x7FFF));    // 15 pixels kept
+    QCOMPARE(wordAt(data, maskBlock + 2), quint16(0x8000));
+
+    // The mask keeps the screen where nothing is drawn: a transparent pixel,
+    // or the pixel that maps to ST colour 0 — the background register.
+    ImageDocument art = ImageDocument::create(16, 16, PaletteKind::Ste);
+    art.setPixel(1, art.active().at(2));    // ST colour 2 → plane 1
+    art.setPixel(2, art.active().at(0));    // ST colour 0 → not drawn
+    BitplaneDataOptions maskOnly;
+    maskOnly.palette = false;
+    maskOnly.sprite = false;
+    maskOnly.masked = true;
+    const QByteArray masked = exportBitplaneData(art, 0, maskOnly, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(wordAt(masked, 0), quint16(0xBFFF));          // only column 1 opaque
+    QCOMPARE(wordAt(masked, 2), quint16(0));               // plane 0
+    QCOMPARE(wordAt(masked, 4), quint16(0x4000));          // plane 1, column 1
+}
+
+void TstImage::bitplaneDataPreShift()
+{
+    const auto wordAt = [](const QByteArray &bytes, int offset) {
+        return quint16((uchar(bytes.at(offset)) << 8) | uchar(bytes.at(offset + 1)));
+    };
+
+    // Two pixels: the leftmost, and the rightmost — the second one only fits
+    // in the spare group a pre-shifted copy carries.
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    doc.setPixel(15, doc.active().at(1));
+    BitplaneDataOptions opt;
+    opt.palette = false;
+    opt.sprite = false;
+    opt.shifted = true;
+    opt.shiftedMasked = true;
+    opt.preShifts = 2;                      // two copies, 8 px apart
+    QString error;
+    const QByteArray data = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+
+    const QVector<BitplaneBlock> blocks = bitplaneLayout(16, 16, 1, opt);
+    QCOMPARE(blocks.size(), 4);
+    QCOMPARE(blocks.at(0).name, QStringLiteral("sprite_shift0_f0"));
+    QCOMPARE(blocks.at(0).bytes, 16 * 16);
+    QCOMPARE(blocks.at(1).name, QStringLiteral("sprite_shift1_f0"));
+    QCOMPARE(blocks.at(2).name, QStringLiteral("sprite_masked_shift0_f0"));
+    QCOMPARE(blocks.at(3).name, QStringLiteral("sprite_masked_shift1_f0"));
+    QCOMPARE(data.size(), blocks.at(3).offset + blocks.at(3).bytes);
+
+    // Copy 0 is the frame itself, one group wider (the spare group stays empty).
+    QCOMPARE(wordAt(data, 0), quint16(0x8001));
+    QCOMPARE(wordAt(data, 8), quint16(0));
+
+    // Copy 1 moves both pixels 8 to the right: column 0 → 8 (bit 7 of the
+    // first group), column 15 → 23 (bit 8 of the second group).
+    const int shift1 = blocks.at(1).offset;
+    QCOMPARE(wordAt(data, shift1), quint16(0x0080));
+    QCOMPARE(wordAt(data, shift1 + 8), quint16(0x0100));
+
+    // The mask follows the shift, so it is computed at the new position. A
+    // masked group is mask,plane0..3 — five words — so the second group's mask
+    // is ten bytes past the first's.
+    const int masked = blocks.at(3).offset;
+    QCOMPARE(wordAt(data, masked), quint16(0xFF7F));
+    QCOMPARE(wordAt(data, masked + 2), quint16(0x0080));
+    QCOMPARE(wordAt(data, masked + 10), quint16(0xFEFF));
+    QCOMPARE(wordAt(data, masked + 12), quint16(0x0100));
+}
+
+
+void TstImage::bitplaneScrollDemo()
+{
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    BitplaneDataOptions opt;
+    opt.masked = true;
+    opt.shifted = true;
+    opt.shiftedMasked = true;
+    opt.preShifts = 8;
+    QString error;
+    const QByteArray text = exportScrollDemo(doc, 0, opt, QStringLiteral("sprite.dat"), &error);
+    QVERIFY2(!text.isEmpty(), qPrintable(error));
+
+    // A GEMDOS program: supervisor mode first (the ST bus-errors user-mode
+    // access to the hardware), then traps for the VBL, the resolution and the
+    // keyboard.
+    QVERIFY(text.contains("Super(0)"));
+    QVERIFY(text.contains("\ttrap\t#14"));
+    QVERIFY(text.contains("#37,-(sp)"));
+    QVERIFY(text.contains("saved_ssp"));
+
+    // The data is the .dat's, pulled in by the assembler rather than copied
+    // into the source, with every block addressed by an equate into it.
+    QVERIFY(text.contains("\tincbin\t\"sprite.dat\""));
+    const QVector<BitplaneBlock> blocks = bitplaneLayout(16, 16, 1, opt);
+    for (const BitplaneBlock &block : blocks) {
+        const QByteArray equ = block.name.toLatin1().leftJustified(24) + "equ\tbitplanes+$"
+            + QByteArray::number(block.offset, 16).rightJustified(4, '0').toUpper();
+        QVERIFY2(text.contains(equ), equ.constData());
+    }
+
+    // Driven by the widest block selected: masked, pre-shifted, 8 copies 2 px
+    // apart, so the sprite moves 2 px a frame.
+    QVERIFY(text.contains("lea\tsprite_masked_shift0_f0,a0"));
+    QVERIFY(text.contains("kShifts\t\tequ\t8"));
+    QVERIFY(text.contains("kStep\t\tequ\t2"));
+    // A 16x16 masked sprite with pre-shifts: rows are two groups wide (the
+    // frame plus the spare group), so a copy is 20 bytes a row.
+    QVERIFY(text.contains("kSpriteRowBytes\tequ\t20"));
+    QVERIFY(text.contains("kCopyStride\tequ\t320"));
+
+    // The screen is 320x200 pixels of four planes — 32,000 bytes, not 64,000.
+    // Clearing pixels' worth ran 32 KB past the screen.
+    QVERIFY(text.contains("kScreenRowBytes\tequ\t160"));
+    QVERIFY(text.contains("kScreenBytes\tequ\t32000"));
+
+    // The keyboard check is Cconis (11), never Crawio (6): handed no character
+    // argument, Crawio answered non-zero on all eight measured calls, so the
+    // demo would quit on its first frame and the drain loop would never end.
+    QCOMPARE(text.count("#$0b,-(sp)"), 2);   // the drain and the frame loop
+    QVERIFY(!text.contains("#6,-(sp)"));
+
+    // A 32-bit screen address built in a register that a `move.w` only half
+    // fills: the upper half has to be cleared first, or the sprite is written
+    // wherever that garbage points (it looked like "nothing drawn").
+    QCOMPARE(text.count("moveq\t#0,d1"), 2);   // the blit and the erase
+    QCOMPARE(text.count("moveq\t#0,d2"), 1);   // the frame/copy offset
+
+    // The masked blit has to clear every plane word with the mask, not just the
+    // first one, or a sprite over a non-empty background keeps stale bits.
+    QCOMPARE(text.count("\tand.w\td3,(a1)"), 4);
+    QCOMPARE(text.count("\tor.w\td1,(a1)+"), 4);
+    QCOMPARE(text.count("lsl.w\t#3,d1"), 2);   // the blit and the erase
+    QVERIFY(!text.contains("lsl.w\t#1,d1"));
+
+    // And the palette address survives the traps in between only if it is
+    // loaded again: a0 comes back pointing into the ROM, and writing the
+    // colours through it bus-errors. Three loads: the save, the install after
+    // the traps, and the restore on the way out.
+    QCOMPARE(text.count("lea\t$ffff8240,a0"), 3);
+
+    // A single frame is not animated, so there is no frame arithmetic and no
+    // tick counter to decrement.
+    QVERIFY(text.contains("kFrames\t\tequ\t1"));
+    QVERIFY(!text.contains("kFrameStride"));
+    QVERIFY(!text.contains("anim_frame"));
+
+    // Without a masked or pre-shifted block there is nothing to blit: the
+    // palette alone is not a sprite.
+    BitplaneDataOptions paletteOnly;
+    paletteOnly.sprite = false;
+    error.clear();
+    QVERIFY(exportScrollDemo(doc, 0, paletteOnly, QStringLiteral("d.dat"), &error).isEmpty());
+    QVERIFY(error.contains(QLatin1String("sprite block")));
+
+    // A plain sprite still scrolls, a whole group a frame, with no mask words
+    // to apply and no shift table to index.
+    BitplaneDataOptions plain;
+    plain.masked = false;
+    error.clear();
+    const QByteArray simple = exportScrollDemo(doc, 0, plain, QStringLiteral("d.dat"), &error);
+    QVERIFY2(!simple.isEmpty(), qPrintable(error));
+    QVERIFY(!simple.contains("\tand.w\td3,(a1)"));
+    QVERIFY(!simple.contains("kShifts"));
+    QVERIFY(simple.contains("kStep\t\tequ\t16"));
+}
+
+void TstImage::bitplaneScrollDemoAnimatesFrames()
+{
+    // A three-frame phase: the data carries every frame, and the scroller steps
+    // between them with a stride rather than a pointer table.
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    QVERIFY(doc.addFrame() >= 0);
+    QVERIFY(doc.setCurrentFrame(1));
+    doc.setPixel(5, doc.active().at(2));
+    QVERIFY(doc.addFrame() >= 0);
+    QVERIFY(doc.setCurrentFrame(2));
+    doc.setPixel(9, doc.active().at(3));
+    QCOMPARE(doc.frameCount(), 3);
+
+    BitplaneDataOptions opt;
+    opt.sprite = false;
+    opt.masked = true;
+    opt.shiftedMasked = true;
+    opt.preShifts = 4;
+    QString error;
+    const QVector<BitplaneBlock> blocks = bitplaneLayout(16, 16, 3, opt);
+    // palette + 3 frames x (masked + 4 copies)
+    QCOMPARE(blocks.size(), 1 + 3 * 5);
+    QCOMPARE(blocks.at(1).name, QStringLiteral("sprite_masked_f0"));
+    QCOMPARE(blocks.at(6).name, QStringLiteral("sprite_masked_f1"));
+    // Every frame is the same size, so frame f is base + f * frameStride.
+    const int frameStride = blocks.at(6).offset - blocks.at(1).offset;
+    QCOMPARE(blocks.at(11).offset - blocks.at(6).offset, frameStride);
+    // The copies of a frame are one copy's size apart; the frames are a whole
+    // frame apart, which is more than the chosen block's own bytes whenever
+    // another block is selected too.
+    const int copyStride = blocks.at(3).offset - blocks.at(2).offset;
+    QCOMPARE(blocks.at(2).bytes, copyStride);
+    QCOMPARE(frameStride, blocks.at(1).bytes + 4 * copyStride);
+
+    const QByteArray dat = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(!dat.isEmpty(), qPrintable(error));
+    QCOMPARE(dat.size(), blocks.last().offset + blocks.last().bytes);
+    // Frame 1's copy 0 really is frame 1's pixels: its pixel 5 (colour 2) shows
+    // up in plane 1, and frame 0's pixel 5 does not.
+    const int frameOne = blocks.at(6).offset;
+    const quint16 group = quint16((uchar(dat.at(frameOne + 4)) << 8)
+                                  | uchar(dat.at(frameOne + 5)));
+    QCOMPARE(group, quint16(1u << (15 - 5)));
+
+    const QByteArray text = exportScrollDemo(doc, 0, opt, QStringLiteral("anim.dat"), &error);
+    QVERIFY2(!text.isEmpty(), qPrintable(error));
+    QVERIFY(text.contains("kFrames\t\tequ\t3"));
+    QVERIFY(text.contains(QStringLiteral("kFrameStride\tequ\t%1").arg(frameStride).toUtf8()));
+    QVERIFY(text.contains("kFrameTicks\tequ\t4"));
+    QVERIFY(text.contains("mulu\t#kFrameStride,d2"));
+    QVERIFY(text.contains("anim_frame"));
+    QVERIFY(text.contains("\tincbin\t\"anim.dat\""));
+}
+
+void TstImage::bitplaneScrollDemoAssembles()
+{
+    const QString vasm = QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot"));
+    if (vasm.isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    // Deliberately not a multiple of 16, and two frames, so the padding and the
+    // animation path are assembled too.
+    ImageDocument doc = ImageDocument::create(20, 17, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    QVERIFY(doc.addFrame() >= 0);
+    QVERIFY(doc.setCurrentFrame(1));
+    doc.setPixel(30, doc.active().at(2));
+    BitplaneDataOptions opt;
+    opt.masked = true;
+    opt.shiftedMasked = true;
+    opt.preShifts = 4;
+    QString error;
+    const QByteArray data = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(!data.isEmpty(), qPrintable(error));
+    const QByteArray text =
+        exportScrollDemo(doc, 0, opt, QStringLiteral("scroll.dat"), &error);
+    QVERIFY2(!text.isEmpty(), qPrintable(error));
+
+    // The .s pulls the .dat in with incbin, which is what the user's F7 build
+    // does — so write the pair, not just the source.
+    QFile dat(dir.filePath(QStringLiteral("scroll.dat")));
+    QVERIFY(dat.open(QIODevice::WriteOnly));
+    QCOMPARE(dat.write(data), qint64(data.size()));
+    dat.close();
+    const QString source = dir.filePath(QStringLiteral("scroll.s"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(text), qint64(text.size()));
+    file.close();
+
+    QProcess assembler;
+    assembler.setWorkingDirectory(dir.path());
+    assembler.start(vasm, {QStringLiteral("-Ftos"), QStringLiteral("-o"),
+                           dir.filePath(QStringLiteral("scroll.prg")), source});
+    QVERIFY(assembler.waitForFinished(30000));
+    // Warn-free, not just error-free: vasm warns about a label that shadows a
+    // directive name, and a clean assemble is the point of a generated file.
+    const QByteArray out = assembler.readAllStandardOutput();
+    const QByteArray err = assembler.readAllStandardError();
+    QVERIFY2(assembler.exitCode() == 0, err.constData());
+    QVERIFY2(!err.contains("warning"), err.constData());
+    QVERIFY2(!out.contains("warning"), out.constData());
+    QVERIFY(QFileInfo::exists(dir.filePath(QStringLiteral("scroll.prg"))));
+    // The blob really is inside the program: it is bigger than its own code.
+    QVERIFY(QFileInfo(dir.filePath(QStringLiteral("scroll.prg"))).size() > data.size());
+
+    // And from a different working directory, which is how PiST builds: vasm
+    // resolves an incbin beside the source it is assembling, so the pair
+    // travels together.
+    QProcess elsewhere;
+    elsewhere.setWorkingDirectory(QDir::tempPath());
+    elsewhere.start(vasm, {QStringLiteral("-Ftos"), QStringLiteral("-o"),
+                           dir.filePath(QStringLiteral("scroll2.prg")), source});
+    QVERIFY(elsewhere.waitForFinished(30000));
+    QVERIFY2(elsewhere.exitCode() == 0, elsewhere.readAllStandardError().constData());
+}
+
+void TstImage::bitplaneDataExportsTheChosenPhase()
+{
+    // Two phases of different sizes: the export follows the phase it is given,
+    // not the one the editor happens to be on.
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    QCOMPARE(doc.addPhase(QStringLiteral("wide"), 32, 16), 1);
+    doc.setPixel(0, doc.active().at(2));
+    QCOMPARE(doc.currentPhase(), 1);
+
+    BitplaneDataOptions opt;
+    opt.masked = false;
+    opt.sprite = true;
+    QString error;
+    const QVector<BitplaneBlock> first = bitplaneLayout(16, 16, 1, opt);
+    const QVector<BitplaneBlock> second = bitplaneLayout(32, 16, 1, opt);
+    QVERIFY(first.last().offset + first.last().bytes
+            != second.last().offset + second.last().bytes);
+
+    // Phase 0 is the 16x16 one even though the editor is on phase 1.
+    const QByteArray a = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(!a.isEmpty(), qPrintable(error));
+    QCOMPARE(a.size(), first.last().offset + first.last().bytes);
+    const QByteArray b = exportBitplaneData(doc, 1, opt, &error);
+    QVERIFY2(!b.isEmpty(), qPrintable(error));
+    QCOMPARE(b.size(), second.last().offset + second.last().bytes);
+    // The 16x16 phase's first pixel is in the leftmost bit of plane 0 (after the
+    // palette block); the 32x8 phase's is one group in...
+    const auto wordAt = [](const QByteArray &bytes, int offset) {
+        return quint16((uchar(bytes.at(offset)) << 8) | uchar(bytes.at(offset + 1)));
+    };
+    // Colour 1 is plane 0; colour 2 is plane 1, which is the group's second word.
+    const int spriteAt = first.at(1).offset;
+    QCOMPARE(wordAt(a, spriteAt), quint16(0x8000));
+    QCOMPARE(wordAt(a, spriteAt + 2), quint16(0));
+    const int wideAt = second.at(1).offset;
+    QCOMPARE(wordAt(b, wideAt), quint16(0));
+    QCOMPARE(wordAt(b, wideAt + 2), quint16(0x8000));
+
+    error.clear();
+    QVERIFY(exportBitplaneData(doc, 2, opt, &error).isEmpty());
     QVERIFY(!error.isEmpty());
 }
 

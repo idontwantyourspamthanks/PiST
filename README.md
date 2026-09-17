@@ -36,7 +36,10 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats
-  plus STOS `.MBK` and an assembler include. Importing adopts the file's palette
+  plus STOS `.MBK`, an assembler include, and a raw bitplane `.dat` for `incbin`
+  (palette, masked sprite, pre-shifted copies, every frame of the phase) with an
+  optional ready-to-assemble scroller that animates it across the screen — see
+  [Sprite bitplane data](#sprite-bitplane-data-dat). Importing adopts the file's palette
   as the active set. The select tool drags a rectangle you
   can move (drag inside it or nudge with the arrows), and copy, cut, paste
   (Ctrl+C/X/V) and delete; pasting keeps transparent pixels see-through.
@@ -290,6 +293,59 @@ http://sun.hasenbraten.de/vlink/
 ```
 
 It builds with plain `make`. A single-file project needs no linker at all.
+
+## Sprite bitplane data (`.dat`)
+
+**File ▸ Export Bitplane Data…** writes one phase of the focused sprite as raw ST bitplanes — the
+blob an `incbin` pulls in — and the dialog says which phase, which blocks, and where each one lands.
+Every frame of the phase goes into the file, so an animation arrives as one blob. The blocks come in
+this order, each only when selected:
+
+| Block | Contents |
+|---|---|
+| `palette` | 16 colour words (32 bytes), registers 0–15, ready to copy straight into `$ff8240` |
+| `sprite_f0`, `sprite_f1`, … | each frame's four bitplanes in screen format: a row is a run of 16-pixel groups, each group plane 0–3 (4 words) |
+| `sprite_masked_f0`, … | the same rows, each group preceded by its mask word (5 words per group) |
+| `sprite_shift0..N-1_f0`, … | the pre-shifted copies: N is 2, 4 or 8, and copy k is `16/N × k` pixels to the right |
+| `sprite_masked_shift0..N-1_f0`, … | the pre-shifted copies, each with its mask words |
+
+Frames are written one after another, and every frame is the same size, so frame f of a block is
+`base + f × frameStride`: an animation is a stride, not a pointer table.
+
+A width that is not a whole number of groups is padded up to one, and a pre-shifted copy is one
+group wider than the frame so the pixels a shift pushes off its right edge still fit. Every copy of a
+pre-shifted block has the same stride, so the source for shift k is `base + k × copyStride`, and copy
+0 is the unshifted picture in that wider row — no shift needs a special case.
+
+A mask bit is set where the pixel is *not* drawn — transparent, or a colour that maps to ST colour
+0, the background register. The blit therefore ANDs the screen with the mask and ORs the planes over
+it, with no complement step:
+
+```asm
+        move.w  (a0)+,d3        ; mask: a 1 bit keeps the screen underneath
+        and.w   d3,(a1)
+        move.w  (a0)+,d1
+        or.w    d1,(a1)+        ; plane 0, then planes 1, 2, 3
+```
+
+The export also leaves the block map in the console as `equ`s, so the offsets are still to hand
+after the dialog closes:
+
+```
+sprite_shift0_f0        equ $04a0
+sprite_masked_shift0_f3 equ $1ca0
+```
+
+**Also write a scroller (.s)** puts a ready-to-assemble GEMDOS program beside the `.dat`, under the
+same name, that shows the phase off. It `incbin`s the `.dat` — vasm looks for it beside the source
+it is assembling, so the pair travels together — and addresses every block through those same
+`equ`s. It takes over supervisor mode, swaps in this palette, clears the screen, then animates and
+scrolls the sprite across it: one step per VBL, each animation frame held for `kFrameTicks`, until a
+key is pressed, when it puts the palette back and returns to TOS. `F7` builds it like any other
+source in PiST. It asks XBIOS `Getrez` first: it wants a colour monitor (RGB/VGA/TV), which is what
+the 320×200 four-bitplane screen needs — PiST's default project settings use the mono monitor, which
+boots TOS in high resolution, and there it says so and waits for a key instead of drawing. The step it moves in is the pre-shift step, so
+ticking a pre-shifted block is what makes the motion fine (2 px with 8 copies).
 
 ## Emulator embedding
 

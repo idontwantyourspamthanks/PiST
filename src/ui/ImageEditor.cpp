@@ -1816,6 +1816,43 @@ bool ImageEditor::exportSheetFile(const QString &path, int sheetIndex, bool spri
     return true;
 }
 
+bool ImageEditor::exportBitplaneFile(const QString &path, int phase,
+                                     const BitplaneDataOptions &options)
+{
+    QString error;
+    const QByteArray bytes = exportBitplaneData(m_doc, phase, options, &error);
+    if (bytes.isEmpty()) {
+        m_lastError = error.isEmpty() ? tr("Export failed") : error;
+        return false;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || file.write(bytes) != bytes.size()) {
+        m_lastError = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool ImageEditor::exportScrollDemoFile(const QString &path, int phase,
+                                       const BitplaneDataOptions &options,
+                                       const QString &dataFile)
+{
+    QString error;
+    const QByteArray bytes = exportScrollDemo(m_doc, phase, options, dataFile, &error);
+    if (bytes.isEmpty()) {
+        m_lastError = error.isEmpty() ? tr("Export failed") : error;
+        return false;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || file.write(bytes) != bytes.size()) {
+        m_lastError = file.errorString();
+        return false;
+    }
+    return true;
+}
+
 void ImageEditor::refreshOnion()
 {
     if (!m_canvas)

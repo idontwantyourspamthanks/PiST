@@ -269,6 +269,9 @@ private:
     void exportImage();
     void exportImageSpriteSafe();
     void exportSpriteSheet();
+    /// Ask which blocks a `.dat` should hold, then write them for the current
+    /// frame of the focused sprite tab.
+    void exportBitplaneData();
 
     void openRecentSource();
 
@@ -427,6 +430,7 @@ private:
     QAction *m_actExportImage = nullptr;
     QAction *m_actExportImageSafe = nullptr;
     QAction *m_actExportSpriteSheet = nullptr;
+    QAction *m_actExportBitplanes = nullptr;
     QAction *m_actOpenProject = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;

@@ -24,6 +24,7 @@
 #include "ui/FileBrowser.h"
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
+#include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
@@ -600,6 +601,16 @@ void MainWindow::wireBackend()
 
 void MainWindow::createMenus()
 {
+    // GEM's first menu was Desk; here it is the Fuji, with About PiST as its
+    // only item (Desktop Info).
+    auto *deskMenu = menuBar()->addMenu(appearance::atariLogoIcon(), QString());
+    deskMenu->setObjectName(QStringLiteral("deskMenu"));
+    deskMenu->setToolTip(tr("Atari"));
+    deskMenu->menuAction()->setIcon(appearance::atariLogoIcon());
+    auto *about = deskMenu->addAction(tr("About PiST"));
+    about->setObjectName(QStringLiteral("aboutPistAction"));
+    connect(about, &QAction::triggered, this, &MainWindow::showAbout);
+
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
@@ -639,6 +650,12 @@ void MainWindow::createMenus()
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
+}
+
+void MainWindow::showAbout()
+{
+    AboutDialog dialog(this);
+    dialog.exec();
 }
 
 void MainWindow::showToolSetup()
@@ -1130,6 +1147,8 @@ void MainWindow::applyIcons()
     m_actStep->setIcon(appearance::icon(Icon::Step));
     m_actStepOver->setIcon(appearance::icon(Icon::StepOver));
     m_actClearBreakpoints->setIcon(appearance::icon(Icon::ClearBreakpoints));
+    if (auto *desk = findChild<QMenu *>(QStringLiteral("deskMenu")))
+        desk->setIcon(appearance::atariLogoIcon());
 }
 
 void MainWindow::applyAppearance()

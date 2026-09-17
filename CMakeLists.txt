@@ -140,12 +140,16 @@ qt_add_library(pist_core OBJECT
     src/ui/PalettePickerDialog.h
     src/ui/NewImageDialog.cpp
     src/ui/NewImageDialog.h
+    src/ui/AboutDialog.cpp
+    src/ui/AboutDialog.h
 )
 target_include_directories(pist_core PUBLIC src)
 target_link_libraries(pist_core PUBLIC
     Qt6::Widgets
     Qt6::Network
 )
+# Quoted so the preprocessor sees a string, not a floating-point token.
+target_compile_definitions(pist_core PUBLIC "PIST_VERSION=\"${PROJECT_VERSION}\"")
 
 if(X11_FOUND)
     target_compile_definitions(pist_core PUBLIC PIST_HAVE_X11)

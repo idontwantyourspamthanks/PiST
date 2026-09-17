@@ -32,7 +32,9 @@
 #include "toolchain/ToolFetch.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QComboBox>
+#include <QDialog>
 #include <QDir>
 #include <QFileSystemModel>
 #include <QLineEdit>
@@ -42,6 +44,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QMenu>
+#include <QMenuBar>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
@@ -71,6 +74,7 @@ class TstGui : public QObject
 private slots:
     void initTestCase();
     void windowConstructs();
+    void aboutMenuIsFirstAndOpensGemDialog();
     void assemblesAndMapsLines();
     void editorShowsExecutionLineAndBreakpoints();
 
@@ -224,6 +228,38 @@ void TstGui::windowConstructs()
     QVERIFY(!window.windowTitle().isEmpty());
     QVERIFY2(window.windowTitle().contains(QLatin1String("PiST")),
              qPrintable(window.windowTitle()));
+}
+
+void TstGui::aboutMenuIsFirstAndOpensGemDialog()
+{
+    MainWindow window;
+    const QList<QAction *> menus = window.menuBar()->actions();
+    QVERIFY(!menus.isEmpty());
+    auto *desk = menus.first()->menu();
+    QVERIFY2(desk, "the first menu must be the Atari/Desk menu");
+    QCOMPARE(desk->objectName(), QStringLiteral("deskMenu"));
+    QVERIFY(!desk->menuAction()->icon().isNull());
+    QCOMPARE(desk->actions().size(), 1);
+    QAction *about = desk->actions().first();
+    QCOMPARE(about->objectName(), QStringLiteral("aboutPistAction"));
+    QCOMPARE(about->text().remove(QLatin1Char('&')), QStringLiteral("About PiST"));
+
+    QTimer::singleShot(0, &window, []() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        QCOMPARE(dialog->objectName(), QStringLiteral("aboutDialog"));
+        auto *title = dialog->findChild<QLabel *>(QStringLiteral("aboutTitle"));
+        auto *version = dialog->findChild<QLabel *>(QStringLiteral("aboutVersion"));
+        auto *copyright = dialog->findChild<QLabel *>(QStringLiteral("aboutCopyright"));
+        auto *credit = dialog->findChild<QLabel *>(QStringLiteral("aboutCredit"));
+        QVERIFY(title && version && copyright && credit);
+        QCOMPARE(title->text(), QStringLiteral("PIST, Program in ST"));
+        QCOMPARE(version->text(), QStringLiteral(PIST_VERSION));
+        QVERIFY(copyright->text().contains(QStringLiteral("2026")));
+        QCOMPARE(credit->text(), QStringLiteral("Koala Software/Dad.PRG"));
+        dialog->accept();
+    });
+    about->trigger();
 }
 
 // The line map is what turns a gutter click into an address and a PC back into a

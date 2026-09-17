@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QCursor>
+#include <QFont>
 #include <QPalette>
 #include <QPainter>
 #include <QPainterPath>
@@ -15,7 +16,9 @@
 #include <QTransform>
 #include <QColor>
 
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 
 namespace pist {
 namespace appearance {
@@ -1089,6 +1092,154 @@ void paintWindowGlyph(QPainter &p, int s)
         p.drawRect(QRectF(sc(16 + i * 6), sc(55), sc(4), sc(3)));
 }
 
+// SVG path subset used by docs/atari-2.svg: M/m L/l H/h V/v C/c Z/z and
+// implicit repeats. White counter paths are extra subpaths; OddEvenFill
+// punches them as holes.
+QPainterPath svgPath(const char *d)
+{
+    QPainterPath path;
+    const char *s = d;
+    qreal cx = 0, cy = 0, sx = 0, sy = 0;
+    char cmd = 0;
+
+    auto skip = [&] {
+        while (*s && (std::isspace(static_cast<unsigned char>(*s)) || *s == ','))
+            ++s;
+    };
+    auto hasNumber = [&] {
+        skip();
+        return *s == '+' || *s == '-' || *s == '.'
+            || (*s >= '0' && *s <= '9');
+    };
+    auto number = [&] {
+        skip();
+        char *end = nullptr;
+        const qreal v = std::strtod(s, &end);
+        s = end;
+        return v;
+    };
+
+    skip();
+    while (*s) {
+        if (std::isalpha(static_cast<unsigned char>(*s)))
+            cmd = *s++;
+        if (!cmd)
+            break;
+        const bool rel = std::islower(static_cast<unsigned char>(cmd));
+        const char kind = static_cast<char>(std::toupper(static_cast<unsigned char>(cmd)));
+        if (kind == 'Z') {
+            path.closeSubpath();
+            cx = sx;
+            cy = sy;
+            skip();
+            continue;
+        }
+        if (!hasNumber())
+            break;
+        const qreal n1 = number();
+        if (kind == 'H') {
+            cx = rel ? cx + n1 : n1;
+            path.lineTo(cx, cy);
+        } else if (kind == 'V') {
+            cy = rel ? cy + n1 : n1;
+            path.lineTo(cx, cy);
+        } else {
+            const qreal n2 = number();
+            if (kind == 'M') {
+                cx = rel ? cx + n1 : n1;
+                cy = rel ? cy + n2 : n2;
+                path.moveTo(cx, cy);
+                sx = cx;
+                sy = cy;
+                cmd = rel ? 'l' : 'L';
+            } else if (kind == 'L') {
+                cx = rel ? cx + n1 : n1;
+                cy = rel ? cy + n2 : n2;
+                path.lineTo(cx, cy);
+            } else if (kind == 'C') {
+                const qreal x1 = rel ? cx + n1 : n1;
+                const qreal y1 = rel ? cy + n2 : n2;
+                const qreal x2 = rel ? cx + number() : number();
+                const qreal y2 = rel ? cy + number() : number();
+                const qreal x = rel ? cx + number() : number();
+                const qreal y = rel ? cy + number() : number();
+                path.cubicTo(x1, y1, x2, y2, x, y);
+                cx = x;
+                cy = y;
+            }
+        }
+        skip();
+    }
+    return path;
+}
+
+QPainterPath atariLogoGlyph(bool wordmark)
+{
+    // docs/atari-2.svg, viewBox 0 0 50.041 53.04. White fills are holes.
+    QPainterPath p;
+    p.setFillRule(Qt::OddEvenFill);
+    p.addPath(svgPath("M19.681 34.201h5.039V.001h-5.039v34.2z"));
+    p.addPath(svgPath(
+        "M16.08 0h2.64c-.004 15.983-.413 19.865-2.879 24.601C13.403 29.264 "
+        "6.56 34.168.72 34.681v-5.16c4.408-.665 8.392-3.424 11.881-8.64C16.061 "
+        "15.677 16.161 3.314 16.08 0z"));
+    p.addPath(svgPath(
+        "M28.441 0H25.8c-.035 15.983.373 19.865 2.88 24.601 2.396 4.663 9.243 "
+        "9.567 15.12 10.08v-5.16c-4.447-.665-8.433-3.424-11.88-8.64C28.421 "
+        "15.677 28.319 3.314 28.441 0z"));
+    if (!wordmark)
+        return p;
+
+    p.addPath(svgPath("M40.921 53.04h2.4V37.561h-2.4V53.04z"));
+    p.addPath(svgPath(
+        "M10.08 37.561v2.28h3.241V53.04h2.399V39.841h3.121v-2.28H10.08z"));
+    p.addPath(svgPath(
+        "M25.562 49.201l1.079 3.839h2.399l-3.96-13.92c-.378-1.47-1.24-1.583"
+        "-1.8-1.56-.64-.023-1.503.09-1.919 1.56l-3.96 13.92H19.8l1.081-3.839"
+        "h4.681z"));
+    p.addPath(svgPath(
+        "M32.642 40.561V53.04H30.24V39.841c.049-1.592.687-2.304 2.281-2.28h"
+        "2.519c1.925-.023 4.211 1.401 4.2 4.56.011 3.067-1.713 3.854-2.639 "
+        "4.32-.499.396-.388.696-.12 1.2l3.599 5.399h-2.759l-3.48-5.399c-.701"
+        "-1.028-.401-2.154.359-2.521.487-.29 2.726-.908 2.761-2.879-.035-1.929"
+        "-1.197-2.38-2.04-2.4H33.24c-.4.02-.625.209-.598.72z"));
+    p.addPath(svgPath(
+        "M8.16 49.201l1.08 3.839h2.401L7.68 39.12c-.353-1.47-1.215-1.583-1.799"
+        "-1.56-.616-.023-1.479.09-1.921 1.56L0 53.04h2.401l1.08-3.839H8.16z"));
+    p.addPath(svgPath("M21.601 46.921l1.679-5.881 1.68 5.881h-3.359z"));
+    p.addPath(svgPath("M4.2 46.921l1.681-5.881 1.68 5.881H4.2z"));
+    p.addPath(svgPath(
+        "M48.12 35.04c-1.002-.045-1.881.755-1.92 1.801.039 1.134.918 1.934 "
+        "1.92 1.92 1.069.014 1.949-.786 1.92-1.92.029-1.046-.851-1.846-1.92"
+        "-1.801z"));
+    p.addPath(svgPath(
+        "M48.12 35.281c.894.028 1.569.703 1.561 1.56.009.949-.667 1.619-1.561 "
+        "1.56-.827.06-1.502-.61-1.559-1.56.057-.857.732-1.531 1.559-1.56z"));
+    p.addPath(svgPath(
+        "M47.762 37.08h.358l.601.841h.359l-.599-.961c.302.015.547-.155.599-.6"
+        "-.052-.376-.306-.565-.84-.6h-.839v2.16h.36v-.84h.001z"));
+    p.addPath(svgPath(
+        "M47.762 36.12h.479c.199-.046.444.005.48.24-.036.369-.287.39-.601.36h"
+        "-.358v-.6z"));
+    return p;
+}
+
+void paintAtariLogo(QPainter &p, const QRectF &r, bool wordmark, const QColor &fill)
+{
+    const QPainterPath glyph = atariLogoGlyph(wordmark);
+    const QRectF src = glyph.boundingRect();
+    if (src.isEmpty() || r.isEmpty())
+        return;
+    const qreal s = qMin(r.width() / src.width(), r.height() / src.height());
+    QTransform xf;
+    xf.translate(r.center().x(), r.center().y());
+    xf.scale(s, s);
+    xf.translate(-src.center().x(), -src.center().y());
+    p.setPen(Qt::NoPen);
+    p.setBrush(fill);
+    p.drawPath(xf.map(glyph));
+}
+
 } // namespace
 
 QIcon icon(Icon id, const QColor &paint)
@@ -1127,6 +1278,46 @@ QIcon windowIcon()
         pm.fill(Qt::transparent);
         QPainter p(&pm);
         paintWindowGlyph(p, logical);
+        p.end();
+        ic.addPixmap(pm);
+    }
+    return ic;
+}
+
+QPixmap atariLogoPixmap(int logicalHeight, bool wordmark)
+{
+    const QPainterPath glyph = atariLogoGlyph(wordmark);
+    const QRectF src = glyph.boundingRect();
+    const qreal aspect = src.height() > 0 ? src.width() / src.height() : 1.0;
+    const int logicalWidth = std::max(1, int(std::lround(logicalHeight * aspect)));
+    const qreal ratio = dpr();
+    const int pw = std::max(1, int(std::lround(logicalWidth * ratio)));
+    const int ph = std::max(1, int(std::lround(logicalHeight * ratio)));
+    QPixmap pm(pw, ph);
+    pm.setDevicePixelRatio(ratio);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor fill = wordmark ? QColor(Qt::black) : ink();
+    paintAtariLogo(p, QRectF(0, 0, logicalWidth, logicalHeight), wordmark, fill);
+    p.end();
+    return pm;
+}
+
+QIcon atariLogoIcon()
+{
+    QIcon ic;
+    const qreal ratio = dpr();
+    for (int logical : {16, 20, 24, 32}) {
+        const int px = int(std::lround(logical * ratio));
+        QPixmap pm(px, px);
+        pm.setDevicePixelRatio(ratio);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal pad = logical * 0.10;
+        paintAtariLogo(p, QRectF(pad, pad, logical - 2 * pad, logical - 2 * pad),
+                       false, ink());
         p.end();
         ic.addPixmap(pm);
     }

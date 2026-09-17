@@ -8,6 +8,7 @@
 #include <QCursor>
 #include <QFont>
 #include <QIcon>
+#include <QPixmap>
 #include <QString>
 #include <QStringList>
 
@@ -133,6 +134,11 @@ Colors colors();
 /// Toolbar glyph. For `Icon::Brush`, a valid opaque `paint` fills the brush head.
 QIcon icon(Icon id, const QColor &paint = QColor());
 QIcon windowIcon();
+/// The Atari mark from docs/atari-2.svg. The menu heading is the Fuji peaks
+/// in the theme ink colour; the About box uses the full mark including the
+/// wordmark, in black on the GEM grey face.
+QIcon atariLogoIcon();
+QPixmap atariLogoPixmap(int logicalHeight, bool wordmark = true);
 /// Canvas pointer. For `CanvasCursor::Brush`, `paint` fills the bristle well.
 QCursor canvasCursor(CanvasCursor id, const QColor &paint = QColor());
 

@@ -63,6 +63,9 @@ public slots:
     /// Open the tool/ROM setup dialog. From the Tools menu.
     void showToolSetup();
 
+    /// GEM-style About box, from the Atari menu.
+    void showAbout();
+
     /// Open the setup dialog only when a required piece is missing. Called
     /// once from main() after the window is shown, so a first run offers the
     /// guided fetch instead of failing the first build with it.

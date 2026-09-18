@@ -182,6 +182,7 @@ private slots:
     /// Disk A/B groups list a mounted image, eject it, and export the
     /// hard-drive selection to a new .st / .msa floppy.
     void fileBrowserFloppyGroups();
+    void floppyRewriteOfAForeignDiskAsks();
     /// Copy, cut and paste through the browser panes: duplicate and move on
     /// the hard drive (with pathRenamed for open documents), and across the
     /// hard-drive and floppy panes.
@@ -2963,6 +2964,69 @@ void TstGui::searchMenuFollowsTheEditor()
     // ...and come back with the editor.
     tabs->setCurrentIndex(tabs->indexOf(editor));
     QVERIFY(findAction->isEnabled());
+}
+
+void TstGui::floppyRewriteOfAForeignDiskAsks()
+{
+    const QString dir = m_work->path() + QStringLiteral("/foreign");
+    QVERIFY(QDir().mkpath(dir));
+    const QString host = dir + QStringLiteral("/new.txt");
+    {
+        QFile f(host);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("new");
+    }
+
+    // A disk with its own boot code: writing to it rebuilds the whole image
+    // with PiST's canonical layout, so the browser must ask first, and a "no"
+    // must leave the image byte-identical in the parts that matter.
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("ONE.TXT");
+    file.data = QByteArrayLiteral("one");
+    items.append(file);
+    const QString image = dir + QStringLiteral("/game.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    raw.replace(3, 8, QByteArrayLiteral("GAMEDSK "));
+    QVERIFY2(floppy::saveRaw(image, raw, &error), qPrintable(error));
+
+    MainWindow window;
+    // The constructor queues "reopen where the user left off", which loads a
+    // project and re-syncs the disk slots from its (empty) settings. Let that
+    // land before mounting, or it wipes the mount at the next event loop —
+    // which here is the confirmation dialog's.
+    QTest::qWait(50);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->setFloppyImages({image, QString()});
+    browser->copyHardDrivePaths({host}, false);
+
+    // Decline: nothing is written and the boot code survives.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->button(QMessageBox::No)->click();
+    });
+    QVERIFY(!browser->pasteIntoFloppy(0, QString()));
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    QCOMPARE(raw.mid(3, 8), QByteArrayLiteral("GAMEDSK "));
+    QCOMPARE(floppy::listImage(image, &error).size(), 1);
+
+    // Accept: the file lands, and the disk is now PiST's canonical layout —
+    // which is exactly what the warning said would happen.
+    browser->copyHardDrivePaths({host}, false);
+    QTimer::singleShot(0, browser, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->button(QMessageBox::Yes)->click();
+    });
+    QVERIFY(browser->pasteIntoFloppy(0, QString()));
+    const QVector<floppy::Entry> after = floppy::listImage(image, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(after.size(), 2);
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    QVERIFY(floppy::looksLikeCanonical720k(raw.left(512), raw.size()));
 }
 
 QTEST_MAIN(TstGui)

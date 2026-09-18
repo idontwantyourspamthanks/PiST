@@ -62,6 +62,14 @@ QVector<Entry> listRaw(const QByteArray &raw, QString *error);
 /// Load an image file and list it.
 QVector<Entry> listImage(const QString &imagePath, QString *error);
 
+/// Whether a decoded image already has the layout `updateImage` writes: the
+/// canonical 720 KiB geometry with the `mkfs.fat` OEM field. Anything else —
+/// a game disk's own boot code, a 1.44 MB disk — is *rewritten* rather than
+/// edited, losing whatever made it different, so a caller can ask first.
+/// `firstSector` is the decoded image's first 512 bytes (not the file's: a
+/// `.msa` file starts with its own header), and `imageSize` the decoded size.
+bool looksLikeCanonical720k(const QByteArray &firstSector, qint64 imageSize);
+
 /// Read one file's content out of a decoded image. `entryPath` is the
 /// `/`-separated path `listRaw` reports (`AUTO/PROG.PRG`).
 bool readFileRaw(const QByteArray &raw, const QString &entryPath,

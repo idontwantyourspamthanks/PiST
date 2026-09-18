@@ -46,6 +46,7 @@ private slots:
     void floppyListingSurvivesDirectoryCycles();
     void floppyNamesAreSanitizedForHostPaths();
     void floppyRejectsAbsurdGeometry();
+    void floppyCanonicalLayoutIsRecognised();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -833,6 +834,38 @@ void TstParsers::floppyRejectsAbsurdGeometry()
     QByteArray data;
     QVERIFY(!floppy::readFileRaw(img, QStringLiteral("A.TXT"), &data, &error));
     QVERIFY2(!error.isEmpty(), "the reader must refuse it too");
+}
+
+void TstParsers::floppyCanonicalLayoutIsRecognised()
+{
+    // updateImage rebuilds whatever it writes with PiST's canonical layout, so
+    // the caller asks first when the image is not already that shape. The
+    // predicate has to tell PiST's own images from a disk that would lose
+    // something.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("A.TXT");
+    file.data = QByteArrayLiteral("x");
+    items.append(file);
+    const QString st = tmp.path() + QStringLiteral("/own.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(st, &raw, &error), qPrintable(error));
+    QVERIFY(floppy::looksLikeCanonical720k(raw.left(512), raw.size()));
+
+    // A foreign boot sector at the same size: rewriting it replaces that boot
+    // code, so it must not pass as canonical.
+    QByteArray foreign = raw;
+    foreign.replace(3, 8, QByteArrayLiteral("GAMEDSK "));
+    QVERIFY(!floppy::looksLikeCanonical720k(foreign.left(512), foreign.size()));
+
+    // Neither may a larger image, whose upper half the rewrite would drop.
+    QByteArray big(1474560, '\0');
+    big.replace(0, 512, raw.left(512));
+    QVERIFY(!floppy::looksLikeCanonical720k(big.left(512), big.size()));
 }
 QTEST_MAIN(TstParsers)
 #include "tst_parsers.moc"

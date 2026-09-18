@@ -724,6 +724,29 @@ bool FileBrowser::transferHostPaths(const QStringList &paths, const QString &tar
     return true;
 }
 
+bool FileBrowser::confirmFloppyRewrite(const QString &imagePath)
+{
+    QByteArray raw;
+    QString error;
+    if (!floppy::loadRaw(imagePath, &raw, &error))
+        return true;   // unreadable: let the write itself report it
+    if (floppy::looksLikeCanonical720k(raw.left(512), raw.size()))
+        return true;
+
+    const QString name = QFileInfo(imagePath).fileName();
+    const QString oversize = raw.size() > 720 * 1024
+        ? tr("Everything past 720 KiB is discarded, and ")
+        : QString();
+    return QMessageBox::warning(this, tr("Rewrite this disk?"),
+                                tr("Writing to %1 rebuilds the whole image with PiST's "
+                                   "720 KiB FAT12 layout: %2its boot sector is replaced. A disk "
+                                   "that is not already that shape loses whatever made it "
+                                   "different.\n\nContinue?")
+                                    .arg(name, oversize),
+                                QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+           == QMessageBox::Yes;
+}
+
 bool FileBrowser::addHostPathsToFloppy(int drive, const QString &dirInImage,
                                        const QStringList &hostPaths, bool removeSources)
 {
@@ -756,6 +779,8 @@ bool FileBrowser::addHostPathsToFloppy(int drive, const QString &dirInImage,
     if (additions.isEmpty())
         return false;
 
+    if (!confirmFloppyRewrite(image))
+        return false;
     if (!floppy::updateImage(image, additions, {}, &error)) {
         QMessageBox::warning(this, tr("Copy"),
                              tr("Could not add the files to %1:\n%2")
@@ -779,6 +804,9 @@ bool FileBrowser::extractFloppyEntries(int drive, const QStringList &entryPaths,
         return false;
     const QString image = m_floppyPath[drive];
     if (image.isEmpty())
+        return false;
+    // A move rewrites the image; a plain copy-out does not.
+    if (removeSource && !confirmFloppyRewrite(image))
         return false;
 
     QString error;
@@ -885,6 +913,12 @@ bool FileBrowser::copyFloppyToFloppy(int sourceDrive, const QStringList &entryPa
     const QString dir = normalizedEntryPath(dirInImage);
     const bool sameImage = QFileInfo(sourceImage).absoluteFilePath()
         == QFileInfo(targetImage).absoluteFilePath();
+    // Every write below rebuilds an image: the target always, and the source
+    // too when this is a move between two different disks.
+    if (!confirmFloppyRewrite(targetImage))
+        return false;
+    if (!sameImage && removeSource && !confirmFloppyRewrite(sourceImage))
+        return false;
 
     for (const QString &chosen : entryPaths) {
         const QString entry = normalizedEntryPath(chosen);

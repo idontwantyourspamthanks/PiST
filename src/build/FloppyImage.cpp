@@ -979,6 +979,13 @@ QVector<Entry> listImage(const QString &imagePath, QString *error)
     return listRaw(raw, error);
 }
 
+bool looksLikeCanonical720k(const QByteArray &firstSector, qint64 imageSize)
+{
+    return imageSize == qint64(kTotalSectors) * kSectorSize
+        && firstSector.size() >= 11
+        && firstSector.mid(3, 8) == QByteArrayLiteral("mkfs.fat");
+}
+
 bool readFileRaw(const QByteArray &raw, const QString &entryPath, QByteArray *data,
                  QString *error)
 {

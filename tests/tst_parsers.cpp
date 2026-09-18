@@ -49,58 +49,71 @@ private slots:
     void floppyCanonicalLayoutIsRecognised();
 };
 
-// The two diagnostic shapes vasm produces. The second has no file or line, and
-// must still parse so it can be reported against the build log.
+// vasm's diagnostic shapes, parsed by parseVasmDiagnostic itself. An earlier
+// version of this test carried its own copy of the two patterns, so a change to
+// BuildService.cpp — a dropped capture group, a widened quote class — left it
+// green while the Problems pane quietly misreported diagnostics. Severity is
+// pinned because that is precisely the drift that already shipped once on the
+// linker side, where the severity word was matched but never captured
+// (docs/code-review-glm-001.md P3).
 void TstParsers::diagnosticShapes_data()
 {
     QTest::addColumn<QString>("line");
+    QTest::addColumn<bool>("isDiagnostic");
+    QTest::addColumn<int>("severity");
     QTest::addColumn<int>("code");
     QTest::addColumn<int>("lineNo");
     QTest::addColumn<QString>("file");
+    QTest::addColumn<QString>("message");
 
     QTest::newRow("located")
         << QStringLiteral("error 10 in line 2 of \"bad.s\": number or identifier expected")
-        << 10 << 2 << QStringLiteral("bad.s");
+        << true << int(Diagnostic::Error) << 10 << 2 << QStringLiteral("bad.s")
+        << QStringLiteral("number or identifier expected");
     QTest::newRow("located-warning")
         << QStringLiteral("warning 51 in line 4 of \"warn.s\": instruction has been auto-aligned")
-        << 51 << 4 << QStringLiteral("warn.s");
+        << true << int(Diagnostic::Warning) << 51 << 4 << QStringLiteral("warn.s")
+        << QStringLiteral("instruction has been auto-aligned");
     QTest::newRow("unlocated")
         << QStringLiteral("error 3004: section attributes <r> not supported")
-        << 3004 << 0 << QString();
+        << true << int(Diagnostic::Error) << 3004 << 0 << QString()
+        << QStringLiteral("section attributes <r> not supported");
     QTest::newRow("unlocated-fatal")
         << QStringLiteral(
                "fatal error 3008: output module doesn't allow multiple sections of the same type ()")
-        << 3008 << 0 << QString();
+        << true << int(Diagnostic::Error) << 3008 << 0 << QString()
+        << QStringLiteral("output module doesn't allow multiple sections of the same type ()");
+    // Ordinary build output must not become a diagnostic, or the Problems pane
+    // fills with noise and the build looks failed.
+    QTest::newRow("not-a-diagnostic")
+        << QStringLiteral("vasm v1.9 (compiled 2024.01.01)")
+        << false << int(Diagnostic::Error) << 0 << 0 << QString() << QString();
 }
 
 void TstParsers::diagnosticShapes()
 {
     QFETCH(QString, line);
+    QFETCH(bool, isDiagnostic);
+    QFETCH(int, severity);
     QFETCH(int, code);
     QFETCH(int, lineNo);
     QFETCH(QString, file);
-
-    static const QRegularExpression located(QStringLiteral(
-        "^(error|warning|fatal error)\\s+(\\d+)\\s+in line\\s+(\\d+)\\s+of\\s+\"([^\"]+)\":\\s*(.*)$"));
-    static const QRegularExpression unlocated(
-        QStringLiteral("^(error|warning|fatal error)\\s+(\\d+):\\s*(.*)$"));
+    QFETCH(QString, message);
 
     Diagnostic d;
-    auto m = located.match(line);
-    if (m.hasMatch()) {
-        d.code = m.captured(2).toInt();
-        d.line = m.captured(3).toInt();
-        d.file = m.captured(4);
-    } else {
-        auto u = unlocated.match(line);
-        QVERIFY2(u.hasMatch(), qPrintable("neither pattern matched: " + line));
-        d.code = u.captured(2).toInt();
-        d.line = 0;
-    }
+    const bool parsed = parseVasmDiagnostic(line, &d);
+    QVERIFY2(parsed == isDiagnostic,
+             qPrintable(QStringLiteral("%1: %2")
+                            .arg(isDiagnostic ? QStringLiteral("not parsed")
+                                              : QStringLiteral("misread as a diagnostic"), line)));
+    if (!isDiagnostic)
+        return;
 
+    QCOMPARE(int(d.severity), severity);
     QCOMPARE(d.code, code);
     QCOMPARE(d.line, lineNo);
     QCOMPARE(d.file, file);
+    QCOMPARE(d.message, message);
 }
 
 // vlink's two diagnostic shapes. The severity word must survive parsing: it was

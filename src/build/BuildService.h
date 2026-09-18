@@ -22,6 +22,13 @@ namespace pist {
 /// Returns false when the line is neither, so the caller can log it verbatim.
 bool parseLinkerDiagnostic(const QString &line, Diagnostic *diagnostic);
 
+/// Parse one line of vasm's output into a diagnostic.
+///
+/// Same contract as parseLinkerDiagnostic, and public for the same reason: the
+/// patterns live here so a test can pin the parser that actually runs, rather
+/// than a copy that can drift from it.
+bool parseVasmDiagnostic(const QString &line, Diagnostic *diagnostic);
+
 /// Drives `vasmm68k_mot` as a subprocess and turns its stderr into diagnostics.
 ///
 /// The assembler is never modified or linked against: everything is expressed

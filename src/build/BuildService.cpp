@@ -82,6 +82,31 @@ bool parseLinkerDiagnostic(const QString &line, Diagnostic *diagnostic)
     return false;
 }
 
+bool parseVasmDiagnostic(const QString &line, Diagnostic *diagnostic)
+{
+    auto located = locatedRe().match(line);
+    if (located.hasMatch()) {
+        diagnostic->severity = severityFrom(located.captured(1));
+        diagnostic->code = located.captured(2).toInt();
+        diagnostic->line = located.captured(3).toInt();
+        diagnostic->file = located.captured(4);
+        diagnostic->message = located.captured(5).trimmed();
+        return true;
+    }
+
+    // Module-level and fatal failures carry no file or line. They still need to
+    // reach the Problems pane, attached to the build log rather than a source
+    // location.
+    auto unlocated = unlocatedRe().match(line);
+    if (!unlocated.hasMatch())
+        return false;
+    diagnostic->severity = severityFrom(unlocated.captured(1));
+    diagnostic->code = unlocated.captured(2).toInt();
+    diagnostic->line = 0;
+    diagnostic->message = unlocated.captured(3).trimmed();
+    return true;
+}
+
 BuildService::BuildService(QObject *parent)
     : QObject(parent)
 {
@@ -330,29 +355,8 @@ void BuildService::handleStderrLine(const QString &line)
         return;
     }
 
-    auto located = locatedRe().match(line);
-    if (located.hasMatch()) {
-        Diagnostic d;
-        d.severity = severityFrom(located.captured(1));
-        d.code = located.captured(2).toInt();
-        d.line = located.captured(3).toInt();
-        d.file = located.captured(4);
-        d.message = located.captured(5).trimmed();
-        m_diagnostics.append(d);
-        emit outputLine(line);
-        return;
-    }
-
-    // Module-level and fatal failures carry no file or line. They still need to
-    // reach the Problems pane, attached to the build log rather than a source
-    // location.
-    auto unlocated = unlocatedRe().match(line);
-    if (unlocated.hasMatch()) {
-        Diagnostic d;
-        d.severity = severityFrom(unlocated.captured(1));
-        d.code = unlocated.captured(2).toInt();
-        d.line = 0;
-        d.message = unlocated.captured(3).trimmed();
+    Diagnostic d;
+    if (parseVasmDiagnostic(line, &d)) {
         m_diagnostics.append(d);
         emit outputLine(line);
         return;

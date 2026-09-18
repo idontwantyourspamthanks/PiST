@@ -133,6 +133,8 @@ private slots:
     void aboutMenuIsFirstAndOpensGemDialog();
     void assemblesAndMapsLines();
     void editorShowsExecutionLineAndBreakpoints();
+    void clearAllRemovesWatchpoints();
+    void importAppendAddsSheetReplaceReplaces();
 
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
@@ -517,6 +519,68 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
     QVERIFY(host);
     QTest::qWait(1500);
     QVERIFY(!host->isRunning());
+}
+
+void TstGui::clearAllRemovesWatchpoints()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QCoreApplication::processEvents();
+
+    QString error;
+    // A lone watchpoint, no breakpoints. The dock's "Clear all" enables for it
+    // (its enable test is "any breakpoint OR any watchpoint"), so it must clear
+    // the watchpoint too — the shared clearAllBreakpoints handler used to leave
+    // it, so the button stayed enabled.
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error), qPrintable(error));
+
+    QPushButton *clear = nullptr;
+    for (QPushButton *b : window.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Clear all")) {
+            clear = b;
+            break;
+        }
+    }
+    QVERIFY2(clear, "the breakpoints dock has a Clear all button");
+    QVERIFY2(clear->isEnabled(), "Clear all must enable for a lone watchpoint");
+
+    clear->click();
+    QCoreApplication::processEvents();
+
+    QVERIFY2(!clear->isEnabled(),
+             "Clear all left the watchpoint behind — it cleared only breakpoints");
+}
+
+void TstGui::importAppendAddsSheetReplaceReplaces()
+{
+    ImageDocument art = ImageDocument::create(16, 16, PaletteKind::Ste);
+    art.setPixel(0, art.active().at(1));
+    const QString dir = m_work->path() + QStringLiteral("/import-append");
+    QVERIFY(QDir().mkpath(dir));
+    const QString pi1Path = dir + QStringLiteral("/a.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(art, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    QFile out(pi1Path);
+    QVERIFY(out.open(QIODevice::WriteOnly));
+    out.write(pi1);
+    out.close();
+
+    ImageEditor editor;
+    editor.show();
+    QVERIFY(editor.importFile(pi1Path, false));
+    QCOMPARE(editor.document().sheets().size(), 1);
+
+    // "Add frame" keeps the current image and adds the import as another sheet.
+    QVERIFY(editor.importFile(pi1Path, true));
+    QCOMPARE(editor.document().sheets().size(), 2);
+
+    // "Replace" discards the current document, so the import is the whole image
+    // again — one sheet, not a third. Before append was honoured, every import
+    // added a sheet (1, 2, 3), so the dialog's Replace was a no-op.
+    QVERIFY(editor.importFile(pi1Path, false));
+    QCOMPARE(editor.document().sheets().size(), 1);
 }
 
 void TstGui::stateSummaryClearsAfterSessionEnds()

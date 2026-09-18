@@ -34,6 +34,7 @@ private slots:
     void pimRejectsPixelAmplification();
     void pimClampsSheetReference();
     void pimEmptyFramesSizedToPhase();
+    void removePhaseAdjustsCurrentIndex();
     void fillAndLineIndices();
     void pi1RoundTrip();
     void neoRoundTrip();
@@ -241,6 +242,24 @@ void TstImage::pimEmptyFramesSizedToPhase()
     QCOMPARE(doc.height(), 40);
     QCOMPARE(doc.frameCount(), 1);
     QCOMPARE(doc.frame(0).size(), 40 * 40); // not the stale 32*32 = 1024
+}
+
+void TstImage::removePhaseAdjustsCurrentIndex()
+{
+    ImageDocument doc = ImageDocument::create(8, 8, PaletteKind::Ste); // A
+    const int b = doc.addPhase(QStringLiteral("B"), 8, 8);
+    doc.addPhase(QStringLiteral("C"), 8, 8);
+    QCOMPARE(doc.phaseCount(), 3);
+    QVERIFY(doc.setCurrentPhase(b)); // current = B (index 1)
+
+    // Remove a phase *before* the current one. The current index must shift down
+    // so it still names B. removeFrame() does this; removePhase() used to only
+    // clamp the upper bound, so the current selection silently retargeted to the
+    // phase that slid into the old index (C here).
+    QVERIFY(doc.removePhase(0)); // remove A -> [B, C]
+    QCOMPARE(doc.phaseCount(), 2);
+    QCOMPARE(doc.currentPhase(), 0);
+    QCOMPARE(doc.phases().at(doc.currentPhase()).name, QStringLiteral("B"));
 }
 
 void TstImage::fillAndLineIndices()

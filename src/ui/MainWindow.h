@@ -147,6 +147,10 @@ private slots:
     void toggleBreakpointAtLine(int line);
     void editBreakpointCondition(int line);
     void clearAllBreakpoints();
+    /// The breakpoints dock's "Clear all": removes breakpoints AND watchpoints
+    /// (its button enables when only watchpoints are present), unlike the Run-menu
+    /// "Clear Breakpoints" action, which stays breakpoint-only.
+    void clearAllDebugTargets();
     void addWatchpoint();
     void removeWatchpoint(int index);
 

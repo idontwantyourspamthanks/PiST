@@ -989,7 +989,7 @@ void MainWindow::createDocks()
     connect(m_breakpointPanel, &BreakpointPanel::breakpointActivated,
             this, &MainWindow::goToBreakpoint);
     connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
-            this, &MainWindow::clearAllBreakpoints);
+            this, &MainWindow::clearAllDebugTargets);
     connect(m_breakpointPanel, &BreakpointPanel::watchpointRemoveRequested,
             this, &MainWindow::removeWatchpoint);
     connect(m_breakpointPanel, &BreakpointPanel::watchpointActivated,
@@ -2969,6 +2969,24 @@ void MainWindow::clearAllBreakpoints()
     if (m_host->isRunning())
         m_host->clearBreakpoints();
     m_log->appendPlainText(tr("[breakpoints] all cleared"));
+}
+
+void MainWindow::clearAllDebugTargets()
+{
+    // The dock's "Clear all" lists watchpoints too (its button enables when only
+    // watchpoints are present), so it clears both models — unlike the
+    // breakpoint-only Run-menu action. Watchpoints are armed as `b` conditions
+    // (Hatari has no data watchpoints), so the host's `b all` removes them
+    // alongside breakpoints; refreshBreakpointMarkers() updates the panel's
+    // breakpoint rows but not its watchpoint rows, so those are set explicitly.
+    m_breakpoints.clear();
+    m_watchpoints.clear();
+    refreshBreakpointMarkers();
+    if (m_breakpointPanel)
+        m_breakpointPanel->setWatchpoints(m_watchpoints);
+    if (m_host->isRunning())
+        m_host->clearBreakpoints();
+    m_log->appendPlainText(tr("[breakpoints] all breakpoints and watchpoints cleared"));
 }
 
 void MainWindow::onStateUpdated(const MachineState &state)

@@ -944,7 +944,6 @@ bool ImageEditor::saveFile(const QString &path)
 
 bool ImageEditor::importFile(const QString &path, bool append)
 {
-    Q_UNUSED(append);
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         m_lastError = file.errorString();
@@ -956,6 +955,20 @@ bool ImageEditor::importFile(const QString &path, bool append)
     if (!importStImage(file.readAll(), format, m_doc.paletteKind(), &sheet, &error)) {
         m_lastError = error;
         return false;
+    }
+    // Honour the dialog's choice. "Replace" (append == false) discards the
+    // current document so the import becomes the whole image; "Add frame"
+    // (append == true) keeps it and adds the import as another sheet target.
+    // addImageTab imports into a fresh editor, where append=false already starts
+    // empty, so this only changes the import-into-an-existing-image path. The
+    // replacement is a fresh-editor-equivalent document — the default 32x32
+    // staged phase (sizing it to the sheet instead would mis-slice the placement
+    // drag) with the current palette kind, since the import was decoded against
+    // it. The sheet itself is added by the shared path below.
+    if (!append) {
+        replaceDocument(ImageDocument::create(32, 32, m_doc.paletteKind()));
+        m_importedSheets.clear();
+        m_sheetUnderlays.clear();
     }
 
     // Adopt the imported file's palette: phases sliced from this sheet paint
@@ -1489,7 +1502,11 @@ void ImageEditor::refreshPhases()
     if (!m_phases || !m_previewPhaseBox)
         return;
     m_phases->blockSignals(true);
-    const int selected = m_phases->currentRow();
+    // Re-derive the highlight from the model, like refreshFrames() does — the
+    // widget's own row is a second source of truth and goes stale when a phase
+    // before the current one is removed (the model shifts its index, the old row
+    // would then point at a different phase).
+    const int selected = m_doc.currentPhase();
     m_phases->clear();
     for (const ImagePhase &phase : m_doc.phases()) {
         QString placement;

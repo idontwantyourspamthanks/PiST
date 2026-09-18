@@ -359,6 +359,8 @@ bool ImageDocument::removePhase(int index)
     m_phases.removeAt(index);
     if (m_currentPhase >= m_phases.size())
         m_currentPhase = m_phases.size() - 1;
+    else if (m_currentPhase > index)
+        --m_currentPhase; // removing an earlier phase shifts the current one down
     m_currentFrame = 0;
     clampActiveLayer();
     touch();

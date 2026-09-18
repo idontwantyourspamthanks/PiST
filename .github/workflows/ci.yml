@@ -138,6 +138,23 @@ jobs:
           "$EXE" -quiet -Ftos -o smoke.prg smoke.s
           # A TOS executable starts with the 0x601A branch magic.
           test "$(od -An -tx1 -N2 smoke.prg | tr -d ' ')" = "601a"
+          # Put it on PATH for the build and test steps. tst_gui's
+          # initTestCase skips the whole suite when findExecutable cannot
+          # resolve vasmm68k_mot, so a leg that downloads and verifies the
+          # assembler but never publishes it reports green while contributing
+          # zero assertions from its largest suite.
+          echo "$RUNNER_TEMP/vasm-win" >> "$GITHUB_PATH"
+
+
+      - name: Prove the Windows vasm resolves on PATH
+        if: matrix.windowsVasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The previous step's PATH append only takes effect here, so prove
+          # the entry rather than assume it: Qt's findExecutable applies
+          # PATHEXT, and this is the name the test suite looks for.
+          command -v vasmm68k_mot.exe
 
       # Build the pinned Hatari. The rationale for the version, the checksum and
       # the per-platform details lives with the build, in

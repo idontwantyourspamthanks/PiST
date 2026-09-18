@@ -37,6 +37,7 @@ private slots:
     void buildRespondsWhenFinished();
     void cmdDisconnectDuringWaitSurvives();
     void runWithoutSourceFailsFast();
+    void secondBlockingCommandIsRefusedWhileOneWaits();
 };
 
 namespace {
@@ -281,6 +282,41 @@ void TstRemoteControl::runWithoutSourceFailsFast()
     QVERIFY2(reply.startsWith(QStringLiteral("error")),
              qPrintable(QStringLiteral("run replied: %1\nconsole: %2")
                             .arg(reply, s.window.debugConsoleText().right(400))));
+}
+
+void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // A second client on the same server.
+    QTcpSocket other;
+    {
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        QObject::connect(&other, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        other.connectToHost(QHostAddress::LocalHost, s.control.boundPort());
+        timer.start(5000);
+        loop.exec();
+    }
+    QVERIFY(other.state() == QAbstractSocket::ConnectedState);
+
+    // The second command has to be written while the first one's wait is
+    // already running, so it goes out from a timer that fires inside that
+    // nested loop — the test thread is blocked in it until the first command
+    // times out. With no session, neither `cmd` ever gets a response.
+    QTimer::singleShot(300, &other, [&other] { other.write("cmd r\n"); });
+    s.client.write("cmd info mfp\n");
+    QTest::qWait(10600);
+
+    // The second client is refused rather than waiting on the same signals as
+    // the first and being answered with its result.
+    const QString reply = QString::fromUtf8(other.readAll()).trimmed();
+    QVERIFY2(reply.startsWith(QStringLiteral("error busy")),
+             qPrintable(QStringLiteral("second client got: %1").arg(reply)));
 }
 QTEST_MAIN(TstRemoteControl)
 #include "tst_remotecontrol.moc"

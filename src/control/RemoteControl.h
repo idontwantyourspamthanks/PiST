@@ -55,6 +55,11 @@ private:
 
     MainWindow *m_window;
     QTcpServer *m_server = nullptr;
+    /// A blocking command (build/run/cmd) is waiting on its nested loop. The
+    /// nested loop services every other connection, so without this a second
+    /// blocking command would wait on the same signals and be answered with
+    /// the first one's result.
+    bool m_busy = false;
 };
 
 } // namespace pist

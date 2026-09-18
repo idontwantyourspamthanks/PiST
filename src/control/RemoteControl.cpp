@@ -141,6 +141,11 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         // is what an agent actually needs — "started" is no use for sequencing a
         // screenshot. A nested event loop gives synchronous semantics without
         // freezing the UI or the other connections.
+        if (m_busy) {
+            reply(guarded, QStringLiteral("error busy: another command is still running"));
+            return;
+        }
+        m_busy = true;
         bool finished = false, success = false;
         QEventLoop loop;
         QTimer timeout;
@@ -177,6 +182,7 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
                                       Qt::DirectConnection);
         });
         loop.exec();
+        m_busy = false;
         disconnect(done);
         disconnect(failed);
         if (!guarded)
@@ -196,20 +202,32 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         // An arbitrary debugger command, passed through verbatim (e.g. "info mfp").
         // Only meaningful while stopped. The response comes back as a block.
         if (line.length() > 4) {
+            if (m_busy) {
+                reply(guarded, QStringLiteral("error busy: another command is still running"));
+                return;
+            }
             const QString dbg = line.mid(4);
             QEventLoop loop;
             QTimer timeout;
             timeout.setSingleShot(true);
             QString response;
+            // Match on the command text: the window routes debugger responses
+            // through one signal, and the hardware view's own `info <subject>`
+            // refresh uses it too, so an unrelated response must not be
+            // delivered to this waiter.
             QMetaObject::Connection c = connect(m_window, &MainWindow::debugCommandFinished,
-                                                &loop, [&](const QString &, const QString &r) {
+                                                &loop, [&](const QString &command, const QString &r) {
+                if (command != dbg)
+                    return;
                 response = r;
                 loop.quit();
             });
             connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
             timeout.start(10000);
+            m_busy = true;
             m_window->debugCommand(dbg);
             loop.exec();
+            m_busy = false;
             disconnect(c);
             replyBlock(guarded, response.isEmpty() ? QStringLiteral("(no response)") : response);
         } else {
@@ -301,7 +319,10 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "screenshot <f>   save the window to <f> (default /tmp/pist-screenshot.png)\n"
             "console          the build & debug console text\n"
             "state            registers and PC\n"
-            "quit             close the IDE\n"));
+            "quit             close the IDE\n"
+            "\n"
+            "build, run and cmd block until they finish; one at a time — a second\n"
+            "blocking command while one is waiting is answered 'error busy'.\n"));
 
     } else if (cmd == QLatin1String("quit")) {
         reply(guarded, QStringLiteral("ok"));

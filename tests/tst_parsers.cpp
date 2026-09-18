@@ -42,6 +42,7 @@ private slots:
     void floppyUpdateAddsAndRemoves();
     void floppyUpdateRefusesDim();
     void floppyRejectsOversizedExport();
+    void floppyRejectsOversizedAutoFolderProgram();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -668,6 +669,40 @@ void TstParsers::floppyRejectsOversizedExport()
     QString error;
     QVERIFY(!floppy::writeImage(img, items, &error));
     QVERIFY(!error.isEmpty());
+}
+
+void TstParsers::floppyRejectsOversizedAutoFolderProgram()
+{
+    // The AUTO folder takes cluster 2 and the program runs contiguously from
+    // cluster 3, so 712 clusters — 729,088 bytes — is the capacity. The
+    // boundary itself must succeed; one byte past it must be refused rather
+    // than written past the end of the image (writeImage's allocateClusters
+    // guards the generic export path the same way).
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString prgExact = tmp.path() + QStringLiteral("/exact.prg");
+    {
+        QFile f(prgExact);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(729088, 'X'));
+    }
+    const QString exactImg = tmp.path() + QStringLiteral("/exact.st");
+    QString error;
+    QVERIFY2(floppy::writeAutoFolderImage(exactImg, prgExact, &error),
+             qPrintable(error));
+
+    const QString prgHuge = tmp.path() + QStringLiteral("/huge.prg");
+    {
+        QFile f(prgHuge);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(729089, 'X'));
+    }
+    const QString hugeImg = tmp.path() + QStringLiteral("/huge.st");
+    error.clear();
+    QVERIFY(!floppy::writeAutoFolderImage(hugeImg, prgHuge, &error));
+    QVERIFY(error.contains(QLatin1String("fit")));
+    // The refused write must not leave a truncated image behind.
+    QVERIFY(!QFile::exists(hugeImg));
 }
 
 QTEST_MAIN(TstParsers)

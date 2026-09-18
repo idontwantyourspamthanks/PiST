@@ -811,6 +811,14 @@ bool writeAutoFolderImage(const QString &imagePath, const QString &programPath,
     // and our chain. AUTO's directory is one cluster (2); the program starts
     // at cluster 3 and runs contiguously to the end of its size.
     const int prgClusters = (int(prg.size()) + kClusterSize - 1) / kClusterSize;
+    // Cluster 2 is the AUTO directory and the program runs contiguously from
+    // cluster 3, so kMaxDataClusters - 1 clusters is the capacity. Refuse what
+    // does not fit rather than writing past the image and the FAT — the same
+    // guard writeImage's allocateClusters applies to the generic export path.
+    if (prgClusters > kMaxDataClusters - 1) {
+        setError(error, QStringLiteral("the program does not fit on a 720 KiB floppy"));
+        return false;
+    }
     for (int f = 0; f < kFatCount; ++f) {
         const int fatStart = (kReservedSectors + f * kFatSectors) * kSectorSize;
         QVector<quint8> fat = image.mid(fatStart, kFatSectors * kSectorSize);

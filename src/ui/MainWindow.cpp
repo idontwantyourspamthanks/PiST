@@ -2967,7 +2967,12 @@ void MainWindow::clearAllBreakpoints()
     m_breakpoints.clear();
     refreshBreakpointMarkers();
     if (m_host->isRunning())
-        m_host->clearBreakpoints();
+        // Re-derive the host from the models rather than a bare `b all`: watchpoints
+        // are armed as `b` conditions (Hatari has no data watchpoints), so `b all`
+        // would disarm them too, leaving the panel listing watchpoints that are dead
+        // on the emulator until the next arm. armBreakpoints() clears then re-arms —
+        // the cleared breakpoints go, the retained watchpoints come back.
+        armBreakpoints();
     m_log->appendPlainText(tr("[breakpoints] all cleared"));
 }
 

@@ -1278,8 +1278,12 @@ QByteArray exportScrollDemo(const ImageDocument &doc, int phase,
     line("	move.l	a6,a1");
     line("	adda.l	d1,a1			; a1 = the sprite's first screen word");
     // The source is the block's first copy on the first frame, plus the frame
-    // and the pre-shift. `moveq` because a `move.w` leaves the top half alone,
-    // and the two `mulu`s below fill all 32 bits when they run at all.
+    // and the pre-shift. `moveq` because a `move.w` leaves the top half alone:
+    // with a single frame neither offset below runs at all, and that zero is
+    // the offset. The frame offset arrives as a full longword from
+    // kFrameOffsets, because a frame stride can exceed 16 bits; the
+    // pre-shift's `mulu` immediate cannot, one copy being bounded by the
+    // 320x200 cell.
     line("	moveq	#0,d2");
     if (frames > 1) {
         line("	move.w	anim_frame,d2		; which animation frame...");

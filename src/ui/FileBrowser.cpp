@@ -781,6 +781,10 @@ bool FileBrowser::addHostPathsToFloppy(int drive, const QString &dirInImage,
 
     if (!confirmFloppyRewrite(image))
         return false;
+    // The confirmation runs an event loop, so the slot can be resynced while
+    // it is up: write to the disk that was asked about, or not at all.
+    if (m_floppyPath[drive] != image)
+        return false;
     if (!floppy::updateImage(image, additions, {}, &error)) {
         QMessageBox::warning(this, tr("Copy"),
                              tr("Could not add the files to %1:\n%2")
@@ -808,6 +812,8 @@ bool FileBrowser::extractFloppyEntries(int drive, const QStringList &entryPaths,
     // A move rewrites the image; a plain copy-out does not.
     if (removeSource && !confirmFloppyRewrite(image))
         return false;
+    if (removeSource && m_floppyPath[drive] != image)
+        return false;   // resynced while the confirmation was up
 
     QString error;
     QByteArray raw;
@@ -919,6 +925,9 @@ bool FileBrowser::copyFloppyToFloppy(int sourceDrive, const QStringList &entryPa
         return false;
     if (!sameImage && removeSource && !confirmFloppyRewrite(sourceImage))
         return false;
+    if (m_floppyPath[targetDrive] != targetImage
+        || m_floppyPath[sourceDrive] != sourceImage)
+        return false;   // resynced while a confirmation was up
 
     for (const QString &chosen : entryPaths) {
         const QString entry = normalizedEntryPath(chosen);

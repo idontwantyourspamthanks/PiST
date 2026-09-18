@@ -126,6 +126,16 @@ public slots:
     /// `dirInImage` (empty for the image root). Returns true on success.
     bool pasteIntoFloppy(int drive, const QString &dirInImage);
 
+    /// Ask before an operation that rewrites `imagePath`: every write goes
+    /// through floppy::updateImage, which rebuilds the image with PiST's
+    /// canonical 720 KiB layout. A disk that is not already that shape loses
+    /// its boot sector and, if it is larger, everything past 720 KiB — which
+    /// is documented in the writer but invisible to the user unless something
+    /// says so. Returns false when the user declines. Public because
+    /// MainWindow's write-back-on-save path rewrites an image too, and the
+    /// policy belongs in one place.
+    bool confirmFloppyRewrite(const QString &imagePath);
+
 private slots:
     void onPathEntered();
     void onActivated(const QModelIndex &index);
@@ -180,14 +190,6 @@ private:
     /// Floppy → floppy, possibly the same image (copying within a disk).
     bool copyFloppyToFloppy(int sourceDrive, const QStringList &entryPaths,
                             int targetDrive, const QString &dirInImage, bool removeSource);
-
-    /// Ask before an operation that rewrites `imagePath`: every write goes
-    /// through floppy::updateImage, which rebuilds the image with PiST's
-    /// canonical 720 KiB layout. A disk that is not already that shape loses
-    /// its boot sector and, if it is larger, everything past 720 KiB — which
-    /// is documented in the writer but invisible to the user unless something
-    /// says so. Returns false when the user declines.
-    bool confirmFloppyRewrite(const QString &imagePath);
 
     void dropOnHardDrive(const QPoint &pos, const QMimeData *mime, Qt::DropAction action,
                          Qt::KeyboardModifiers modifiers);

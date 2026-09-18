@@ -1551,6 +1551,11 @@ void MainWindow::writeBackFloppyDoc(const QString &path)
     item.destPath = it->entryPath;
     item.data = data;
     QString error;
+    // Saving rewrites the whole image, so a disk that is not already PiST's
+    // canonical layout is asked about first — the same policy the file
+    // browser's copy and move paths use, and the reason it lives there.
+    if (m_fileBrowser && !m_fileBrowser->confirmFloppyRewrite(it->imagePath))
+        return;
     if (!floppy::updateImage(it->imagePath, {item}, {it->entryPath}, &error)) {
         QMessageBox::warning(this, tr("Save"),
                              tr("The text was saved to the session copy, but could not be "

@@ -183,6 +183,18 @@ QByteArray compressTrack(const QByteArray &src)
     return out;
 }
 
+/// The documented inverse of the encoding above: literal bytes, and
+/// `$E5 <value> <16-bit big-endian run>`.
+///
+/// Deliberately stricter than Hatari's decoder, which clamps an over-long run
+/// and simply stops when the input runs out, leaving the rest of the track as
+/// whatever the buffer held. Hatari can afford that — a partly-zero disk still
+/// boots, and refusing a game disk is worse than loading it imperfectly. This
+/// reader gates a *rewriting* file manager: `loadRaw` success is what lets
+/// `updateImage` stage a new image over the user's file, so a damaged archive
+/// that decoded into a partly-zero disk would be silently re-encoded and
+/// written back. A malformed image therefore fails here with an error and the
+/// original is never touched.
 bool decompressTrack(const QByteArray &src, int trackSize, QByteArray *out)
 {
     out->fill('\0', trackSize);
@@ -195,21 +207,20 @@ bool decompressTrack(const QByteArray &src, int trackSize, QByteArray *out)
             d[di++] = s[si++];
             continue;
         }
+        // Marker plus value plus a 16-bit length: four bytes in all.
         if (si + 4 > src.size())
             return false;   // truncated run header
         const quint8 val = s[si + 1];
         const int count = (int(quint8(s[si + 2])) << 8) | quint8(s[si + 3]);
         si += 4;
-        // A zero-length run carries no meaning and can only come from damage.
+        // A zero-length run carries no meaning, and a run past the end of the
+        // track can only come from damage.
         if (count <= 0 || di + count > trackSize)
             return false;
         std::memset(d + di, val, size_t(count));
         di += count;
     }
-    // A stream that runs out before the track is full is tolerated, with the
-    // remainder left zero, because that is what the reference decoder does and
-    // what the padding at the end of a real image looks like.
-    return true;
+    return di == trackSize;
 }
 
 bool geometryFromSectors(int sectors, int *tracks, int *sides, int *spt)

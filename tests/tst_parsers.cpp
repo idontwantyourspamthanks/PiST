@@ -50,6 +50,7 @@ private slots:
     void floppyReadsAForeignMkfsImage();
     void floppyReadsAForeignSpecMsa();
     void msaEncodingMatchesTheDocumentedFormat();
+    void floppyRejectsATruncatedMsaRun();
 };
 
 // vasm's diagnostic shapes, parsed by parseVasmDiagnostic itself. An earlier
@@ -965,9 +966,79 @@ void TstParsers::floppyReadsAForeignSpecMsa()
     // transposed run fields, say — passes it and interoperates with nothing.
     QCOMPARE(raw, foreignMkfsImage());
 
+    // The fixture must exercise both track forms the format allows: a length
+    // equal to the track size means the bytes are stored verbatim (spec-legal,
+    // and what an uncompressed MSA is made of entirely), anything shorter is an
+    // RLE stream. One of each, or the raw branch goes untested.
+    const int trackSize = 9 * 512;
+    int rawTracks = 0, rleTracks = 0;
+    for (int at = 10; at + 2 <= packed.size(); at += 2) {
+        const int length = (quint16(quint8(packed.at(at))) << 8) | quint8(packed.at(at + 1));
+        (length == trackSize ? rawTracks : rleTracks)++;
+        at += length;   // the loop's +2 steps over the next header
+    }
+    QVERIFY2(rawTracks >= 1, "the fixture stores no uncompressed track");
+    QVERIFY2(rleTracks >= 1, "the fixture stores no compressed track");
+
     const QVector<floppy::Entry> entries = floppy::listImage(msa, &error);
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(entries.size(), 4);
+}
+
+void TstParsers::floppyRejectsATruncatedMsaRun()
+{
+    // Two different truncations, caught by two different guards: a track whose
+    // declared length runs past the file, and a run header that stops inside
+    // its own four bytes (marker, value, 16-bit length). Both must be refused
+    // with an error rather than decoded into a partly-formed track, because
+    // loadRaw success is what gates updateImage rewriting the user's image.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString path = tmp.path() + QStringLiteral("/truncated.msa");
+
+    const auto refuses = [&path](const QByteArray &msa) -> bool {
+        {
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly))
+                return false;
+            f.write(msa);
+        }
+        QByteArray raw;
+        QString error;
+        return !floppy::loadRaw(path, &raw, &error) && !error.isEmpty();
+    };
+
+    QByteArray header;
+    header.append(char(0x0E)); header.append(char(0x0F));  // signature
+    header.append(char(0x00)); header.append(char(9));    // sectors per track
+    header.append(char(0x00)); header.append(char(1));    // last side
+    header.append(char(0x00)); header.append(char(0));    // first track
+    header.append(char(0x00)); header.append(char(79));   // last track
+
+    // A run header that stops inside itself: the declared track length is
+    // honest, so the outer per-track bound passes and the decoder itself has
+    // to refuse it.
+    QByteArray midRun = header;
+    midRun.append(char(0x00)); midRun.append(char(4));      // four payload bytes
+    midRun.append(char(0x01)); midRun.append(char(0x02));   // two literals
+    midRun.append(char(0xE5)); midRun.append(char(0xAA));   // header cut short
+    QVERIFY2(refuses(midRun), "a run truncated inside its header was accepted");
+
+    // One length byte short of a full header. Pinned for the behaviour rather
+    // than as a guard test: checked by mutation, the pre-widening bound
+    // refuses this too, reading the terminating NUL as a zero length and
+    // failing the count check on the way instead.
+    QByteArray oneShort = header;
+    oneShort.append(char(0x00)); oneShort.append(char(5));
+    oneShort.append(char(0x01)); oneShort.append(char(0x02));
+    oneShort.append(char(0xE5)); oneShort.append(char(0xAA)); oneShort.append(char(0x00));
+    QVERIFY2(refuses(oneShort), "a run header one byte short was accepted");
+
+    // A track that promises more bytes than the file holds.
+    QByteArray overrun = header;
+    overrun.append(char(0x00)); overrun.append(char(9));
+    overrun.append(char(0x01)); overrun.append(char(0x02));
+    QVERIFY2(refuses(overrun), "a track length past the end of the file was accepted");
 }
 
 void TstParsers::msaEncodingMatchesTheDocumentedFormat()
@@ -1001,6 +1072,23 @@ void TstParsers::msaEncodingMatchesTheDocumentedFormat()
     for (int i = 2; i < 6; ++i)
         raw[i] = '\0';
     QCOMPARE(firstRun(), QByteArrayLiteral("e5e50002"));
+
+    // A track that cannot be compressed is stored verbatim rather than as a
+    // stream that merely grows: alternating byte pairs contain no run of four
+    // and no $E5, so their "RLE" would be exactly as long as the track.
+    for (int i = 0; i < 9 * 512; ++i)
+        raw[i] = char(i % 2 ? 0x22 : 0x11);
+    const auto firstTrackLength = [&]() -> int {
+        QString error;
+        if (!floppy::saveRaw(msa, raw, &error))
+            return -1;
+        QFile f(msa);
+        if (!f.open(QIODevice::ReadOnly))
+            return -1;
+        const QByteArray bytes = f.readAll();
+        return (int(quint8(bytes.at(10))) << 8) | quint8(bytes.at(11));
+    };
+    QCOMPARE(firstTrackLength(), 9 * 512);
 }
 QTEST_MAIN(TstParsers)
 #include "tst_parsers.moc"

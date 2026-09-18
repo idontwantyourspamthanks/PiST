@@ -1,0 +1,5 @@
+# Binary test fixtures. Without `-text`, a Windows checkout with core.autocrlf
+# enabled rewrites the 0x0A bytes inside these images and the loader fails with
+# an error that says nothing about line endings — and the Windows leg is the one
+# that now actually runs these tests.
+tests/data/* -text

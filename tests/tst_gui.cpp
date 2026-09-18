@@ -135,6 +135,8 @@ private slots:
     void editorShowsExecutionLineAndBreakpoints();
     void clearAllRemovesWatchpoints();
     void importAppendAddsSheetReplaceReplaces();
+    void strokeDedupMakesUndoRestoreOriginal();
+    void sheetCanvasBlitsPhaseComposite();
 
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
@@ -581,6 +583,66 @@ void TstGui::importAppendAddsSheetReplaceReplaces()
     // added a sheet (1, 2, 3), so the dialog's Replace was a no-op.
     QVERIFY(editor.importFile(pi1Path, false));
     QCOMPARE(editor.document().sheets().size(), 1);
+}
+
+void TstGui::strokeDedupMakesUndoRestoreOriginal()
+{
+    // Guards the O(1) stroke dedup: a cell painted twice in one stroke must
+    // record its *original* value once (so undo restores it), not the colour
+    // painted on the second visit. A drag that crosses (2,2), leaves, and returns
+    // visits it in two paintIndices calls.
+    ImageEditor editor;
+    editor.show();
+    editor.newDocument(8, 8, PaletteKind::Ste);
+    auto *canvas = editor.findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    const auto idx = [](int x, int y) { return y * 8 + x; };
+    const auto cellPoint = [&canvas](int x, int y) {
+        const int c = canvas->cellSize();
+        return QPoint(x * c + c / 2, y * c + c / 2);
+    };
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(2, 2));
+    QTest::mouseMove(canvas, cellPoint(3, 2));
+    QTest::mouseMove(canvas, cellPoint(2, 2));
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(2, 2));
+    QVERIFY2(editor.document().pixels().at(idx(2, 2)) != kTransparent, "the stroke painted (2,2)");
+
+    editor.undo();
+    // Without the dedup, the second visit recorded the painted colour as the
+    // "before" value and undo would leave it here instead of transparent.
+    QCOMPARE(editor.document().pixels().at(idx(2, 2)), kTransparent);
+}
+
+void TstGui::sheetCanvasBlitsPhaseComposite()
+{
+    // The per-frame QImage blit must draw the same pixels the old per-pixel
+    // fillRect loop did — a broken rect/transform/colour would leave the strip
+    // blank or mis-tinted. Paint a 2x2 block, render the sheet, find the colour.
+    ImageDocument doc = ImageDocument::create(4, 4, PaletteKind::Ste);
+    doc.addSheet(QStringLiteral("s.pi1"), 32, 32);
+    QVERIFY(doc.setPhasePlacement(0, 0, 0, 0));
+    const int colour = doc.active().at(1);
+    doc.fillIndices({0, 1, 4, 5}, colour, 0);
+    const Rgb rgb = cubeRgb(PaletteKind::Ste, colour);
+    const QRgb want = qRgb(rgb.r, rgb.g, rgb.b);
+
+    SheetCanvas canvas;
+    canvas.setDocument(&doc);
+    canvas.setSheetIndex(0);
+    canvas.setScale(8);
+    canvas.resize(canvas.sizeHint());
+    QImage img(canvas.size(), QImage::Format_ARGB32);
+    img.fill(Qt::black);
+    canvas.render(&img);
+
+    bool found = false;
+    for (int y = 0; y < img.height() && !found; ++y)
+        for (int x = 0; x < img.width(); ++x)
+            if (img.pixelColor(x, y).rgb() == want) {
+                found = true;
+                break;
+            }
+    QVERIFY2(found, "the painted phase cells must be blitted into the sheet view");
 }
 
 void TstGui::stateSummaryClearsAfterSessionEnds()

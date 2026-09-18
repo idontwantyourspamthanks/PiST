@@ -1995,11 +1995,20 @@ void ImageEditor::paintIndices(const QVector<int> &indices, int colour)
         m_strokePhase = m_doc.currentPhase();
         m_strokeLayer = m_doc.activeLayer();
         m_strokeFrame = m_doc.currentFrame();
+        // Fresh membership set per stroke, sized to the frame. The phase's cell
+        // size is fixed for the duration of a stroke, so this covers every index.
+        m_strokeSeen = QBitArray(m_doc.pixelCount(), false);
     }
     const QVector<int> &layer = m_doc.activeLayerPixels();
     for (int index : indices) {
-        if (m_strokeIndices.contains(index))
-            continue;
+        // Dedup so m_strokeBefore records each cell's value the first time it is
+        // painted (undo must restore the original, not a colour painted earlier in
+        // the same stroke). O(1) bit test replaces the O(n) contains() scan.
+        if (index >= 0 && index < m_strokeSeen.size()) {
+            if (m_strokeSeen.testBit(index))
+                continue;
+            m_strokeSeen.setBit(index);
+        }
         m_strokeIndices.append(index);
         m_strokeBefore.append(layer.value(index, kTransparent));
     }
@@ -2018,6 +2027,7 @@ void ImageEditor::finishStroke()
                                   m_strokeIndices, m_strokeBefore, m_strokeColour));
     m_strokeIndices.clear();
     m_strokeBefore.clear();
+    m_strokeSeen.clear();
 }
 
 void ImageEditor::pickColour(int cubeIndex)

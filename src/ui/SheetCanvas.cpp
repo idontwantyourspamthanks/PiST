@@ -153,6 +153,11 @@ void SheetCanvas::paintEvent(QPaintEvent *)
         p.setOpacity(1.0);
     }
 
+    // Pixel-art scaling: guarantee hard-edged (nearest-neighbour) blits rather
+    // than relying on the transform hint defaulting to off, matching ImageCanvas
+    // and PalettePickerDialog. Each composed frame cell becomes an m_scale square.
+    p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+
     for (int i = 0; i < m_doc->phases().size(); ++i) {
         const ImagePhase &phase = m_doc->phases().at(i);
         if (phase.sheet != m_sheetIndex && phase.sheet != -1)
@@ -166,16 +171,24 @@ void SheetCanvas::paintEvent(QPaintEvent *)
         for (int k = 0; k < phase.frames.size(); ++k) {
             const QVector<int> &composite = phase.frames.at(k).composite;
             const int ox = stripPx.x() + k * phase.cellW * m_scale;
+            // Compose the frame once into a cell-sized image and blit it scaled,
+            // instead of one fillRect per pixel: a full sheet was ~64k QPainter
+            // calls per repaint. FastTransformation keeps the nearest-neighbour
+            // blocky look (each cell -> an m_scale square) and a transparent cell
+            // leaves the underlay/background showing, exactly as the skip did.
+            QImage img(phase.cellW, phase.cellH, QImage::Format_ARGB32);
+            img.fill(Qt::transparent);
             for (int row = 0; row < phase.cellH; ++row) {
+                auto *line = reinterpret_cast<QRgb *>(img.scanLine(row));
                 for (int col = 0; col < phase.cellW; ++col) {
-                    const int value = composite.at(row * phase.cellW + col);
+                    const int value = composite.value(row * phase.cellW + col, -1);
                     if (value < 0)
                         continue;
                     const Rgb rgb = cubeRgb(m_doc->paletteKind(), value);
-                    p.fillRect(ox + col * m_scale, stripPx.y() + row * m_scale, m_scale,
-                               m_scale, qRgb(rgb.r, rgb.g, rgb.b));
+                    line[col] = qRgb(rgb.r, rgb.g, rgb.b);
                 }
             }
+            p.drawImage(QRect(ox, stripPx.y(), phase.cellW * m_scale, phase.cellH * m_scale), img);
         }
 
         const bool selected = i == m_selected;

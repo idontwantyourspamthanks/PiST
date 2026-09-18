@@ -9,6 +9,7 @@
 #include "image/Tools.h"
 
 #include <QHash>
+#include <QBitArray>
 #include <QImage>
 
 #include <QWidget>
@@ -184,6 +185,10 @@ private:
     int m_colour = 0;
     QVector<int> m_strokeIndices;
     QVector<int> m_strokeBefore;
+    // O(1) membership for the stroke dedup below; sized to the frame's pixel
+    // count at stroke start. m_strokeIndices.contains() was O(n) per visit, so a
+    // full-canvas stroke scanned ~n^2/2 (measured ~530 ms for a 320x200 phase).
+    QBitArray m_strokeSeen;
     int m_strokeColour = kTransparent;
     int m_strokePhase = 0;
     int m_strokeLayer = 0;

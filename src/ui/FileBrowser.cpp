@@ -818,6 +818,16 @@ bool FileBrowser::extractFloppyEntries(int drive, const QStringList &entryPaths,
             const QString destination = top
                 ? target
                 : QDir(target).absoluteFilePath(e.path.mid(entry.size() + 1));
+            // Defence in depth against crafted images: an extraction must
+            // land inside the folder the user chose. The listing sanitises
+            // entry names, so this can only fire on something that slipped
+            // through anyway — refuse it loudly rather than write outside.
+            if (!QDir::cleanPath(destination)
+                     .startsWith(QDir::cleanPath(targetDir) + QLatin1Char('/'))) {
+                ok = false;
+                error = tr("%1 escapes the destination folder.").arg(e.path);
+                break;
+            }
             bool written = false;
             if (e.isDirectory) {
                 written = QDir().mkpath(destination);

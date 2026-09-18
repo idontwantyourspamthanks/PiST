@@ -373,10 +373,25 @@ int geoClusterOffset(const Geo &g, int cluster)
     return (g.firstDataSector + (cluster - 2) * g.sectorsPerCluster) * g.sectorSize;
 }
 
+/// The display name is joined into paths that become host file names on
+/// copy-out, and the on-disk bytes are untrusted: drop control characters and
+/// both separators, so a crafted entry cannot smuggle a traversal or an
+/// absolute path. parseDirBytes already skips exact "." and "..", and with
+/// separators gone a component can never be anything but a flat name.
+QString sanitize83Component(const QString &text)
+{
+    QString out;
+    for (const QChar c : text) {
+        const ushort u = c.unicode();
+        out += (u >= 0x20 && u != '/' && u != '\\') ? c : QLatin1Char('_');
+    }
+    return out;
+}
+
 QString display83(const QByteArray &name11)
 {
-    const QString name = QString::fromLatin1(name11.left(8)).trimmed();
-    const QString ext = QString::fromLatin1(name11.mid(8, 3)).trimmed();
+    const QString name = sanitize83Component(QString::fromLatin1(name11.left(8)).trimmed());
+    const QString ext = sanitize83Component(QString::fromLatin1(name11.mid(8, 3)).trimmed());
     if (ext.isEmpty())
         return name;
     return name + QLatin1Char('.') + ext;
@@ -451,9 +466,14 @@ const RawDirEntry *dirEntryNamed(const QVector<RawDirEntry> &entries, const QStr
 }
 
 void listDir(const QByteArray &image, const Geo &g, const QByteArray &dirBytes,
-             const QString &prefix, int depth, QVector<Entry> *out)
+             const QString &prefix, int depth, QSet<int> *visitedDirs, QVector<Entry> *out)
 {
-    if (depth > 32)
+    // A listing of one disk cannot legitimately be large; the bound turns a
+    // hostile image into a truncated answer rather than unbounded memory. It
+    // sits above the legitimate worst case — 713 directory clusters x 32
+    // entries plus the root's 112 is ~22,928 (reachable with zero-byte
+    // files) — so it can only ever clip a hostile listing.
+    if (depth > 32 || out->size() > 25000)
         return;
     for (const RawDirEntry &e : parseDirBytes(dirBytes)) {
         Entry item;
@@ -462,8 +482,16 @@ void listDir(const QByteArray &image, const Geo &g, const QByteArray &dirBytes,
         item.size = e.isDir ? 0 : e.size;
         out->append(item);
         if (e.isDir) {
+            // Many entries may name the same directory cluster, and a crafted
+            // image can even make directories point at each other in a cycle;
+            // readChain's own cycle set dies with each call, so the walk
+            // carries one that spans it: expand a cluster at most once. This
+            // is also what keeps the listing bounded for degenerate trees.
+            if (visitedDirs->contains(e.cluster))
+                continue;
+            visitedDirs->insert(e.cluster);
             const QByteArray child = readChain(image, g, e.cluster, 0, true);
-            listDir(image, g, child, item.path, depth + 1, out);
+            listDir(image, g, child, item.path, depth + 1, visitedDirs, out);
         }
     }
 }
@@ -915,7 +943,8 @@ QVector<Entry> listRaw(const QByteArray &raw, QString *error)
         return {};
     }
     QVector<Entry> entries;
-    listDir(raw, geo, raw.mid(rootStart, rootBytes), QString(), 0, &entries);
+    QSet<int> visitedDirs;
+    listDir(raw, geo, raw.mid(rootStart, rootBytes), QString(), 0, &visitedDirs, &entries);
     return entries;
 }
 

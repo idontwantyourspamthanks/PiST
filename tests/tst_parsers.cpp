@@ -43,6 +43,8 @@ private slots:
     void floppyUpdateRefusesDim();
     void floppyRejectsOversizedExport();
     void floppyRejectsOversizedAutoFolderProgram();
+    void floppyListingSurvivesDirectoryCycles();
+    void floppyNamesAreSanitizedForHostPaths();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -711,5 +713,95 @@ void TstParsers::floppyRejectsOversizedAutoFolderProgram()
     QVERIFY(!QFile::exists(hugeImg));
 }
 
+
+namespace {
+/// Patch a 32-byte directory entry into the image at `at` (canonical 720 KiB
+/// geometry: the first allocated cluster is 2, at sector 14).
+void putDirEntry(QFile &f, int at, const QByteArray &name11, quint8 attr, quint16 cluster,
+                 quint32 size)
+{
+    QByteArray e(32, '\0');
+    e.replace(0, 11, QByteArray(name11).left(11).leftJustified(11, ' '));
+    e[11] = char(attr);
+    e[26] = char(cluster & 0xff);
+    e[27] = char(cluster >> 8);
+    e[28] = char(size & 0xff);
+    e[29] = char((size >> 8) & 0xff);
+    e[30] = char((size >> 16) & 0xff);
+    e[31] = char((size >> 24) & 0xff);
+    QVERIFY(f.seek(at));
+    QVERIFY(f.write(e) == 32);
+}
+} // namespace
+
+void TstParsers::floppyListingSurvivesDirectoryCycles()
+{
+    // A crafted image whose directory entries point back at the cluster they
+    // live in: two entries per level double per depth step, and a walk with
+    // no shared visited set expands without bound (the per-chain cycle set in
+    // readChain dies with each call). The listing must terminate, bounded.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item folder;
+    folder.destPath = QStringLiteral("F");
+    folder.isDirectory = true;
+    items.append(folder);
+    const QString st = tmp.path() + QStringLiteral("/cycle.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+
+    QFile f(st);
+    QVERIFY(f.open(QIODevice::ReadWrite));
+    // The folder is the only allocation, so its directory is cluster 2, at
+    // sector 14 of the canonical geometry.
+    putDirEntry(f, 14 * 512, QByteArrayLiteral("LOOPA      "), 0x10, 2, 0);
+    putDirEntry(f, 14 * 512 + 32, QByteArrayLiteral("LOOPB      "), 0x10, 2, 0);
+    f.close();
+
+    const QVector<floppy::Entry> entries = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(entries.size() <= 1000);
+    QVERIFY(entryNamed(entries, QStringLiteral("F"), true));
+    QVERIFY(entryNamed(entries, QStringLiteral("F/LOOPA"), true));
+    QVERIFY(entryNamed(entries, QStringLiteral("F/LOOPB"), true));
+}
+
+void TstParsers::floppyNamesAreSanitizedForHostPaths()
+{
+    // A crafted 8.3 name carrying path separators and traversal dots: the
+    // listed path is what the copy-out destination is joined from, so every
+    // component of it must be safe to use as a host file name.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item folder;
+    folder.destPath = QStringLiteral("F");
+    folder.isDirectory = true;
+    items.append(folder);
+    const QString st = tmp.path() + QStringLiteral("/evil.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+
+    QFile f(st);
+    QVERIFY(f.open(QIODevice::ReadWrite));
+    putDirEntry(f, 14 * 512, QByteArrayLiteral("../evil     "), 0x20, 0, 0);
+    putDirEntry(f, 14 * 512 + 32, QByteArrayLiteral("SLASH/NAME  "), 0x20, 0, 0);
+    f.close();
+
+    const QVector<floppy::Entry> entries = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    for (const floppy::Entry &entry : entries) {
+        const QStringList components = entry.path.split(QLatin1Char('/'));
+        for (const QString &component : components) {
+            QVERIFY2(!component.isEmpty(), qPrintable(entry.path));
+            QVERIFY2(component != QLatin1String("..") && component != QLatin1String("."),
+                     qPrintable(entry.path));
+            QVERIFY2(!component.contains(QLatin1Char('\\'))
+                         && !component.contains(QLatin1Char('/')),
+                     qPrintable(entry.path));
+        }
+    }
+}
 QTEST_MAIN(TstParsers)
 #include "tst_parsers.moc"

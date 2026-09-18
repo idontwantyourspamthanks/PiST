@@ -40,8 +40,18 @@ QJsonArray pixelsToJson(const QVector<int> &pixels)
     return array;
 }
 
-QVector<int> pixelsFromJson(const QJsonArray &array, int expected)
+QVector<int> pixelsFromJson(const QJsonArray &array, int expected, qint64 &budget)
 {
+    // Allocate from the *declared* cell size, so an empty pixels array still
+    // demands the full buffer. Bound the running total against the input size
+    // *before* allocating: a legitimate file spends at least one JSON byte per
+    // pixel, so it can never declare more pixels than it has bytes, while a
+    // hostile one can. A negative budget is the reject sentinel fromJson checks.
+    if (budget < expected) {
+        budget = -1;
+        return {};
+    }
+    budget -= expected;
     QVector<int> pixels(expected, kTransparent);
     const int n = qMin(expected, array.size());
     for (int i = 0; i < n; ++i)
@@ -65,12 +75,17 @@ QJsonObject frameToJson(const ImageFrame &frame)
     return obj;
 }
 
-ImageFrame frameFromJson(const QJsonObject &obj, int cellW, int cellH)
+ImageFrame frameFromJson(const QJsonObject &obj, int cellW, int cellH, qint64 &budget)
 {
     const int expected = cellW * cellH;
     ImageFrame frame;
-    frame.composite = pixelsFromJson(obj.value(QStringLiteral("pixels")).toArray(), expected);
+    frame.composite
+        = pixelsFromJson(obj.value(QStringLiteral("pixels")).toArray(), expected, budget);
     const QJsonArray layers = obj.value(QStringLiteral("layers")).toArray();
+    if (layers.size() > ImageDocument::kMaxLayersPerFrame) {
+        budget = -1;
+        return frame;
+    }
     if (!layers.isEmpty()) {
         for (const QJsonValue &layerValue : layers) {
             const QJsonObject layerObj = layerValue.toObject();
@@ -78,7 +93,7 @@ ImageFrame frameFromJson(const QJsonObject &obj, int cellW, int cellH)
             layer.name = layerObj.value(QStringLiteral("name")).toString(QStringLiteral("Layer"));
             layer.visible = layerObj.value(QStringLiteral("visible")).toBool(true);
             layer.pixels = pixelsFromJson(layerObj.value(QStringLiteral("pixels")).toArray(),
-                                          expected);
+                                          expected, budget);
             frame.layers.append(layer);
         }
     } else {
@@ -755,18 +770,35 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
     if (!paletteKindFromName(root.value(QStringLiteral("palette")).toString(), &kind))
         kind = PaletteKind::Ste;
 
+    // A hostile file can declare a huge structure in almost no bytes: each frame
+    // allocates from the *declared* cell size, not from the pixels present. Bound
+    // the total pixel allocation against the input size (a real file spends at
+    // least one JSON byte per pixel) and cap the container counts.
+    qint64 pixelBudget = json.size();
+    const auto reject = [&](const QString &message) {
+        m_lastError = message;
+        if (error)
+            *error = message;
+        return false;
+    };
+
     QVector<ImageSheet> sheets;
     const QJsonArray sheetArray = root.value(QStringLiteral("sheets")).toArray();
+    if (sheetArray.size() > kMaxSheets)
+        return reject(QStringLiteral(".pim declares too many sheets (%1)").arg(sheetArray.size()));
     for (const QJsonValue &value : sheetArray) {
         const QJsonObject obj = value.toObject();
         ImageSheet sheet;
         sheet.path = obj.value(QStringLiteral("path")).toString();
-        sheet.width = obj.value(QStringLiteral("width")).toInt(320);
-        sheet.height = obj.value(QStringLiteral("height")).toInt(200);
+        sheet.width = qBound(kMinSize, obj.value(QStringLiteral("width")).toInt(320), kMaxWidth);
+        sheet.height
+            = qBound(kMinSize, obj.value(QStringLiteral("height")).toInt(200), kMaxHeight);
         sheets.append(sheet);
     }
 
     const QJsonArray phaseArray = root.value(QStringLiteral("phases")).toArray();
+    if (phaseArray.size() > kMaxPhases)
+        return reject(QStringLiteral(".pim declares too many phases (%1)").arg(phaseArray.size()));
     QVector<ImagePhase> phases;
     for (const QJsonValue &value : phaseArray) {
         const QJsonObject obj = value.toObject();
@@ -775,31 +807,46 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
         phase.cellW = obj.value(QStringLiteral("cellW")).toInt(32);
         phase.cellH = obj.value(QStringLiteral("cellH")).toInt(32);
         if (phase.cellW < kMinSize || phase.cellW > kMaxWidth || phase.cellH < kMinSize
-            || phase.cellH > kMaxHeight) {
-            const QString message = QStringLiteral("phase %1 has an out-of-range cell size")
-                                        .arg(phase.name);
-            m_lastError = message;
-            if (error)
-                *error = message;
-            return false;
-        }
+            || phase.cellH > kMaxHeight)
+            return reject(QStringLiteral("phase %1 has an out-of-range cell size").arg(phase.name));
+        // The sheet reference comes straight from the file, but currentSheetIndex()
+        // and sheets().at() assume it is in range. -1 means "no sheet"; clamp an
+        // out-of-range value to it rather than let it index past the end.
         phase.sheet = obj.value(QStringLiteral("sheet")).toInt(-1);
+        if (phase.sheet >= sheets.size())
+            phase.sheet = -1;
         phase.x = obj.value(QStringLiteral("x")).toInt(0);
         phase.y = obj.value(QStringLiteral("y")).toInt(0);
         const QJsonArray frameArray = obj.value(QStringLiteral("frames")).toArray();
-        for (const QJsonValue &frameValue : frameArray)
-            phase.frames.append(frameFromJson(frameValue.toObject(), phase.cellW, phase.cellH));
-        if (phase.frames.isEmpty())
-            phase.frames.append(blankFrame());
+        if (frameArray.size() > kMaxFramesPerPhase) {
+            return reject(QStringLiteral("phase %1 declares too many frames (%2)")
+                              .arg(phase.name)
+                              .arg(frameArray.size()));
+        }
+        for (const QJsonValue &frameValue : frameArray) {
+            phase.frames.append(
+                frameFromJson(frameValue.toObject(), phase.cellW, phase.cellH, pixelBudget));
+            if (pixelBudget < 0)
+                return reject(QStringLiteral(".pim declares more pixel data than the file holds"));
+        }
+        if (phase.frames.isEmpty()) {
+            // A frame-less phase still needs its composite sized to THIS phase's
+            // cell. blankFrame() reads pixelCount() -> phase() -> m_phases, which
+            // is still the previous document (the constructor's 32x32) until
+            // m_phases is reassigned at the end of fromJson — so it would build a
+            // 1024-int buffer for a 320x200 phase, and ImageCanvas::rebuildImage
+            // then indexes pixels.at(y*width()+x) up to 63999 on it: OOB in
+            // Release. An empty object yields an all-transparent cellW*cellH
+            // composite plus the v1 single layer, and it draws on the budget.
+            phase.frames.append(
+                frameFromJson(QJsonObject(), phase.cellW, phase.cellH, pixelBudget));
+            if (pixelBudget < 0)
+                return reject(QStringLiteral(".pim declares more pixel data than the file holds"));
+        }
         phases.append(phase);
     }
-    if (phases.isEmpty()) {
-        const QString message = QStringLiteral(".pim file has no phases");
-        m_lastError = message;
-        if (error)
-            *error = message;
-        return false;
-    }
+    if (phases.isEmpty())
+        return reject(QStringLiteral(".pim file has no phases"));
 
     QVector<int> active;
     const QJsonArray activeArray = root.value(QStringLiteral("active")).toArray();

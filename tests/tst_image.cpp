@@ -31,6 +31,9 @@ private slots:
     void defaultActiveHasSixteen();
     void pimRoundTrip();
     void pimRejectsBadSize();
+    void pimRejectsPixelAmplification();
+    void pimClampsSheetReference();
+    void pimEmptyFramesSizedToPhase();
     void fillAndLineIndices();
     void pi1RoundTrip();
     void neoRoundTrip();
@@ -145,6 +148,99 @@ void TstImage::pimRejectsBadSize()
         "{\"format\":\"pist.image\",\"version\":1,\"width\":8,\"height\":8,"
         "\"palette\":\"ste\",\"active\":[0],\"frames\":[{\"pixels\":[]}]}"), &error));
     QVERIFY(!error.isEmpty());
+}
+
+void TstImage::pimRejectsPixelAmplification()
+{
+    ImageDocument doc;
+    QString error;
+
+    // A ~130-byte file declaring one 320x200 frame (64,000 pixels) with an empty
+    // pixels array. pixelsFromJson allocates from the *declared* cell size, so
+    // this is ~500x amplification; the total-pixel budget (the file's own byte
+    // size) rejects it, because a real file spends at least a byte per pixel.
+    QVERIFY(!doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"phases\":[{\"cellW\":320,\"cellH\":200,\"frames\":[{\"pixels\":[]}]}]}"),
+        &error));
+    QVERIFY(!error.isEmpty());
+
+    // A structure whose declared pixels fit inside the file's own size still
+    // loads: the budget is not a blanket cap on cell size or a small frame count.
+    QVERIFY2(doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"phases\":[{\"cellW\":4,\"cellH\":4,\"frames\":[{\"pixels\":[]}]}]}"),
+        &error),
+        qPrintable(error));
+    QCOMPARE(doc.frameCount(), 1);
+
+    // Many 1x1 frames pass the budget individually (one int each) but are bounded
+    // by the per-phase frame cap, so the count itself is capped, not just volume.
+    QByteArray many = QStringLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"phases\":[{\"cellW\":1,\"cellH\":1,\"frames\":[")
+        .toUtf8();
+    for (int i = 0; i <= ImageDocument::kMaxFramesPerPhase; ++i) {
+        if (i)
+            many += ',';
+        many += "{\"pixels\":[]}";
+    }
+    many += "]}]}";
+    QVERIFY(!doc.fromJson(many, &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TstImage::pimClampsSheetReference()
+{
+    ImageDocument doc;
+    QString error;
+    // A phase may name a sheet index that does not exist, and a sheet may declare
+    // a size past the ST screen. Both are read straight from the file; load must
+    // clamp them so currentSheetIndex()/sheets().at() can never index out of range
+    // (an unchecked .at() is assert-only, so it is UB in Release).
+    QVERIFY2(doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"sheets\":[{\"path\":\"a.pi1\",\"width\":99999,\"height\":99999}],"
+        "\"phases\":[{\"cellW\":4,\"cellH\":4,\"sheet\":99999,\"frames\":[{\"pixels\":[]}]}]}"),
+        &error),
+        qPrintable(error));
+    QCOMPARE(doc.sheets().size(), 1);
+    QCOMPARE(doc.phases().at(0).sheet, -1); // out-of-range -> "no sheet"
+    QCOMPARE(doc.sheets().at(0).width, 320); // clamped to the ST screen width
+    QCOMPARE(doc.sheets().at(0).height, 200); // clamped to the ST screen height
+
+    // A valid sheet reference is left alone.
+    QVERIFY2(doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"sheets\":[{\"path\":\"a.pi1\",\"width\":16,\"height\":16}],"
+        "\"phases\":[{\"cellW\":4,\"cellH\":4,\"sheet\":0,\"frames\":[{\"pixels\":[]}]}]}"),
+        &error),
+        qPrintable(error));
+    QCOMPARE(doc.phases().at(0).sheet, 0);
+    QCOMPARE(doc.sheets().at(0).width, 16);
+}
+
+void TstImage::pimEmptyFramesSizedToPhase()
+{
+    // A phase with an empty "frames" array still needs a composite sized to its
+    // own cell. The old fallback used blankFrame(), which reads the *previous*
+    // document's cell (still the 32x32 constructor default mid-load), so a larger
+    // phase got an undersized buffer and ImageCanvas::rebuildImage indexed past it
+    // with pixels.at(y*width()+x) — OOB in Release. The invariant rebuildImage
+    // relies on is frame size == width()*height(); assert it for a phase bigger
+    // than the stale default. The padded name keeps the file over the pixel budget.
+    ImageDocument doc;
+    QString error;
+    QByteArray json = QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"phases\":[{\"name\":\"");
+    json += QByteArray(1600, 'x');
+    json += QByteArrayLiteral("\",\"cellW\":40,\"cellH\":40,\"frames\":[]}]}");
+    QVERIFY2(doc.fromJson(json, &error), qPrintable(error));
+    QCOMPARE(doc.width(), 40);
+    QCOMPARE(doc.height(), 40);
+    QCOMPARE(doc.frameCount(), 1);
+    QCOMPARE(doc.frame(0).size(), 40 * 40); // not the stale 32*32 = 1024
 }
 
 void TstImage::fillAndLineIndices()

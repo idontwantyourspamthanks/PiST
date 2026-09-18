@@ -297,6 +297,11 @@ QImage sheetUnderlayImage(const ImportedSheet &sheet, PaletteKind kind)
     return underlay;
 }
 
+/// Upper bound on a sheet file read back from a JSON-supplied path. ST images
+/// are tiny; this exists only to bound an untrusted path that points at a large
+/// regular file (the read is otherwise unbounded — see loadSheetPixels).
+constexpr qint64 kMaxSheetBytes = 64LL * 1024 * 1024;
+
 /// (Re)load the pixel data of every sheet target that has a readable file,
 /// so slicing works after a document is reopened. Sheets without a path or
 /// with a missing file stay pixel-less until re-imported.
@@ -307,7 +312,12 @@ void loadSheetPixels(ImageDocument &doc, QHash<int, ImportedSheet> &pixels,
     underlays.clear();
     for (int i = 0; i < doc.sheets().size(); ++i) {
         const ImageSheet &sheet = doc.sheets().at(i);
-        if (sheet.path.isEmpty() || !QFileInfo::exists(sheet.path))
+        // The path comes from the file being loaded, so treat it as untrusted:
+        // require a regular file (not /dev/zero, a FIFO or a directory — all of
+        // which QFileInfo::exists reports true) and bound its size, or readAll()
+        // on a special or huge file hangs the open or exhausts memory.
+        const QFileInfo info(sheet.path);
+        if (sheet.path.isEmpty() || !info.isFile() || info.size() > kMaxSheetBytes)
             continue;
         QFile file(sheet.path);
         if (!file.open(QIODevice::ReadOnly))

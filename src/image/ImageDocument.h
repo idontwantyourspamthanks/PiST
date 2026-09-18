@@ -61,6 +61,18 @@ public:
     static constexpr int kMaxWidth = kStScreenWidth;
     static constexpr int kMaxHeight = kStScreenHeight;
 
+    /// Caps on a loaded `.pim`'s structure, enforced in fromJson with a loud
+    /// rejection. Cell size is already bounded by kMaxWidth/kMaxHeight above;
+    /// these bound the *counts*. A frame allocates its pixel buffer from the
+    /// *declared* cell size (not from the pixels present in the file), so an
+    /// unbounded number of frames/layers/phases lets a small file demand
+    /// gigabytes — the caps plus the total-pixel budget in fromJson keep the
+    /// allocation proportional to the input.
+    static constexpr int kMaxSheets = 1024;
+    static constexpr int kMaxPhases = 1024;
+    static constexpr int kMaxFramesPerPhase = 4096;
+    static constexpr int kMaxLayersPerFrame = 256;
+
     ImageDocument();
 
     /// Blank document of one phase with `width`×`height` cells and one

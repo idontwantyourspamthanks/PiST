@@ -72,6 +72,44 @@
 
 using namespace pist;
 
+namespace {
+
+/// What the emulator integration is missing, or empty when it can run. The
+/// same prerequisites tst_emulatorhost checks, so PIST_REQUIRE_EMULATOR means
+/// one thing across the suite.
+QString emulatorMissing()
+{
+    QStringList missing;
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        missing << QStringLiteral("hatari");
+    const TosRom rom = selectPreferredRom(findTosRoms(), Machine::St);
+    if (rom.path.isEmpty() || !rom.supportsAutostart())
+        missing << QStringLiteral("an autostart-capable TOS ROM for an ST");
+    return missing.join(QStringLiteral(", "));
+}
+
+} // namespace
+
+/// Skip the calling test — or fail it under PIST_REQUIRE_EMULATOR — when the
+/// emulator integration cannot run. Skipping is the right default on a
+/// developer's machine, which may legitimately have none of this; in CI a skip
+/// is a lie, because the run reports green while the emulator path went
+/// untested, so CI sets the variable and a missing prerequisite fails loudly
+/// instead. A macro because QSKIP/QFAIL return from the *calling* function.
+#define REQUIRE_EMULATOR_OR_SKIP()                                             \
+    do {                                                                       \
+        const QString pist_missing = emulatorMissing();                        \
+        if (!pist_missing.isEmpty()) {                                         \
+            if (!qEnvironmentVariableIsEmpty("PIST_REQUIRE_EMULATOR")) {       \
+                QFAIL(qPrintable(QStringLiteral(                                 \
+                    "PIST_REQUIRE_EMULATOR is set but the emulator integration "\
+                    "cannot run: missing %1").arg(pist_missing)));              \
+            }                                                                  \
+            QSKIP(qPrintable(QStringLiteral("needs %1 (set $PIST_TOS_DIR if "   \
+                                            "needed)").arg(pist_missing)));     \
+        }                                                                      \
+    } while (false)
+
 class TstGui : public QObject
 {
     Q_OBJECT
@@ -369,14 +407,7 @@ void TstGui::editorShowsExecutionLineAndBreakpoints()
 // appeared to "just build".
 void TstGui::runStartsAnEmulatorSession()
 {
-    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
-        QSKIP("needs hatari");
-    {
-        const QList<TosRom> roms = findTosRoms();
-        const TosRom rom = selectPreferredRom(roms, Machine::St);
-        if (rom.path.isEmpty() || !rom.supportsAutostart())
-            QSKIP("needs an autostart-capable TOS ROM for an ST");
-    }
+    REQUIRE_EMULATOR_OR_SKIP();
 
     // A program that assembles cleanly and spins, so the session stops at entry.
     const QString source = m_work->path() + QStringLiteral("/run.s");
@@ -461,14 +492,7 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
 
 void TstGui::stateSummaryClearsAfterSessionEnds()
 {
-    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
-        QSKIP("needs hatari");
-    {
-        const QList<TosRom> roms = findTosRoms();
-        const TosRom rom = selectPreferredRom(roms, Machine::St);
-        if (rom.path.isEmpty() || !rom.supportsAutostart())
-            QSKIP("needs an autostart-capable TOS ROM for an ST");
-    }
+    REQUIRE_EMULATOR_OR_SKIP();
 
     const QString source = m_work->path() + QStringLiteral("/state.s");
     QFile src(source);
@@ -740,14 +764,7 @@ void TstGui::memoryEditIgnoresStaleDump()
 
 void TstGui::memoryEditSurvivesRefreshLive()
 {
-    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
-        QSKIP("needs hatari");
-    {
-        const QList<TosRom> roms = findTosRoms();
-        const TosRom rom = selectPreferredRom(roms, Machine::St);
-        if (rom.path.isEmpty() || !rom.supportsAutostart())
-            QSKIP("needs an autostart-capable TOS ROM for an ST");
-    }
+    REQUIRE_EMULATOR_OR_SKIP();
 
     const QString source = m_work->path() + QStringLiteral("/edit.s");
     QFile src(source);
@@ -859,14 +876,7 @@ void TstGui::stackViewDoubleClickFollowsAddress()
 // nothing (docs/code-review-glm-001.md P1).
 void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
 {
-    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
-        QSKIP("needs hatari");
-    {
-        const QList<TosRom> roms = findTosRoms();
-        const TosRom rom = selectPreferredRom(roms, Machine::St);
-        if (rom.path.isEmpty() || !rom.supportsAutostart())
-            QSKIP("needs an autostart-capable TOS ROM for an ST");
-    }
+    REQUIRE_EMULATOR_OR_SKIP();
 
     // A program that spins, with the loop body on line 3, so a breakpoint there
     // fires the moment it resumes past the entry stop.
@@ -1152,14 +1162,7 @@ void TstGui::columnHeadersAreLeftAligned()
 
 void TstGui::consoleCommandRoundTrips()
 {
-    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
-        QSKIP("needs hatari");
-    {
-        const QList<TosRom> roms = findTosRoms();
-        const TosRom rom = selectPreferredRom(roms, Machine::St);
-        if (rom.path.isEmpty() || !rom.supportsAutostart())
-            QSKIP("needs an autostart-capable TOS ROM for an ST");
-    }
+    REQUIRE_EMULATOR_OR_SKIP();
 
     const QString source = m_work->path() + QStringLiteral("/console.s");
     QFile src(source);

@@ -18,6 +18,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <QMessageBox>
 
 using namespace pist;
 
@@ -35,6 +36,7 @@ private slots:
     void watchpointCommandValidatesAddress();
     void buildRespondsWhenFinished();
     void cmdDisconnectDuringWaitSurvives();
+    void runWithoutSourceFailsFast();
 };
 
 namespace {
@@ -253,5 +255,32 @@ void TstRemoteControl::cmdDisconnectDuringWaitSurvives()
     QVERIFY(roundTripBlock(next, "help").endsWith(QLatin1String("\n.\n")));
 }
 
+
+void TstRemoteControl::runWithoutSourceFailsFast()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // No source is open, so run() is refused and buildCompleted(false) must
+    // end the wait immediately instead of the client sitting out the
+    // operation timeout. The refusal's modal dialog is dismissed whenever it
+    // appears: command execution is queued, so a single-shot timer can fire
+    // before the dialog exists and would then miss it entirely.
+    auto *dismiss = new QTimer(&s.control);
+    dismiss->setInterval(50);
+    QObject::connect(dismiss, &QTimer::timeout, [&s, dismiss] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            box->accept();
+            dismiss->stop();
+        }
+    });
+    dismiss->start();
+
+    const QString reply = roundTrip(s.client, "run");
+    QVERIFY2(reply.startsWith(QStringLiteral("error")),
+             qPrintable(QStringLiteral("run replied: %1\nconsole: %2")
+                            .arg(reply, s.window.debugConsoleText().right(400))));
+}
 QTEST_MAIN(TstRemoteControl)
 #include "tst_remotecontrol.moc"

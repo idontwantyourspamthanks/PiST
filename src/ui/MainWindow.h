@@ -196,6 +196,21 @@ private:
     /// call on a freshly created backend.
     void wireBackend();
 
+    /// Reset everything that must not leak from one debug session into the
+    /// next: the arming state and resolved bases (GEMDOS relocates the
+ /// program on every run), the cached machine state (the remote `state`
+    /// command must not answer for a dead session) and any pending remote
+    /// command. Called at launch and again when the session ends, so a
+    /// session's state has exactly one lifetime and one owner.
+    void resetSessionState();
+
+    /// Report a build that refused to start (no source, failed save, missing
+    /// linker): a refusal is still a finished build as far as callers are
+    /// concerned — run()'s launch intent must be dropped rather than left
+    /// armed for the next successful build, and a remote-control `build`
+    /// must be answered now, not after its timeout.
+    void refuseBuild(const QString &title, const QString &reason, bool critical);
+
     /// Load the project settings that sit beside a source file, if any.
     void loadProjectForSource(const QString &sourcePath);
 

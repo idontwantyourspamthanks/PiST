@@ -45,6 +45,7 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QMenu>
@@ -179,6 +180,9 @@ private slots:
     /// through the undo stack.
     void imageSelectionCopyPaste();
     void undoEditsThePhaseItWasMadeIn();
+    void refusedBuildAnswersAndDropsLaunchIntent();
+    void stateSummaryClearsAfterSessionEnds();
+    void projectAssemblerPathOverridesDiscovery();
     /// Importing an ST image adopts the file's palette registers as the
     /// active set, so the colours its pixels use are not overspill.
     void importAdoptsTheFilePalette();
@@ -417,6 +421,114 @@ void TstGui::runStartsAnEmulatorSession()
              "the emulator started but never reached the debugger");
 
     host->stop();
+}
+
+void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
+{
+    MainWindow window; // no source open
+    QSignalSpy completed(&window, &MainWindow::buildCompleted);
+    QTimer::singleShot(0, &window, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->accept();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    // A refused build is a completed build: answered now, not after a
+    // timeout, and without leaving a launch armed.
+    QCOMPARE(completed.count(), 1);
+    QCOMPARE(completed.first().first().toBool(), false);
+
+    if (m_vasm.isEmpty())
+        QSKIP("needs vasmm68k_mot");
+    // The refusal must not leave m_launchAfterBuild set: a later successful
+    // build has no reason to start an emulator the user never asked for.
+    const QString source = m_work->path() + QStringLiteral("/later.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#1,d0\n\trts\n\teven\n\tend\n");
+    src.close();
+    window.openPath(source);
+
+    QSignalSpy completed2(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(completed2.count(), 1, 30000);
+    QCOMPARE(completed2.first().first().toBool(), true);
+
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    QTest::qWait(1500);
+    QVERIFY(!host->isRunning());
+}
+
+void TstGui::stateSummaryClearsAfterSessionEnds()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("hatari")).isEmpty())
+        QSKIP("needs hatari");
+    {
+        const QList<TosRom> roms = findTosRoms();
+        const TosRom rom = selectPreferredRom(roms, Machine::St);
+        if (rom.path.isEmpty() || !rom.supportsAutostart())
+            QSKIP("needs an autostart-capable TOS ROM for an ST");
+    }
+
+    const QString source = m_work->path() + QStringLiteral("/state.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#1,d0\nloop:\tbra.s\tloop\n\teven\n\tend\n");
+    src.close();
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+
+    // At the entry stop the machine state is cached; after the session ends
+    // the remote `state` command must not answer with a dead session's
+    // registers.
+    QTRY_VERIFY_WITH_TIMEOUT(!window.stateSummary().startsWith(
+                                 QStringLiteral("no session state")),
+                             30000);
+    host->stop();
+    QTRY_VERIFY_WITH_TIMEOUT(!host->isRunning(), 10000);
+    QCOMPARE(window.stateSummary(), QStringLiteral("no session state\n"));
+}
+
+void TstGui::projectAssemblerPathOverridesDiscovery()
+{
+    if (m_vasm.isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    const QString source = m_work->path() + QStringLiteral("/ovr.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\trts\n\teven\n\tend\n");
+    src.close();
+    // A private copy of the assembler: discovery cannot find it, so the
+    // build using it proves the project override reached the build service.
+    const QString copy = m_work->path() + QStringLiteral("/vasm-override");
+    QVERIFY(QFile::copy(m_vasm, copy));
+    QVERIFY(QFile::setPermissions(copy, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                              | QFileDevice::ExeOwner));
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.assemblerPath = copy;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.openPath(source);
+    QCOMPARE(window.assemblerPath(), copy);
 }
 
 void TstGui::hrdbProjectRunsThroughTheSwapPath()

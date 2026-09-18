@@ -147,6 +147,7 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         timeout.setSingleShot(true);
 
         QMetaObject::Connection done;
+        QMetaObject::Connection failed;
         if (cmd == QLatin1String("build")) {
             done = connect(m_window, &MainWindow::buildCompleted, this,
                            [&](bool ok) { finished = true; success = ok; loop.quit(); });
@@ -155,15 +156,29 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
                            [&](bool running) {
                                if (running) { finished = true; success = true; loop.quit(); }
                            });
+            // A build that fails or is refused ends the wait too: `run` must
+            // not sit out the full timeout when the answer is already known
+            // (buildCompleted(false) now fires for refusals as well).
+            failed = connect(m_window, &MainWindow::buildCompleted, this,
+                             [&](bool ok) {
+                                 if (!ok) { finished = true; success = false; loop.quit(); }
+                             });
         }
         connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
         timeout.start(kOpTimeoutMs);
 
-        QMetaObject::invokeMethod(m_window, cmd == QLatin1String("build") ? "build" : "run",
-                                  Qt::DirectConnection);
+        // Start the operation only once the wait loop is running: a
+        // synchronous refusal emits buildCompleted(false) during the
+        // invocation, and a quit() before exec() is lost — the wait would
+        // then run to its full timeout for an answer that already happened.
+        QTimer::singleShot(0, this, [this, cmd] {
+            QMetaObject::invokeMethod(m_window,
+                                      cmd == QLatin1String("build") ? "build" : "run",
+                                      Qt::DirectConnection);
+        });
         loop.exec();
         disconnect(done);
-
+        disconnect(failed);
         if (!guarded)
             return;
         if (finished && success)

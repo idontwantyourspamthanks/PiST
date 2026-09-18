@@ -401,10 +401,13 @@ void MainWindow::refreshToolchain()
     // dialog closes: a piece the dialog just installed (e.g. vasm in the
     // per-user tools directory, which is not on PATH) must take effect without
     // a restart, or the first build after a successful setup would still fail.
-    const ToolInfo assembler = toolchain::findAssembler();
+    const ToolInfo assembler = toolchain::findAssembler(m_settings.assemblerPath);
     m_build->setAssemblerPath(assembler.found() ? assembler.path
                                                 : QStringLiteral("vasmm68k_mot"));
-    m_caps = probeHatari(toolchain::findEmulator().path);
+    // Probe the emulator the session would actually run: with a project
+    // override pointing elsewhere, the discovered binary's capabilities are
+    // the wrong answer for the status bar and the embed action.
+    m_caps = probeHatari(toolchain::findEmulator(m_settings.hatariPath).path);
     updateEmbedActionState();
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
@@ -570,12 +573,16 @@ void MainWindow::wireBackend()
         if (m_actPause)
             m_actPause->setEnabled(false);
         if (m_sessionArmed) {
-            m_sessionArmed = false;
             if (m_actStep) m_actStep->setEnabled(false);
             if (m_actStepOver) m_actStepOver->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
             m_log->appendPlainText(tr("[session] emulator is no longer running"));
         }
+        // One owner for everything an ended session leaves behind — the same
+        // reset the next launch performs, so stale arming state, bases, the
+        // cached machine state and a pending remote command cannot survive
+        // into whatever happens next.
+        resetSessionState();
     });
     connect(m_host, &IDebugBackend::memoryDumpReady, this,
             [this](quint32, const QString &response, int tag) {
@@ -1664,6 +1671,9 @@ void MainWindow::editSettings()
 
     m_settings = dialog.settings();
 
+    // A tool path the dialog just changed must take effect without a restart.
+    refreshToolchain();
+
     // The dialog persisted the application-wide appearance preferences on
     // accept; bring them into effect now rather than at next start.
     applyAppearance();
@@ -1725,6 +1735,13 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
 
     loaded.sourceFile = sourcePath;
     m_settings = loaded;
+
+    // A project that names tool paths must not keep the construction-time
+    // discovery answer: the override wins as soon as it is known.
+    if (!m_settings.assemblerPath.isEmpty() || !m_settings.linkerPath.isEmpty()
+        || !m_settings.hatariPath.isEmpty()) {
+        refreshToolchain();
+    }
 
     settings::rememberLastProject(projectPath, sourcePath);
     syncFileBrowserDisks();
@@ -2068,8 +2085,7 @@ void MainWindow::build()
 {
     const QString source = buildSourcePath();
     if (source.isEmpty()) {
-        QMessageBox::information(this, tr("Build"),
-                                 tr("Open an assembly source file first."));
+        refuseBuild(tr("Build"), tr("Open an assembly source file first."), false);
         return;
     }
 
@@ -2080,9 +2096,10 @@ void MainWindow::build()
         if (editor->filePath().isEmpty() || !editor->isModifiedSinceLoad())
             continue;
         if (!editor->saveFile(editor->filePath())) {
-            QMessageBox::critical(this, tr("Build"),
-                                  tr("Could not save %1: %2")
-                                      .arg(editor->filePath(), editor->lastError()));
+            refuseBuild(tr("Build"),
+                        tr("Could not save %1: %2")
+                            .arg(editor->filePath(), editor->lastError()),
+                        true);
             return;
         }
         writeBackFloppyDoc(editor->filePath());
@@ -2107,8 +2124,7 @@ void MainWindow::build()
     if (linking) {
         const ToolInfo linker = toolchain::findLinker(m_settings.linkerPath);
         if (!linker.found()) {
-            QMessageBox::critical(this, tr("Linker not found"),
-                                  toolchain::linkerInstallHint());
+            refuseBuild(tr("Linker not found"), toolchain::linkerInstallHint(), true);
             return;
         }
         m_build->setLinkerPath(linker.path);
@@ -2127,6 +2143,34 @@ void MainWindow::build()
     m_build->setExtraArgs(m_settings.extraBuildArgs);
 
     m_build->build();
+}
+
+void MainWindow::resetSessionState()
+{
+    // GEMDOS relocates the program on every run, so resolved addresses and
+    // armed breakpoints are meaningless; the cached machine state and any
+    // pending remote command must not answer for a session that no longer
+    // exists. Both call sites (launch, session end) are idempotent resets.
+    m_sessionArmed = false;
+    m_breakpointsArmedThisSession = false;
+    m_bases = LineMap::SectionBases();
+    m_lastState = MachineState();
+    m_pendingDebugCommand.clear();
+}
+
+void MainWindow::refuseBuild(const QString &title, const QString &reason, bool critical)
+{
+    // A refused build is still a completed build as far as callers are
+    // concerned: run()'s launch intent must be dropped rather than left armed
+    // for the next successful build, and a remote-control `build` must be
+    // answered now rather than after its timeout.
+    m_launchAfterBuild = false;
+    m_log->appendPlainText(tr("--- build refused: %1 ---").arg(reason));
+    emit buildCompleted(false);
+    if (critical)
+        QMessageBox::critical(this, title, reason);
+    else
+        QMessageBox::information(this, title, reason);
 }
 
 void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnostics)
@@ -2205,11 +2249,6 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
 
 void MainWindow::run()
 {
-    if (buildSourcePath().isEmpty()) {
-        QMessageBox::information(this, tr("Run"), tr("Open an assembly source file first."));
-        return;
-    }
-
     // Always rebuild before running: this keeps the listing in step with the
     // binary, which is what the line map depends on.
     //
@@ -2218,6 +2257,9 @@ void MainWindow::run()
     // still in flight — and a "is the build running?" guard here is always true,
     // which silently turned the whole launch path into dead code. The launch is
     // chained onto build completion instead, via onBuildFinished.
+    //
+    // No source check of its own: build()'s refusal handles it (and must, or a
+    // refused run would leave m_launchAfterBuild armed for the next build).
     m_launchAfterBuild = true;
     build();
 }
@@ -2469,9 +2511,7 @@ void MainWindow::launchEmulator()
 
     // A new session relocates the program, so previously resolved addresses are
     // meaningless and arming must happen again after the next entry stop.
-    m_sessionArmed = false;
-    m_breakpointsArmedThisSession = false;
-    m_bases = LineMap::SectionBases();
+    resetSessionState();
 
     m_host->setCapabilities(launchedCaps);
     if (!m_host->start(config, &error)) {

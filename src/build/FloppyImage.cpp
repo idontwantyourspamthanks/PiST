@@ -1040,13 +1040,37 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
         QFile::remove(staged);
         return false;
     }
-    QFile::remove(imagePath);
-    if (!QFile::rename(staged, imagePath)) {
-        setError(error, QStringLiteral("could not replace %1 with the staged image")
+    // Replace via a same-directory rename dance, never remove-then-rename:
+    // QFile::rename refuses to overwrite an existing target, and removing
+    // the original first loses it for good when the rename then fails (an
+    // emulator holding the image open on Windows, AV/ACL interference, a
+    // full directory). Setting the original aside first keeps every failure
+    // recoverable: roll the backup forward again and the user's image is
+    // exactly as it was.
+    const QString backup = info.absolutePath() + QStringLiteral("/.pist-%1.bak.%2")
+                                                .arg(info.completeBaseName(), suffix);
+    QFile::remove(backup);
+    if (!QFile::rename(imagePath, backup)) {
+        setError(error, QStringLiteral("could not set %1 aside for replacement "
+                                       "(is the image in use?)")
                             .arg(imagePath));
         QFile::remove(staged);
         return false;
     }
+    if (!QFile::rename(staged, imagePath)) {
+        setError(error, QStringLiteral("could not replace %1 with the staged image")
+                            .arg(imagePath));
+        if (QFile::rename(backup, imagePath)) {
+            QFile::remove(staged);
+            return false;
+        }
+        const QString previous = error ? *error : QString();
+        setError(error, QStringLiteral("%1\nThe original was preserved as %2.")
+                            .arg(previous, backup));
+        QFile::remove(staged);
+        return false;
+    }
+    QFile::remove(backup);
     return true;
 }
 

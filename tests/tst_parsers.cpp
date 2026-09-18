@@ -636,6 +636,12 @@ void TstParsers::floppyUpdateAddsAndRemoves()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY(entryNamed(msaEntries, QStringLiteral("DATA/KEEP.TXT"), false));
     QVERIFY(entryNamed(msaEntries, QStringLiteral("A.PRG"), false));
+
+    // The replace dance must clean up after itself: no staged or backup
+    // file may survive a successful update.
+    const QStringList litter = QDir(tmp.path()).entryList(
+        {QStringLiteral(".pist-*")}, QDir::Hidden | QDir::Files);
+    QCOMPARE(litter.size(), 0);
 }
 
 void TstParsers::floppyUpdateRefusesDim()

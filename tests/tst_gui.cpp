@@ -295,11 +295,13 @@ void TstGui::initTestCase()
     QVERIFY(m_work->isValid());
     m_source = m_work->path() + QStringLiteral("/prog.s");
 
-    // The suite must not read or write the developer's real PiST settings:
-    // MainWindow restores layout/state from QSettings and the appearance test
-    // writes appearance/*, so a shared store makes the dock-arrangement
-    // assertions depend on how the user last left their window. main()
-    // redirects QSettings to a throwaway directory for the whole run.
+    // The suite must not carry state between runs through a shared settings
+    // store. It never did touch the developer's PiST.conf — these binaries set
+    // no organisation or application name, so QSettings resolved to an
+    // "Unknown Organization" placeholder instead — but that file persisted
+    // across runs, and last/project drives the constructor's deferred
+    // openRecentSource() while setup/promptDismissed gates the setup dialog.
+    // main() redirects QSettings to a throwaway directory for the whole run.
     QVERIFY2(QSettings().fileName().startsWith(QDir::tempPath()),
              qPrintable(QStringLiteral("QSettings resolves to %1, outside %2")
                             .arg(QSettings().fileName(), QDir::tempPath())));

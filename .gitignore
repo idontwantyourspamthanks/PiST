@@ -74,3 +74,7 @@ scratch/
 # Python bytecode (packaging/collect-notices.py runs in CI)
 __pycache__/
 *.pyc
+
+# Agent-generated review records (docs/agents/): working documents, not
+# project documentation — kept out of the repository on purpose.
+/docs/agents/

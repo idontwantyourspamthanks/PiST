@@ -34,6 +34,7 @@ private slots:
     void screenshotWithoutDisplayFailsGracefully();
     void watchpointCommandValidatesAddress();
     void buildRespondsWhenFinished();
+    void cmdDisconnectDuringWaitSurvives();
 };
 
 namespace {
@@ -211,6 +212,45 @@ void TstRemoteControl::buildRespondsWhenFinished()
     const QString reply = roundTrip(s.client, "build");
     QVERIFY2(reply == QStringLiteral("ok"),
              qPrintable(QStringLiteral("build replied: %1").arg(reply)));
+}
+
+void TstRemoteControl::cmdDisconnectDuringWaitSurvives()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // `cmd` with no emulator session never receives commandFinished, so the
+    // server's nested wait runs to its full timeout. A client that gives up
+    // and disconnects inside that window deletes the server-side socket (the
+    // disconnected -> deleteLater in onNewConnection runs inside the nested
+    // loop); both the reply after the loop and the read-line loop in
+    // onReadyRead must survive that deletion.
+    //
+    // The abort has to fire *inside* the server's nested loop, the way a real
+    // peer's disconnect arrives through the socket notifier: scheduling it as
+    // a timer makes it detonate while the nested loop is pumping events (a
+    // plain abort() after write() would run only after the nested loop has
+    // already finished and blocked this thread for the full timeout).
+    QTimer::singleShot(300, &s.client, [&s] { s.client.abort(); });
+    s.client.write("cmd info mfp\n");
+
+    // Outlive the server's 10 s command timeout: the reply is written here,
+    // to a socket that was destroyed inside the nested loop.
+    QTest::qWait(10600);
+
+    // Observable recovery: the server must still serve a fresh client.
+    QTcpSocket next;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&next, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    next.connectToHost(QHostAddress::LocalHost, s.control.boundPort());
+    timer.start(5000);
+    loop.exec();
+    QVERIFY(next.state() == QAbstractSocket::ConnectedState);
+    QVERIFY(roundTripBlock(next, "help").endsWith(QLatin1String("\n.\n")));
 }
 
 QTEST_MAIN(TstRemoteControl)

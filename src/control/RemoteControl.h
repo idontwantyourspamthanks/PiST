@@ -43,6 +43,7 @@ private slots:
 
 private:
     void onReadyRead(class QTcpSocket *client);
+    void queueCommand(class QTcpSocket *client, const QString &line);
     void execute(class QTcpSocket *client, const QString &line);
 
     /// One-line reply: "ok" or "error <message>".

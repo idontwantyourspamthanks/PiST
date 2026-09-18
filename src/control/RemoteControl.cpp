@@ -79,8 +79,29 @@ void RemoteControl::onNewConnection()
 void RemoteControl::onReadyRead(QTcpSocket *client)
 {
     // Commands are whole lines; a partial line waits for the rest of it.
+    //
+    // Lines are executed queued, on a fresh dispatch, never inside this
+    // readyRead handler: the blocking commands (build/run/cmd) spin nested
+    // event loops, and a nested loop running inside the socket's own
+    // dispatch delivers a disconnected peer's deferred delete
+    // (onNewConnection) while the notifier frame that called us is still
+    // suspended beneath it — Qt then resumes that frame into a destroyed
+    // socket (QAbstractSocketPrivate::canReadNotification after the
+    // emission). One loop hop later there is no socket dispatch on the
+    // stack; the QPointer covers the gap between queuing and running.
     while (client->canReadLine())
-        execute(client, QString::fromUtf8(client->readLine()).trimmed());
+        queueCommand(client, QString::fromUtf8(client->readLine()).trimmed());
+}
+
+void RemoteControl::queueCommand(QTcpSocket *client, const QString &line)
+{
+    QPointer<QTcpSocket> guarded(client);
+    QMetaObject::invokeMethod(
+        this, [this, guarded, line] {
+            if (guarded)
+                execute(guarded, line);
+        },
+        Qt::QueuedConnection);
 }
 
 void RemoteControl::reply(QTcpSocket *client, const QString &line)
@@ -103,12 +124,16 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
 {
     const QString cmd = line.section(QLatin1Char(' '), 0, 0);
     const QString arg = line.section(QLatin1Char(' '), 1).trimmed();
+    // Every branch replies through the guard, not the raw pointer: several
+    // commands pump events before replying (modal dialogs from open/build/run
+    // refusal paths, screenshot's processEvents), and a peer that disconnects
+    // inside one of those loops is deleted before the reply is written.
     QPointer<QTcpSocket> guarded(client);
 
     if (cmd == QLatin1String("open")) {
         QMetaObject::invokeMethod(m_window, "openPath", Qt::DirectConnection,
                                   Q_ARG(QString, arg));
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("build") || cmd == QLatin1String("run")) {
         // These are asynchronous: build compiles, run builds and then starts the
@@ -150,7 +175,7 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
 
     } else if (cmd == QLatin1String("stop")) {
         QMetaObject::invokeMethod(m_window, "stopSession", Qt::DirectConnection);
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("cmd")) {
         // An arbitrary debugger command, passed through verbatim (e.g. "info mfp").
@@ -171,57 +196,57 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             m_window->debugCommand(dbg);
             loop.exec();
             disconnect(c);
-            replyBlock(client, response.isEmpty() ? QStringLiteral("(no response)") : response);
+            replyBlock(guarded, response.isEmpty() ? QStringLiteral("(no response)") : response);
         } else {
-            reply(client, QStringLiteral("error usage: cmd <debugger command>"));
+            reply(guarded, QStringLiteral("error usage: cmd <debugger command>"));
         }
 
     } else if (cmd == QLatin1String("step")) {
         QMetaObject::invokeMethod(m_window, "step", Qt::DirectConnection);
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("stepover")) {
         QMetaObject::invokeMethod(m_window, "stepOver", Qt::DirectConnection);
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("continue")) {
         QMetaObject::invokeMethod(m_window, "resume", Qt::DirectConnection);
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("breakpoint")) {
         QMetaObject::invokeMethod(m_window, "toggleBreakpointAtLine", Qt::DirectConnection,
                                   Q_ARG(int, arg.toInt()));
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("setreg")) {
         const QString name = arg.section(QLatin1Char(' '), 0, 0);
         quint32 value = 0;
         if (name.isEmpty() || !parseValue(arg.section(QLatin1Char(' '), 1), &value)) {
-            reply(client, QStringLiteral("error usage: setreg <name> <value>"));
+            reply(guarded, QStringLiteral("error usage: setreg <name> <value>"));
         } else if (m_window->setRegister(name, value)) {
-            reply(client, QStringLiteral("ok"));
+            reply(guarded, QStringLiteral("ok"));
         } else {
-            reply(client, QStringLiteral("error not stopped"));
+            reply(guarded, QStringLiteral("error not stopped"));
         }
 
     } else if (cmd == QLatin1String("setmem")) {
         quint32 address = 0, value = 0;
         if (!parseValue(arg.section(QLatin1Char(' '), 0, 0), &address)
             || !parseValue(arg.section(QLatin1Char(' '), 1), &value)) {
-            reply(client, QStringLiteral("error usage: setmem <addr> <value>"));
+            reply(guarded, QStringLiteral("error usage: setmem <addr> <value>"));
         } else if (m_window->setMemoryByte(address, value)) {
-            reply(client, QStringLiteral("ok"));
+            reply(guarded, QStringLiteral("ok"));
         } else {
-            reply(client, QStringLiteral("error not stopped"));
+            reply(guarded, QStringLiteral("error not stopped"));
         }
 
     } else if (cmd == QLatin1String("watchpoint")) {
         // Watchpoint breaks when the value at an address changes.
         QString error;
         if (m_window->addWatchpointAddress(arg, &error))
-            reply(client, QStringLiteral("ok"));
+            reply(guarded, QStringLiteral("ok"));
         else
-            reply(client, QStringLiteral("error ") + error);
+            reply(guarded, QStringLiteral("error ") + error);
 
     } else if (cmd == QLatin1String("screenshot")) {
         const QString path = arg.isEmpty() ? QStringLiteral("/tmp/pist-screenshot.png") : arg;
@@ -235,18 +260,18 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         QGuiApplication::processEvents();
         const QImage img = captureWindowImage(m_window->winId());
         if (!img.isNull() && img.save(path))
-            reply(client, QStringLiteral("ok"));
+            reply(guarded, QStringLiteral("ok"));
         else
-            reply(client, QStringLiteral("error could not save screenshot to ") + path);
+            reply(guarded, QStringLiteral("error could not save screenshot to ") + path);
 
     } else if (cmd == QLatin1String("console")) {
-        replyBlock(client, m_window->debugConsoleText());
+        replyBlock(guarded, m_window->debugConsoleText());
 
     } else if (cmd == QLatin1String("state")) {
-        replyBlock(client, m_window->stateSummary());
+        replyBlock(guarded, m_window->stateSummary());
 
     } else if (cmd == QLatin1String("help")) {
-        replyBlock(client, QStringLiteral(
+        replyBlock(guarded, QStringLiteral(
             "open <path>      open a source file\n"
             "build            assemble, answering when the build finishes\n"
             "run              build and start the emulator, answering when running\n"
@@ -264,11 +289,11 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "quit             close the IDE\n"));
 
     } else if (cmd == QLatin1String("quit")) {
-        reply(client, QStringLiteral("ok"));
+        reply(guarded, QStringLiteral("ok"));
         QCoreApplication::quit();
 
     } else if (!cmd.isEmpty()) {
-        reply(client, QStringLiteral("error unknown command: ") + cmd);
+        reply(guarded, QStringLiteral("error unknown command: ") + cmd);
     }
 }
 

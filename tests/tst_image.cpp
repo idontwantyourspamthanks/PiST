@@ -55,6 +55,7 @@ private slots:
     void bitplaneScrollDemoAnimatesFrames();
     void bitplaneDataExportsTheChosenPhase();
     void bitplaneScrollDemoAssembles();
+    void scrollDemoHandlesAnOversizeFrameStride();
 };
 
 void TstImage::cubeSizes()
@@ -850,7 +851,7 @@ void TstImage::bitplaneScrollDemoAnimatesFrames()
     QVERIFY(text.contains("kFrames\t\tequ\t3"));
     QVERIFY(text.contains(QStringLiteral("kFrameStride\tequ\t%1").arg(frameStride).toUtf8()));
     QVERIFY(text.contains("kFrameTicks\tequ\t4"));
-    QVERIFY(text.contains("mulu\t#kFrameStride,d2"));
+    QVERIFY(text.contains("move.l\t0(a0,d2.w),d2"));
     QVERIFY(text.contains("anim_frame"));
     QVERIFY(text.contains("\tincbin\t\"anim.dat\""));
 }
@@ -918,6 +919,60 @@ void TstImage::bitplaneScrollDemoAssembles()
                            dir.filePath(QStringLiteral("scroll2.prg")), source});
     QVERIFY(elsewhere.waitForFinished(30000));
     QVERIFY2(elsewhere.exitCode() == 0, elsewhere.readAllStandardError().constData());
+}
+
+void TstImage::scrollDemoHandlesAnOversizeFrameStride()
+{
+    const QString vasm = QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot"));
+    if (vasm.isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    // A phase big enough that one frame's bytes exceed what a 16-bit `mulu`
+    // immediate can hold. The codegen used to emit `mulu #kFrameStride,d2`
+    // regardless, so the export reported success and handed the user a source
+    // file that could not be assembled.
+    ImageDocument doc = ImageDocument::create(160, 80, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    QVERIFY(doc.addFrame() >= 0);
+    BitplaneDataOptions opt;
+    opt.masked = true;
+    opt.shiftedMasked = true;
+    opt.preShifts = 8;
+    QString error;
+    const QByteArray data = exportBitplaneData(doc, 0, opt, &error);
+    QVERIFY2(!data.isEmpty(), qPrintable(error));
+    const QByteArray text = exportScrollDemo(doc, 0, opt, QStringLiteral("big.dat"), &error);
+    QVERIFY2(!text.isEmpty(), qPrintable(error));
+
+    // The stride really is over 16 bits, or this test proves nothing.
+    const QByteArray equate = QByteArrayLiteral("kFrameStride\tequ\t");
+    const int at = text.indexOf(equate);
+    QVERIFY2(at >= 0, "the frame stride equate is emitted");
+    const int stride = QByteArray(text.mid(at + equate.size()).split('\t').first()).toInt();
+    QVERIFY2(stride > 0xffff, qPrintable(QStringLiteral("frame stride is %1").arg(stride)));
+    QVERIFY(!text.contains("mulu\t#kFrameStride"));
+    QVERIFY(text.contains("kFrameOffsets"));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QFile dat(dir.filePath(QStringLiteral("big.dat")));
+    QVERIFY(dat.open(QIODevice::WriteOnly));
+    QCOMPARE(dat.write(data), qint64(data.size()));
+    dat.close();
+    const QString source = dir.filePath(QStringLiteral("big.s"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(text), qint64(text.size()));
+    file.close();
+
+    QProcess assembler;
+    assembler.setWorkingDirectory(dir.path());
+    assembler.start(vasm, {QStringLiteral("-Ftos"), QStringLiteral("-o"),
+                           dir.filePath(QStringLiteral("big.prg")), source});
+    QVERIFY(assembler.waitForFinished(60000));
+    const QByteArray err = assembler.readAllStandardError();
+    QVERIFY2(assembler.exitCode() == 0, err.constData());
+    QVERIFY2(!err.contains("warning"), err.constData());
 }
 
 void TstImage::bitplaneDataExportsTheChosenPhase()

@@ -1283,7 +1283,10 @@ QByteArray exportScrollDemo(const ImageDocument &doc, int phase,
     line("	moveq	#0,d2");
     if (frames > 1) {
         line("	move.w	anim_frame,d2		; which animation frame...");
-        line("	mulu	#kFrameStride,d2");
+        line("	lsl.w	#2,d2			;   a longword index into the table:");
+        line("	lea	kFrameOffsets,a0	;   a frame stride can exceed 16 bits,");
+        line("	move.l	0(a0,d2.w),d2		;   which no mulu immediate can hold.");
+        line("					;   a0 is scratch until the block lea");
     }
     if (shifted) {
         line("	move.w	d0,d3			; ...and which pre-shifted copy: the");
@@ -1363,6 +1366,10 @@ QByteArray exportScrollDemo(const ImageDocument &doc, int phase,
         line("	dc.w	0			;   blit's own registers are all scratch");
         line("anim_ticks:");
         line("	dc.w	0");
+        line("	even				; a longword table must not start odd");
+        line("kFrameOffsets:				; frame f lives at base + this");
+        for (int f = 0; f < frames; ++f)
+            line(QByteArrayLiteral("	dc.l	kFrameStride*") + number(f));
     }
     line("");
     line("msg_res:");

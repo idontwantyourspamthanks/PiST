@@ -93,6 +93,9 @@ private slots:
     void sourceLineBreakpointFiresAndResolvesBack();
     /// Continue at the entry stop used to discard unsent `b pc=` commands.
     void resumeFlushesPendingBreakpointCommands();
+    /// A second session on the same host must re-frame cleanly: resetTransport()
+    /// exists for this and no other test exercises it, as each builds a fresh host.
+    void secondSessionOnOneHostReframesCleanly();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -1078,6 +1081,77 @@ void TstEmulatorHost::floppyInsertsWhileRunning()
     };
     QTRY_VERIFY_WITH_TIMEOUT(inserted(), 15000);
     QVERIFY2(inserted(), qPrintable("running insert did not reach Hatari:\n" + log.join(QLatin1Char('\n'))));
+
+    host.stop();
+}
+
+void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    QVERIFY(caps.valid);
+
+    const auto configFor = [this, &caps](const QString &name) {
+        SessionConfig config;
+        config.hatariPath = m_hatari;
+        config.programPath = m_program;
+        config.tosPath = m_tos;
+        config.sessionDir = m_work->path() + QLatin1Char('/') + name;
+        config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+        config.gemdosDir = m_sourceDir;
+        config.bootstrapScriptPath
+            = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+        return config;
+    };
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &l) { m_log.append(l); });
+
+    // Session 1, left dirty on purpose, in the shape this class was actually
+    // broken by once: arms queued, Continue pressed at the entry stop before
+    // they flushed, then Stop. That leaves m_continueWhenIdle set — the one
+    // piece of per-session framing that stop() does not clear and
+    // resetTransport() does. Ending the session cleanly instead would leave
+    // nothing the reset owns, and the test would pass with the reset deleted.
+    QSignalSpy entry1(&host, &EmulatorHost::stoppedChanged);
+    QVERIFY2(host.start(configFor(QStringLiteral("second-session-1")), nullptr),
+             "session 1 failed to start");
+    QVERIFY2(entry1.wait(15000), "session 1 never stopped at program entry");
+    host.armBreakpoint(QStringLiteral("b pc = $100 && pc < $e00000 :once"));
+    host.armBreakpoint(QStringLiteral("b pc = $108 && pc < $e00000 :once"));
+    host.resume();
+    host.stop();
+
+    // Session 2 on the same object: a surviving m_continueWhenIdle makes the
+    // queue-empty dispatch write `c`, so the new session resumes itself instead
+    // of waiting stopped at the entry stop, and its first command never returns.
+    QSignalSpy entry2(&host, &EmulatorHost::stoppedChanged);
+    QVERIFY2(host.start(configFor(QStringLiteral("second-session-2")), nullptr),
+             "session 2 failed to start");
+    QVERIFY2(entry2.wait(15000), "session 2 never stopped at program entry");
+    QVERIFY2(host.isStopped(),
+             "session 2 resumed itself: session 1's continue request survived");
+
+    QSignalSpy answered(&host, &EmulatorHost::commandFinished);
+    host.command(QStringLiteral("r"));
+    QVERIFY2(answered.wait(15000),
+             "session 2's first command was never answered — session 1's "
+             "transport state survived into it");
+
+    // And the reply is session 2's own register dump rather than something
+    // swallowed or attributed from session 1.
+    const QList<QVariant> args = answered.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("r"));
+    QVERIFY2(args.at(1).toString().contains(QStringLiteral("D0"), Qt::CaseInsensitive),
+             qPrintable(QStringLiteral("unexpected reply: %1").arg(args.at(1).toString())));
+
+    // A stale m_continueWhenIdle fires `c` the moment this command's reply
+    // drains the queue — so the resume has to be caught after the answer and
+    // not at the entry stop, which is why the check lives down here.
+    QTest::qWait(1500);
+    QVERIFY2(host.isStopped(),
+             "session 2 resumed itself after its first command: session 1's "
+             "continue request survived the transport reset");
 
     host.stop();
 }

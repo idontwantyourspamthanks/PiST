@@ -38,12 +38,18 @@ void ProgramLineMap::setLinkMap(const LinkMap &map)
 
 void ProgramLineMap::setLiveBases(const LineMap::SectionBases &live)
 {
+    // A single-module build has no linker map: the module *is* the program, so
+    // it owns the whole section and starts where the section does. With more
+    // than one module a map was expected, and without it no module's placement
+    // is knowable — marking them placed would resolve their lines into the
+    // live section base, arming breakpoints inside the first module that never
+    // fire (or fire in the wrong one) while reporting themselves as armed.
+    // Leave them unplaced so unplacedModules() tells the truth instead.
+    const bool singleModule = m_modules.size() == 1;
     for (Module &module : m_modules) {
-        // A single-module build has no linker map, so the module owns the whole
-        // section and starts where the section does.
         if (m_linkMap.isEmpty()) {
-            module.bases = live;
-            module.placed = true;
+            module.bases = singleModule ? live : LineMap::SectionBases();
+            module.placed = singleModule;
             continue;
         }
 

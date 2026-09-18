@@ -104,6 +104,7 @@ private slots:
     void refusesAddressesOutsideEveryModule();
     void singleModuleNeedsNoLinkMap();
     void reportsModulesTheMapDidNotPlace();
+    void multiModuleWithoutLinkMapStaysUnplaced();
 
     /// The real thing, when vasm and a vlink are available: assemble two
     /// modules, link them, and check the mapping against the linked program's
@@ -312,6 +313,41 @@ void TstLink::reportsModulesTheMapDidNotPlace()
     // And it must not be mapped to a guessed address.
     quint32 addr = 0;
     QVERIFY(!program.addressFor(QStringLiteral("ghost.s"), 1, &addr));
+}
+
+// A multi-module build whose link map is missing or failed to parse: the
+// placement of every module is unknown, so none may be treated as placed.
+// Giving them all the live section base is what arms a breakpoint at an
+// address inside the first module and reports it as armed.
+void TstLink::multiModuleWithoutLinkMapStaysUnplaced()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString mainLst = writeModuleListing(
+        dir, QStringLiteral("main.lst"), {{2, 0x0}, {9, 0x20}}, QStringLiteral("main.s"));
+    const QString libLst = writeModuleListing(
+        dir, QStringLiteral("lib.lst"), {{3, 0x0}, {7, 0x40}}, QStringLiteral("lib.s"));
+
+    ProgramLineMap program;
+    QVERIFY(program.addModule(QStringLiteral("main.s"), QStringLiteral("main.o"),
+                              mainLst, nullptr));
+    QVERIFY(program.addModule(QStringLiteral("lib.s"), QStringLiteral("lib.o"),
+                              libLst, nullptr));
+    // Deliberately no setLinkMap: the map is absent or did not parse.
+
+    LineMap::SectionBases live;
+    live.text = 0x12596;
+    program.setLiveBases(live);
+
+    const QStringList unplaced = program.unplacedModules();
+    QCOMPARE(unplaced.size(), 2);
+
+    // Neither module may resolve to a guessed address — in particular the
+    // second must not be handed the first one's base.
+    quint32 addr = 0;
+    QVERIFY(!program.addressFor(QStringLiteral("main.s"), 9, &addr));
+    QVERIFY(!program.addressFor(QStringLiteral("lib.s"), 7, &addr));
 }
 
 void TstLink::endToEndAgainstARealLink()

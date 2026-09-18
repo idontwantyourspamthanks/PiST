@@ -50,9 +50,10 @@ namespace {
 class PaintCommand : public QUndoCommand
 {
 public:
-    PaintCommand(ImageDocument *doc, int frame, int layer, const QVector<int> &indices,
-                 const QVector<int> &before, int colour)
+    PaintCommand(ImageDocument *doc, int phase, int frame, int layer,
+                 const QVector<int> &indices, const QVector<int> &before, int colour)
         : m_doc(doc)
+        , m_phase(phase)
         , m_frame(frame)
         , m_layer(layer)
         , m_indices(indices)
@@ -64,8 +65,11 @@ public:
 
     void undo() override
     {
-        m_doc->setCurrentFrame(m_frame);
-        m_doc->restoreIndices(m_indices, m_before, m_layer);
+        // editFrame addresses the phase and frame the stroke was made in:
+        // undo must not depend on which phase the user is looking at now.
+        m_doc->editFrame(m_phase, m_frame, [this] {
+            m_doc->restoreIndices(m_indices, m_before, m_layer);
+        });
     }
     void redo() override
     {
@@ -74,12 +78,14 @@ public:
             m_virgin = false;
             return;
         }
-        m_doc->setCurrentFrame(m_frame);
-        m_doc->fillIndices(m_indices, m_colour, m_layer);
+        m_doc->editFrame(m_phase, m_frame, [this] {
+            m_doc->fillIndices(m_indices, m_colour, m_layer);
+        });
     }
 
 private:
     ImageDocument *m_doc;
+    int m_phase = 0;
     int m_frame = 0;
     int m_layer = 0;
     QVector<int> m_indices;
@@ -91,9 +97,11 @@ private:
 class LayerPixelsCommand : public QUndoCommand
 {
 public:
-    LayerPixelsCommand(ImageDocument *doc, int frame, int layer, const QVector<int> &before,
-                       const QVector<int> &after, const QString &text)
+    LayerPixelsCommand(ImageDocument *doc, int phase, int frame, int layer,
+                       const QVector<int> &before, const QVector<int> &after,
+                       const QString &text)
         : m_doc(doc)
+        , m_phase(phase)
         , m_frame(frame)
         , m_layer(layer)
         , m_before(before)
@@ -104,9 +112,10 @@ public:
 
     void undo() override
     {
-        m_doc->setCurrentFrame(m_frame);
-        m_doc->setActiveLayer(m_layer);
-        m_doc->replaceActiveLayer(m_before);
+        m_doc->editFrame(m_phase, m_frame, [this] {
+            m_doc->setActiveLayer(m_layer);
+            m_doc->replaceActiveLayer(m_before);
+        });
     }
     void redo() override
     {
@@ -114,13 +123,15 @@ public:
             m_virgin = false;
             return;
         }
-        m_doc->setCurrentFrame(m_frame);
-        m_doc->setActiveLayer(m_layer);
-        m_doc->replaceActiveLayer(m_after);
+        m_doc->editFrame(m_phase, m_frame, [this] {
+            m_doc->setActiveLayer(m_layer);
+            m_doc->replaceActiveLayer(m_after);
+        });
     }
 
 private:
     ImageDocument *m_doc;
+    int m_phase = 0;
     int m_frame = 0;
     int m_layer = 0;
     QVector<int> m_before;
@@ -1954,6 +1965,7 @@ void ImageEditor::paintIndices(const QVector<int> &indices, int colour)
         return;
     if (m_strokeIndices.isEmpty()) {
         m_strokeColour = colour;
+        m_strokePhase = m_doc.currentPhase();
         m_strokeLayer = m_doc.activeLayer();
         m_strokeFrame = m_doc.currentFrame();
     }
@@ -1975,8 +1987,8 @@ void ImageEditor::finishStroke()
 {
     if (m_strokeIndices.isEmpty())
         return;
-    m_undo->push(new PaintCommand(&m_doc, m_strokeFrame, m_strokeLayer, m_strokeIndices,
-                                  m_strokeBefore, m_strokeColour));
+    m_undo->push(new PaintCommand(&m_doc, m_strokePhase, m_strokeFrame, m_strokeLayer,
+                                  m_strokeIndices, m_strokeBefore, m_strokeColour));
     m_strokeIndices.clear();
     m_strokeBefore.clear();
 }
@@ -2003,7 +2015,8 @@ void ImageEditor::pushSnapshot(const ImageDocument &before, const QString &text)
 
 void ImageEditor::applyLayerBuffer(const QVector<int> &before, const QString &text)
 {
-    m_undo->push(new LayerPixelsCommand(&m_doc, m_doc.currentFrame(), m_doc.activeLayer(), before,
+    m_undo->push(new LayerPixelsCommand(&m_doc, m_doc.currentPhase(), m_doc.currentFrame(),
+                                        m_doc.activeLayer(), before,
                                         m_doc.activeLayerPixels(), text));
 }
 
@@ -2020,7 +2033,6 @@ bool ImageEditor::applyLayerEdit(const QVector<int> &before, const QVector<int> 
     notifyModified();
     return true;
 }
-
 void ImageEditor::clearSelection()
 {
     if (m_canvas)

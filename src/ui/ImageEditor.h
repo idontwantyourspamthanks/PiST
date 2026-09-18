@@ -185,6 +185,7 @@ private:
     QVector<int> m_strokeIndices;
     QVector<int> m_strokeBefore;
     int m_strokeColour = kTransparent;
+    int m_strokePhase = 0;
     int m_strokeLayer = 0;
     int m_strokeFrame = 0;
     int m_onionDistance = 0;

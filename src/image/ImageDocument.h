@@ -108,6 +108,32 @@ public:
     void replaceWith(const ImageDocument &other);
 
     bool setCurrentPhase(int index);
+    /// Run `fn` with (phaseIndex, frameIndex) current, restoring the previous
+    /// selection afterwards. The editor's undo commands edit the phase and
+    /// frame they recorded when they were pushed, whatever the user is
+    /// looking at when they undo; a phase or frame that no longer exists
+    /// (deleted since) is skipped — the snapshot command covering that
+    /// structural change owns that part of the history.
+    template <typename Fn>
+    void editFrame(int phaseIndex, int frameIndex, Fn fn)
+    {
+        if (phaseIndex < 0 || phaseIndex >= m_phases.size())
+            return;
+        const int savedPhase = m_currentPhase;
+        const int savedFrame = m_currentFrame;
+        const int savedLayer = m_activeLayer;
+        m_currentPhase = phaseIndex;
+        if (!setCurrentFrame(frameIndex)) {
+            m_currentPhase = savedPhase;
+            m_activeLayer = savedLayer;
+            return;
+        }
+        fn();
+        m_currentPhase = savedPhase;
+        m_currentFrame = savedFrame;
+        m_activeLayer = savedLayer;
+        clampActiveLayer();
+    }
     /// Add an empty phase named `name` with `cellW`×`cellH` cells and one
     /// transparent frame; returns its index and makes it current.
     int addPhase(const QString &name, int cellW, int cellH);

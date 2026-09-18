@@ -178,6 +178,7 @@ private slots:
     /// moves the pixels, and copy/paste/nudge/delete edit the active layer
     /// through the undo stack.
     void imageSelectionCopyPaste();
+    void undoEditsThePhaseItWasMadeIn();
     /// Importing an ST image adopts the file's palette registers as the
     /// active set, so the colours its pixels use are not overspill.
     void importAdoptsTheFilePalette();
@@ -2540,6 +2541,47 @@ void TstGui::imageSelectionCopyPaste()
     // A click outside the selection collapses it.
     QTest::mouseClick(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(7, 7));
     QVERIFY(canvas->selection().isEmpty());
+}
+
+void TstGui::undoEditsThePhaseItWasMadeIn()
+{
+    ImageEditor editor;
+    editor.show();
+    editor.newDocument(8, 8, PaletteKind::Ste);
+    // A second phase sharing the cell size: an undo applied to the wrong
+    // phase lands in range and corrupts silently instead of failing loudly.
+    QCOMPARE(editor.document().addPhase(QStringLiteral("B"), 8, 8), 1);
+    // addPhase leaves the new phase current; draw on A, not on B.
+    QVERIFY(editor.document().setCurrentPhase(0));
+
+    auto *canvas = editor.findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    const auto idx = [](int x, int y) { return y * 8 + x; };
+    const auto cellPoint = [&canvas](int x, int y) {
+        const int c = canvas->cellSize();
+        return QPoint(x * c + c / 2, y * c + c / 2);
+    };
+    // A stroke on phase A (a PaintCommand on the undo stack).
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(2, 2));
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(2, 2));
+    const int colour = editor.document().pixels().at(idx(2, 2));
+    QVERIFY2(colour != kTransparent, "the stroke painted a colour");
+
+    // A flip (a LayerPixelsCommand on the undo stack): the pixel moves to
+    // the mirrored column.
+    QVERIFY(QMetaObject::invokeMethod(&editor, "flipHorizontal"));
+    QCOMPARE(editor.document().pixels().at(idx(2, 2)), kTransparent);
+    QCOMPARE(editor.document().pixels().at(idx(5, 2)), colour);
+
+    // Undo the flip while phase B is current: the command must edit the
+    // phase it was made in, not whichever one is on screen.
+    QVERIFY(editor.document().setCurrentPhase(1));
+    editor.undo();
+    QVERIFY(editor.document().setCurrentPhase(0));
+    QCOMPARE(editor.document().pixels().at(idx(2, 2)), colour);
+    QVERIFY(editor.document().setCurrentPhase(1));
+    for (int i = 0; i < editor.document().pixelCount(); ++i)
+        QCOMPARE(editor.document().pixels().at(i), kTransparent);
 }
 
 void TstGui::importAdoptsTheFilePalette()

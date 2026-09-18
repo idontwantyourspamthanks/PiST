@@ -273,6 +273,12 @@ enable_testing()
 
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
+# Tests that read committed data from the source tree (the fetch pins in
+# tst_toolfetch, the foreign floppy images in tst_parsers) need the path as a C
+# string literal. Forward slashes are what QFile accepts on every platform; the
+# native Windows path would embed escapes like \a and \P in the literal.
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" PIST_SOURCE_DIR_CMAKE)
+
 qt_add_executable(tst_parsers
     tests/tst_parsers.cpp
     src/build/LineMap.cpp
@@ -293,6 +299,7 @@ qt_add_executable(tst_parsers
 )
 target_include_directories(tst_parsers PRIVATE src)
 target_link_libraries(tst_parsers PRIVATE Qt6::Test)
+target_compile_definitions(tst_parsers PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
 add_test(NAME parsers COMMAND tst_parsers)
 
 # Sprite document, ST palettes, paint tools and PI1/NEO/MBK/PNG codecs.
@@ -412,7 +419,7 @@ qt_add_executable(tst_toolfetch
 target_include_directories(tst_toolfetch PRIVATE src)
 target_link_libraries(tst_toolfetch PRIVATE Qt6::Test)
 # The pin guard reads the workflows' copies of the fetch pins.
-target_compile_definitions(tst_toolfetch PRIVATE PIST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(tst_toolfetch PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
 add_test(NAME toolfetch COMMAND tst_toolfetch)
 
 # GUI-level: constructs MainWindow and verifies the line map against a real

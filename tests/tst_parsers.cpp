@@ -47,6 +47,9 @@ private slots:
     void floppyNamesAreSanitizedForHostPaths();
     void floppyRejectsAbsurdGeometry();
     void floppyCanonicalLayoutIsRecognised();
+    void floppyReadsAForeignMkfsImage();
+    void floppyReadsAForeignSpecMsa();
+    void msaEncodingMatchesTheDocumentedFormat();
 };
 
 // vasm's diagnostic shapes, parsed by parseVasmDiagnostic itself. An earlier
@@ -747,6 +750,18 @@ void putDirEntry(QFile &f, int at, const QByteArray &name11, quint8 attr, quint1
     QVERIFY(f.seek(at));
     QVERIFY(f.write(e) == 32);
 }
+
+/// A committed image written by foreign tools — `mkfs.fat 4.2` plus mtools,
+/// carrying a volume label, an empty file, a subdirectory and a two-cluster
+/// file. Stored under Qt's compression framing (`qUncompress`) so 720 KiB of
+/// mostly-zero FAT12 costs about a kilobyte in the repository.
+QByteArray foreignMkfsImage()
+{
+    QFile f(QStringLiteral(PIST_SOURCE_DIR "/tests/data/floppy-foreign-mkfs.st.qz"));
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return qUncompress(f.readAll());
+}
 } // namespace
 
 void TstParsers::floppyListingSurvivesDirectoryCycles()
@@ -879,6 +894,113 @@ void TstParsers::floppyCanonicalLayoutIsRecognised()
     QByteArray big(1474560, '\0');
     big.replace(0, 512, raw.left(512));
     QVERIFY(!floppy::looksLikeCanonical720k(big.left(512), big.size()));
+}
+
+// Every other floppy test reads back something our own writer produced, so a
+// mismatch between what we emit and what the formats actually specify stays
+// invisible. These two fixtures came from outside: mkfs.fat + mtools for the
+// .st, and a packer written against the documented MSA layout (quoted in
+// Hatari's src/floppies/msa.c) for the .msa.
+void TstParsers::floppyReadsAForeignMkfsImage()
+{
+    const QByteArray image = foreignMkfsImage();
+    QCOMPARE(image.size(), 720 * 1024);
+
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString st = tmp.path() + QStringLiteral("/foreign.st");
+    {
+        QFile f(st);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QCOMPARE(f.write(image), qint64(image.size()));
+    }
+
+    QString error;
+    const QVector<floppy::Entry> entries = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+
+    // The volume label is metadata rather than an entry, the empty file owns no
+    // cluster at all, and AUTO/PROG.PRG spans two clusters with a real link.
+    QVERIFY(entryNamed(entries, QStringLiteral("HELLO.TXT"), false));
+    QVERIFY(entryNamed(entries, QStringLiteral("EMUDESK.INF"), false));
+    QVERIFY(entryNamed(entries, QStringLiteral("AUTO"), true));
+    QVERIFY(entryNamed(entries, QStringLiteral("AUTO/PROG.PRG"), false));
+    QVERIFY(!entryNamed(entries, QStringLiteral("PISTTEST"), false));
+    QCOMPARE(entries.size(), 4);
+
+    QByteArray data;
+    QVERIFY2(floppy::readFileRaw(image, QStringLiteral("HELLO.TXT"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArrayLiteral("hello from mkfs\n"));
+    QVERIFY2(floppy::readFileRaw(image, QStringLiteral("AUTO/PROG.PRG"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArray(1500, 'A'));
+    QVERIFY2(floppy::readFileRaw(image, QStringLiteral("EMUDESK.INF"), &data, &error),
+             qPrintable(error));
+    QVERIFY2(data.isEmpty(), "an empty file must read back empty");
+}
+
+void TstParsers::floppyReadsAForeignSpecMsa()
+{
+    QFile src(QStringLiteral(PIST_SOURCE_DIR "/tests/data/floppy-foreign-spec.msa"));
+    QVERIFY(src.open(QIODevice::ReadOnly));
+    const QByteArray packed = src.readAll();
+
+    // loadRaw dispatches on the suffix, so the fixture needs a real .msa name.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString msa = tmp.path() + QStringLiteral("/foreign.msa");
+    {
+        QFile out(msa);
+        QVERIFY(out.open(QIODevice::WriteOnly));
+        QCOMPARE(out.write(packed), qint64(packed.size()));
+    }
+
+    QString error;
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(msa, &raw, &error), qPrintable(error));
+    // Decoding an independently packed archive must reproduce the mkfs.vfat
+    // image byte for byte. Our own round-trip test cannot make that claim: its
+    // encoder and decoder are the same code, so a shared wrong convention —
+    // transposed run fields, say — passes it and interoperates with nothing.
+    QCOMPARE(raw, foreignMkfsImage());
+
+    const QVector<floppy::Entry> entries = floppy::listImage(msa, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(entries.size(), 4);
+}
+
+void TstParsers::msaEncodingMatchesTheDocumentedFormat()
+{
+    // The format our exporter writes is what Hatari and every ST archiver
+    // reads, so the bytes on disk are the contract: a run is
+    // $E5 <value> <16-bit big-endian length> (six $AA bytes are $E5 $AA $00
+    // $06), and a literal $E5 is escaped as a run rather than emitted bare.
+    QByteArray raw(720 * 1024, '\0');
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString msa = tmp.path() + QStringLiteral("/out.msa");
+
+    const auto firstRun = [&]() -> QByteArray {
+        QString error;
+        if (!floppy::saveRaw(msa, raw, &error))
+            return error.toUtf8();
+        QFile f(msa);
+        if (!f.open(QIODevice::ReadOnly))
+            return QByteArrayLiteral("<unreadable>");
+        // 10-byte header, then a 2-byte track length for track 0 side 0.
+        return f.readAll().mid(12, 4).toHex();
+    };
+
+    for (int i = 0; i < 6; ++i)
+        raw[i] = char(0xAA);
+    QCOMPARE(firstRun(), QByteArrayLiteral("e5aa0006"));
+
+    raw[0] = char(0xE5);
+    raw[1] = char(0xE5);
+    for (int i = 2; i < 6; ++i)
+        raw[i] = '\0';
+    QCOMPARE(firstRun(), QByteArrayLiteral("e5e50002"));
 }
 QTEST_MAIN(TstParsers)
 #include "tst_parsers.moc"

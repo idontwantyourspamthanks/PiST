@@ -150,6 +150,14 @@ bool isMsa(const QByteArray &bytes)
     return bytes.size() >= 10 && readBe16(bytes, 0) == 0x0E0F;
 }
 
+/// The documented MSA run-length encoding (quoted in Hatari's
+/// src/floppies/msa.c): literal bytes pass through, and a run is
+/// `$E5 <value> <16-bit big-endian length>` — six $AA bytes are $E5 $AA $00
+/// $06. Runs of four or more pay for themselves; shorter ones are written
+/// literally, except $E5 itself, which always has to be escaped because the
+/// marker is indistinguishable from data otherwise. The 16-bit length matters:
+/// a zero-filled track is the normal case on a floppy, and an 8-bit count
+/// cannot cover one.
 QByteArray compressTrack(const QByteArray &src)
 {
     QByteArray out;
@@ -159,12 +167,13 @@ QByteArray compressTrack(const QByteArray &src)
     while (i < src.size()) {
         const quint8 b = s[i];
         int run = 1;
-        while (i + run < src.size() && s[i + run] == b && run < 255)
+        while (i + run < src.size() && s[i + run] == b && run < 0xFFFF)
             ++run;
         if (b == 0xE5 || run >= 4) {
             out.append(char(0xE5));
-            out.append(char(run));
             out.append(char(b));
+            out.append(char((run >> 8) & 0xff));
+            out.append(char(run & 0xff));
             i += run;
         } else {
             out.append(char(b));
@@ -176,7 +185,7 @@ QByteArray compressTrack(const QByteArray &src)
 
 bool decompressTrack(const QByteArray &src, int trackSize, QByteArray *out)
 {
-    out->resize(trackSize);
+    out->fill('\0', trackSize);
     auto *d = reinterpret_cast<quint8 *>(out->data());
     const auto *s = reinterpret_cast<const quint8 *>(src.constData());
     int si = 0;
@@ -186,17 +195,21 @@ bool decompressTrack(const QByteArray &src, int trackSize, QByteArray *out)
             d[di++] = s[si++];
             continue;
         }
-        if (si + 2 >= src.size())
-            return false;
-        ++si;
-        const int count = s[si++];
-        const quint8 val = s[si++];
+        if (si + 4 > src.size())
+            return false;   // truncated run header
+        const quint8 val = s[si + 1];
+        const int count = (int(quint8(s[si + 2])) << 8) | quint8(s[si + 3]);
+        si += 4;
+        // A zero-length run carries no meaning and can only come from damage.
         if (count <= 0 || di + count > trackSize)
             return false;
         std::memset(d + di, val, size_t(count));
         di += count;
     }
-    return di == trackSize;
+    // A stream that runs out before the track is full is tolerated, with the
+    // remainder left zero, because that is what the reference decoder does and
+    // what the padding at the end of a real image looks like.
+    return true;
 }
 
 bool geometryFromSectors(int sectors, int *tracks, int *sides, int *spt)

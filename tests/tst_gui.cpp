@@ -268,8 +268,14 @@ private:
 void TstGui::initTestCase()
 {
     m_vasm = QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot"));
-    if (m_vasm.isEmpty())
+    if (m_vasm.isEmpty()) {
+        // A skip here takes the whole suite with it, so under
+        // PIST_REQUIRE_EMULATOR it must fail instead: a CI leg missing the
+        // assembler would otherwise report green having run nothing.
+        if (!qEnvironmentVariableIsEmpty("PIST_REQUIRE_EMULATOR"))
+            QFAIL("PIST_REQUIRE_EMULATOR is set but vasmm68k_mot is not on PATH");
         QSKIP("needs vasmm68k_mot");
+    }
 
     m_work = new QTemporaryDir;
     QVERIFY(m_work->isValid());
@@ -468,8 +474,6 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
     QCOMPARE(completed.count(), 1);
     QCOMPARE(completed.first().first().toBool(), false);
 
-    if (m_vasm.isEmpty())
-        QSKIP("needs vasmm68k_mot");
     // The refusal must not leave m_launchAfterBuild set: a later successful
     // build has no reason to start an emulator the user never asked for.
     const QString source = m_work->path() + QStringLiteral("/later.s");
@@ -528,9 +532,6 @@ void TstGui::stateSummaryClearsAfterSessionEnds()
 
 void TstGui::projectAssemblerPathOverridesDiscovery()
 {
-    if (m_vasm.isEmpty())
-        QSKIP("needs vasmm68k_mot");
-
     const QString source = m_work->path() + QStringLiteral("/ovr.s");
     QFile src(source);
     QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));

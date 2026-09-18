@@ -353,24 +353,50 @@ bool parseGeo(const QByteArray &image, Geo *g)
         return false;
     }
 
-    parsed.rootSectors = (parsed.rootEntries * 32 + parsed.sectorSize - 1) / parsed.sectorSize;
-    parsed.firstDataSector = parsed.reservedSectors + parsed.fatCount * parsed.fatSectors
-        + parsed.rootSectors;
+    // 64-bit throughout: a crafted BPB pushes these products past INT_MAX, and
+    // a wrapped — often negative — value sails through the bounds check that
+    // exists to contain it. Validating the whole layout here is what lets every
+    // later offset be trusted.
+    const qint64 rootSectors =
+        (qint64(parsed.rootEntries) * 32 + parsed.sectorSize - 1) / parsed.sectorSize;
+    const qint64 firstDataSector = qint64(parsed.reservedSectors)
+        + qint64(parsed.fatCount) * parsed.fatSectors + rootSectors;
     parsed.clusterSize = parsed.sectorSize * parsed.sectorsPerCluster;
-    if (parsed.firstDataSector * parsed.sectorSize > image.size()) {
+    if (firstDataSector * parsed.sectorSize > image.size()
+        || firstDataSector + 2 > parsed.totalSectors
+        || qint64(parsed.totalSectors) * parsed.sectorSize > image.size()) {
         if (image.size() == 720 * 1024) {
             apply720k(g);
             return true;
         }
         return false;
     }
+    parsed.rootSectors = int(rootSectors);
+    parsed.firstDataSector = int(firstDataSector);
     *g = parsed;
     return true;
 }
 
-int geoClusterOffset(const Geo &g, int cluster)
+qint64 geoClusterOffset(const Geo &g, int cluster)
 {
-    return (g.firstDataSector + (cluster - 2) * g.sectorsPerCluster) * g.sectorSize;
+    return (qint64(g.firstDataSector) + (qint64(cluster) - 2) * g.sectorsPerCluster)
+           * g.sectorSize;
+}
+
+/// The root directory's bytes, or false with `error` set when the geometry does
+/// not describe a root directory inside this image. Shared by both readers so
+/// neither can omit the bounds check the other has.
+bool rootDirBytes(const QByteArray &raw, const Geo &g, QByteArray *out, QString *error)
+{
+    const qint64 start =
+        (qint64(g.reservedSectors) + qint64(g.fatCount) * g.fatSectors) * g.sectorSize;
+    const qint64 bytes = qint64(g.rootSectors) * g.sectorSize;
+    if (start < 0 || bytes <= 0 || start + bytes > raw.size()) {
+        setError(error, QStringLiteral("floppy root directory is truncated"));
+        return false;
+    }
+    *out = raw.mid(int(start), int(bytes));
+    return true;
 }
 
 /// The display name is joined into paths that become host file names on
@@ -410,10 +436,10 @@ QByteArray readChain(const QByteArray &image, const Geo &g, int start, quint32 f
         if (seen.contains(cluster) || seen.size() > 4096)
             break;
         seen.insert(cluster);
-        const int off = geoClusterOffset(g, cluster);
+        const qint64 off = geoClusterOffset(g, cluster);
         if (off < 0 || off + g.clusterSize > image.size())
             break;
-        out += image.mid(off, g.clusterSize);
+        out += image.mid(int(off), g.clusterSize);
         cluster = int(fat12Get(image, fatOff, cluster));
     }
     if (!isDir && fileSize < quint32(out.size()))
@@ -936,15 +962,12 @@ QVector<Entry> listRaw(const QByteArray &raw, QString *error)
         setError(error, QStringLiteral("not a FAT12 floppy image"));
         return {};
     }
-    const int rootStart = (geo.reservedSectors + geo.fatCount * geo.fatSectors) * geo.sectorSize;
-    const int rootBytes = geo.rootSectors * geo.sectorSize;
-    if (rootStart < 0 || rootStart + rootBytes > raw.size()) {
-        setError(error, QStringLiteral("floppy root directory is truncated"));
+    QByteArray dirBytes;
+    if (!rootDirBytes(raw, geo, &dirBytes, error))
         return {};
-    }
     QVector<Entry> entries;
     QSet<int> visitedDirs;
-    listDir(raw, geo, raw.mid(rootStart, rootBytes), QString(), 0, &visitedDirs, &entries);
+    listDir(raw, geo, dirBytes, QString(), 0, &visitedDirs, &entries);
     return entries;
 }
 
@@ -975,9 +998,9 @@ bool readFileRaw(const QByteArray &raw, const QString &entryPath, QByteArray *da
         return false;
     }
 
-    const int rootStart = (g.reservedSectors + g.fatCount * g.fatSectors) * g.sectorSize;
-    const int rootBytes = g.rootSectors * g.sectorSize;
-    QByteArray dirBytes = raw.mid(rootStart, rootBytes);
+    QByteArray dirBytes;
+    if (!rootDirBytes(raw, g, &dirBytes, error))
+        return false;
     for (int i = 0; i < parts.size(); ++i) {
         // `found` points into `entries`: the vector must outlive the entry's
         // use, not be the temporary this used to parse inline.

@@ -45,6 +45,7 @@ private slots:
     void floppyRejectsOversizedAutoFolderProgram();
     void floppyListingSurvivesDirectoryCycles();
     void floppyNamesAreSanitizedForHostPaths();
+    void floppyRejectsAbsurdGeometry();
 };
 
 // The two diagnostic shapes vasm produces. The second has no file or line, and
@@ -802,6 +803,36 @@ void TstParsers::floppyNamesAreSanitizedForHostPaths()
                      qPrintable(entry.path));
         }
     }
+}
+
+void TstParsers::floppyRejectsAbsurdGeometry()
+{
+    // A crafted BPB whose data region starts far past the end of the image.
+    // Computed in 32-bit, firstDataSector * sectorSize overflows a signed int
+    // (UB) and the wrapped — often negative — product sails through the bounds
+    // check written to contain it, so the geometry is accepted and describes
+    // nothing. In 64-bit the check sees the real value and refuses the image.
+    QByteArray img(1024, '\0');
+    const auto put16 = [&img](int at, quint16 v) {
+        img[at] = char(v & 0xff);
+        img[at + 1] = char((v >> 8) & 0xff);
+    };
+    put16(11, 512);   // bytes per sector
+    img[13] = 2;      // sectors per cluster
+    put16(14, 1);     // reserved sectors
+    img[16] = char(255);  // FAT count
+    put16(17, 112);   // root directory entries
+    put16(19, 2);     // total sectors
+    put16(22, 65535); // sectors per FAT
+
+    QString error;
+    QVERIFY(floppy::listRaw(img, &error).isEmpty());
+    QVERIFY2(!error.isEmpty(), "a geometry that describes nothing must be refused");
+
+    error.clear();
+    QByteArray data;
+    QVERIFY(!floppy::readFileRaw(img, QStringLiteral("A.TXT"), &data, &error));
+    QVERIFY2(!error.isEmpty(), "the reader must refuse it too");
 }
 QTEST_MAIN(TstParsers)
 #include "tst_parsers.moc"

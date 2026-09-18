@@ -2579,6 +2579,18 @@ void TstGui::undoEditsThePhaseItWasMadeIn()
     editor.undo();
     QVERIFY(editor.document().setCurrentPhase(0));
     QCOMPARE(editor.document().pixels().at(idx(2, 2)), colour);
+    QCOMPARE(editor.document().pixels().at(idx(5, 2)), kTransparent);
+
+    // Undo the stroke too (the PaintCommand half): A returns to its pristine
+    // state — pre-fix the flip's pixel survives at (5,2) because the undo
+    // landed in B instead.
+    QVERIFY(editor.document().setCurrentPhase(1));
+    editor.undo();
+    QVERIFY(editor.document().setCurrentPhase(0));
+    for (int i = 0; i < editor.document().pixelCount(); ++i)
+        QCOMPARE(editor.document().pixels().at(i), kTransparent);
+
+    // And phase B was never written to by either undo.
     QVERIFY(editor.document().setCurrentPhase(1));
     for (int i = 0; i < editor.document().pixelCount(); ++i)
         QCOMPARE(editor.document().pixels().at(i), kTransparent);

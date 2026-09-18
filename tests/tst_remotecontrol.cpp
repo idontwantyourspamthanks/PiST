@@ -16,6 +16,8 @@
 
 #include <QStandardPaths>
 #include <QTcpSocket>
+#include <QSettings>
+#include <QDir>
 #include <QTemporaryDir>
 #include <QtTest>
 #include <QMessageBox>
@@ -38,8 +40,18 @@ private slots:
     void cmdDisconnectDuringWaitSurvives();
     void runWithoutSourceFailsFast();
     void secondBlockingCommandIsRefusedWhileOneWaits();
+    void initTestCase();
 };
 
+
+void TstRemoteControl::initTestCase()
+{
+    // This suite builds a MainWindow, which reads and writes QSettings; the
+    // redirect in main() is what keeps that off the developer's disk.
+    QVERIFY2(QSettings().fileName().startsWith(QDir::tempPath()),
+             qPrintable(QStringLiteral("QSettings resolves to %1, outside %2")
+                            .arg(QSettings().fileName(), QDir::tempPath())));
+}
 namespace {
 
 /// A control client bound to one MainWindow, listening on an OS-assigned port.
@@ -318,5 +330,16 @@ void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()
     QVERIFY2(reply.startsWith(QStringLiteral("error busy")),
              qPrintable(QStringLiteral("second client got: %1").arg(reply)));
 }
-QTEST_MAIN(TstRemoteControl)
+// See tst_gui's main() for why both QSettings calls are needed and why
+// QStandardPaths::setTestModeEnabled is not used here.
+int main(int argc, char *argv[])
+{
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QTemporaryDir settings;
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+
+    QApplication app(argc, argv);
+    TstRemoteControl testCase;
+    return QTest::qExec(&testCase, argc, argv);
+}
 #include "tst_remotecontrol.moc"

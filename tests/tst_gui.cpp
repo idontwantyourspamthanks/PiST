@@ -88,6 +88,19 @@ QString emulatorMissing()
     return missing.join(QStringLiteral(", "));
 }
 
+/// QStandardPaths::setTestModeEnabled is process-wide, and the setup-dialog
+/// tests need it only for their own body. Restoring it in the destructor means
+/// an assertion that returns early cannot leave test mode on for the rest of
+/// the suite, which would silently redirect every later test's tool and ROM
+/// lookups into the test-mode data root.
+struct TestModeScope
+{
+    TestModeScope() { QStandardPaths::setTestModeEnabled(true); }
+    ~TestModeScope() { QStandardPaths::setTestModeEnabled(false); }
+    TestModeScope(const TestModeScope &) = delete;
+    TestModeScope &operator=(const TestModeScope &) = delete;
+};
+
 } // namespace
 
 /// Skip the calling test — or fail it under PIST_REQUIRE_EMULATOR — when the
@@ -281,6 +294,15 @@ void TstGui::initTestCase()
     m_work = new QTemporaryDir;
     QVERIFY(m_work->isValid());
     m_source = m_work->path() + QStringLiteral("/prog.s");
+
+    // The suite must not read or write the developer's real PiST settings:
+    // MainWindow restores layout/state from QSettings and the appearance test
+    // writes appearance/*, so a shared store makes the dock-arrangement
+    // assertions depend on how the user last left their window. main()
+    // redirects QSettings to a throwaway directory for the whole run.
+    QVERIFY2(QSettings().fileName().startsWith(QDir::tempPath()),
+             qPrintable(QStringLiteral("QSettings resolves to %1, outside %2")
+                            .arg(QSettings().fileName(), QDir::tempPath())));
 }
 
 void TstGui::windowConstructs()
@@ -1774,13 +1796,13 @@ void TstGui::setupDialogShowsMissingPieces()
     const QByteArray savedTosDir = qgetenv("PIST_TOS_DIR");
     qputenv("PATH", "");
     qputenv("PIST_TOS_DIR", "");
-    QStandardPaths::setTestModeEnabled(true);
+    const TestModeScope testMode;
 
     // Other suites' fixtures may have left an "installed" fake tool or ROM in
     // the shared test-mode data root; clear both so missing really is missing.
-    // Below setTestModeEnabled deliberately: only with it on do these resolve
-    // to the test-mode locations — above it they would name the real per-user
-    // directories and delete a user's genuinely fetched tools.
+    // Below the scope guard deliberately: only with test mode on do these
+    // resolve to the test-mode locations — above it they would name the real
+    // per-user directories and delete a user's genuinely fetched tools.
     QDir(toolchain::suggestedInstallDir()).removeRecursively();
     QDir(paths::suggestedRomDir()).removeRecursively();
 
@@ -1827,7 +1849,6 @@ void TstGui::setupDialogShowsMissingPieces()
         QVERIFY(!SetupDialog::shouldPromptAtStartup());
     }
 
-    QStandardPaths::setTestModeEnabled(false);
     qputenv("PATH", savedPath);
     qputenv("PIST_TOS_DIR", savedTosDir);
 }
@@ -1840,7 +1861,7 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
     const QByteArray savedTosDir = qgetenv("PIST_TOS_DIR");
     qputenv("PATH", "");
     qputenv("PIST_TOS_DIR", "");
-    QStandardPaths::setTestModeEnabled(true);
+    const TestModeScope testMode;
     QDir(toolchain::suggestedInstallDir()).removeRecursively();
     QDir(paths::suggestedRomDir()).removeRecursively();
 
@@ -1868,7 +1889,6 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
     window.refreshToolchain();
     QCOMPARE(QDir::cleanPath(window.assemblerPath()), QDir::cleanPath(installed));
 
-    QStandardPaths::setTestModeEnabled(false);
     qputenv("PATH", savedPath);
     qputenv("PIST_TOS_DIR", savedTosDir);
 }
@@ -3029,6 +3049,32 @@ void TstGui::floppyRewriteOfAForeignDiskAsks()
     QVERIFY(floppy::looksLikeCanonical720k(raw.left(512), raw.size()));
 }
 
-QTEST_MAIN(TstGui)
+// Settings are redirected to a throwaway directory for the whole run, so the
+// suite neither reads nor writes a store it shares with previous runs (or with
+// the developer): MainWindow restores layout/state from QSettings, the setup
+// dialog persists setup/promptDismissed, and the appearance test writes
+// appearance/*. Without this they land in ~/.config/Unknown Organization/
+// tst_gui.conf — and one setApplicationName("PiST") away from the real thing.
+//
+// Both calls are needed. setPath only covers the format it is registered for,
+// and a default-constructed QSettings uses NativeFormat: the registry on
+// Windows, a plist on macOS. Forcing IniFormat is what makes the redirect —
+// and initTestCase's assertion on fileName() — hold on every platform.
+//
+// QStandardPaths::setTestModeEnabled is deliberately NOT used here: it also
+// moves the *data* location that toolchain::suggestedInstallDir() and
+// paths::suggestedRomDir() derive from, which would hide a vasm or a TOS ROM
+// installed through PiST's own setup dialog — and the emulator gate now fails
+// rather than skips when PIST_REQUIRE_EMULATOR is set.
+int main(int argc, char *argv[])
+{
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QTemporaryDir settings;
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+
+    QApplication app(argc, argv);
+    TstGui testCase;
+    return QTest::qExec(&testCase, argc, argv);
+}
 
 #include "tst_gui.moc"

@@ -28,6 +28,15 @@ const QRegularExpression &groupRe()
     return re;
 }
 
+/// The two-or-more-space run between the hex field and the character column.
+/// Keyed on a *run* so the single spaces between hex groups — and the 4- and
+/// 8-digit widths they separate in word and long dumps — are left alone.
+const QRegularExpression &columnSeparator()
+{
+    static const QRegularExpression re(QStringLiteral("\\s{2,}"));
+    return re;
+}
+
 } // namespace
 
 QList<MemoryRow> parseMemoryDump(const QString &response)
@@ -45,7 +54,16 @@ QList<MemoryRow> parseMemoryDump(const QString &response)
         // was requested as bytes, words or longs. Normalise everything to bytes
         // so the view and any future export agree, and so a mixed dump still
         // renders sensibly.
-        auto groups = groupRe().globalMatch(match.captured(2));
+        // The row pattern's `\s+` happily crosses the two spaces before the
+        // character column, so a column beginning with hex digits (memory
+        // holding "0123456789ABCDEF" — what a pane pointed at text shows) is
+        // absorbed as extra bytes. Cut the field at the separator first.
+        QString data = match.captured(2);
+        const auto separator = columnSeparator().match(data);
+        if (separator.hasMatch())
+            data.truncate(separator.capturedStart());
+
+        auto groups = groupRe().globalMatch(data);
         while (groups.hasNext()) {
             const QString group = groups.next().captured();
             if (group.size() <= 2) {

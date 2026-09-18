@@ -80,6 +80,7 @@ private slots:
     void parsesWordDump();
     void parsesLongDump();
     void ignoresNonDumpText();
+    void ignoresAHexLookingCharacterColumn();
     void rendersCharacterColumn();
     void readsBigEndianLong();
     void rejectsOutOfRangeLong();
@@ -328,6 +329,23 @@ void TstDebug::ignoresNonDumpText()
         "0x00000008 T start\n"
         "Loaded 3 symbols (3 for code)\n");
     QCOMPARE(parseMemoryDump(noise).size(), 0);
+}
+
+void TstDebug::ignoresAHexLookingCharacterColumn()
+{
+    // Hatari separates the hex field from its character column with two
+    // spaces, and the row pattern's `\s+` crosses them: memory holding
+    // "0123456789ABCDEF" — exactly what a pane pointed at text shows — used to
+    // parse the character column as four more bytes, breaking the documented
+    // one-row-per-16-bytes contract and rendering the absorbed digits in the
+    // view's ASCII column.
+    const QString dump = QStringLiteral(
+        "00012596: 30 31 32 33 34 35 36 37 38 39 41 42 43 44 45 46  0123456789ABCDEF\n");
+    const QList<MemoryRow> rows = parseMemoryDump(dump);
+    QCOMPARE(rows.size(), 1);
+    QCOMPARE(rows[0].bytes.size(), 16);
+    QCOMPARE(rows[0].bytes[0], quint8(0x30));
+    QCOMPARE(rows[0].bytes[15], quint8(0x46));
 }
 
 void TstDebug::rendersCharacterColumn()

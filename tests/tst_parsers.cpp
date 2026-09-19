@@ -42,6 +42,7 @@ private slots:
     void floppyMsaRoundTrip();
     void floppyReadsFilesFromImage();
     void floppyUpdateAddsAndRemoves();
+    void floppyUpdatePreservesDuplicateNames();
     void floppyUpdateRefusesDim();
     void floppyRejectsOversizedExport();
     void floppyRejectsOversizedAutoFolderProgram();
@@ -732,6 +733,76 @@ void TstParsers::floppyUpdateAddsAndRemoves()
     const QStringList litter = QDir(tmp.path()).entryList(
         {QStringLiteral(".pist-*")}, QDir::Hidden | QDir::Files);
     QCOMPARE(litter.size(), 0);
+}
+
+void TstParsers::floppyUpdatePreservesDuplicateNames()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item a;
+    a.destPath = QStringLiteral("A.TXT");
+    a.data = QByteArrayLiteral("first");
+    items.append(a);
+    floppy::Item b;
+    b.destPath = QStringLiteral("B.TXT");
+    b.data = QByteArrayLiteral("second");
+    items.append(b);
+    QString error;
+    const QString st = tmp.path() + QStringLiteral("/dup.st");
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+
+    // Craft a duplicate 8.3 name: rewrite B.TXT's root-dir entry name to A.TXT,
+    // keeping its own cluster and "second" bytes. writeImage's uniqueName11 never
+    // produces a duplicate, so edit the raw bytes. 720k root dir begins at sector
+    // (1 reserved + 2 FATs * 3) = 7, 32-byte entries.
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(st, &raw, &error), qPrintable(error));
+    const auto name11 = [](char c) {
+        return QByteArray(1, c) + QByteArray(7, ' ') + QByteArrayLiteral("TXT");
+    };
+    const int rootStart = (1 + 2 * 3) * 512;
+    int pos = -1;
+    for (int i = rootStart; i + 32 <= rootStart + 7 * 512; i += 32) {
+        if (raw.mid(i, 11) == name11('B')) {
+            pos = i;
+            break;
+        }
+    }
+    QVERIFY2(pos >= 0, "B.TXT directory entry not found to duplicate");
+    raw.replace(pos, 11, name11('A'));
+    {
+        QFile f(st);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QCOMPARE(f.write(raw), raw.size());
+    }
+
+    // Update: add C.TXT. updateImage re-reads each existing entry; a name-only
+    // read gives both A.TXT entries the FIRST's bytes ("first"), silently losing
+    // "second". Reading by cluster preserves both (finding B9).
+    floppy::Item c;
+    c.destPath = QStringLiteral("C.TXT");
+    c.data = QByteArrayLiteral("third");
+    QVERIFY2(floppy::updateImage(st, {c}, {}, &error), qPrintable(error));
+
+    QByteArray raw2;
+    QVERIFY2(floppy::loadRaw(st, &raw2, &error), qPrintable(error));
+    const QVector<floppy::Entry> entries = floppy::listImage(st, &error);
+    bool sawFirst = false;
+    bool sawSecond = false;
+    for (const floppy::Entry &e : entries) {
+        if (e.isDirectory)
+            continue;
+        QByteArray data;
+        if (!floppy::readFileRaw(raw2, e.path, &data, &error))
+            continue;
+        if (data == QByteArrayLiteral("first"))
+            sawFirst = true;
+        else if (data == QByteArrayLiteral("second"))
+            sawSecond = true;
+    }
+    QVERIFY2(sawFirst, "the first A.TXT's bytes must survive");
+    QVERIFY2(sawSecond, "the duplicate-named entry must keep its own bytes, not collapse to the first");
 }
 
 void TstParsers::floppyUpdateRefusesDim()

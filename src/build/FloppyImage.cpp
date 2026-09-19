@@ -530,6 +530,7 @@ void listDir(const QByteArray &image, const Geo &g, const QByteArray &dirBytes,
         item.path = prefix.isEmpty() ? e.name : prefix + QLatin1Char('/') + e.name;
         item.isDirectory = e.isDir;
         item.size = e.isDir ? 0 : e.size;
+        item.cluster = e.cluster;
         out->append(item);
         if (e.isDir) {
             // Many entries may name the same directory cluster, and a crafted
@@ -1093,6 +1094,11 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
     }
 
     QVector<Item> items;
+    Geo g;
+    if (!parseGeo(raw, &g)) {
+        setError(error, QStringLiteral("not a FAT12 floppy image"));
+        return false;
+    }
     for (const Entry &entry : entries) {
         bool dropped = false;
         for (const QString &r : removed) {
@@ -1107,8 +1113,12 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
         Item item;
         item.destPath = entry.path;
         item.isDirectory = entry.isDirectory;
-        if (!entry.isDirectory && !readFileRaw(raw, entry.path, &item.data, error))
-            return false;
+        // Read each file by its own directory cluster, not by re-resolving its
+        // name. A FAT image can hold two entries with the same 8.3 name; a name
+        // lookup returns the first for both, so the second's bytes would be
+        // silently replaced by the first's (finding B9).
+        if (!entry.isDirectory)
+            item.data = readChain(raw, g, entry.cluster, entry.size, false);
         items.append(item);
     }
     items += additions;

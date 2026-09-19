@@ -38,6 +38,10 @@ struct Entry {
     QString path;
     bool isDirectory = false;
     quint32 size = 0;
+    /// The entry's first data cluster, so a caller can read this exact entry's
+    /// bytes without re-resolving its name — FAT allows duplicate 8.3 names, and
+    /// a name lookup returns the first match for all of them (finding B9).
+    quint16 cluster = 0;
 };
 
 /// One host file or folder to place on a floppy. `destPath` is relative to the

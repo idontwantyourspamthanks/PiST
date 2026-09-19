@@ -1,11 +1,12 @@
+<!--
 # PiST — release notes
 
 This file is the body of every GitHub release: `.github/workflows/release.yml`
 publishes it via `body_path`, so the text is reviewed in-tree and cannot drift
 from what the workflow and README actually do. Edit it here, not in the
-workflow.
-
----
+workflow. Maintainer guidance lives in this comment so it does not ship in the
+published body.
+-->
 
 PiST — an IDE for Atari ST assembly development.
 

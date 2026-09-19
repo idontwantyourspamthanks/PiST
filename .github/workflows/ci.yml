@@ -289,14 +289,14 @@ jobs:
             code=0
             "$exe" -o "$out,txt" > /dev/null 2>&1 || code=$?
             echo "--- $exe (exit $code) ---"
-            tail -30 "$out"
+            cat "$out"
             rm -f "$out"
             [ "$code" -eq 0 ] && continue
             # A failing binary gets per-function isolation: each function in its
             # own process, so even a hard crash that swallows all output still
-            # names the function that was running. (tr strips the CRLF the
-            # Windows binary ends its -functions lines with.)
-            for fn in $("$exe" -functions 2>/dev/null | tr -d '\r'); do
+            # names the function that was running. (tr strips the CRLF and sed
+            # the trailing "()" the Windows binary puts on its -functions lines.)
+            for fn in $("$exe" -functions 2>/dev/null | tr -d '\r' | sed 's/()$//'); do
               fnout=$(mktemp)
               fncode=0
               "$exe" "$fn" -o "$fnout,txt" > /dev/null 2>&1 || fncode=$?

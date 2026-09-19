@@ -12,6 +12,7 @@
 #include "ui/Appearance.h"
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
+#include "editor/IncludeNav.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "image/ImageDocument.h"
@@ -920,6 +921,36 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     }
 
     auto *w = qobject_cast<QWidget *>(watched);
+
+    // Ctrl+click in an editor: an include directive opens its target (resolved
+    // against the current file's directory and the project's include paths);
+    // any other word jumps to its label definition in the same document.
+    if (type == QEvent::MouseButtonPress && me->button() == Qt::LeftButton
+        && me->modifiers().testFlag(Qt::ControlModifier)) {
+        if (auto *editor = qobject_cast<CodeEditor *>(w ? w->parentWidget() : nullptr)) {
+            const QTextCursor cursor = editor->cursorForPosition(me->position().toPoint());
+            const QString lineText = cursor.block().text();
+            const QString include = includeTargetAt(lineText);
+            if (!include.isEmpty()) {
+                const QString target = resolveInclude(
+                    include, QFileInfo(editor->filePath()).absolutePath(),
+                    m_settings.includePaths);
+                if (!target.isEmpty())
+                    openPath(target);
+                else
+                    statusBar()->showMessage(tr("Include not found: %1").arg(include), 5000);
+                return true;
+            }
+            const QString word = wordAtCursor(lineText, cursor.positionInBlock());
+            if (!word.isEmpty()) {
+                const int line = labelLine(editor->toPlainText(), word);
+                if (line > 0) {
+                    editor->gotoLine(line);
+                    return true;
+                }
+            }
+        }
+    }
     QDockWidget *dock = w ? dockAtPress(w, me->globalPosition().toPoint()) : nullptr;
     if (!dock)
         return QMainWindow::eventFilter(watched, event);

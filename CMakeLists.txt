@@ -46,6 +46,8 @@ qt_add_library(pist_core OBJECT
     src/editor/CodeEditor.h
     src/editor/InstrRef.cpp
     src/editor/InstrRef.h
+    src/editor/IncludeNav.cpp
+    src/editor/IncludeNav.h
 
     src/build/BuildService.cpp
     src/build/BuildService.h

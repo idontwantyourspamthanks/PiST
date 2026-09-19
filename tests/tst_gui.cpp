@@ -150,6 +150,7 @@ private slots:
     void breakpointSetBeforeRunFiresAndEditorFollows();
     void stepOutAndRunToCursorReachTheirTargets();
     void openRecentMenuListsAndOpensFiles();
+    void ctrlClickOpensIncludesAndJumpsToLabels();
     void instructionReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void dockLayoutPersistsAcrossRestart();
@@ -1280,6 +1281,64 @@ void TstGui::instructionReferenceFollowsTheCursor()
     editor->setTextCursor(cursor);
     QTest::qWait(50);
     QCOMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));  // a label: no-op
+}
+
+// Ctrl+click on an include opens the target file (resolved via the current
+// directory and the project's include paths); Ctrl+click on a symbol jumps to
+// its definition in the same document.
+void TstGui::ctrlClickOpensIncludesAndJumpsToLabels()
+{
+    const QString lib = m_work->path() + QStringLiteral("/lib.s");
+    QFile lf(lib);
+    QVERIFY(lf.open(QIODevice::WriteOnly | QIODevice::Text));
+    lf.write("\ttext\nhelper:\tmoveq\t#3,d0\n\trts\n\tend\n");
+    lf.close();
+
+    const QString main = m_work->path() + QStringLiteral("/main.s");
+    QFile mf(main);
+    QVERIFY(mf.open(QIODevice::WriteOnly | QIODevice::Text));
+    mf.write("\ttext\n"                      // line 1
+             "\tinclude\t\"lib.s\"\n"        // line 2
+             "start:\tmoveq\t#1,d0\n"        // line 3
+             "\tbra.s\tdone\n"               // line 4
+             "\tmoveq\t#2,d1\n"              // line 5
+             "done:\trts\n"                  // line 6
+             "\tend\n");
+    mf.close();
+
+    MainWindow window;
+    window.show();
+    window.openPath(main);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    auto ctrlClickLine = [&](int line, int col) {
+        QTextCursor c = editor->textCursor();
+        c.setPosition(editor->document()->findBlockByNumber(line - 1).position() + col);
+        const QPoint pos = editor->cursorRect(c).center();
+        QTest::mouseClick(editor->viewport(), Qt::LeftButton, Qt::ControlModifier, pos);
+    };
+
+    // On the include line: lib.s opens (in a new editor tab, so the window —
+    // not the first editor pointer — is asked for it).
+    ctrlClickLine(2, 14);
+    auto haveEditorFor = [&] (const QString &path) {
+        for (CodeEditor *e : window.findChildren<CodeEditor *>())
+            if (e->filePath() == path)
+                return true;
+        return false;
+    };
+    QTRY_VERIFY(haveEditorFor(lib));
+
+    // Back in main.s: Ctrl+click the `done` operand jumps to its definition.
+    window.openPath(main);
+    QTRY_VERIFY(editor->isVisible());
+    ctrlClickLine(4, 8);
+    QCOMPARE(editor->textCursor().blockNumber(), 5);  // line 6, 0-based 5
+
+    // Ctrl+click on an instruction (no such label) does not move the cursor.
+    ctrlClickLine(3, 3);  // on `moveq`
+    QCOMPARE(editor->textCursor().blockNumber(), 2);
 }
 
 // The panel arrangement is Photoshop-style: docks are movable/floatable/

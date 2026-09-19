@@ -67,7 +67,6 @@ HatariCapabilities probeHatari(const QString &hatariPath)
         caps.hasControlSocket = help.contains(QLatin1String("--control-socket"));
         caps.hasSymbolAutoloadOption = help.contains(QLatin1String("--symload"));
         caps.hasDebugExcept = help.contains(QLatin1String("--debug-except"));
-        caps.hasParse = help.contains(QLatin1String("--parse"));
     }
 
     // The HRDB fork is version-identical to upstream and adds no CLI option,

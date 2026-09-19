@@ -54,11 +54,6 @@ public:
     /// decide whether the session embeds.
     void requestEmbedSize() { writeLine("hatari-embed-info\n"); }
 
-    /// `hatari-option --disk-a|--disk-b <path>` (or `none` to eject). Spaces in
-    /// the path are escaped with `\`, which is what Change_ApplyCommandline
-    /// requires. Dropped when no emulator is connected.
-    void setFloppyImage(int drive, const QString &path);
-
 signals:
     /// A "WxH" video-size report arrived and parsed.
     void sizeReported(int width, int height);

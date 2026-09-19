@@ -87,10 +87,12 @@ public:
     virtual void stepOver() = 0;
     virtual void resume() = 0;
 
-    /// Break into a *running* emulation. Native: `hatari-stop` over the
-    /// control socket (unavailable where the socket is not compiled in).
-    /// HRDB: `break`, serviced at the next VBL. A stop follows via
-    /// stoppedChanged(true), as for any breakpoint.
+    /// Break into a *running* emulation. Native arms a one-shot breakpoint
+    /// `hatari-debug b pc ! 0 :once` over the control socket — a condition that is
+    /// always true, so it traps at the next instruction. NOT `hatari-stop`: that
+    /// only clears the VBL loop's active flag and never enters the debugger (see
+    /// EmulatorHost::pause). HRDB: `break`, serviced at the next VBL. A stop
+    /// follows via stoppedChanged(true), as for any breakpoint.
     virtual void pause() = 0;
 
     /// Queue the commands needed to render a full state snapshot; one

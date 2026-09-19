@@ -15,9 +15,12 @@ namespace {
 
 /// `$0125a2 60fe                     bra.b     $125a2`
 ///
-/// The `$` prefix marks the Capstone engine; the UAE default prints the bare
-/// address. The register dump's inline instruction line has no byte column and
-/// is deliberately not matched.
+/// The `$` prefix is optional: Hatari's Capstone disassembler emits it, the UAE
+/// default prints the bare address, and this matches both. The byte column is
+/// optional in the pattern, but `parseDisassembly` runs only on the `d`
+/// command's output, where every line carries one — the register dump's byte-less
+/// inline instruction is parsed separately (pcLineRe in EmulatorHost), so it never
+/// reaches here.
 const QRegularExpression &disasmRe()
 {
     static const QRegularExpression re(QStringLiteral(

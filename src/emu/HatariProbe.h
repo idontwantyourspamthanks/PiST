@@ -31,10 +31,6 @@ struct HatariCapabilities
     /// `--debug-except`: breaks in on CPU exceptions.
     bool hasDebugExcept = false;
 
-    /// `--parse`: run debugger commands from a file at startup.
-    bool hasParse = false;
-
-
     /// The HRDB remote-debug protocol (the tattlemuss hrdb-main fork). The fork
     /// is version-identical to upstream and adds no CLI option, so neither a
     /// version nor an option probe can find it; the listener's banner string is

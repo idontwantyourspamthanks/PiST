@@ -130,25 +130,6 @@ void EmbedSocket::writeLine(const QByteArray &line)
     m_socket->flush();
 }
 
-void EmbedSocket::setFloppyImage(int drive, const QString &path)
-{
-    if (!m_socket || drive < 0 || drive > 1)
-        return;
-    // Change_ApplyCommandline splits on whitespace unless the preceding
-    // character is `\`. Without that, a magazine image whose name contains
-    // spaces is parsed as several arguments and never inserted.
-    QByteArray line = "hatari-option ";
-    line += (drive == 0) ? "--disk-a " : "--disk-b ";
-    const QByteArray raw = path.isEmpty() ? QByteArray("none") : QFile::encodeName(path);
-    for (char c : raw) {
-        if (c == ' ' || c == '\t')
-            line += '\\';
-        line += c;
-    }
-    line += '\n';
-    writeLine(line);
-}
-
 QString floppySetoptCommand(int drive, const QString &path)
 {
     if (drive < 0 || drive > 1)

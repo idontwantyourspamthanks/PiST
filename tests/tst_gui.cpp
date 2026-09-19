@@ -708,7 +708,9 @@ void TstGui::projectAssemblerPathOverridesDiscovery()
     src.close();
     // A private copy of the assembler: discovery cannot find it, so the
     // build using it proves the project override reached the build service.
-    const QString copy = m_work->path() + QStringLiteral("/vasm-override");
+    // The .exe suffix matters on Windows: executability there is the suffix,
+    // so an extensionless copy is not runnable and the override is rejected.
+    const QString copy = m_work->path() + QStringLiteral("/vasm-override.exe");
     QVERIFY(QFile::copy(m_vasm, copy));
     QVERIFY(QFile::setPermissions(copy, QFileDevice::ReadOwner | QFileDevice::WriteOwner
                                               | QFileDevice::ExeOwner));

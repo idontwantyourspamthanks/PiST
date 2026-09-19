@@ -66,6 +66,9 @@ public:
 
     /// Source line to address. `file` may be a full path or a base name.
     bool addressFor(const QString &file, int line, quint32 *address) const;
+    /// Like addressFor but resolves only executable sections — for breakpoint
+    /// arming, which must not arm at a data/bss address (finding B10).
+    bool codeAddressFor(const QString &file, int line, quint32 *address) const;
 
     /// Address back to source line, searching every module and picking the one
     /// whose span contains it.

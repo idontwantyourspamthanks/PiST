@@ -20,9 +20,11 @@ ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
         }
 
         quint32 address = 0;
-        if (!lineMap.addressFor(bp.file, bp.line, &address)) {
-            // The line produced no code or data, which is normal for a comment,
-            // a blank line, or a directive that emits nothing.
+        if (!lineMap.codeAddressFor(bp.file, bp.line, &address)) {
+            // No executable code here: normal for a comment, blank line, or a
+            // directive that emits nothing — and, crucially, for a `dc.b`/`ds`
+            // data line, which the general addressFor would resolve to a data
+            // address that a breakpoint can never fire at (finding B10).
             plan.unresolved.append(bp.label());
             continue;
         }

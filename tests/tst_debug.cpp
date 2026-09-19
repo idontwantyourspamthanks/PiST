@@ -67,6 +67,7 @@ private slots:
     // --- breakpoint resolution -------------------------------------------
 
     void resolvesLineToAddress();
+    void breakpointOnDataLineIsUnresolved();
     void emitsConditionExpressionNotBareAddress();
     void appendsUserCondition();
     void reportsLinesWithNoCode();
@@ -114,6 +115,33 @@ void TstDebug::resolvesLineToAddress()
     QCOMPARE(plan.armed.size(), 1);
     QCOMPARE(plan.armed.first().address, 0x12596u + 0x0Cu);
     QVERIFY(plan.armed.first().resolved);
+}
+
+void TstDebug::breakpointOnDataLineIsUnresolved()
+{
+    QTemporaryDir dir;
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
+
+    // Line 8 is `msg: dc.b "HI"` — a data-section line. planBreakpoints must
+    // report it unresolved rather than arm `b pc = $<data>`, which can never
+    // fire (finding B10).
+    QList<Breakpoint> bps;
+    bps.append(Breakpoint{QStringLiteral("prog.s"), 8, QString(), true, 0, false});
+    const ArmPlan plan = planBreakpoints(bps, map);
+    QVERIFY(plan.commands.isEmpty());
+    QVERIFY(plan.armed.isEmpty());
+    QCOMPARE(plan.unresolved.size(), 1);
+
+    // But the general resolver still resolves the data line — watchpoints arm on
+    // data addresses, so the code/data filter belongs to the breakpoint consumer,
+    // not addressFor.
+    quint32 addr = 0;
+    QVERIFY(map.addressFor(QStringLiteral("prog.s"), 8, &addr));
+    QCOMPARE(addr, 0x125acu);
 }
 
 // Hatari's `b` takes a condition: a bare symbol or address produces

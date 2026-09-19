@@ -62,6 +62,11 @@ public:
     /// Address of a source line, resolved against live section bases.
     /// Returns false when the line emitted no code or data.
     bool addressFor(const QString &file, int line, const SectionBases &bases, quint32 *address) const;
+    /// Like addressFor but resolves only executable sections (text/code). A
+    /// breakpoint armed at a data/bss address never fires, so the breakpoint
+    /// consumer uses this; watchpoints resolve data and keep using addressFor.
+    bool codeAddressFor(const QString &file, int line, const SectionBases &bases,
+                        quint32 *address) const;
 
     /// Nearest source line at or before `address`. Ignored if the address falls
     /// outside every known section.
@@ -98,6 +103,8 @@ private:
         QString file;
         int line = 0;
     };
+    bool addressForImpl(const QString &file, int line, const SectionBases &bases,
+                        quint32 *address, bool codeOnly) const;
 
     QHash<QString, QString> m_sectionNames; // listing index -> section name
 

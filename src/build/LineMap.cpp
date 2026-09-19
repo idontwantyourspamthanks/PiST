@@ -168,12 +168,20 @@ quint32 LineMap::textEnd() const
     return end;
 }
 
-bool LineMap::addressFor(const QString &file, int line, const SectionBases &bases,
-                         quint32 *address) const
+bool LineMap::addressForImpl(const QString &file, int line, const SectionBases &bases,
+                             quint32 *address, bool codeOnly) const
 {
     for (const Entry &e : m_entries) {
         if (e.line != line || !sameSource(e.file, file))
             continue;
+        // Breakpoints may only arm on executed code: a `dc.b`/`ds` line lives in
+        // data/bss, and `b pc = $<data>` there never fires (finding B10). The
+        // filter is opt-in because watchpoints legitimately resolve data lines.
+        if (codeOnly) {
+            const QString section = e.section.toLower();
+            if (section != QLatin1String("text") && section != QLatin1String("code"))
+                continue;
+        }
         const quint32 base = baseForSection(e.section, bases);
         if (base == 0)
             continue;
@@ -182,6 +190,18 @@ bool LineMap::addressFor(const QString &file, int line, const SectionBases &base
         return true;
     }
     return false;
+}
+
+bool LineMap::addressFor(const QString &file, int line, const SectionBases &bases,
+                         quint32 *address) const
+{
+    return addressForImpl(file, line, bases, address, false);
+}
+
+bool LineMap::codeAddressFor(const QString &file, int line, const SectionBases &bases,
+                             quint32 *address) const
+{
+    return addressForImpl(file, line, bases, address, true);
 }
 
 bool LineMap::lineForSectionOffset(const QString &section, quint32 offset, Address *result) const

@@ -152,6 +152,21 @@ bool ProgramLineMap::addressFor(const QString &file, int line, quint32 *address)
     return false;
 }
 
+bool ProgramLineMap::codeAddressFor(const QString &file, int line, quint32 *address) const
+{
+    if (!m_resolved)
+        return false;
+    for (const Module &module : m_modules) {
+        if (!module.placed)
+            continue;
+        if (!LineMap::sameSource(module.sourceFile, file))
+            continue;
+        if (module.lines.codeAddressFor(file, line, module.bases, address))
+            return true;
+    }
+    return false;
+}
+
 bool ProgramLineMap::lineFor(quint32 address, LineMap::Address *result) const
 {
     if (!m_resolved)

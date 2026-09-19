@@ -139,6 +139,11 @@ private slots:
     void stopSession();
     void step();
     void stepOver();
+    /// Step out of the current subroutine: one-shot breakpoint at the return
+    /// address read from the stack, then resume (no Hatari primitive exists).
+    void stepOut();
+    /// One-shot breakpoint at the cursor line's code address, then resume.
+    void runToCursor();
     void pauseSession();
     void resume();
 
@@ -435,6 +440,11 @@ private:
     /// loses that race), so this guards doing it exactly once, when they arrive.
     bool m_breakpointsArmedThisSession = false;
 
+    /// A stack dump requested by stepOut() is in flight; the next
+    /// stackDumpReady arms the return-address breakpoint instead of only
+    /// feeding the stack view.
+    bool m_stepOutPending = false;
+
     /// Set by Run, consumed by onBuildFinished. Needed because the build is
     /// asynchronous: the launch has to wait for it, not run alongside it.
     bool m_launchAfterBuild = false;
@@ -470,6 +480,8 @@ private:
     QAction *m_actEmbedDisplay = nullptr;
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
+    QAction *m_actStepOut = nullptr;
+    QAction *m_actRunToCursor = nullptr;
     QAction *m_actResume = nullptr;
     QAction *m_actClearBreakpoints = nullptr;
     QAction *m_actPause = nullptr;

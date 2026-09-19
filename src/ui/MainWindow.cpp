@@ -8,6 +8,7 @@
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
+#include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
 #include "build/FloppyImage.h"
 #include "emu/Paths.h"
@@ -521,6 +522,16 @@ void MainWindow::createActions()
     m_actStepOver->setEnabled(false);
     connect(m_actStepOver, &QAction::triggered, this, &MainWindow::stepOver);
 
+    m_actStepOut = new QAction(tr("Step O&ut"), this);
+    m_actStepOut->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F11));
+    m_actStepOut->setEnabled(false);
+    connect(m_actStepOut, &QAction::triggered, this, &MainWindow::stepOut);
+
+    m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
+    m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
+    m_actRunToCursor->setEnabled(false);
+    connect(m_actRunToCursor, &QAction::triggered, this, &MainWindow::runToCursor);
+
     m_actClearBreakpoints = new QAction(tr("Clear &Breakpoints"), this);
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     connect(m_actClearBreakpoints, &QAction::triggered, this, &MainWindow::clearAllBreakpoints);
@@ -575,6 +586,8 @@ void MainWindow::wireBackend()
         if (m_sessionArmed) {
             if (m_actStep) m_actStep->setEnabled(false);
             if (m_actStepOver) m_actStepOver->setEnabled(false);
+            if (m_actStepOut) m_actStepOut->setEnabled(false);
+            if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
             m_log->appendPlainText(tr("[session] emulator is no longer running"));
         }
@@ -618,6 +631,8 @@ void MainWindow::wireBackend()
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
         m_actStep->setEnabled(stopped);
         m_actStepOver->setEnabled(stopped);
+        m_actStepOut->setEnabled(stopped);
+        m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
         m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
         // The embedded panel renders no frames while stopped, so tell it to show
@@ -637,6 +652,33 @@ void MainWindow::wireBackend()
 
     connect(m_host, &IDebugBackend::stackDumpReady, this,
             [this](quint32 sp, const QString &response) {
+                // A step-out dump is consumed here regardless of the stack
+                // view: any stack response is at the same SP with the return
+                // address on top.
+                if (m_stepOutPending) {
+                    m_stepOutPending = false;
+                    const QList<MemoryRow> rows = parseMemoryDump(response);
+                    const quint32 returnAddress =
+                        (!rows.isEmpty() && rows.first().bytes.size() >= 4)
+                        ? readLongBE(QByteArray::fromRawData(
+                                         reinterpret_cast<const char *>(
+                                             rows.first().bytes.constData()),
+                                         rows.first().bytes.size()),
+                                     0)
+                        : 0;
+                    if (!looksLikeAddress(returnAddress)) {
+                        m_log->appendPlainText(
+                            tr("[step out] no plausible return address at A7 "
+                               "(0x%1) — not inside a subroutine?")
+                                .arg(returnAddress, 0, 16));
+                        return;
+                    }
+                    m_log->appendPlainText(tr("[step out] to 0x%1")
+                                               .arg(returnAddress, 0, 16));
+                    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once")
+                                              .arg(returnAddress, 0, 16));
+                    m_host->resume();
+                }
                 if (!m_stack)
                     return;
                 // The annotation needs the *text* extent, not the data base.
@@ -708,6 +750,8 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actResume);
     runMenu->addAction(m_actStep);
     runMenu->addAction(m_actStepOver);
+    runMenu->addAction(m_actStepOut);
+    runMenu->addAction(m_actRunToCursor);
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
@@ -1190,6 +1234,7 @@ void MainWindow::createToolBar()
     bar->addAction(m_actResume);
     bar->addAction(m_actStep);
     bar->addAction(m_actStepOver);
+    bar->addAction(m_actStepOut);
     bar->addSeparator();
     bar->addAction(m_actClearBreakpoints);
 }
@@ -2579,6 +2624,42 @@ void MainWindow::stepOver()
 {
     m_host->stepOver();
     m_host->refresh();
+}
+
+void MainWindow::stepOut()
+{
+    // Hatari has no step-out primitive, so: read the return address from the
+    // top of the stack (valid inside a jsr/bsr subroutine that has not
+    // adjusted A7), arm a one-shot breakpoint there and resume. The read is
+    // asynchronous — the stackDumpReady handler does the arming.
+    if (!m_host->isStopped() || !m_lastState.regs.valid) {
+        m_log->appendPlainText(tr("[step out] needs a stopped program with known registers"));
+        return;
+    }
+    if (m_stepOutPending)
+        return;
+    m_stepOutPending = true;
+    m_host->requestStackDump(m_lastState.regs.a[7], 16);
+}
+
+void MainWindow::runToCursor()
+{
+    if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty())
+        return;
+    const int line = m_editor->textCursor().blockNumber() + 1;
+    quint32 address = 0;
+    if (!m_programMap.codeAddressFor(m_editor->filePath(), line, &address)) {
+        m_log->appendPlainText(tr("[run to cursor] no code address for %1:%2")
+                                   .arg(m_editor->filePath())
+                                   .arg(line));
+        return;
+    }
+    m_log->appendPlainText(tr("[run to cursor] %1:%2 -> 0x%3")
+                               .arg(m_editor->filePath())
+                               .arg(line)
+                               .arg(address, 0, 16));
+    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
+    m_host->resume();
 }
 
 

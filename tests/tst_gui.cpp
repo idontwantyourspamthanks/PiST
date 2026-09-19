@@ -67,6 +67,9 @@
 #include <QFontDatabase>
 #include <QSettings>
 #include <QtTest>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
 
 #include <functional>
 
@@ -143,6 +146,7 @@ private slots:
     /// asynchronous build finishes, not alongside it.
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
+    void stepOutAndRunToCursorReachTheirTargets();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
@@ -1091,6 +1095,61 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
     // a fixed wait after the first stop was racing the attach.
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+
+    host->stop();
+}
+
+// Step out and run to cursor are built from one-shot breakpoints over the
+// existing arm/resume path, so the observable contract is where the editor
+// lands: run-to-cursor stops on the cursor's line, step-out stops on the
+// line after the call that entered the subroutine.
+void TstGui::stepOutAndRunToCursorReachTheirTargets()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/steps.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                    // line 1
+              "start:\tbsr\tsub\n"          // line 2
+              "spin:\tbra.s\tspin\n"        // line 3  <- step-out lands here
+              "sub:\tmoveq\t#1,d0\n"        // line 4  <- run-to-cursor lands here
+              "\trts\n"                     // line 5
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host);
+    QVERIFY(editor);
+
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // Run to the cursor on line 4, inside the subroutine: the bsr at the
+    // entry line executes, and the one-shot breakpoint traps at `sub`.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(3).position());
+    editor->setTextCursor(cursor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "runToCursor", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 4, 30000);
+
+    // Stopped inside `sub`, the top of the stack is the return address —
+    // step out must land on line 3, the instruction after the bsr.
+    QVERIFY(QMetaObject::invokeMethod(&window, "stepOut", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
     host->stop();

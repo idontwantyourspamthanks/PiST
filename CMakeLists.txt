@@ -128,6 +128,8 @@ qt_add_library(pist_core OBJECT
     src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/ConsoleInput.cpp
+    src/ui/ConsoleInput.h
     src/ui/PcHistoryView.cpp
     src/ui/PcHistoryView.h
     src/ui/InstructionRefView.cpp

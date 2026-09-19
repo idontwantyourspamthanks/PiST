@@ -151,6 +151,7 @@ private slots:
     void stepOutAndRunToCursorReachTheirTargets();
     void openRecentMenuListsAndOpensFiles();
     void ctrlClickOpensIncludesAndJumpsToLabels();
+    void debugConsoleRecallsHistoryWithArrowKeys();
     void instructionReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void dockLayoutPersistsAcrossRestart();
@@ -1333,12 +1334,43 @@ void TstGui::ctrlClickOpensIncludesAndJumpsToLabels()
     // Back in main.s: Ctrl+click the `done` operand jumps to its definition.
     window.openPath(main);
     QTRY_VERIFY(editor->isVisible());
+
     ctrlClickLine(4, 8);
     QCOMPARE(editor->textCursor().blockNumber(), 5);  // line 6, 0-based 5
 
     // Ctrl+click on an instruction (no such label) does not move the cursor.
     ctrlClickLine(3, 3);  // on `moveq`
     QCOMPARE(editor->textCursor().blockNumber(), 2);
+}
+// The debugger console recalls its session history with the arrow keys:
+// newest-first from Up, repeats collapse, and Down past the newest restores
+// the half-typed line.
+void TstGui::debugConsoleRecallsHistoryWithArrowKeys()
+{
+    MainWindow window;
+    window.show();
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    input->setEnabled(true);  // the shell enables it when a session starts
+    QVERIFY(input);
+
+    QTest::keyClicks(input, QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Return);   // no session: logged, but recorded
+    QTest::keyClicks(input, QStringLiteral("d"));
+    QTest::keyClick(input, Qt::Key_Return);
+    QTest::keyClicks(input, QStringLiteral("d"));  // a repeat: collapses
+    QTest::keyClick(input, Qt::Key_Return);
+
+    QTest::keyClicks(input, QStringLiteral("m $1"));
+    QTest::keyClick(input, Qt::Key_Up);
+    QCOMPARE(input->text(), QStringLiteral("d"));
+    QTest::keyClick(input, Qt::Key_Up);
+    QCOMPARE(input->text(), QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Up);             // clamped at the oldest
+    QCOMPARE(input->text(), QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Down);
+    QCOMPARE(input->text(), QStringLiteral("d"));
+    QTest::keyClick(input, Qt::Key_Down);
+    QCOMPARE(input->text(), QStringLiteral("m $1"));  // the half-typed line back
 }
 
 // The panel arrangement is Photoshop-style: docks are movable/floatable/

@@ -16,9 +16,9 @@ on:
 
 jobs:
   # Cross-built on Linux with mingw-w64 and *run natively* by the Windows leg
-  # below — exactly how release.yml produces and verifies the PE it ships, so
-  # a per-PR regression in the shipping assembler fails here rather than at
-  # release time.
+  # below — exactly how release.yml produces and verifies the PEs it ships, so
+  # a per-PR regression in the shipping assembler or linker fails here rather
+  # than at release time.
   vasm-windows:
     name: vasm (windows cross-build)
     runs-on: ubuntu-latest
@@ -26,7 +26,7 @@ jobs:
       - name: Install mingw-w64
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
 
-      - name: Fetch, verify and cross-build vasm
+      - name: Fetch, verify and cross-build vasm and vlink
         run: |
           set -euo pipefail
           # Same pinned source as the other legs and the release.
@@ -37,11 +37,23 @@ jobs:
           tar xzf vasm.tar.gz
           make -C vasm CPU=m68k SYNTAX=mot CC=x86_64-w64-mingw32-gcc
           file vasm/vasmm68k_mot.exe
+          # vlink, from the same author: its Win32FromLinux makefile hardcodes
+          # the 32-bit triplet, so the compilers are overridden to x86_64.
+          VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
+          VLINK_SHA256=8d151cdd30a4feb575a364e68810c2bc300fe1a7c074dbbee6fd1175a6c5bfae
+          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
+          echo "$VLINK_SHA256  vlink.tar.gz" | sha256sum -c -
+          tar xzf vlink.tar.gz
+          make -C vlink -f Makefile.Win32FromLinux \
+            CC=x86_64-w64-mingw32-gcc LD=x86_64-w64-mingw32-gcc
+          file vlink/vlink.exe
 
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-windows-exe
-          path: vasm/vasmm68k_mot.exe
+          path: |
+            vasm/vasmm68k_mot.exe
+            vlink/vlink.exe
           if-no-files-found: error
 
   build:
@@ -69,23 +81,24 @@ jobs:
           - name: macOS (clang)
             os: macos-15
             vasm: true
-            # Parked, not broken. Hatari builds successfully on macOS (the arch
-            # mismatch was real and is fixed), but it produces an application
-            # bundle whose executable does not run standalone, so the verification
-            # step hangs. Since the priority is a first-class Linux experience,
-            # this is deliberately left off rather than chased — flip to true to
-            # resume, and expect to sort out running the bundle's binary.
-            emulator: false
-          # No Hatari package for MSYS2, so Windows builds and unit-tests but
-          # cannot exercise the emulator. Its emulator suite therefore skips
-          # rather than failing, which is honest as long as its green means less.
+            # The emulator runs here since the build-hatari action configures
+            # with ENABLE_OSX_BUNDLE=OFF: the default bundle build's binary
+            # only runs from inside Hatari.app, which is what used to park
+            # this leg.
+            emulator: true
+          # No MSYS2 Hatari package exists, so the native backend is exercised
+          # against the official pinned Windows binary (downloaded below) and
+          # the HRDB transport against the fork, built here with MSYS2. The
+          # stock build has no control socket (POSIX-only), so the socket-
+          # gated tests skip themselves by capability probe — honest, since
+          # that is exactly what a stock-Hatari Windows session can do.
           - name: Windows (MSVC)
             os: windows-latest
             vasm: false
-            # The shipping Windows assembler (cross-built above) is run
-            # natively here.
+            # The shipping Windows assembler and linker (cross-built above)
+            # are run natively here.
             windowsVasm: true
-            emulator: false
+            emulator: true
 
     steps:
       - uses: actions/checkout@v4
@@ -100,8 +113,7 @@ jobs:
       # rather than downloaded, because no binaries are published for host
       # platforms — only Amiga-family and Atari targets. Building it here also
       # means the emulator and build tests exercise a real assembler instead of
-      # skipping.
-      - name: Build vasm (Linux/macOS)
+      - name: Build vasm and vlink (Linux/macOS)
         if: matrix.vasm
         shell: bash
         run: |
@@ -114,20 +126,29 @@ jobs:
           echo "$VASM_SHA256  vasm.tar.gz" | shasum -a 256 -c -
           tar xzf vasm.tar.gz
           make -C vasm CPU=m68k SYNTAX=mot
+          # vlink, same author and same discipline: tst_link's end-to-end case
+          # needs it, and skips without it.
+          VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
+          VLINK_SHA256=8d151cdd30a4feb575a364e68810c2bc300fe1a7c074dbbee6fd1175a6c5bfae
+          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
+          echo "$VLINK_SHA256  vlink.tar.gz" | shasum -a 256 -c -
+          tar xzf vlink.tar.gz
+          make -C vlink
           mkdir -p "$HOME/.local/bin"
-          cp vasm/vasmm68k_mot "$HOME/.local/bin/"
+          cp vasm/vasmm68k_mot vlink/vlink "$HOME/.local/bin/"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # The Windows leg runs the shipping assembler natively: a real assembly,
-      # not just a version print, so a broken PE fails here.
-      - name: Download the Windows vasm
+      # The Windows leg runs the shipping assembler and linker natively: a real
+      # assembly and a real link, not just a version print, so a broken PE
+      # fails here.
+      - name: Download the Windows vasm and vlink
         if: matrix.windowsVasm
         uses: actions/download-artifact@v4
         with:
           name: vasm-windows-exe
           path: ${{ runner.temp }}/vasm-win
 
-      - name: Verify the Windows vasm assembles
+      - name: Verify the Windows vasm assembles and vlink links
         if: matrix.windowsVasm
         shell: bash
         run: |
@@ -138,7 +159,16 @@ jobs:
           "$EXE" -quiet -Ftos -o smoke.prg smoke.s
           # A TOS executable starts with the 0x601A branch magic.
           test "$(od -An -tx1 -N2 smoke.prg | tr -d ' ')" = "601a"
-          # Put it on PATH for the build and test steps. tst_gui's
+          # The linker, exercised the way a multi-file project uses it: two
+          # vasm objects linked into one TOS program (the tst_link fixture's
+          # own shape).
+          printf '\ttext\n\txdef\tstart\n\txref\thelper\nstart:\tmoveq\t#1,d0\n\tbsr\thelper\nloop:\tbra.s\tloop\n\tend\n' > main.s
+          printf '\ttext\n\txdef\thelper\nhelper:\tmoveq\t#3,d0\n\trts\n\tend\n' > lib.s
+          "$EXE" -quiet -Fvobj -o main.o main.s
+          "$EXE" -quiet -Fvobj -o lib.o lib.s
+          "$RUNNER_TEMP/vasm-win/vlink.exe" -b ataritos -o smoke2.prg main.o lib.o
+          test "$(od -An -tx1 -N2 smoke2.prg | tr -d ' ')" = "601a"
+          # Put them on PATH for the build and test steps. tst_gui's
           # initTestCase skips the whole suite when findExecutable cannot
           # resolve vasmm68k_mot, so a leg that downloads and verifies the
           # assembler but never publishes it reports green while contributing
@@ -146,15 +176,16 @@ jobs:
           echo "$RUNNER_TEMP/vasm-win" >> "$GITHUB_PATH"
 
 
-      - name: Prove the Windows vasm resolves on PATH
+      - name: Prove the Windows tools resolve on PATH
         if: matrix.windowsVasm
         shell: bash
         run: |
           set -euo pipefail
           # The previous step's PATH append only takes effect here, so prove
           # the entry rather than assume it: Qt's findExecutable applies
-          # PATHEXT, and this is the name the test suite looks for.
+          # PATHEXT, and these are the names the test suite looks for.
           command -v vasmm68k_mot.exe
+          command -v vlink.exe
 
       # Build the pinned Hatari. The rationale for the version, the checksum and
       # the per-platform details lives with the build, in
@@ -163,19 +194,39 @@ jobs:
       # here: the emulator is only built and exercised where the matrix asks for
       # it.
       - name: Build Hatari
-        if: matrix.emulator
+        if: matrix.emulator && runner.os != 'Windows'
         uses: ./.github/actions/build-hatari
         with:
           destination: ${{ runner.temp }}/hatari-bin
 
-      # A free ROM so the emulator suites have something to boot. Pinned by
-      # checksum for the same reason vasm is: an upstream change should fail
-      # loudly rather than silently altering what is tested.
+      # On Windows the native backend is exercised against the official stock
+      # binary rather than a source build: it is what a Windows user actually
+      # gets from hatari-emu.org, and it has no control socket, which is the
+      # configuration the socket-gated tests exist to skip. Pinned by checksum
+      # like every other input.
+      - name: Download stock Hatari (Windows)
+        if: matrix.emulator && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o hatari-win.zip \
+            https://framagit.org/hatari/releases/-/raw/main/v2.6.1/hatari-2.6.1_windows64.zip
+          echo "996ff8df1fd6bd909ded90d5460d5639f3d8dee2c74921f3983a4cd10ff02812  hatari-win.zip" \
+            | sha256sum -c -
+          python3 - <<'PY'
+          import zipfile, os
+          dest = os.path.join(os.environ["RUNNER_TEMP"], "hatari-stock")
+          with zipfile.ZipFile("hatari-win.zip") as z:
+              z.extractall(dest)
+          print("extracted to", dest)
+          PY
+          echo "$RUNNER_TEMP/hatari-stock/hatari-2.6.1_windows64" >> "$GITHUB_PATH"
 
-      # The HRDB fork, side by side with the upstream build: the tst_hrdb suite
-      # and the gui transport-swap tests run against it. The bundled emulator
-      # in a release *is* this fork (release.yml), so CI must exercise the
-      # transport that ships.
+      # The HRDB fork: on Linux/macOS side by side with the upstream build, on
+      # Windows built with MSYS2 by the same action. The tst_hrdb suite and the
+      # gui transport-swap tests run against it, and the bundled emulator in a
+      # release *is* this fork (release.yml), so CI must exercise the transport
+      # that ships — on Windows it is also the only build with working pause.
       - name: Build Hatari (hrdb fork)
         if: matrix.emulator
         uses: ./.github/actions/build-hatari
@@ -188,7 +239,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          command -v hatari
+          command -v hatari || command -v hatari.exe
           hatari --version 2>&1 | sed -n '1p' || true
 
       - name: Fetch a ROM
@@ -250,7 +301,7 @@ jobs:
           # The HRDB suites run against the fork built above; without it they
           # skip (developer machines) rather than fail (they are not part of
           # the require-emulator contract, which is about upstream Hatari).
-          PIST_HRDB_HATARI: ${{ matrix.emulator && format('{0}/hatari-hrdb-bin/hatari-hrdb', runner.temp) || '' }}
+          PIST_HRDB_HATARI: ${{ matrix.emulator && format('{0}/hatari-hrdb-bin/hatari-hrdb{1}', runner.temp, runner.os == 'Windows' && '.exe' || '') || '' }}
           # Runners have no display. Hatari uses SDL for video, so it needs the
           # dummy driver — the debugger transport and the emulated machine are
           # unaffected, which is all this suite exercises.

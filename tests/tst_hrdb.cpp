@@ -423,6 +423,13 @@ void TstHrdb::embedSocketParsesSizeReports()
 
 void TstHrdb::embedSizeReportArrivesOnForkSession()
 {
+    // The embed-size reports travel over the upstream control socket, which a
+    // Windows build of the fork does not have — so there is nothing to test
+    // there, and passing the option would fail the launch.
+    const HatariCapabilities probe = probeHatari(m_hatari);
+    if (!probe.hasControlSocket)
+        QSKIP("embed-size reports need the control socket");
+
     SessionConfig config;
     config.hatariPath = m_hatari;
     config.programPath = m_program;

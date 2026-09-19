@@ -202,6 +202,14 @@ void TstEmulatorHost::cleanup()
     m_log.clear();
 }
 
+/// The control socket path for a session, or empty when this Hatari build has
+/// no socket (stock Windows builds): MainWindow gates the option on exactly
+/// this probe, and passing it to a socketless build fails the launch.
+static QString controlSocketFor(const HatariCapabilities &caps, const QString &sessionDir)
+{
+    return caps.hasControlSocket ? sessionDir + QStringLiteral("/ctl.sock") : QString();
+}
+
 void TstEmulatorHost::debuggerStopsAtProgramEntry()
 {
     HatariCapabilities caps = probeHatari(m_hatari);
@@ -212,7 +220,7 @@ void TstEmulatorHost::debuggerStopsAtProgramEntry()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s1");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
 
     QString error;
@@ -253,7 +261,7 @@ void TstEmulatorHost::registersRoundTrip()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s2");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -294,7 +302,7 @@ void TstEmulatorHost::stackDumpRoutesSeparatelyFromMemoryDump()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/stackroute");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -326,7 +334,7 @@ void TstEmulatorHost::basepageReportsProgramSections()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s3");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -370,7 +378,7 @@ void TstEmulatorHost::disassemblyIsLabelled()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s4");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -415,7 +423,7 @@ void TstEmulatorHost::steppingAdvancesPc()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s5");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -1105,7 +1113,7 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
         config.programPath = m_program;
         config.tosPath = m_tos;
         config.sessionDir = m_work->path() + QLatin1Char('/') + name;
-        config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+        config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
         config.gemdosDir = m_sourceDir;
         config.bootstrapScriptPath
             = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);

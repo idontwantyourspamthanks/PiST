@@ -144,6 +144,11 @@ private slots:
     void stepOut();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
+    /// F4 / Shift+F4: step through the Problems pane without the mouse,
+    /// wrapping, skipping diagnostics that carry no source line.
+    void nextDiagnostic();
+    void previousDiagnostic();
+    void stepDiagnostic(int direction);
     void pauseSession();
     void resume();
 
@@ -478,6 +483,8 @@ private:
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
     QAction *m_actEmbedDisplay = nullptr;
+    QAction *m_actNextDiagnostic = nullptr;
+    QAction *m_actPrevDiagnostic = nullptr;
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
     QAction *m_actStepOut = nullptr;

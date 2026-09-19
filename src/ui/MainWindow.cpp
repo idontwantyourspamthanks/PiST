@@ -452,6 +452,14 @@ void MainWindow::createActions()
     m_actFind->setObjectName(QStringLiteral("findAction"));
     m_actFind->setShortcut(QKeySequence::Find);
     m_actFind->setEnabled(false);
+
+    m_actNextDiagnostic = new QAction(tr("Next Diagnostic"), this);
+    m_actNextDiagnostic->setShortcut(QKeySequence(Qt::Key_F4));
+    connect(m_actNextDiagnostic, &QAction::triggered, this, &MainWindow::nextDiagnostic);
+
+    m_actPrevDiagnostic = new QAction(tr("Previous Diagnostic"), this);
+    m_actPrevDiagnostic->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F4));
+    connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
 
     m_actFindNext = new QAction(tr("Find &Next"), this);
@@ -710,6 +718,25 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
     fileMenu->addAction(m_actSave);
+    // Rebuilt on every opening: the list is persisted, and entries whose file
+    // has gone away are pruned as they are shown.
+    auto *recentMenu = new QMenu(tr("Open &Recent"), this);
+    recentMenu->setObjectName(QStringLiteral("openRecentMenu"));
+    connect(recentMenu, &QMenu::aboutToShow, this, [this, recentMenu] {
+        recentMenu->clear();
+        QStringList recent = settings::recentSources();
+        QStringList existing;
+        for (const QString &path : recent)
+            if (QFileInfo::exists(path))
+                existing << path;
+        for (const QString &path : existing)
+            connect(recentMenu->addAction(QFileInfo(path).fileName() + QStringLiteral("    ")
+                                          + path),
+                    &QAction::triggered, this, [this, path] { openPath(path); });
+        if (existing.isEmpty())
+            recentMenu->addAction(tr("No Recent Files"))->setEnabled(false);
+    });
+    fileMenu->addMenu(recentMenu);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actImportImage);
     fileMenu->addAction(m_actExportImage);
@@ -737,6 +764,9 @@ void MainWindow::createMenus()
     searchMenu->addAction(m_actFindPrevious);
     searchMenu->addSeparator();
     searchMenu->addAction(m_actReplace);
+    searchMenu->addSeparator();
+    searchMenu->addAction(m_actNextDiagnostic);
+    searchMenu->addAction(m_actPrevDiagnostic);
 
     auto *toolsMenu = menuBar()->addMenu(tr("&Tools"));
     toolsMenu->addAction(tr("Set up tools and ROMs…"), this, &MainWindow::showToolSetup);
@@ -3006,6 +3036,42 @@ void MainWindow::goToBreakpoint(const QString &file, int line)
         || !LineMap::sameSource(file, m_editor->filePath()))
         return;
     m_editor->gotoLine(line);
+}
+
+void MainWindow::stepDiagnostic(int direction)
+{
+    const int count = m_problems ? m_problems->topLevelItemCount() : 0;
+    if (count == 0)
+        return;
+
+    // From the current row, wrapping; an item without a line (build-level
+    // messages) cannot be navigated to, so it is skipped.
+    int row = m_problems->indexOfTopLevelItem(m_problems->currentItem());
+    for (int i = 0; i < count; ++i) {
+        row = ((row + direction) % count + count) % count;
+        QTreeWidgetItem *item = m_problems->topLevelItem(row);
+        const int line = item->text(1).toInt();
+        if (line <= 0)
+            continue;
+        // Same contract as double-clicking the item: navigate within the open
+        // document only (goToBreakpoint's rule), never switch files blindly.
+        const QString file = item->text(0);
+        m_problems->setCurrentItem(item);
+        if (m_editor && (file.isEmpty() || file == tr("(build)")
+                         || LineMap::sameSource(file, m_editor->filePath())))
+            m_editor->gotoLine(line);
+        return;
+    }
+}
+
+void MainWindow::nextDiagnostic()
+{
+    stepDiagnostic(+1);
+}
+
+void MainWindow::previousDiagnostic()
+{
+    stepDiagnostic(-1);
 }
 
 void MainWindow::editBreakpointCondition(int line)

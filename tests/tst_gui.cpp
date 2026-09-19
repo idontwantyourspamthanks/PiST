@@ -70,6 +70,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTreeWidget>
 
 #include <functional>
 
@@ -147,6 +148,8 @@ private slots:
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
     void stepOutAndRunToCursorReachTheirTargets();
+    void openRecentMenuListsAndOpensFiles();
+    void diagnosticKeyboardFlowToursProblems();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
@@ -1152,7 +1155,95 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
     QVERIFY(QMetaObject::invokeMethod(&window, "stepOut", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
+
     host->stop();
+}
+// F4/Shift+F4 tour the Problems pane without the mouse: each step selects the
+// next diagnostic carrying a source line (wrapping, skipping line-less build
+// messages) and the editor follows, exactly like double-clicking the item.
+void TstGui::diagnosticKeyboardFlowToursProblems()
+{
+    const QString source = m_work->path() + QStringLiteral("/diag.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#1,d0\n\tmoveq\t#2,d1\n\tmoveq\t#3,d2\n"
+              "\tmoveq\t#4,d3\n\tmoveq\t#5,d4\n\tmoveq\t#6,d5\n\trts\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"));
+    QVERIFY(dock);
+    auto *problems = dock->findChild<QTreeWidget *>();
+    QVERIFY(problems);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    window.openPath(source);
+
+    auto addItem = [&](const QString &file, int line) {
+        auto *item = new QTreeWidgetItem(problems);
+        item->setText(0, file);
+        item->setText(1, line > 0 ? QString::number(line) : QString());
+        item->setText(2, QStringLiteral("diagnostic"));
+    };
+    addItem(source, 2);
+    addItem(QStringLiteral("(build)"), 0);  // no line: skipped, never landed on
+    addItem(source, 7);
+
+    auto editorLine = [&] { return editor->textCursor().blockNumber() + 1; };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 0);
+    QCOMPARE(editorLine(), 2);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 2);  // the line-less item was skipped
+    QCOMPARE(editorLine(), 7);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 0);  // wrapped
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "previousDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 2);  // backwards wraps too
+    QCOMPARE(editorLine(), 7);
+}
+
+// File ▸ Open Recent lists the persisted MRU sources (skipping files that no
+// longer exist) and opening an entry loads it — the table-stakes follow-up to
+// reopen-last-on-start.
+void TstGui::openRecentMenuListsAndOpensFiles()
+{
+    const QString one = m_work->path() + QStringLiteral("/one.s");
+    const QString two = m_work->path() + QStringLiteral("/two.s");
+    for (const QString &p : {one, two}) {
+        QFile f(p);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\nstart:\trts\n\tend\n");
+    }
+    const QString gone = m_work->path() + QStringLiteral("/deleted.s");
+    QSettings().setValue(QStringLiteral("last/recentSources"),
+                         QStringList{two, gone, one});
+
+    MainWindow window;
+    auto *menu = window.findChild<QMenu *>(QStringLiteral("openRecentMenu"));
+    QVERIFY(menu);
+
+    menu->popup(QPoint());
+    QStringList titles;
+    for (QAction *a : menu->actions())
+        titles << a->text();
+    menu->close();
+
+    QCOMPARE(titles.size(), 2);  // the deleted file was pruned
+    QVERIFY(titles.at(0).contains(QStringLiteral("two.s")));  // MRU order kept
+    QVERIFY(titles.at(1).contains(QStringLiteral("one.s")));
+
+    menu->popup(QPoint());
+    menu->actions().at(1)->trigger();
+    menu->close();
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QTRY_COMPARE(editor->filePath(), one);
 }
 
 // The panel arrangement is Photoshop-style: docks are movable/floatable/

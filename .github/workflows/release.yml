@@ -738,9 +738,9 @@ jobs:
               swapping disks at runtime are unavailable — Hatari compiles its
               control channel only on POSIX systems. Breakpoints and stepping
               work regardless.
-            - **No installers**: these are tarballs and zips.
-            - **No linker step**: multi-file builds via include paths work, but
-              separate compilation and vlink are not yet supported.
+            - **Linking**: multi-file projects build through vlink (add sources in
+              Project Settings), but vlink itself is not bundled — install it to
+              use separate compilation.
             - The interface is functional rather than polished.
 
             Run `pist --diagnose` to see which assembler, emulator and ROMs PiST

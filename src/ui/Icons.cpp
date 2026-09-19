@@ -170,7 +170,20 @@ void paintPause(QPainter &p, const QRectF &r, qreal w)
 
 void paintContinue(QPainter &p, const QRectF &r, qreal w)
 {
-    paintRun(p, r, w);
+    // Run is a plain triangle; Continue resumes from the stop point, so it
+    // gets a bar at its base — the two must not be identical on the toolbar.
+    p.setPen(Qt::NoPen);
+    p.setBrush(accent());
+    p.drawRoundedRect(QRectF(r.left() + r.width() * 0.20, r.top() + r.height() * 0.22,
+                             r.width() * 0.11, r.height() * 0.56),
+                      1, 1);
+    QPainterPath tri;
+    tri.moveTo(r.left() + r.width() * 0.42, r.top() + r.height() * 0.20);
+    tri.lineTo(r.left() + r.width() * 0.42, r.top() + r.height() * 0.80);
+    tri.lineTo(r.left() + r.width() * 0.84, r.center().y());
+    tri.closeSubpath();
+    p.drawPath(tri);
+    Q_UNUSED(w);
 }
 
 void paintStep(QPainter &p, const QRectF &r, qreal w)

@@ -270,9 +270,10 @@ of an upstream Hatari limitation rather than anything in `PiST`:
 
 \* Pause on Windows, and live breakpoint / running-disk changes there, work when the debug
 transport is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (Project Settings → Debug
-transport), which speaks typed TCP instead of the POSIX-only control socket. Stock Hatari on
-Windows still lacks those *while the program is running*; a stopped session can still insert or
-eject a floppy via the debugger (`setopt`).
+transport), which speaks typed TCP instead of the POSIX-only control socket. The Windows release
+archive bundles exactly that fork, so a fresh download is unaffected; a user-installed *stock*
+Hatari on Windows still lacks those *while the program is running*, and a stopped session can
+still insert or eject a floppy via the debugger (`setopt`).
 
 The three gaps are all downstream of one thing: Hatari's control channel is compiled only on
 POSIX systems (`HAVE_UNIX_DOMAIN_SOCKETS`), and it is the only way to command an *already running*
@@ -287,8 +288,8 @@ approach, in **[docs/FUTURE.md](docs/FUTURE.md)**.
 
 Multi-file projects are assembled separately and linked with **vlink**, from the
 same author as vasm and under the same licence terms (unmodified redistribution,
-non-commercial use). Release archives do not include it — a source build needs it
-installed separately if you use more than one source file:
+non-commercial use). Release archives bundle it beside the assembler; a source
+build needs it installed separately if you use more than one source file:
 
 ```
 http://sun.hasenbraten.de/vlink/
@@ -464,33 +465,31 @@ follow.
 ## Known limitations
 
 Stated plainly, because an early release should not imply more than it does:
-- **The emulator integration has only been exercised on Linux.** CI builds and
-  tests on Windows and macOS, and the path handling, tool discovery and install
-  steps are verified there — but neither runner runs the emulator suite: Windows
-  has no Hatari package for MSYS2, and the macOS Hatari build produces an
-  application bundle whose binary does not run standalone. Linux CI builds the
-  pinned Hatari 2.6.1 *and* the hrdb-main fork, and exercises assembling and
-  debugging against both transports, so bug reports from real Windows or macOS
-  machines remain genuinely useful.
+- **The emulator integration is exercised in CI on all three platforms.** Linux
+  and macOS build the pinned Hatari 2.6.1 *and* the hrdb-main fork from source
+  and run the emulator suites against both transports; Windows runs the native
+  transport against the official stock 2.6.1 binary and HRDB against an MSYS2
+  build of the fork (the stock Windows build has no control socket, so the
+  socket-gated tests skip there by capability probe — exactly what a stock
+  Windows session can do). Bug reports from real machines remain useful.
 - **On stock Hatari, pause, changing breakpoints while running, and swapping disks at runtime
   do not work on Windows.** Hatari compiles its control channel only on POSIX systems.
   Breaking at entry, on exceptions, and at source-line breakpoints all work. The bundled
-  emulator (the hrdb-main fork, in the Linux AppImage) is not affected; on Windows a
-  user-installed [hrdb-main Hatari](https://github.com/tattlemuss/hatari) build gets pause and
-  live breakpoints back (auto-detected). See [docs/FUTURE.md](docs/FUTURE.md) for the upstream
-  fix that would cover the rest.
+  emulator is not affected: the Linux AppImage and the Windows archive both carry the
+  hrdb-main fork, whose TCP transport covers all three. See
+  [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix that would cover stock Hatari.
 - **Installers and plain archives** — Linux gets an AppImage plus deb and RPM packages,
   macOS a dmg and a tarball, Windows an MSI and a zip.
-- **Hatari is bundled only in the Linux AppImage.** That copy is the hrdb-main fork
-  (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified from a
-  checksum-pinned commit tarball, so it debugs with nothing else installed — over HRDB. The macOS
-  and Windows archives do not include it (and neither does a source build), so
-  there the emulator must be installed separately — and no distribution package
-  will do: Ubuntu 22.04 ships 2.3.1 and 24.04 ships 2.4.1, whose truncated
-  debugger responses break source-line debugging, while the IDE is developed and
-  verified against 2.6.1.
+- **Hatari is bundled in the Linux AppImage and the Windows archive.** Both copies are the
+  hrdb-main fork (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified
+  from a checksum-pinned commit tarball — the Windows one built with MSYS2 ucrt64 with its
+  runtime DLLs beside the exe — so they debug with nothing else installed, over HRDB. The
+  macOS archive does not include it (`brew install hatari` is 2.6.1), and neither does a
+  source build. Avoid distribution packages on Linux: Ubuntu 22.04 ships 2.3.1 and 24.04
+  ships 2.4.1, whose truncated debugger responses break source-line debugging, while the
+  IDE is developed and verified against 2.6.1.
 - Multi-file projects are supported through the linker (add sources in Project
-  Settings; needs `vlink`, which is not bundled with the source build).
+  Settings; release archives bundle `vlink`, a source build needs it installed).
 - The interface is functional rather than polished.
 
 ## Documentation

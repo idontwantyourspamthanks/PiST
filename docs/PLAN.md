@@ -782,11 +782,11 @@ Where each component comes from, kept deliberately separate from the source tree
 | Context | vasm | Hatari |
 |---|---|---|
 | **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; built from the checksum-pinned fork commit at packaging and CI time |
-| **Release artifacts** (Linux AppImage; Windows/macOS bundles) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage — and the bundled build is the **hrdb-main fork** (upstream 2.6.1 + the remote-debug listener), built unmodified from a checksum-pinned commit tarball; the probe selects HRDB for it automatically. The Windows/macOS archives leave the emulator to the user, since there is no MSYS2 Hatari package for Windows |
+| **Release artifacts** (Linux AppImage; Windows/macOS bundles) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage and the Windows archive — and the bundled build is the **hrdb-main fork** (upstream 2.6.1 + the remote-debug listener), built unmodified from a checksum-pinned commit tarball (MSYS2 ucrt64 on Windows, runtime DLLs beside the exe); the probe selects HRDB for it automatically. The macOS archive leaves the emulator to the user (`brew install hatari` carries 2.6.1) |
 | **Linux distro package** | Optional dependency; the distro's `vasm` package is used if present | Not usable as supplied: 22.04 ships 2.3.1 and 24.04 ships 2.4.1, below the 2.6.1 the IDE is verified against (§2.4) |
-| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the Linux AppImage needs none. The unprompted startup prompt fires whenever *any* piece is missing — including the emulator, which is the only gap on the macOS/Windows archives — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
+| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the bundled archives need none. The unprompted startup prompt fires whenever *any* piece is missing — including the emulator, which is the only gap on the macOS archive — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
 
-This yields one-click setup on Linux — and on macOS and Windows for everything but the emulator —
+This yields one-click setup on Linux and Windows — and on macOS for everything but the emulator —
 without placing non-free bytes in the repository, and without ever breaching vasm's no-modification
 clause.
 
@@ -903,13 +903,18 @@ load-bearing dependency — which the detection order above already guarantees.
 install cleanly.** This is the first genuine cross-platform evidence in the
 project; everything before it was either Linux-only or read from source.
 
-- **gcc, clang and MSVC all compile the tree with no warnings**, and all six test
-  suites pass on each. The tests that need Hatari or a TOS ROM report as *skipped*,
-  never as passed, so a green run does not overstate what was verified.
+- **gcc, clang and MSVC all compile the tree with no warnings**, and the test
+  suites pass on each. The emulator suites now run on all three platforms:
+  Linux and macOS build the pinned 2.6.1 and the hrdb-main fork from source;
+  Windows runs the native transport against the official stock 2.6.1 binary
+  and HRDB against an MSYS2 ucrt64 build of the fork. The tests that need a
+  capability a build lacks (the control socket on stock Windows Hatari)
+  report as *skipped*, never as passed, so a green run does not overstate
+  what was verified.
 - **`cmake --install` works on all three**, and the installed binary starts from a
-  staged prefix — which is what `CMAKE_INSTALL_RPATH_USE_LINK_PATH` provides. That
-  is the honest minimum for a non-bundled install; a self-contained macOS/Windows
-  bundle (macdeployqt, windeployqt) is still open.
+  staged prefix — which is what `CMAKE_INSTALL_RPATH_USE_LINK_PATH` provides. The
+  release archives go further: macdeployqt/windeployqt/linuxdeploy make each
+  bundle self-contained (§7).
 - **The Windows control-socket path is exercised**: `runsWithoutControlSocket`
   runs a full session with no socket configured, which is precisely the Windows
   configuration, since Hatari does not compile that option there.
@@ -966,7 +971,10 @@ project; everything before it was either Linux-only or read from source.
    is also implemented (`src/build/FloppyImage.cpp`), as are in-place edits (`readFileRaw` +
    `updateImage` back the file browser's copy/move); IPF/Pasti authoring is not.
 5. Windows and macOS behaviour of the embedding paths and `SetParent`
-6. Behaviour of `--control-socket` alternatives on Windows (only stdio is available)
+6. ~~Behaviour of `--control-socket` alternatives on Windows~~ — **resolved**: HRDB is the
+   alternative. The fork builds for Windows with MSYS2 ucrt64 (its listener is winsock-aware
+   upstream of us), CI exercises it there, and the Windows release archive bundles it. Stock
+   Windows Hatari remains stdin-only, which §5 rule 12 already treats as normal.
 
 ---
 
@@ -1030,8 +1038,8 @@ separate process, with command-line arguments only, and is never patched or link
 
 ### Not bundled
 
-Original Atari TOS ROMs remain user-supplied (proprietary). Hatari is bundled in the Linux AppImage,
-but not in the macOS and Windows archives, nor in a source build; where it is absent, PiST reports it
+Original Atari TOS ROMs remain user-supplied (proprietary). Hatari is bundled in the Linux AppImage
+and the Windows archive, but not in the macOS archive, nor in a source build; where it is absent, PiST reports it
 and points at where to get it. Everything else needed to build and run assembly out of the box is
 bundleable — see §7.
 

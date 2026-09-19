@@ -36,6 +36,20 @@ vasmm68k_mot — the assembler
       - it is NEVER committed to the PiST source repository, which stays entirely
         free software. It is produced at release time only.
 
+vlink — the linker
+    Copyright (c) 1995-2025 Frank Wille.
+    NOT free software. Its terms permit redistribution *without modification*
+    and use for non-commercial purposes; commercial use requires the author's
+    written consent except for the M68k/AmigaOS case.
+    Source and licence: http://sun.hasenbraten.de/vlink/
+
+    Redistribution: release archives of PiST *do* include a vlink binary,
+    compiled by the release workflow from the author's unmodified source
+    tarball, pinned by checksum — the same basis and the same commitments as
+    vasm above: never patched, never committed to this repository, driven
+    purely through command-line arguments. PiST links multi-file projects
+    through it; a single-file project needs no linker at all.
+
     If you are building PiST for commercial distribution, the permission above
     does not extend to you: supply your own assembler, or obtain the author's
     consent. PiST supports an explicit assembler path in Project Settings for
@@ -74,9 +88,11 @@ hatari — the emulator
     responses that break source-line debugging, so relying on the user's package
     manager cannot work.
 
-    This applies to the Linux AppImage. The macOS and Windows archives still
-    require the user to install Hatari themselves, and there is no MSYS2 Hatari
-    package for Windows.
+    This applies to the Linux AppImage and the Windows archive. The Windows
+    build is compiled with MSYS2 ucrt64 from the same pinned commit and ships
+    its runtime DLLs (SDL2, libpng, zlib, the GCC runtime) beside the exe. The
+    macOS archive still requires the user to install Hatari themselves
+    (`brew install hatari` carries 2.6.1).
 
 readline — the line editor linked into Hatari
     GNU General Public License, version 3 or later. It is redistributed because
@@ -122,7 +138,7 @@ Qt 6 (Core, Gui, Widgets, Network, Test)
     https://doc.qt.io/qt-6/licensing.html
 
 
-No code from Hatari, vasm or Qt is included in this repository's sources.
+No code from Hatari, vasm, vlink or Qt is included in this repository's sources.
 
 The ST colour-word layout, Degas/NeoChrome/IFF/STOS bitplane packing, and paint-tool geometry in
 `src/image/` were reimplemented from the known file formats and from the behaviour of the

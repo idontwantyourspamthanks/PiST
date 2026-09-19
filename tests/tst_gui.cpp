@@ -137,6 +137,7 @@ private slots:
     void importAppendAddsSheetReplaceReplaces();
     void strokeDedupMakesUndoRestoreOriginal();
     void sheetCanvasBlitsPhaseComposite();
+    void removeWatchpointWithoutSessionDoesNotError();
 
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
@@ -643,6 +644,23 @@ void TstGui::sheetCanvasBlitsPhaseComposite()
                 break;
             }
     QVERIFY2(found, "the painted phase cells must be blitted into the sheet view");
+}
+
+void TstGui::removeWatchpointWithoutSessionDoesNotError()
+{
+    MainWindow window;
+    window.show();
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    QString error;
+    QVERIFY(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error));
+
+    QSignalSpy errors(host, &EmulatorHost::errorOccurred);
+    // No session running: removing a watchpoint must not push debugger commands
+    // (armBreakpoints used to run unconditionally, and each command emits "No
+    // emulator session is running." — a false error on a plain edit).
+    QMetaObject::invokeMethod(&window, "removeWatchpoint", Qt::DirectConnection, Q_ARG(int, 0));
+    QCOMPARE(errors.count(), 0);
 }
 
 void TstGui::stateSummaryClearsAfterSessionEnds()

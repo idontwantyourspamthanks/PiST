@@ -2821,7 +2821,14 @@ void MainWindow::removeWatchpoint(int index)
     if (index < 0 || index >= m_watchpoints.size())
         return;
     m_watchpoints.removeAt(index);
-    armBreakpoints();
+    // Re-arm only with a live session: armBreakpoints() pushes debugger commands,
+    // and with no process running each one logs "No emulator session is running."
+    // (a false error on a plain edit). Without a session, just refresh the panel —
+    // the next Run arms from the models. Matches addWatchpointAddress.
+    if (m_host->isRunning())
+        armBreakpoints();
+    else if (m_breakpointPanel)
+        m_breakpointPanel->setWatchpoints(m_watchpoints);
 }
 
 QList<Breakpoint> MainWindow::mergeResolved(const ArmPlan &plan) const

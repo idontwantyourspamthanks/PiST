@@ -243,6 +243,7 @@ jobs:
           destination: ${{ runner.temp }}/hatari-hrdb-bin
       - name: Verify the emulator build
         if: matrix.emulator
+        shell: bash
         run: |
           set -euo pipefail
           command -v hatari || command -v hatari.exe

@@ -23,6 +23,8 @@ QVector<int> clampActive(const QVector<int> &indices, PaletteKind kind)
     for (int index : indices) {
         if (index < 0 || index > maxIndex)
             continue;
+        if (out.contains(index)) // dedupe: a crafted "active":[5,5,5] must not burn three registers
+            continue;
         if (out.size() >= kMaxActive)
             break;
         out.append(index);
@@ -162,7 +164,16 @@ ImageFrame *ImageDocument::frameAt(int index)
 
 const QVector<int> &ImageDocument::frame(int index) const
 {
-    return phase().frames.at(index).composite;
+    // Clamp an out-of-range index (a stale preview/ghost frame after frames were
+    // removed) to a real composite instead of .at() indexing out of bounds — UB in
+    // Release, and every single-frame exporter routes through here. Precondition:
+    // every phase is created with >=1 frame (constructor, create, addPhase,
+    // fromJson's empty-frames fallback) and removeFrame refuses to drop the last,
+    // so frames is never empty; asserted so a future path that empties one trips in
+    // debug rather than hitting qBound(0, i, -1).
+    const QVector<ImageFrame> &frames = phase().frames;
+    Q_ASSERT(!frames.isEmpty());
+    return frames.at(qBound(0, index, frames.size() - 1)).composite;
 }
 
 QVector<int> ImageDocument::blankPixels() const

@@ -249,7 +249,9 @@ QVector<int> fillIndices(int startIndex, const QVector<int> &data, const Grid &g
             if (!inBounds(nx[i], ny[i], grid))
                 continue;
             const int ni = ny[i] * grid.width + nx[i];
-            if (visited[ni] || data[ni] != target)
+            // inBounds() checks the grid, but `visited`/`data` are sized to the
+            // data; a grid larger than the data would index past them.
+            if (ni >= data.size() || visited[ni] || data[ni] != target)
                 continue;
             visited[ni] = 1;
             queue.enqueue(ni);

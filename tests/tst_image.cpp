@@ -35,6 +35,9 @@ private slots:
     void pimClampsSheetReference();
     void pimEmptyFramesSizedToPhase();
     void removePhaseAdjustsCurrentIndex();
+    void activePaletteDeduped();
+    void frameIndexClampsToRange();
+    void iffRejectsBadPlaneCount();
     void fillAndLineIndices();
     void pi1RoundTrip();
     void neoRoundTrip();
@@ -260,6 +263,56 @@ void TstImage::removePhaseAdjustsCurrentIndex()
     QCOMPARE(doc.phaseCount(), 2);
     QCOMPARE(doc.currentPhase(), 0);
     QCOMPARE(doc.phases().at(doc.currentPhase()).name, QStringLiteral("B"));
+}
+
+void TstImage::activePaletteDeduped()
+{
+    ImageDocument doc;
+    QString error;
+    // clampActive must collapse duplicate registers: "active":[5,5,5,7] is two
+    // colours, not four, or a crafted file burns palette registers.
+    QVERIFY2(doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[5,5,5,7],"
+        "\"phases\":[{\"cellW\":4,\"cellH\":4,\"frames\":[{\"pixels\":[]}]}]}"),
+        &error),
+        qPrintable(error));
+    QCOMPARE(doc.active(), (QVector<int>{5, 7}));
+}
+
+void TstImage::frameIndexClampsToRange()
+{
+    ImageDocument doc = ImageDocument::create(8, 8, PaletteKind::Ste);
+    doc.addFrame(); // two frames, the second current
+    doc.setPixel(0, doc.active().at(1)); // paint frame 1 only
+    QVERIFY(doc.frame(0).at(0) == kTransparent);
+    QVERIFY(doc.frame(1).at(0) != kTransparent);
+    // Out-of-range indices clamp to a real composite instead of .at() OOB (UB in
+    // Release); every single-frame exporter routes through frame().
+    QCOMPARE(doc.frame(99), doc.frame(1));
+    QCOMPARE(doc.frame(-5), doc.frame(0));
+}
+
+void TstImage::iffRejectsBadPlaneCount()
+{
+    ImageDocument doc = ImageDocument::create(16, 8, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    QString error;
+    const QByteArray bytes = exportIff(doc, 0, &error);
+    QVERIFY(!bytes.isEmpty());
+    // BMHD chunk sits at offset 12; nPlanes is BMHD data byte 8 -> file offset 28.
+    QVERIFY(bytes.mid(12, 4) == QByteArray("BMHD"));
+    const int planesByte = 28;
+    QVERIFY(bytes.at(planesByte) >= 1 && bytes.at(planesByte) <= 4); // valid as written
+    ImportedSheet sheet;
+    for (char bad : {char(0), char(5), char(31)}) {
+        QByteArray corrupt = bytes;
+        corrupt[planesByte] = bad;
+        QVERIFY2(!importIff(corrupt, PaletteKind::Ste, &sheet, &error),
+                 qPrintable(QStringLiteral("nPlanes=%1 must be rejected").arg(int(bad))));
+        QVERIFY(!error.isEmpty());
+    }
+    // The untouched 4-plane file still imports.
+    QVERIFY2(importIff(bytes, PaletteKind::Ste, &sheet, &error), qPrintable(error));
 }
 
 void TstImage::fillAndLineIndices()

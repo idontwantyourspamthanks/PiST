@@ -357,6 +357,14 @@ bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
                          .arg(kStScreenHeight);
         return false;
     }
+    // ST ILBM is 1-4 planes (2/4/8/16 colours). nPlanes is a raw header byte, so
+    // an unbounded value both decodes nonsense and makes `1 << plane` undefined at
+    // plane >= 31. Reject before the decode rather than rely on the shift wrapping.
+    if (nPlanes < 1 || nPlanes > 4) {
+        if (error)
+            *error = QStringLiteral("IFF image has %1 planes (ST ILBM supports 1-4)").arg(nPlanes);
+        return false;
+    }
 
     const int rawRowbytes = (width + 7) / 8;
     const int rowbytes = rawRowbytes + (rawRowbytes % 2);

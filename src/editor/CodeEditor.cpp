@@ -708,8 +708,13 @@ bool CodeEditor::loadFile(const QString &path)
 
 bool CodeEditor::saveFile(const QString &path)
 {
+    // No QIODevice::Text on the write: on Windows it would translate every \n
+    // to \r\n, so the bytes on disk would differ from the editor's content —
+    // visible to the user as a floppy entry that changes shape on save. The
+    // read side keeps the flag, so a CRLF file still displays sensibly and is
+    // normalised to LF on the next save.
     QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
 
     QTextStream stream(&file);

@@ -235,7 +235,8 @@ FileBrowser::FileBrowser(QWidget *parent)
     connect(browse, &QPushButton::clicked, this, [this] {
         const QString chosen = QFileDialog::getExistingDirectory(
             this, tr("Choose Project Directory"),
-            m_model->rootPath().isEmpty() ? QDir::homePath() : m_model->rootPath());
+            // rootPath() defaults to ".", so "no root yet" is m_rootChosen.
+            m_rootChosen ? m_model->rootPath() : QDir::homePath());
         if (!chosen.isEmpty())
             showDirectory(chosen);
     });

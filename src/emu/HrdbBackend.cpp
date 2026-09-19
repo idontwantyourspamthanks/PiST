@@ -27,6 +27,10 @@ constexpr quint16 kHrdbPort = 56001;
 /// that lost the 56001 bind race (another PiST session or the hrdb GUI holds
 /// it) runs with no debug endpoint at all — both must fail, not hang.
 constexpr int kHandshakeTimeoutMs = 5000;
+/// Per-command watchdog: if the fork never answers a dispatched command (a dead
+/// or wedged debug link), fail it rather than block the queue forever. Matches
+/// the native backend's kCommandTimeoutMs (finding 11).
+constexpr int kCommandTimeoutMs = 10000;
 
 /// `!status` notification field 1 (and `status` reply field 2): the fork
 /// sends 0 while stopped in its remote break loop, 1 while running — the
@@ -84,6 +88,24 @@ HrdbBackend::HrdbBackend(QObject *parent)
             stop();
         }
     });
+
+    m_commandWatchdog = new QTimer(this);
+    m_commandWatchdog->setSingleShot(true);
+    m_commandWatchdog->setInterval(kCommandTimeoutMs);
+    connect(m_commandWatchdog, &QTimer::timeout, this, [this] {
+        if (!m_haveCurrent)
+            return;
+        // The fork never answered: fail the in-flight command so the caller's
+        // commandFinished fires (no upstream 120 s hang), release the slot, and
+        // let the queue proceed.
+        const QString command = m_current.text;
+        m_haveCurrent = false;
+        m_current = Pending();
+        emit errorOccurred(tr("The HRDB debugger did not respond to '%1' in time.").arg(command));
+        emit commandFinished(command, QString());
+        m_owedReply = true; // a late reply to this failed command must be swallowed
+        dispatchNext();
+    });
     // The control socket carries the embedded display's video-size reports on
     // the fork (its debugger channels are HRDB's; the socket is upstream's).
     connect(&m_embedSocket, &EmbedSocket::sizeReported, this,
@@ -110,6 +132,7 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
     m_ready = false;
     m_queue.clear();
     m_haveCurrent = false;
+    m_owedReply = false;
     m_current = Pending();
     m_buffer.clear();
     m_stderrText.clear();
@@ -199,10 +222,22 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
     m_socket = new QTcpSocket(this);
     connect(m_socket, &QTcpSocket::readyRead, this, &HrdbBackend::onSocketData);
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
-        if (isRunning()) {
-            emit errorOccurred(tr("The remote-debug connection dropped."));
-            emit logLine(tr("Remote-debug socket closed."));
+        if (!isRunning())
+            return;
+        // The debug channel died. Fail the in-flight command before stop() clears
+        // it (so the caller's commandFinished fires, not a hang), then end the
+        // session — otherwise m_ready/m_haveCurrent stay set, dispatchNext writes
+        // into the dead socket forever, and the UI shows a live session with a
+        // dead debug channel (finding 11).
+        emit errorOccurred(tr("The remote-debug connection dropped."));
+        emit logLine(tr("Remote-debug socket closed."));
+        if (m_haveCurrent) {
+            const QString command = m_current.text;
+            m_haveCurrent = false;
+            m_current = Pending();
+            emit commandFinished(command, QString());
         }
+        stop();
     });
     m_socket->connectToHost(QStringLiteral("127.0.0.1"), kHrdbPort);
     m_connectRetry->start();
@@ -220,10 +255,12 @@ void HrdbBackend::stop()
     m_embedSocket.close();
     m_connectRetry->stop();
     m_handshakeWatchdog->stop();
+    m_commandWatchdog->stop();
     m_ready = false;
     m_stopped = false;
     m_queue.clear();
     m_haveCurrent = false;
+    m_owedReply = false;
     m_current = Pending();
 
     if (m_socket) {
@@ -286,6 +323,9 @@ void HrdbBackend::dispatchNext()
     if (m_current.captureStderr)
         m_stderrConsumed = m_stderrText.size();
     m_socket->write(m_current.wire.toUtf8() + '\0');
+    // The fork has the command in flight; start the watchdog so a dead link that
+    // never answers fails the command instead of wedging the queue (finding 11).
+    m_commandWatchdog->start();
 }
 
 void HrdbBackend::onSocketData()
@@ -305,6 +345,13 @@ void HrdbBackend::onSocketData()
         }
         // Any other message is the reply to the current command. The fork
         // answers commands in order and only one is outstanding.
+        if (m_owedReply) {
+            // A late reply to a command the watchdog already failed — swallow it
+            // so it can't be mis-attributed to the next command (native's
+            // owed-prompts guard, finding 11).
+            m_owedReply = false;
+            continue;
+        }
         if (m_haveCurrent)
             completeCurrent(message);
         else
@@ -358,6 +405,8 @@ void HrdbBackend::handleNotification(const QByteArray &message)
 
 void HrdbBackend::completeCurrent(const QByteArray &message)
 {
+    // A reply arrived: cancel the per-command watchdog.
+    m_commandWatchdog->stop();
     const QList<QByteArray> fields = message.split('\x01');
     const Pending done = m_current;
     m_haveCurrent = false;

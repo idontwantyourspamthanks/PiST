@@ -126,10 +126,19 @@ private:
     QTcpSocket *m_socket = nullptr;
     QTimer *m_connectRetry = nullptr;
     QTimer *m_handshakeWatchdog = nullptr;
+    /// Fails a command the fork never answered — the native backend has a
+    /// per-command timeout; HRDB had only the handshake watchdog, so a dead link
+    /// wedged the queue forever (finding 11).
+    QTimer *m_commandWatchdog = nullptr;
 
     QByteArray m_buffer;
     QQueue<Pending> m_queue;
     bool m_haveCurrent = false;
+    /// After the command watchdog fails a command, one reply is still owed to it
+    /// (a slow — not dead — fork may answer late). Swallow the next reply so it
+    /// can't be mis-attributed to the following command, mirroring the native
+    /// backend's owed-prompts guard (finding 11).
+    bool m_owedReply = false;
     Pending m_current;
 
     /// The control-socket server, used for the embedded display's video-size

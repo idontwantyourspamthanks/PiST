@@ -262,26 +262,49 @@ jobs:
 
           # ctest's output capture proved unreliable here — on Windows a failing
           # test reported no output at all — so re-run verbosely, which makes
-          # ctest print each test's command line and its output. Locating the
-          # binaries by hand was tried and is worse: build artefacts such as
-          # *.vcxproj also match a `tst_*` glob.
+          # ctest print each test's command line and its output.
           echo
           echo "### verbose re-run to capture the failures"
           ctest --test-dir build --build-config Release -V || true
 
-          # Last resort: run each test binary with its output redirected to a
-          # file, which captures output even when ctest's capture does not.
+          # Last resort: run each test binary directly. Two traps shaped this:
+          # the glob must name real executables only — build/tst_* also matches
+          # MSBuild artefacts (*.vcxproj) and directories (tst_*.dir/), and an
+          # exec failure under bash -e used to abort the step before it printed
+          # anything — and the log must go to a file, because a crashing test
+          # can take its pipe-buffered stdout with it while QTest's file logger
+          # flushes every message.
           echo
           echo "### direct runs with redirected output"
-          for exe in build/tst_* build/Release/tst_*.exe; do
-            [ -f "$exe" ] || continue
-            case "$exe" in *.exe.recipe|*.lib|*.pdb) continue ;; esac
+          shopt -s nullglob
+          exes=(build/Release/tst_*.exe)
+          for f in build/tst_*; do
+            # Single-config tree: keep extension-less regular files only, so
+            # build artefacts can never reach the exec.
+            case "$f" in *.*) continue ;; esac
+            [ -f "$f" ] && exes+=("$f")
+          done
+          for exe in "${exes[@]}"; do
             out=$(mktemp)
-            "$exe" > "$out" 2>&1
-            code=$?
+            code=0
+            "$exe" -o "$out,txt" > /dev/null 2>&1 || code=$?
             echo "--- $exe (exit $code) ---"
             tail -30 "$out"
             rm -f "$out"
+            [ "$code" -eq 0 ] && continue
+            # A failing binary gets per-function isolation: each function in its
+            # own process, so even a hard crash that swallows all output still
+            # names the function that was running.
+            for fn in $("$exe" -functions 2>/dev/null); do
+              fnout=$(mktemp)
+              fncode=0
+              "$exe" "$fn" -o "$fnout,txt" > /dev/null 2>&1 || fncode=$?
+              if [ "$fncode" -ne 0 ]; then
+                echo "    FAILED (exit $fncode): $fn"
+                cat "$fnout"
+              fi
+              rm -f "$fnout"
+            done
           done
           exit 1
 

@@ -3613,6 +3613,16 @@ void TstGui::searchMenuFollowsTheEditor()
     QCOMPARE(nextAction->shortcut(), QKeySequence(Qt::Key_F3));
 
     // A session starts on a text tab, so they are live from the first frame.
+    // Open a real file rather than relying on the pristine tab: an untouched
+    // tab is REPLACED when the image opens below (addImageTab), and whether the
+    // tab is pristine otherwise depends on QSettings left by whichever test ran
+    // before — which is how this test flaked.
+    const QString source = m_work->path() + QStringLiteral("/search.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\trts\n\tend\n");
+    src.close();
+    window.openPath(source);
     QVERIFY(findAction->isEnabled());
     QVERIFY(replaceAction->isEnabled());
 

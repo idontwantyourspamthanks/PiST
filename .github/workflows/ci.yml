@@ -243,11 +243,17 @@ jobs:
           destination: ${{ runner.temp }}/hatari-hrdb-bin
       - name: Verify the emulator build
         if: matrix.emulator
-        shell: bash
         run: |
           set -euo pipefail
           command -v hatari || command -v hatari.exe
-          hatari --version 2>&1 | sed -n '1p' || true
+          # No `hatari --version` on Windows: Hatari's info options open a
+          # console and then wait for Enter (Win_ForceCon + Main_ErrorExit),
+          # which would hang the step until the job timeout. The test binaries
+          # verify the build by content probe instead (HatariProbe scans the
+          # binary on Windows precisely because of this).
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            hatari --version 2>&1 | sed -n '1p' || true
+          fi
 
       - name: Fetch a ROM
         if: matrix.emulator

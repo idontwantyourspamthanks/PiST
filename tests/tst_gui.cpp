@@ -1488,19 +1488,60 @@ void TstGui::fileBrowserShowsTheProjectDirectory()
     auto *browser = window.findChild<FileBrowser *>();
     QVERIFY2(browser, "MainWindow must own a FileBrowser");
 
-    // Opening a file must point the browser at that file's directory, so the
-    // browser and the editor never disagree about which project is open.
+    // The first open seeds the browser with the file's directory, so a fresh
+    // window still lands on the project being edited.
     window.openPath(src);
 
     auto *view = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
     QVERIFY(view);
     QVERIFY2(view->model(), "the browser must have a model");
-    const QString rootPath = view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString();
-    QCOMPARE(rootPath, dir);
+    // The file system model populates in a thread, so the root and the
+    // selection land when the directory read finishes.
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(),
+                              dir, 5000);
 
     // The file being edited is the selected entry.
-    const QString selected = view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString();
-    QCOMPARE(selected, src);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              src, 5000);
+
+    // A file inside the project — here one level down — is revealed by
+    // expanding the tree to it; the root itself does not move.
+    const QString sub = dir + QStringLiteral("/sub");
+    QVERIFY(QDir().mkpath(sub));
+    const QString nested = sub + QStringLiteral("/nested.s");
+    QFile n(nested);
+    QVERIFY(n.open(QIODevice::WriteOnly | QIODevice::Text));
+    n.write("\tnop\n");
+    n.close();
+    window.openPath(nested);
+    QCOMPARE(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(), dir);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              nested, 5000);
+    QVERIFY(view->isExpanded(view->currentIndex().parent()));
+
+    // A file outside the project leaves the browser where the user put it:
+    // the root is a choice, not a shadow of whatever tab is focused.
+    const QString elsewhere = m_work->path() + QStringLiteral("/elsewhere");
+    QVERIFY(QDir().mkpath(elsewhere));
+    const QString foreign = elsewhere + QStringLiteral("/foreign.s");
+    QFile g(foreign);
+    QVERIFY(g.open(QIODevice::WriteOnly | QIODevice::Text));
+    g.write("\tnop\n");
+    g.close();
+    window.openPath(foreign);
+    QCOMPARE(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(), dir);
+    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), nested);
+
+    // The root moves only on an explicit choice: the Browse… button opens a
+    // folder picker, and dismissing it changes nothing.
+    auto *browse = browser->findChild<QPushButton *>(QStringLiteral("hardDriveBrowse"));
+    QVERIFY(browse);
+    QTimer::singleShot(0, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    browse->click();
+    QCOMPARE(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(), dir);
 }
 
 
@@ -1524,14 +1565,16 @@ void TstGui::fileBrowserDirectorySwitchMovesSelection()
 
     auto *view = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
     QVERIFY(view);
-    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), src);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              src, 5000);
 
     // Typing another folder into the path field moves the selection to that
     // folder: the context menu (New File…, Paste) acts on the current index,
     // so with the old selection left in place a new file was created in dirA
     // while the user was looking at dirB.
     browser->showDirectory(dirB);
-    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), dirB);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              dirB, 5000);
     QCOMPARE(browser->selectedHardDrivePaths(), QStringList{dirB});
 }
 

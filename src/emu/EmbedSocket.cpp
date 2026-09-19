@@ -14,10 +14,20 @@ namespace pist {
 
 namespace {
 
+/// Plausible ST video dimensions. Rejecting out-of-range values drops socket
+/// noise and, crucially, a *partial* report that happens to parse: a split
+/// "320x2" (height 2) is not a real mode, so it is left in the buffer to be
+/// completed by the next read into "320x200" (finding C9).
+constexpr int kMinEmbedDim = 16;
+constexpr int kMaxEmbedDim = 4096;
+/// A single "<w>x<h>" report is far shorter than this; exceeding it without a
+/// parse means coalesced or garbage bytes, so drop the buffer rather than let it
+/// grow without bound (finding C9).
+constexpr int kMaxEmbedReportBytes = 64;
+
 /// Parse a "<w>x<h>" embed-size report into width and height. Returns false
-/// for anything that is not exactly two positive integers around an 'x', so
-/// socket noise is never treated as a size and the container is never resized
-/// to junk.
+/// for anything that is not two integers around an 'x' within a plausible
+/// range, so the container is never resized to junk or a truncated report.
 bool parseEmbedSize(const QString &line, int *width, int *height)
 {
     const int x = line.indexOf(QLatin1Char('x'));
@@ -26,7 +36,8 @@ bool parseEmbedSize(const QString &line, int *width, int *height)
     bool okWidth = false, okHeight = false;
     const int w = line.left(x).toInt(&okWidth);
     const int h = line.mid(x + 1).toInt(&okHeight);
-    if (!okWidth || !okHeight || w <= 0 || h <= 0)
+    if (!okWidth || !okHeight || w < kMinEmbedDim || w > kMaxEmbedDim
+        || h < kMinEmbedDim || h > kMaxEmbedDim)
         return false;
     *width = w;
     *height = h;
@@ -195,6 +206,11 @@ void EmbedSocket::onData()
     if (parseEmbedSize(text, &width, &height)) {
         emit logLine(tr("Emulator window size: %1x%2").arg(width).arg(height));
         emit sizeReported(width, height);
+        m_buffer.clear();
+    } else if (m_buffer.size() > kMaxEmbedReportBytes) {
+        // Not a single (or partial) report and too long to become one — a
+        // coalesced pair like "320x200640x400" never parses, so without this the
+        // buffer accumulated forever and every later report was lost with it.
         m_buffer.clear();
     }
 }

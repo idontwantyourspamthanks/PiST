@@ -17,6 +17,7 @@
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
 #include "emu/EmulatorHost.h"
+#include "emu/EmbedSocket.h"
 #include "emu/HrdbBackend.h"
 #include "emu/HatariProbe.h"
 #include "emu/SessionConfig.h"
@@ -27,6 +28,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QProcess>
+#include <QLocalSocket>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -100,6 +102,9 @@ private slots:
     /// Both backends reject a refresh with no session with exactly one error
     /// (native used to emit three — C3 drift 2). Emulator-free.
     void refreshWithoutSessionEmitsOneError();
+    /// A split "<w>x<h>" report must complete, not emit the implausible partial
+    /// (finding C9).
+    void embedSocketCompletesSplitSizeReport();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -1175,6 +1180,55 @@ void TstEmulatorHost::refreshWithoutSessionEmitsOneError()
     QSignalSpy hrdbErrors(&hrdb, &IDebugBackend::errorOccurred);
     hrdb.refresh();
     QCOMPARE(hrdbErrors.count(), 1);
+}
+
+void TstEmulatorHost::embedSocketCompletesSplitSizeReport()
+{
+    const QString path = m_work->path() + QStringLiteral("/embed-split.sock");
+    EmbedSocket server;
+    QString error;
+    QVERIFY2(server.listen(path, &error), qPrintable(error));
+
+    QSignalSpy sizes(&server, &EmbedSocket::sizeReported);
+    QLocalSocket client;
+    client.connectToServer(path);
+    QVERIFY(client.waitForConnected(2000));
+    QTest::qWait(150); // let the server accept the connection
+
+    // Feed the report split across two writes, giving the server a chance to read
+    // the first before the second lands. "320x2" is an implausible height; the
+    // old parser accepted it as a real 320x2 and cleared the buffer, so the
+    // trailing "00" was lost and the reported size was wrong (finding C9).
+    client.write("320x2");
+    QVERIFY(client.waitForBytesWritten(2000));
+    QTest::qWait(150);
+    QCOMPARE(sizes.count(), 0); // held as a partial, not emitted
+
+    client.write("00");
+    QVERIFY(client.waitForBytesWritten(2000));
+    QTest::qWait(150);
+    QCOMPARE(sizes.count(), 1); // completed to 320x200
+    if (sizes.count() == 1) {
+        QCOMPARE(sizes.at(0).at(0).toInt(), 320);
+        QCOMPARE(sizes.at(0).at(1).toInt(), 200);
+    }
+
+    // The unbounded-buffer half: a blob longer than any single report that never
+    // parses must be dropped, so the next clean report still gets through.
+    client.write(QByteArray(200, '1')); // no 'x' — never a size
+    QVERIFY(client.waitForBytesWritten(2000));
+    QTest::qWait(150);
+    client.write("640x480");
+    QVERIFY(client.waitForBytesWritten(2000));
+    QTest::qWait(150);
+    // Without the cap the 200 stray bytes stay and pollute "640x480" (its width
+    // field becomes an unparseable 200-digit number); with it the blob is dropped
+    // and the report parses, so a second size is reported.
+    QCOMPARE(sizes.count(), 2);
+    if (sizes.count() == 2) {
+        QCOMPARE(sizes.at(1).at(0).toInt(), 640);
+        QCOMPARE(sizes.at(1).at(1).toInt(), 480);
+    }
 }
 
 QTEST_MAIN(TstEmulatorHost)

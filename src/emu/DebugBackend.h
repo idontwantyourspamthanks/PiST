@@ -8,6 +8,7 @@
 #include "emu/SessionConfig.h"
 
 #include <QObject>
+#include <QProcessEnvironment>
 #include <QString>
 
 namespace pist {
@@ -33,6 +34,27 @@ enum class BackendKind { Native, Hrdb };
 inline bool isBreakpointCommand(const QString &text)
 {
     return text.startsWith(QLatin1Char('b'));
+}
+
+/// The environment both debug backends hand the Hatari process. Config
+/// isolation (HOME / XDG_CONFIG_HOME pointed at the session dir, so Hatari never
+/// loads the user's real `hatari.cfg` — docs/PLAN.md §5 rule 7) plus the X11
+/// reparenting variables for an embedded display. Shared so the two transports
+/// cannot drift apart.
+inline QProcessEnvironment makeSessionEnvironment(const SessionConfig &config)
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("HOME"), config.sessionDir);
+    env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);
+    if (!config.parentWindowId.isEmpty()) {
+        // Embedded display: Hatari reparents its SDL window into the container
+        // window named here (src/control.c, under HAVE_X11 && SDL_VIDEO_DRIVER_X11).
+        // Both processes must be X11 clients of the same display, which is why the
+        // child is pinned to the X11 driver and why PiST runs on the xcb platform.
+        env.insert(QStringLiteral("PARENT_WIN_ID"), config.parentWindowId);
+        env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("x11"));
+    }
+    return env;
 }
 
 /// The debug-transport contract MainWindow drives, independent of how the

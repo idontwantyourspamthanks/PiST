@@ -17,6 +17,7 @@
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
 #include "emu/EmulatorHost.h"
+#include "emu/HrdbBackend.h"
 #include "emu/HatariProbe.h"
 #include "emu/SessionConfig.h"
 #include "emu/Paths.h"
@@ -96,6 +97,9 @@ private slots:
     /// A second session on the same host must re-frame cleanly: resetTransport()
     /// exists for this and no other test exercises it, as each builds a fresh host.
     void secondSessionOnOneHostReframesCleanly();
+    /// Both backends reject a refresh with no session with exactly one error
+    /// (native used to emit three — C3 drift 2). Emulator-free.
+    void refreshWithoutSessionEmitsOneError();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -1154,6 +1158,23 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
              "continue request survived the transport reset");
 
     host.stop();
+}
+
+void TstEmulatorHost::refreshWithoutSessionEmitsOneError()
+{
+    // Both backends must reject a refresh with no session with exactly one error.
+    // Native used to enqueue three snapshot commands, each emitting its own
+    // "No emulator session is running." (C3 drift 2); the guard makes it one,
+    // matching HrdbBackend. No process is ever started, so this needs no emulator.
+    EmulatorHost native;
+    QSignalSpy nativeErrors(&native, &IDebugBackend::errorOccurred);
+    native.refresh();
+    QCOMPARE(nativeErrors.count(), 1);
+
+    HrdbBackend hrdb;
+    QSignalSpy hrdbErrors(&hrdb, &IDebugBackend::errorOccurred);
+    hrdb.refresh();
+    QCOMPARE(hrdbErrors.count(), 1);
 }
 
 QTEST_MAIN(TstEmulatorHost)

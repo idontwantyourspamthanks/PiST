@@ -462,6 +462,8 @@ qt_add_executable(tst_emulatorhost
     src/debug/Watchpoint.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
+    src/emu/HrdbBackend.cpp
+    src/emu/HrdbBackend.h
     src/emu/DebugBackend.h
     src/emu/EmbedSocket.cpp
     src/emu/EmbedSocket.h

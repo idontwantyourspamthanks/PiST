@@ -6,6 +6,7 @@
 
 #include "emu/EmulatorHost.h"
 #include "emu/HatariTextParse.h"
+#include "emu/MemoryDump.h"
 #include "emu/Paths.h"
 
 #include <QDir>
@@ -120,15 +121,8 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
 
     m_process = new QProcess(this);
 
-    // Same config isolation as the native backend (docs/PLAN.md §5 rule 7).
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("HOME"), config.sessionDir);
-    env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);
-    if (!config.parentWindowId.isEmpty()) {
-        env.insert(QStringLiteral("PARENT_WIN_ID"), config.parentWindowId);
-        env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("x11"));
-    }
-    m_process->setProcessEnvironment(env);
+    // Same config isolation + embedded-display wiring as the native backend.
+    m_process->setProcessEnvironment(makeSessionEnvironment(config));
 
     // The session argv is the stock one, control socket included: the fork
     // keeps the upstream option, and it carries the embedded display's
@@ -542,6 +536,11 @@ QString HrdbBackend::formatMemoryDump(quint32 address, quint32 memBytes,
                                       const QByteArray &uu)
 {
     const QByteArray bytes = uudecode(uu, memBytes);
+    // The character column comes from the shared printable-range renderer (the
+    // memory view uses the same one), so the two cannot drift on what is
+    // printable. Rendered once, then sliced per row.
+    const QVector<quint8> byteVals(bytes.cbegin(), bytes.cend());
+    const QString allChars = renderMemoryChars(byteVals);
 
     // Render as upstream `m` output — `%08X: HH HH …  chars` rows of 16 — so
     // parseMemoryDump (and the views) see exactly the native format.
@@ -549,13 +548,9 @@ QString HrdbBackend::formatMemoryDump(quint32 address, quint32 memBytes,
     for (int row = 0; row < bytes.size(); row += 16) {
         const int count = qMin(16, bytes.size() - row);
         QString line = QStringLiteral("%1:").arg(address + row, 8, 16, QLatin1Char('0'));
-        QString chars;
-        for (int i = 0; i < count; ++i) {
-            const quint8 b = quint8(bytes[row + i]);
-            line += QStringLiteral(" %1").arg(b, 2, 16, QLatin1Char('0'));
-            chars += (b >= 32 && b < 127) ? QLatin1Char(char(b)) : QLatin1Char('.');
-        }
-        text += line + QStringLiteral("  ") + chars + QLatin1Char('\n');
+        for (int i = 0; i < count; ++i)
+            line += QStringLiteral(" %1").arg(quint8(bytes[row + i]), 2, 16, QLatin1Char('0'));
+        text += line + QStringLiteral("  ") + allChars.mid(row, count) + QLatin1Char('\n');
     }
     return text;
 }

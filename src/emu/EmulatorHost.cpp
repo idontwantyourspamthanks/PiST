@@ -267,22 +267,9 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
 
     m_process = new QProcess(this);
 
-    // Isolate the session from the user's real configuration: Hatari always
-    // loads it unless HATARI_TEST is set, and CLI arguments only override what
-    // we pass explicitly (docs/PLAN.md §5 rule 7).
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("HOME"), config.sessionDir);
-    env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);
-
-    if (!config.parentWindowId.isEmpty()) {
-        // Embedded display: Hatari reparents its SDL window into the container
-        // window named here (src/control.c, under HAVE_X11 && SDL_VIDEO_DRIVER_X11).
-        // Both processes must be X11 clients of the same display, which is why the
-        // child is pinned to the X11 driver and why PiST runs on the xcb platform.
-        env.insert(QStringLiteral("PARENT_WIN_ID"), config.parentWindowId);
-        env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("x11"));
-    }
-    m_process->setProcessEnvironment(env);
+    // Config isolation + embedded-display X11 wiring, shared with the HRDB
+    // backend (see makeSessionEnvironment).
+    m_process->setProcessEnvironment(makeSessionEnvironment(config));
 
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
 
@@ -635,6 +622,14 @@ void EmulatorHost::resume()
 
 void EmulatorHost::refresh()
 {
+    // Match HrdbBackend::refresh: without a session each queued command would
+    // dispatch and emit its own "No emulator session is running." — three
+    // identical errors from one refresh. Guard once instead.
+    if (!isRunning()) {
+        emit errorOccurred(tr("No emulator session is running."));
+        return;
+    }
+
     // The three responses each fill a different part of MachineState, so they
     // are queued as one batch: stateUpdated fires once, after the disassembly —
     // the last of the three — has been parsed, and carries the complete state.

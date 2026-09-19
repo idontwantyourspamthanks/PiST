@@ -35,6 +35,7 @@ private slots:
     void lineMapRejectsUnknownLine();
     void lineMapRejectsUnparseableListing();
     void lineMapMatchesAbsoluteListingPaths();
+    void buildServiceFlushesFinalUnterminatedLine();
     void floppyImageGeometry();
     void floppyListsAutoFolder();
     void floppyWritesAndListsFiles();
@@ -394,6 +395,53 @@ void TstParsers::lineMapMatchesAbsoluteListingPaths()
     QVERIFY(!LineMap::sameSource(back.file, QStringLiteral("other.s")));
 }
 
+
+void TstParsers::buildServiceFlushesFinalUnterminatedLine()
+{
+#ifdef Q_OS_WIN
+    // The fake assembler is a /bin/sh script and Windows has no /bin/sh; the
+    // finish-time flush is platform-independent, so POSIX coverage suffices.
+    QSKIP("fake assembler needs a POSIX shell");
+#endif
+
+    // A fake assembler that emits a diagnostic with NO trailing newline, then
+    // fails. The readyRead loop only consumes lines up to '\n', so without the
+    // finish-time flush the last line never reaches handleStderrLine and its
+    // output is silently dropped (finding B12).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString script = dir.filePath(QStringLiteral("fakeasm.sh"));
+    {
+        QFile f(script);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("#!/bin/sh\nprintf 'hello.s:1: error: boom' >&2\nexit 1\n");
+        f.close();
+    }
+    QFile::setPermissions(script,
+                          QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    const QString src = dir.filePath(QStringLiteral("hello.s"));
+    {
+        QFile f(src);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\nstart:\trts\n\tend\n");
+        f.close();
+    }
+
+    BuildService bs;
+    bs.setAssemblerPath(script);
+    bs.setSourceFile(src);
+    bs.setOutputFile(dir.filePath(QStringLiteral("hello.prg")));
+    QSignalSpy output(&bs, &BuildService::outputLine);
+    QSignalSpy done(&bs, &BuildService::finished);
+    bs.build();
+    QVERIFY(done.wait(5000));
+
+    bool sawBoom = false;
+    for (const auto &args : output)
+        if (args.at(0).toString().contains(QStringLiteral("boom")))
+            sawBoom = true;
+    QVERIFY2(sawBoom, "the final unterminated diagnostic line must be flushed and surfaced");
+}
 // The AUTO-folder image must match mkfs.vfat's canonical 720 KiB layout
 // exactly — pinned against a real image so a geometry mistake fails here
 // rather than as a TOS boot failure: 512-byte sectors, 2 sectors per cluster,

@@ -328,6 +328,23 @@ void BuildService::runNextStep()
 
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
             [this](int exitCode, QProcess::ExitStatus status) {
+                // The readyRead loops only consume up to '\n', so a step's final
+                // line — when it has no trailing newline, as vlink's last diagnostic
+                // often is — sits in the buffer and would be dropped when the next
+                // step clears it. Drain any last bytes and flush the remainder as a
+                // final line (finding B12).
+                m_stderrBuffer += m_process->readAllStandardError();
+                m_stdoutBuffer += m_process->readAllStandardOutput();
+                if (!m_stderrBuffer.isEmpty()) {
+                    handleStderrLine(
+                        QString::fromUtf8(m_stderrBuffer).remove(QLatin1Char('\r')));
+                    m_stderrBuffer.clear();
+                }
+                if (!m_stdoutBuffer.isEmpty()) {
+                    handleStdoutLine(
+                        QString::fromUtf8(m_stdoutBuffer).remove(QLatin1Char('\r')));
+                    m_stdoutBuffer.clear();
+                }
                 if (!(status == QProcess::NormalExit && exitCode == 0))
                     m_sawFailure = true;
                 m_process->deleteLater();

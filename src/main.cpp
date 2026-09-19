@@ -64,17 +64,29 @@ int runDiagnose()
     if (assembler.found() && !assembler.version.isEmpty())
         out << "  version: " << assembler.version << "\n";
 
+    const pist::ToolInfo linker = pist::toolchain::findLinker();
+    out << "Linker (vlink): "
+        << (linker.found() ? linker.path : QStringLiteral("NOT FOUND")) << "\n";
+    if (linker.found() && !linker.version.isEmpty())
+        out << "  version: " << linker.version << "\n";
+
     const pist::ToolInfo emulator = pist::toolchain::findEmulator();
     out << "Emulator (hatari): "
         << (emulator.found() ? emulator.path : QStringLiteral("NOT FOUND")) << "\n";
-    if (emulator.found() && !emulator.version.isEmpty())
-        out << "  version: " << emulator.version << "\n";
-    if (emulator.found()) {
-        // Probe the emulator's capabilities, so a release archive can prove
-        // what its bundled emulator speaks (native prompt framing vs HRDB).
-        const pist::HatariCapabilities caps = pist::probeHatari(emulator.path);
+    // Probe the emulator's capabilities, so a release archive can prove
+    // what its bundled emulator speaks (native prompt framing vs HRDB).
+    pist::HatariCapabilities caps;
+    if (emulator.found())
+        caps = pist::probeHatari(emulator.path);
+    // ToolInfo's version is process-probed, which a Windows Hatari defeats —
+    // it prints to a freshly allocated console, not the pipe — so the content
+    // probe's version is the fallback there.
+    const QString emulatorVersion = !emulator.version.isEmpty() ? emulator.version
+                                                                : caps.version;
+    if (emulator.found() && !emulatorVersion.isEmpty())
+        out << "  version: " << emulatorVersion << "\n";
+    if (emulator.found())
         out << "  transport: " << (caps.hasHrdb ? "hrdb" : "native") << "\n";
-    }
 
     // ROMs and where they were looked for, since "no ROM" is the most common
     // first-run problem and the search spans several directories.

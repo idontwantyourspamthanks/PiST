@@ -13,6 +13,7 @@
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
 #include "editor/IncludeNav.h"
+#include "ui/ConsoleInput.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "image/ImageDocument.h"
@@ -234,6 +235,7 @@ ImageEditor *MainWindow::addImageTab(const QString &path)
 
     auto *editor = new ImageEditor(this);
     wireImage(editor);
+    wireImageReExport(editor);
     if (!path.isEmpty()) {
         const bool ok = isPimPath(path) ? editor->loadFile(path) : editor->importFile(path, false);
         if (!ok) {
@@ -314,6 +316,36 @@ void MainWindow::wireImage(ImageEditor *editor)
     });
 }
 
+void MainWindow::wireImageReExport(ImageEditor *editor)
+{
+    // A re-export repeats the block map in the console, same as the explicit
+    // export leaves it.
+    connect(editor, &ImageEditor::bitplaneReExported, this,
+            [this](const QString &path, const QString &scroller, const QString &error) {
+                if (!m_log)
+                    return;
+                if (!error.isEmpty()) {
+                    m_log->appendPlainText(tr("[export] re-export failed: %1").arg(error));
+                    return;
+                }
+                m_log->appendPlainText(tr("--- bitplane data (re-export): %1 ---")
+                                           .arg(QFileInfo(path).fileName()));
+                const ImageDocument &doc = m_image->document();
+                const QVector<BitplaneBlock> blocks = bitplaneLayout(
+                    doc.phases().at(m_image->lastBitplaneExportPhase()).cellW,
+                    doc.phases().at(m_image->lastBitplaneExportPhase()).cellH,
+                    doc.phases().at(m_image->lastBitplaneExportPhase()).frames.size(),
+                    m_image->lastBitplaneExportOptions());
+                for (const BitplaneBlock &block : blocks)
+                    m_log->appendPlainText(QStringLiteral("%1 equ $%2")
+                                               .arg(block.name, -20)
+                                               .arg(block.offset, 4, 16, QLatin1Char('0')));
+                if (!scroller.isEmpty())
+                    m_log->appendPlainText(tr("%1 — press F7 to assemble it and watch this "
+                                              "sprite scroll").arg(QFileInfo(scroller).fileName()));
+            });
+}
+
 QList<CodeEditor *> MainWindow::openEditors() const
 {
     QList<CodeEditor *> editors;
@@ -379,6 +411,9 @@ void MainWindow::onTabChanged(int index)
         m_actExportSpriteSheet->setEnabled(m_image != nullptr
                                            && m_image->currentSheetIndex() >= 0);
         m_actExportBitplanes->setEnabled(m_image != nullptr);
+        if (m_actReExportBitplanes)
+            m_actReExportBitplanes->setEnabled(m_image != nullptr
+                                               && m_image->canReExportBitplane());
     }
     // Find and replace act on the text editor, so they come and go with it: an
     // image tab has nothing to search.
@@ -479,6 +514,15 @@ void MainWindow::createActions()
     m_actNextDiagnostic = new QAction(tr("Next Diagnostic"), this);
     m_actNextDiagnostic->setShortcut(QKeySequence(Qt::Key_F4));
     connect(m_actNextDiagnostic, &QAction::triggered, this, &MainWindow::nextDiagnostic);
+
+    // No shortcut here: the editor's own action owns Ctrl+Shift+E (two actions
+    // with one shortcut is an ambiguity warning, not a feature).
+    m_actReExportBitplanes = new QAction(tr("Re-export Bitplane Data"), this);
+    m_actReExportBitplanes->setEnabled(false);
+    connect(m_actReExportBitplanes, &QAction::triggered, this, [this] {
+        if (m_image)
+            m_image->reExportBitplaneData();
+    });
 
     m_actPrevDiagnostic = new QAction(tr("Previous Diagnostic"), this);
     m_actPrevDiagnostic->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F4));
@@ -766,6 +810,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actExportImageSafe);
     fileMenu->addAction(m_actExportSpriteSheet);
     fileMenu->addAction(m_actExportBitplanes);
+    fileMenu->addAction(m_actReExportBitplanes);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -1182,7 +1227,7 @@ void MainWindow::createDocks()
     // console: commands go through the backend's normal queue and the response
     // is appended when it arrives (matched by command text in the
     // commandFinished handler in wireBackend).
-    m_consoleInput = new QLineEdit(this);
+    m_consoleInput = new ConsoleInput(this);
     m_consoleInput->setObjectName(QStringLiteral("consoleInput"));
     appearance::markMono(m_consoleInput);
     m_consoleInput->setPlaceholderText(
@@ -2190,6 +2235,13 @@ void MainWindow::exportBitplaneData()
                                  .arg(info.fileName(), scroller, m_image->lastError()));
         return;
     }
+
+    // Remember the pair for Ctrl+Shift+E (re-export), scroller included; an
+    // empty scroller records "no scroller", so a declined overwrite is not
+    // re-asked on every re-export.
+    m_image->setBitplaneExportScroller(scroller);
+    if (m_actReExportBitplanes)
+        m_actReExportBitplanes->setEnabled(m_image->canReExportBitplane());
 
     // The blob carries no offsets of its own, and the source needs them for its
     // `equ`s — so leave the map where it can still be read after the dialog

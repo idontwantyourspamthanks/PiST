@@ -58,6 +58,36 @@ public:
     /// `.dat` written beside it).
     bool exportScrollDemoFile(const QString &path, int phase, const BitplaneDataOptions &options,
                               const QString &dataFile);
+
+    /// Remember that the export `exportBitplaneFile()` just wrote also came
+    /// with this scroller, so `reExportBitplaneData()` writes it too. The
+    /// export flow calls this once the scroller is out; `exportBitplaneFile()`
+    /// clears it, so a new export replaces the pair rather than reusing it.
+    /// Ignored when no bitplane export has succeeded yet.
+    void setBitplaneExportScroller(const QString &scroller);
+
+    /// Whether a bitplane export has succeeded in this session, so there is a
+    /// recipe to repeat.
+    bool canReExportBitplane() const { return !m_bitplaneRecipe.path.isEmpty(); }
+    /// The `.dat` the remembered export wrote; empty before the first one.
+    QString lastBitplaneExportPath() const { return m_bitplaneRecipe.path; }
+    /// The phase the remembered export used, and the blocks it wrote, so the
+    /// shell can print the same block map for a re-export as for the explicit
+    /// one.
+    int lastBitplaneExportPhase() const { return m_bitplaneRecipe.phase; }
+    BitplaneDataOptions lastBitplaneExportOptions() const { return m_bitplaneRecipe.options; }
+    /// Write the remembered bitplane export again — the same phase, blocks and
+    /// `.dat`, and the scroller beside it when that export wrote one — with no
+    /// dialog and no overwrite prompt, encoding the document's current pixels.
+    /// False leaves `lastError()` saying why. Nothing is encoded unless both
+    /// blobs encode, so a phase that is gone cannot truncate a good `.dat`;
+    /// the `.dat` goes out before its scroller, so a scroller that will not
+    /// open is reported with the `.dat` already written.
+    bool reExportBitplaneData();
+    /// The toolbar's re-export action, for a File menu entry to share: adding
+    /// this action to a menu keeps one shortcut and one enabled state, where a
+    /// second action would make Ctrl+Shift+E ambiguous.
+    QAction *reExportAction() const { return m_actReExport; }
     /// The sheet the current phase is placed on (0 when unplaced); -1 when
     /// the document has no sheets at all.
     int currentSheetIndex() const;
@@ -93,6 +123,12 @@ public:
 
 signals:
     void modificationChanged(bool modified);
+    /// A re-export finished: `path` is the `.dat`, `scroller` what was written
+    /// beside it (empty when none). `error` is empty on success. A re-export
+    /// has no shell caller to report to — the explicit export is driven from
+    /// the shell, which logs it there — so the widget announces this one for
+    /// the console to print the same block map.
+    void bitplaneReExported(const QString &path, const QString &scroller, const QString &error);
 
 private slots:
     void setSheetMode(bool on);
@@ -145,11 +181,34 @@ private slots:
     void selectPhase(int row);
     void renamePhase();
 
+    /// Repeat the last bitplane export, reporting through the status label
+    /// the way an explicit export does.
+    void reExportBitplane();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    /// The bitplane export a re-export repeats, as `.pim` does not record it
+    /// and the project does not either: export stays explicit, and this is per
+    /// document, per session. `path` empty means no export has happened.
+    struct BitplaneExportRecipe {
+        QString path;
+        int phase = 0;
+        BitplaneDataOptions options;
+        /// The scroller written beside `path`, empty when that export wrote
+        /// none or the user declined to overwrite one already there.
+        QString scroller;
+    };
+
+    bool writeBytes(const QString &path, const QByteArray &bytes);
+    bool exportBitplaneBytes(const QString &path, int phase, const BitplaneDataOptions &options,
+                             const QString &scroller);
+    /// Drop the remembered export — the document it described is gone. Leaves
+    /// the action disabled.
+    void forgetBitplaneExport();
+    /// Match the action's enabled state and tool tip to the recipe.
+    void refreshReExport();
     void rebuildSwatches();
     void refreshBrushIcon();
     void refreshFrames();
@@ -251,6 +310,8 @@ private:
     QAction *m_actShiftRight = nullptr;
     QAction *m_actShiftUp = nullptr;
     QAction *m_actShiftDown = nullptr;
+    QAction *m_actReExport = nullptr;
+    BitplaneExportRecipe m_bitplaneRecipe;
     QToolButton *m_addFrame = nullptr;
     QToolButton *m_dupFrame = nullptr;
     QToolButton *m_removeFrame = nullptr;

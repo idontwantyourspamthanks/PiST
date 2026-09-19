@@ -276,6 +276,7 @@ private:
     /// Connect one editor's signals. Runs for every editor tab created.
     void wireEditor(CodeEditor *editor);
     void wireImage(ImageEditor *editor);
+    void wireImageReExport(ImageEditor *editor);
 
     /// Every open text editor, in tab order.
     QList<CodeEditor *> openEditors() const;
@@ -394,7 +395,7 @@ private:
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
-    QLineEdit *m_consoleInput = nullptr;
+    class ConsoleInput *m_consoleInput = nullptr;
 
     /// Every open memory pane, keyed by the dump-routing tag each one carries, so
     /// a dump is routed back to the pane that asked for it. m_memory is the first
@@ -473,6 +474,7 @@ private:
     QAction *m_actExportImageSafe = nullptr;
     QAction *m_actExportSpriteSheet = nullptr;
     QAction *m_actExportBitplanes = nullptr;
+    QAction *m_actReExportBitplanes = nullptr;
     QAction *m_actFind = nullptr;
     QAction *m_actFindNext = nullptr;
     QAction *m_actFindPrevious = nullptr;

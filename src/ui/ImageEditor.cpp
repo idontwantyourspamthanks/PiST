@@ -570,6 +570,20 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(rotate90, &QAction::triggered, this, &ImageEditor::rotate90);
     addAction(rotate90);
 
+    bar->addSeparator();
+    // Ctrl+Shift+E: the editor's own keys are H, V, R, Del, Esc, Ctrl+0 and the
+    // clipboard/zoom standards, so this one is free here and in the window's
+    // menus (which use Ctrl+Shift+F3/F4/F5/F9/F11 only).
+    m_actReExport = new QAction(tr("Re-export bitplane data (Ctrl+Shift+E)"), this);
+    m_actReExport->setObjectName(QStringLiteral("imageReExportBitplanes"));
+    m_actReExport->setIcon(appearance::icon(appearance::Icon::Save));
+    m_actReExport->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
+    m_actReExport->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(m_actReExport, &QAction::triggered, this, &ImageEditor::reExportBitplane);
+    addAction(m_actReExport);
+    bar->addAction(m_actReExport);
+    refreshReExport();
+
     layout->addWidget(bar);
 
     auto *body = new QHBoxLayout;
@@ -867,6 +881,7 @@ void ImageEditor::newDocument(int width, int height, PaletteKind kind)
     m_undo->clear();
     m_importedSheets.clear();
     m_sheetUnderlays.clear();
+    forgetBitplaneExport();
     if (m_actPlay)
         m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
@@ -886,6 +901,7 @@ void ImageEditor::replaceDocument(const ImageDocument &doc)
     m_doc = doc;
     m_filePath.clear();
     m_undo->clear();
+    forgetBitplaneExport();
     if (m_actPlay)
         m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
@@ -906,6 +922,7 @@ bool ImageEditor::loadFile(const QString &path)
     }
     m_filePath = path;
     m_undo->clear();
+    forgetBitplaneExport();
     if (m_actPlay)
         m_actPlay->setChecked(false);
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
@@ -1111,6 +1128,8 @@ void ImageEditor::applyAppearance()
         m_actShiftUp->setIcon(appearance::icon(Icon::ShiftUp));
     if (m_actShiftDown)
         m_actShiftDown->setIcon(appearance::icon(Icon::ShiftDown));
+    if (m_actReExport)
+        m_actReExport->setIcon(appearance::icon(Icon::Save));
     if (m_actPlay)
         m_actPlay->setIcon(appearance::icon(m_playing ? Icon::Pause : Icon::Run));
     if (m_addFrame)
@@ -1854,21 +1873,97 @@ bool ImageEditor::exportSheetFile(const QString &path, int sheetIndex, bool spri
     return true;
 }
 
-bool ImageEditor::exportBitplaneFile(const QString &path, int phase,
-                                     const BitplaneDataOptions &options)
+bool ImageEditor::writeBytes(const QString &path, const QByteArray &bytes)
 {
-    QString error;
-    const QByteArray bytes = exportBitplaneData(m_doc, phase, options, &error);
-    if (bytes.isEmpty()) {
-        m_lastError = error.isEmpty() ? tr("Export failed") : error;
-        return false;
-    }
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
         || file.write(bytes) != bytes.size()) {
         m_lastError = file.errorString();
         return false;
     }
+    return true;
+}
+
+bool ImageEditor::exportBitplaneBytes(const QString &path, int phase,
+                                      const BitplaneDataOptions &options,
+                                      const QString &scroller)
+{
+    // Encode both before opening either: an encoder that refuses (a phase that
+    // is gone, no blocks selected) must not leave a truncated `.dat` where a
+    // good one was. The `.dat` is the product and goes first; the scroller is
+    // its companion, so a scroller that will not open is reported against a
+    // `.dat` that is already out — the same report the explicit export makes.
+    QString error;
+    const QByteArray data = exportBitplaneData(m_doc, phase, options, &error);
+    if (data.isEmpty()) {
+        m_lastError = error.isEmpty() ? tr("Export failed") : error;
+        return false;
+    }
+    QByteArray demo;
+    if (!scroller.isEmpty()) {
+        demo = exportScrollDemo(m_doc, phase, options, QFileInfo(path).fileName(), &error);
+        if (demo.isEmpty()) {
+            m_lastError = error.isEmpty() ? tr("Export failed") : error;
+            return false;
+        }
+    }
+    if (!writeBytes(path, data))
+        return false;
+    if (scroller.isEmpty())
+        return true;
+    if (!writeBytes(scroller, demo)) {
+        m_lastError = tr("wrote %1, but could not write the scroller %2: %3")
+                          .arg(QFileInfo(path).fileName(), QFileInfo(scroller).fileName(),
+                               m_lastError);
+        return false;
+    }
+    return true;
+}
+
+void ImageEditor::forgetBitplaneExport()
+{
+    m_bitplaneRecipe = BitplaneExportRecipe{};
+    refreshReExport();
+}
+
+void ImageEditor::refreshReExport()
+{
+    if (!m_actReExport)
+        return;
+    const bool ready = !m_bitplaneRecipe.path.isEmpty();
+    m_actReExport->setEnabled(ready);
+    if (!ready) {
+        m_actReExport->setToolTip(
+            tr("Write the last bitplane export again, with the same phase, blocks and file "
+               "and no dialog (Ctrl+Shift+E) — enabled once one has been exported"));
+        return;
+    }
+    const QString name = QFileInfo(m_bitplaneRecipe.path).fileName();
+    m_actReExport->setToolTip(m_bitplaneRecipe.scroller.isEmpty()
+        ? tr("Write %1 again with the same phase and blocks, no dialog (Ctrl+Shift+E)").arg(name)
+        : tr("Write %1 and %2 again with the same phase and blocks, no dialog (Ctrl+Shift+E)")
+              .arg(name, QFileInfo(m_bitplaneRecipe.scroller).fileName()));
+}
+
+void ImageEditor::setBitplaneExportScroller(const QString &scroller)
+{
+    if (m_bitplaneRecipe.path.isEmpty())
+        return;
+    m_bitplaneRecipe.scroller = scroller;
+    refreshReExport();
+}
+
+bool ImageEditor::exportBitplaneFile(const QString &path, int phase,
+                                     const BitplaneDataOptions &options)
+{
+    if (!exportBitplaneBytes(path, phase, options, QString()))
+        return false;
+    // The choices are not in the `.pim` and not in the project: export stays
+    // explicit, so how to repeat it lives here, for this document, this
+    // session. A fresh export re-seeds it; the scroller comes in behind via
+    // setBitplaneExportScroller().
+    m_bitplaneRecipe = BitplaneExportRecipe{path, phase, options, QString()};
+    refreshReExport();
     return true;
 }
 
@@ -1882,13 +1977,38 @@ bool ImageEditor::exportScrollDemoFile(const QString &path, int phase,
         m_lastError = error.isEmpty() ? tr("Export failed") : error;
         return false;
     }
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
-        || file.write(bytes) != bytes.size()) {
-        m_lastError = file.errorString();
+    return writeBytes(path, bytes);
+}
+
+bool ImageEditor::reExportBitplaneData()
+{
+    if (m_bitplaneRecipe.path.isEmpty()) {
+        m_lastError = tr("No bitplane export to repeat yet — export one first.");
         return false;
     }
-    return true;
+    // Overwrite, no dialog and no prompt: the remembered export is the user
+    // saying what this file is, and the action is only enabled after one.
+    return exportBitplaneBytes(m_bitplaneRecipe.path, m_bitplaneRecipe.phase,
+                               m_bitplaneRecipe.options, m_bitplaneRecipe.scroller);
+}
+
+void ImageEditor::reExportBitplane()
+{
+    const QString path = m_bitplaneRecipe.path;
+    const QString scroller = m_bitplaneRecipe.scroller;
+    if (!reExportBitplaneData()) {
+        if (m_status)
+            m_status->setText(tr("Re-export failed: %1").arg(m_lastError));
+        emit bitplaneReExported(path, scroller, m_lastError);
+        return;
+    }
+    if (m_status) {
+        m_status->setText(scroller.isEmpty()
+            ? tr("Re-exported %1.").arg(QFileInfo(path).fileName())
+            : tr("Re-exported %1 and %2.").arg(QFileInfo(path).fileName(),
+                                               QFileInfo(scroller).fileName()));
+    }
+    emit bitplaneReExported(path, scroller, QString());
 }
 
 void ImageEditor::refreshOnion()

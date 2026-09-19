@@ -17,7 +17,7 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 > view and hardware registers, with the editor following the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
-> What is missing is breadth rather than core function: no installers, and the emulator ships only
+> What is missing is breadth rather than core function: the emulator ships only
 > in the Linux AppImage — the macOS and Windows archives still expect you to install Hatari. The
 > integration itself has only been exercised on Linux — see
 > [Known limitations](#known-limitations). [docs/PLAN.md](docs/PLAN.md) has the full design.
@@ -479,8 +479,8 @@ Stated plainly, because an early release should not imply more than it does:
   user-installed [hrdb-main Hatari](https://github.com/tattlemuss/hatari) build gets pause and
   live breakpoints back (auto-detected). See [docs/FUTURE.md](docs/FUTURE.md) for the upstream
   fix that would cover the rest.
-- **No installers** — releases are an AppImage on Linux and tarballs/zips elsewhere,
-  not deb/RPM/MSI/dmg.
+- **Installers and plain archives** — Linux gets an AppImage plus deb and RPM packages,
+  macOS a dmg and a tarball, Windows an MSI and a zip.
 - **Hatari is bundled only in the Linux AppImage.** That copy is the hrdb-main fork
   (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified from a
   checksum-pinned commit tarball, so it debugs with nothing else installed — over HRDB. The macOS

@@ -38,6 +38,7 @@ private slots:
     void activePaletteDeduped();
     void frameIndexClampsToRange();
     void iffRejectsBadPlaneCount();
+    void pimReMeshesCompositeFromLayers();
     void fillAndLineIndices();
     void pi1RoundTrip();
     void neoRoundTrip();
@@ -313,6 +314,24 @@ void TstImage::iffRejectsBadPlaneCount()
     }
     // The untouched 4-plane file still imports.
     QVERIFY2(importIff(bytes, PaletteKind::Ste, &sheet, &error), qPrintable(error));
+}
+
+void TstImage::pimReMeshesCompositeFromLayers()
+{
+    ImageDocument doc;
+    QString error;
+    // A frame whose stored composite ("pixels") disagrees with its layer: the
+    // composite must be recomputed from the layers on load (E12), not kept
+    // verbatim — otherwise the file shows the stored 9s and jumps to the merged
+    // 1,2,3,4 on the first repaint.
+    QVERIFY2(doc.fromJson(QByteArrayLiteral(
+        "{\"format\":\"pist.image\",\"version\":2,\"palette\":\"ste\",\"active\":[0],"
+        "\"phases\":[{\"cellW\":2,\"cellH\":2,\"frames\":[{"
+        "\"pixels\":[9,9,9,9],"
+        "\"layers\":[{\"name\":\"L\",\"visible\":true,\"pixels\":[1,2,3,4]}]}]}]}"),
+        &error),
+        qPrintable(error));
+    QCOMPARE(doc.frame(0), (QVector<int>{1, 2, 3, 4}));
 }
 
 void TstImage::fillAndLineIndices()

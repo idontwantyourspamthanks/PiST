@@ -99,7 +99,7 @@ ImageFrame frameFromJson(const QJsonObject &obj, int cellW, int cellH, qint64 &b
             frame.layers.append(layer);
         }
     } else {
-        // A composite-only frame (the v1 shape) becomes a single layer.
+        // A composite-only frame (no "layers" array) becomes a single layer.
         ImageLayer layer;
         layer.name = QStringLiteral("Layer 1");
         layer.pixels = frame.composite;
@@ -837,8 +837,16 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
                               .arg(frameArray.size()));
         }
         for (const QJsonValue &frameValue : frameArray) {
-            phase.frames.append(
-                frameFromJson(frameValue.toObject(), phase.cellW, phase.cellH, pixelBudget));
+            ImageFrame frame
+                = frameFromJson(frameValue.toObject(), phase.cellW, phase.cellH, pixelBudget);
+            // The composite is derived from the layers, not authoritative: a file
+            // whose stored "pixels" disagrees with its "layers" (crafted or
+            // corrupt) must show the merged layers immediately rather than jump to
+            // the merge on the first repaint (finding E12). No-op for a well-formed
+            // file. Done here, not in frameFromJson, because mergedPixel is private.
+            for (int i = 0; i < frame.composite.size(); ++i)
+                frame.composite[i] = mergedPixel(frame, i);
+            phase.frames.append(frame);
             if (pixelBudget < 0)
                 return reject(QStringLiteral(".pim declares more pixel data than the file holds"));
         }

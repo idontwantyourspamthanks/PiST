@@ -156,6 +156,7 @@ private slots:
     void instructionReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void symbolsPanelListsLabelsAfterBuild();
+    void profilerCollectsAndMapsHotLines();
     void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
@@ -642,7 +643,90 @@ void TstGui::remoteControlWatchersSeeSessionEvents()
         10000);
 
     auto *host = window.findChild<EmulatorHost *>();
+
     QVERIFY(host);
+    host->stop();
+}
+// The profiling flow end to end against a real Hatari: a breakpoint armed
+// before Profile Start (arming one mid-run would reset the counters), collect
+// over the run, Profile Stop saves and parses, and the hot lines land in the
+// profiler dock and the gutter heat.
+void TstGui::profilerCollectsAndMapsHotLines()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/prof.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#0,d0\n"       // line 2
+              "loop:\taddq.w\t#1,d0\n"       // line 3  <- the hot line
+              "\tcmp.w\t#100,d0\n"           // line 4
+              "\tblo.s\tloop\n"              // line 5
+              "done:\tbra.s\tdone\n"         // line 6
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.show();
+    window.openPath(source);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host && editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // The stopping breakpoint goes in BEFORE Profile Start — arming anything
+    // after `profile on` resets the counters (Profile_CpuStart memsets).
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    input->setText(QStringLiteral("b d0 = 50 :once"));
+    QTest::keyClick(input, Qt::Key_Return);
+    QTest::qWait(300);  // let the command complete before profile on
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "profileStart", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 4, 30000);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "profileStop", Qt::DirectConnection));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
+    QVERIFY(dock);
+    auto *table = dock->findChild<QTableWidget *>();
+    QVERIFY(table);
+
+    // Wait for the parse outcome itself: rows, or the parser's error in the
+    // console. (Hatari's own stop-time stats say "executed instructions", so
+    // matching on "instructions" alone would race profileStop's commands.)
+    QTRY_VERIFY_WITH_TIMEOUT(
+        table->rowCount() > 0
+        || window.debugConsoleText().contains(QLatin1String("[profile] no"))
+        || window.debugConsoleText().contains(QLatin1String("[profile] not")),
+        15000);
+    if (table->rowCount() == 0) {
+        // The save needs the external disassembler (the UAE core writes
+        // profile text to the trace file, not the save file): a Hatari
+        // without Capstone produces no instruction lines.
+        QSKIP("this Hatari build has no Capstone disassembler for profile save");
+    }
+
+    // The loop body dominates, and its line is mapped from the address.
+    QStringList lines;
+    for (int i = 0; i < table->rowCount(); ++i)
+        lines << table->item(i, 0)->text();
+    QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
+    QVERIFY(editor->hasLineHeat());
+
     host->stop();
 }
 

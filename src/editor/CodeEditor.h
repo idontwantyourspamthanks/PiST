@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <QHash>
 #include <QList>
 #include <QPlainTextEdit>
 
@@ -56,6 +57,19 @@ public:
 
     /// Mark a line with a build-error gutter marker (1-based).
     void setErrorLines(const QList<int> &lines);
+
+    /// Tint the line-number gutter per line, proportional to
+    /// log(count)/log(max) of `counts`, so a profiler's hottest lines stand out
+    /// at a glance. The scale is logarithmic because execution counts are: a
+    /// linear scale would show one hot instruction and a flat field of black.
+    ///
+    /// An empty map clears the heat; the gutter otherwise renders exactly as it
+    /// did before. This is decoration over the existing markers, never a
+    /// replacement for them.
+    void setLineHeat(const QHash<int, quint64> &counts);
+    /// Whether a heat map is currently set, for tests and for the caller that
+    /// wants to know whether the gutter needs clearing.
+    bool hasLineHeat() const { return !m_lineHeat.isEmpty(); }
 
     /// Lines that currently hold a breakpoint (1-based).
     void setBreakpointLines(const QList<int> &lines);
@@ -133,6 +147,13 @@ private:
     int m_currentExecutionLine = 0;
     QList<int> m_errorLines;
     QList<int> m_breakpointLines;
+    /// Per-line execution counts from a profiling run, for the gutter heat.
+    QHash<int, quint64> m_lineHeat;
+    /// log(largest count), the divisor that maps a line's count onto 0..1 in the
+    /// gutter. Precomputed because the paint runs per visible line; zero when
+    /// there is no heat, or when every line has the same count (nothing to
+    /// scale against, so every heated line is drawn at full strength).
+    double m_lineHeatScale = 0.0;
     QString m_lastError;
 
     QFrame *m_findBar = nullptr;

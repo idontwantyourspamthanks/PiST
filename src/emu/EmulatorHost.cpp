@@ -601,11 +601,14 @@ void EmulatorHost::resume()
     // Keep `b` / `b all` / watchpoint commands; drop dumps and register
     // queries. Continue is enabled at the entry stop, which is before
     // armBreakpoints() has been flushed, and writing `c` immediately used to
-    // discard those unsent arms so a pre-Run breakpoint never fired.
+    // discard those unsent arms so a pre-Run breakpoint never fired. `profile`
+    // control commands are kept too: they take effect at the continue itself
+    // (Profile_CpuStart runs in DebugCpu_SetDebugging), so a `profile on`
+    // armed at a stop and pruned here would silently collect nothing.
     QQueue<Pending> arms;
     while (!m_queue.isEmpty()) {
         const Pending p = m_queue.dequeue();
-        if (isBreakpointCommand(p.text))
+        if (isBreakpointCommand(p.text) || p.text.startsWith(QLatin1String("profile ")))
             arms.enqueue(p);
     }
     m_queue = arms;

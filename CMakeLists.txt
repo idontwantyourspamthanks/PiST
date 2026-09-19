@@ -52,6 +52,8 @@ qt_add_library(pist_core OBJECT
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
+    src/emu/ProfileData.cpp
+    src/emu/ProfileData.h
     src/build/SymbolTable.cpp
     src/build/SymbolTable.h
     src/build/FloppyImage.cpp
@@ -138,6 +140,8 @@ qt_add_library(pist_core OBJECT
     src/ui/InstructionRefView.h
     src/ui/SymbolsView.cpp
     src/ui/SymbolsView.h
+    src/ui/ProfilerView.cpp
+    src/ui/ProfilerView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp

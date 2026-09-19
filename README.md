@@ -37,8 +37,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 ```
 
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
-  and find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
-  match-case and whole-word options)
+  find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
+  match-case and whole-word options), **Ctrl+click** to open an `include` or jump to a label,
+  and a searchable **68000 instruction reference** dock that follows the word under the cursor
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats
@@ -55,9 +56,12 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
   monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
+  and toured from the keyboard (**F4** / Shift+F4); multi-file projects link with vlink, and a
+  **symbols dock** lists every label and equate with its address once the program is running
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
-- **Debug** with breakpoints, single-step, step-over, registers, memory and labelled
-  disassembly — and the editor following the program counter as you step
+- **Debug** with breakpoints, single-step, step-over, **step out** and **run to cursor**
+  (Ctrl+F10), registers, memory and labelled disassembly — and the editor following the
+  program counter as you step
   - **edit registers and memory** while stopped — poke a value and keep debugging
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
@@ -67,15 +71,19 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     Hatari's `info` commands
   - a **PC history** view of how the machine reached the current stop
   - an **interactive debugger console** — type any Hatari debugger command (`r`, `d`,
-    `m $12596 20`, …) and see its output in the console dock
+    `m $12596 20`, …) and see its output in the console dock, with arrow-key history and
+    Tab completion of commands and symbol names
+  - a **profiler**: Hatari's CPU profiling per *source line* — Profile Start at a breakpoint
+    stop, continue, and Profile Stop shows the hot lines in a dock and as heat in the editor
+    gutter
 - **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
   a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
   to rearrange), or right-click for a "Move to" menu. The layout persists.
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
-your first line of code. The Linux AppImage meets that goal today; the macOS and Windows archives
-still need Hatari installed separately.
+your first line of code. The Linux AppImage and the Windows archive meet that goal today
+(both bundle the emulator); the macOS archive still needs `brew install hatari`.
 
 On a machine with no assembler or ROM, the first run offers a **guided setup**: a
 checksum-pinned vasm source build and an EmuTOS download, each named with its URL and checksum

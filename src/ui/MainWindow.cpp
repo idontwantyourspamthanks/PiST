@@ -16,6 +16,8 @@
 #include "ui/ConsoleInput.h"
 #include "ui/SymbolsView.h"
 #include "control/RemoteControl.h"
+#include "ui/ProfilerView.h"
+#include "emu/ProfileData.h"
 #include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -529,6 +531,17 @@ void MainWindow::createActions()
 
     m_actPrevDiagnostic = new QAction(tr("Previous Diagnostic"), this);
     m_actPrevDiagnostic->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F4));
+
+    m_actProfileStart = new QAction(tr("Profile &Start"), this);
+    m_actProfileStart->setEnabled(false);
+    m_actProfileStart->setToolTip(tr("Start collecting CPU profile counts from here "
+                                     "(arm the stopping breakpoint first)"));
+    connect(m_actProfileStart, &QAction::triggered, this, &MainWindow::profileStart);
+
+    m_actProfileStop = new QAction(tr("Profile &Stop and Show"), this);
+    m_actProfileStop->setEnabled(false);
+    m_actProfileStop->setToolTip(tr("Save the profile, then show hot lines and gutter heat"));
+    connect(m_actProfileStop, &QAction::triggered, this, &MainWindow::profileStop);
     connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
 
@@ -667,6 +680,8 @@ void MainWindow::wireBackend()
             if (m_actStepOut) m_actStepOut->setEnabled(false);
             if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
+            if (m_actProfileStart) m_actProfileStart->setEnabled(false);
+            if (m_actProfileStop) m_actProfileStop->setEnabled(false);
             m_log->appendPlainText(tr("[session] emulator is no longer running"));
         }
         // One owner for everything an ended session leaves behind — the same
@@ -674,6 +689,11 @@ void MainWindow::wireBackend()
         // cached machine state and a pending remote command cannot survive
         // into whatever happens next.
         resetSessionState();
+        // A session's profile and its gutter heat belong to that session.
+        if (m_profiler)
+            m_profiler->clear();
+        for (CodeEditor *editor : openEditors())
+            editor->setLineHeat({});
     });
     connect(m_host, &IDebugBackend::memoryDumpReady, this,
             [this](quint32, const QString &response, int tag) {
@@ -689,6 +709,11 @@ void MainWindow::wireBackend()
                     m_hardware->setInfo(response);
                 else if (m_pcHistory && command.startsWith(QLatin1String("history ")))
                     m_pcHistory->setHistory(response);
+                else if (m_profileSavePending
+                         && command.startsWith(QLatin1String("profile save"))) {
+                    m_profileSavePending = false;
+                    showProfileResults();
+                }
                 if (!m_pendingDebugCommand.isEmpty() && command == m_pendingDebugCommand) {
                     m_pendingDebugCommand.clear();
                     emit debugCommandFinished(command, response);
@@ -721,6 +746,8 @@ void MainWindow::wireBackend()
         m_actStepOut->setEnabled(stopped);
         m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
+        m_actProfileStart->setEnabled(stopped);
+        m_actProfileStop->setEnabled(stopped);
         m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
         // The embedded panel renders no frames while stopped, so tell it to show
         // its paused hint rather than look frozen.
@@ -862,6 +889,8 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStepOver);
     runMenu->addAction(m_actStepOut);
     runMenu->addAction(m_actRunToCursor);
+    runMenu->addAction(m_actProfileStart);
+    runMenu->addAction(m_actProfileStop);
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
@@ -1147,6 +1176,7 @@ void MainWindow::createDocks()
     m_display = new EmulatorDisplayWidget(this);
     m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
     m_displayDock->setVisible(m_embeddedDisplay);
+    m_profiler = new ProfilerView(this);
     addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
 
     // --- right, below the display: the debug views, tabbed together -----------
@@ -1166,11 +1196,17 @@ void MainWindow::createDocks()
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
               << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
-              << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView);
+              << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
+              << (m_profilerDock = makeDock(tr("Profiler"), QStringLiteral("profilerDock"),
+                                            m_profiler));
 
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
     for (int i = 1; i < debugTabs.size(); ++i)
         tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
+    connect(m_profiler, &ProfilerView::lineActivated, this, [this](int line) {
+        if (m_editor)
+            m_editor->gotoLine(line);
+    });
 
     connect(m_breakpointPanel, &BreakpointPanel::removeRequested,
             this, &MainWindow::removeBreakpoint);
@@ -1436,6 +1472,8 @@ void MainWindow::applyAppearance()
         m_instrRef->applyAppearance();
     if (m_symbolsView)
         m_symbolsView->applyAppearance();
+    if (m_profiler)
+        m_profiler->applyAppearance();
 }
 
 void MainWindow::createStatusBar()
@@ -2828,6 +2866,64 @@ void MainWindow::runToCursor()
     m_host->resume();
 }
 
+
+void MainWindow::profileStart()
+{
+    // Hatari starts collecting on continue (DebugCpu_SetDebugging) and zeroes
+    // the counters if any breakpoint command is issued mid-run — including
+    // Pause's one-shot — so profiling is armed while stopped and the stopping
+    // breakpoint must exist before this. The flow that works: set a
+    // breakpoint, Profile Start here, continue, the breakpoint stops the run.
+    if (!m_host->isStopped()) {
+        m_log->appendPlainText(
+            tr("[profile] stop at a pre-armed breakpoint first: arming anything "
+               "mid-run (including Pause) resets the counters"));
+        return;
+    }
+    m_host->command(QStringLiteral("profile on"));
+    m_log->appendPlainText(tr("[profile] on — continue to collect, then use "
+                              "Profile Stop at the next breakpoint stop"));
+}
+
+void MainWindow::profileStop()
+{
+    if (!m_host->isStopped() || m_currentSessionDir.isEmpty()) {
+        m_log->appendPlainText(tr("[profile] Profile Stop works from a stopped "
+                                  "machine — the save command needs the debugger"));
+        return;
+    }
+    // The UAE disassembler core (the default with PiST's isolated config)
+    // writes profile disassembly to the trace file instead of the save file,
+    // so the save would contain only "[...]" gap markers — switch engines for
+    // the save. Without Capstone the save stays empty and the parser's error
+    // says so plainly.
+    m_profileSavePending = true;
+    m_host->command(QStringLiteral("setopt --disasm ext"));
+    m_host->command(QStringLiteral("profile save %1/profile.txt").arg(m_currentSessionDir));
+    m_host->command(QStringLiteral("profile off"));
+}
+
+void MainWindow::showProfileResults()
+{
+    ProfileData data;
+    QString error;
+    if (!parseProfile(m_currentSessionDir + QStringLiteral("/profile.txt"), &data, &error)) {
+        m_log->appendPlainText(QStringLiteral("[profile] ") + error);
+        return;
+    }
+    m_profiler->setProfile(data, &m_programMap,
+                           m_editor ? m_editor->filePath() : QString());
+    if (m_profilerDock) {
+        m_profilerDock->show();
+        m_profilerDock->raise();
+    }
+    if (m_editor)
+        m_editor->setLineHeat(m_profiler->lineCounts());
+    m_log->appendPlainText(tr("[profile] %1 instructions, %2 cycles at %3 Hz")
+                               .arg(data.totalCount)
+                               .arg(data.totalCycles)
+                               .arg(data.clockHz));
+}
 
 void MainWindow::pauseSession()
 {

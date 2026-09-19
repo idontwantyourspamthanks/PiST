@@ -38,6 +38,7 @@ class InstructionRefView;
 class SymbolsView;
 class RemoteControl;
 class DisassemblyView;
+class ProfilerView;
 class FileBrowser;
 class IDebugBackend;
 class ImageEditor;
@@ -150,6 +151,12 @@ private slots:
     void stepOut();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
+    /// Profiling is armed/collected while stopped: Hatari starts collection on
+    /// continue and zeroes it if any breakpoint is armed mid-run, so both
+    /// actions refuse a running machine.
+    void profileStart();
+    void profileStop();
+    void showProfileResults();
     /// F4 / Shift+F4: step through the Problems pane without the mouse,
     /// wrapping, skipping diagnostics that carry no source line.
     void nextDiagnostic();
@@ -421,6 +428,10 @@ private:
     /// Where session events are published for remote-control watchers
     /// (control/RemoteControl); null when no one wired one up (tests).
     RemoteControl *m_eventSink = nullptr;
+    class ProfilerView *m_profiler = nullptr;
+    QDockWidget *m_profilerDock = nullptr;
+    /// A `profile save` is in flight; its commandFinished parses the file.
+    bool m_profileSavePending = false;
     /// A stop was announced; the next state batch carries its PC, so the
     /// stopped event is published from onStateUpdated with the detail filled.
     bool m_stopEventPending = false;
@@ -494,6 +505,8 @@ private:
     QAction *m_actFindPrevious = nullptr;
     QAction *m_actReplace = nullptr;
     QAction *m_actOpenProject = nullptr;
+    QAction *m_actProfileStart = nullptr;
+    QAction *m_actProfileStop = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;

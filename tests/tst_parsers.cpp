@@ -33,6 +33,7 @@ private slots:
     void programMapTextExtent();
     void lineMapResolvesAgainstLiveBases();
     void lineMapRejectsUnknownLine();
+    void lineMapRejectsUnparseableListing();
     void lineMapMatchesAbsoluteListingPaths();
     void floppyImageGeometry();
     void floppyListsAutoFolder();
@@ -326,6 +327,26 @@ void TstParsers::lineMapRejectsUnknownLine()
     quint32 addr = 0;
     QVERIFY(!map.addressFor(QStringLiteral("ok.s"), 9999, bases, &addr));
     QVERIFY(!map.addressFor(QStringLiteral("other.s"), 4, bases, &addr));
+}
+
+void TstParsers::lineMapRejectsUnparseableListing()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("bad.lst"));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    // A real, readable file that maps nothing — no section table, no entry lines.
+    f.write("not a listing at all\n");
+    f.close();
+
+    LineMap map;
+    QString error;
+    // parseListing used to return true here, so an empty map masqueraded as a
+    // good one and breakpoints silently never resolved (finding B11).
+    QVERIFY(!map.parseListing(path, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(map.isEmpty());
 }
 
 // vasm records the source path exactly as passed on the command line. The IDE

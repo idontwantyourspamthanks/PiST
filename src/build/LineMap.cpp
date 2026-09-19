@@ -117,6 +117,15 @@ bool LineMap::parseListing(const QString &path, QString *error)
         return a.offset < b.offset;
     });
 
+    if (m_entries.isEmpty()) {
+        // A listing we could open but understood nothing of — wrong format,
+        // truncated, or a build that emitted no mapped lines. Returning success
+        // here let an empty map masquerade as a good one, so breakpoints silently
+        // never resolved (finding B11).
+        if (error)
+            *error = QStringLiteral("listing '%1' produced no mapped source lines").arg(path);
+        return false;
+    }
     return true;
 }
 

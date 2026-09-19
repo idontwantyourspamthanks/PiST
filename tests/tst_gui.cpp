@@ -713,10 +713,14 @@ void TstGui::profilerCollectsAndMapsHotLines()
         || window.debugConsoleText().contains(QLatin1String("[profile] no"))
         || window.debugConsoleText().contains(QLatin1String("[profile] not")),
         15000);
-    if (table->rowCount() == 0) {
+    // Stop before the skip path too: bailing with a live session aborts the
+    // process on teardown (observed on CI as exit 134 after the QSKIP).
+    const bool haveRows = table->rowCount() > 0;
+    if (!haveRows) {
         // The save needs the external disassembler (the UAE core writes
         // profile text to the trace file, not the save file): a Hatari
         // without Capstone produces no instruction lines.
+        host->stop();
         QSKIP("this Hatari build has no Capstone disassembler for profile save");
     }
 

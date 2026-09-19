@@ -52,6 +52,8 @@ qt_add_library(pist_core OBJECT
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
+    src/build/SymbolTable.cpp
+    src/build/SymbolTable.h
     src/build/FloppyImage.cpp
     src/build/FloppyImage.h
 
@@ -134,6 +136,8 @@ qt_add_library(pist_core OBJECT
     src/ui/PcHistoryView.h
     src/ui/InstructionRefView.cpp
     src/ui/InstructionRefView.h
+    src/ui/SymbolsView.cpp
+    src/ui/SymbolsView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp

@@ -14,6 +14,8 @@
 #include "build/FloppyImage.h"
 #include "editor/IncludeNav.h"
 #include "ui/ConsoleInput.h"
+#include "ui/SymbolsView.h"
+#include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "image/ImageDocument.h"
@@ -1146,13 +1148,15 @@ void MainWindow::createDocks()
 
     m_pcHistory = new PcHistoryView(this);
     m_instrRef = new InstructionRefView(this);
+    m_symbolsView = new SymbolsView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
               << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
-              << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef);
+              << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
+              << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView);
 
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
     for (int i = 1; i < debugTabs.size(); ++i)
@@ -1161,6 +1165,8 @@ void MainWindow::createDocks()
     connect(m_breakpointPanel, &BreakpointPanel::removeRequested,
             this, &MainWindow::removeBreakpoint);
     connect(m_breakpointPanel, &BreakpointPanel::breakpointActivated,
+            this, &MainWindow::goToBreakpoint);
+    connect(m_symbolsView, &SymbolsView::symbolActivated,
             this, &MainWindow::goToBreakpoint);
     connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
             this, &MainWindow::clearAllDebugTargets);
@@ -1233,6 +1239,15 @@ void MainWindow::createDocks()
     m_consoleInput->setPlaceholderText(
         tr("Debugger command (e.g. r, d, m $12596 20)"));
     m_consoleInput->setEnabled(false);
+    // The command verbs are always completable; symbol names join the
+    // candidate list when a build's listings are parsed (rebuildProgramMap).
+    m_consoleVerbs = {QStringLiteral("r"), QStringLiteral("d"), QStringLiteral("m"),
+                      QStringLiteral("w"), QStringLiteral("l"), QStringLiteral("s"),
+                      QStringLiteral("n"), QStringLiteral("c"), QStringLiteral("b"),
+                      QStringLiteral("info"), QStringLiteral("symbols"),
+                      QStringLiteral("profile"), QStringLiteral("setopt"),
+                      QStringLiteral("help"), QStringLiteral("quit")};
+    m_consoleInput->setCompletions(m_consoleVerbs);
     connect(m_consoleInput, &QLineEdit::returnPressed, this, [this] {
         const QString cmd = m_consoleInput->text().trimmed();
         if (cmd.isEmpty())
@@ -1409,6 +1424,8 @@ void MainWindow::applyAppearance()
         view->applyAppearance();
     if (m_instrRef)
         m_instrRef->applyAppearance();
+    if (m_symbolsView)
+        m_symbolsView->applyAppearance();
 }
 
 void MainWindow::createStatusBar()
@@ -2880,6 +2897,22 @@ void MainWindow::rebuildProgramMap()
         }
     }
 
+
+    // The symbol browser reads the same listings. Addresses stay blank until
+    // a session resolves the live bases (the view is re-fed in onStateUpdated);
+    // the names feed the console's completion immediately.
+    if (m_symbolsView) {
+        m_symbols.clear();
+        for (int i = 0; i < listings.size() && i < sources.size(); ++i)
+            m_symbols += symbolsFromListing(listings.at(i), sources.at(i));
+        m_symbolsView->setSymbols(m_symbols, &m_programMap);
+        if (m_consoleInput) {
+            QStringList all = m_consoleVerbs;
+            for (const SymbolEntry &s : m_symbols)
+                all << s.name;
+            m_consoleInput->setCompletions(all);
+        }
+    }
     const QStringList unplaced = m_programMap.unplacedModules();
     if (!unplaced.isEmpty()) {
         m_log->appendPlainText(
@@ -3275,6 +3308,10 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // editor never follows the program counter (docs/code-review-glm-001.md
         // P1 root cause B).
         m_programMap.setLiveBases(m_bases);
+
+        // The symbol browser resolves addresses only now that the bases exist.
+        if (m_symbolsView && !m_symbols.isEmpty())
+            m_symbolsView->setSymbols(m_symbols, &m_programMap);
 
         // Arm breakpoints when the bases they resolve against actually arrive —
         // here, where they are set — not on a zero-delay timer that always fires

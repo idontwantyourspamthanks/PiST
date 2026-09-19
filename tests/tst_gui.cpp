@@ -154,6 +154,7 @@ private slots:
     void debugConsoleRecallsHistoryWithArrowKeys();
     void instructionReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
+    void symbolsPanelListsLabelsAfterBuild();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
@@ -533,6 +534,57 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
     QVERIFY(host);
     QTest::qWait(1500);
     QVERIFY(!host->isRunning());
+}
+
+// After a build the symbols dock lists the program's labels with their source
+// locations, parsed from the listing the build just wrote — and activating one
+// navigates the editor to its definition.
+void TstGui::symbolsPanelListsLabelsAfterBuild()
+{
+    const QString source = m_work->path() + QStringLiteral("/syms.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#1,d0\n"       // line 2
+              "\tbsr\thelper\n"              // line 3
+              "\trts\n"                      // line 4
+              "helper:\tmoveq\t#2,d1\n"      // line 5
+              "\trts\n"                      // line 6
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    MainWindow window;
+    window.show();
+    window.openPath(source);
+    QSignalSpy completed(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 30000);
+    QCOMPARE(completed.first().first().toBool(), true);
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("symbolsDock"));
+    QVERIFY(dock);
+    auto *tree = dock->findChild<QTreeWidget *>();
+    QVERIFY(tree);
+
+    auto rowFor = [&](const QString &name) -> int {
+        for (int i = 0; i < tree->topLevelItemCount(); ++i)
+            if (tree->topLevelItem(i)->text(0) == name)
+                return i;
+        return -1;
+    };
+    const int startRow = rowFor(QStringLiteral("start"));
+    const int helperRow = rowFor(QStringLiteral("helper"));
+    QVERIFY(startRow >= 0);
+    QVERIFY(helperRow >= 0);
+    QCOMPARE(tree->topLevelItem(startRow)->text(2), QStringLiteral("syms.s:2"));
+    QCOMPARE(tree->topLevelItem(helperRow)->text(2), QStringLiteral("syms.s:5"));
+
+    // Activation navigates the editor to the definition, like a breakpoint.
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    emit tree->itemActivated(tree->topLevelItem(helperRow), 0);
+    QCOMPARE(editor->textCursor().blockNumber(), 4);  // line 5, 0-based 4
 }
 
 void TstGui::clearAllRemovesWatchpoints()

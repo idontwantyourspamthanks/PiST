@@ -48,12 +48,19 @@ jobs:
             CC=x86_64-w64-mingw32-gcc LD=x86_64-w64-mingw32-gcc
           file vlink/vlink.exe
 
+      # Staged flat: upload-artifact preserves the directory structure of
+      # multiple paths relative to their common ancestor, so uploading the two
+      # build trees would put each exe inside vasm/ and vlink/ subdirectories
+      # the Windows leg never looks in.
+      - name: Stage the Windows tools
+        run: |
+          mkdir -p windows-tools
+          cp vasm/vasmm68k_mot.exe vlink/vlink.exe windows-tools/
+
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-windows-exe
-          path: |
-            vasm/vasmm68k_mot.exe
-            vlink/vlink.exe
+          path: windows-tools
           if-no-files-found: error
 
   build:

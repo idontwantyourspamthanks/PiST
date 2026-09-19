@@ -80,20 +80,26 @@ jobs:
             CC=x86_64-w64-mingw32-gcc LD=x86_64-w64-mingw32-gcc
           file vlink-win/vlink.exe
 
+      # Staged flat, one directory per platform: upload-artifact preserves the
+      # directory structure of multiple paths relative to their common
+      # ancestor, so the two build trees would arrive nested and the package
+      # job's bundle/bin would miss them.
+      - name: Stage the tool artifacts
+        run: |
+          mkdir -p dist-linux dist-windows
+          cp vasm/vasmm68k_mot vlink/vlink dist-linux/
+          cp vasm-win/vasmm68k_mot.exe vlink-win/vlink.exe dist-windows/
+
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-linux
-          path: |
-            vasm/vasmm68k_mot
-            vlink/vlink
+          path: dist-linux
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-windows
-          path: |
-            vasm-win/vasmm68k_mot.exe
-            vlink-win/vlink.exe
+          path: dist-windows
           if-no-files-found: error
 
   vasm-macos:
@@ -116,12 +122,17 @@ jobs:
           tar xzf vlink.tar.gz
           make -C vlink
 
+      # Staged flat: uploading the two build trees as two paths would nest
+      # them under vasm/ and vlink/ in the artifact (common-ancestor rule).
+      - name: Stage the tool artifact
+        run: |
+          mkdir -p dist-macos
+          cp vasm/vasmm68k_mot vlink/vlink dist-macos/
+
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-macos
-          path: |
-            vasm/vasmm68k_mot
-            vlink/vlink
+          path: dist-macos
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 #include "editor/IncludeNav.h"
 #include "ui/ConsoleInput.h"
 #include "ui/SymbolsView.h"
+#include "control/RemoteControl.h"
 #include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -706,6 +707,15 @@ void MainWindow::wireBackend()
             });
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
+        // Watchers (remote-control `watch`, the MCP shim) learn the running
+        // edge here; the stopped edge waits for onStateUpdated, which has the
+        // PC worth reporting.
+        if (m_eventSink) {
+            if (stopped)
+                m_stopEventPending = true;
+            else
+                m_eventSink->publishEvent(QStringLiteral("running"));
+        }
         m_actStep->setEnabled(stopped);
         m_actStepOver->setEnabled(stopped);
         m_actStepOut->setEnabled(stopped);
@@ -3294,6 +3304,12 @@ void MainWindow::onStateUpdated(const MachineState &state)
 {
     m_lastState = state;
     m_registers->setState(state);
+    if (m_stopEventPending) {
+        m_stopEventPending = false;
+        if (m_eventSink)
+            m_eventSink->publishEvent(QStringLiteral("stopped"),
+                                      QStringLiteral("pc=0x%1").arg(state.pc, 8, 16, QLatin1Char('0')));
+    }
     m_disassembly->setState(state);
 
     bool navigated = false;

@@ -36,6 +36,7 @@ class CodeEditor;
 class BreakpointPanel;
 class InstructionRefView;
 class SymbolsView;
+class RemoteControl;
 class DisassemblyView;
 class FileBrowser;
 class IDebugBackend;
@@ -72,6 +73,9 @@ public slots:
     /// once from main() after the window is shown, so a first run offers the
     /// guided fetch instead of failing the first build with it.
     void showSetupIfNeeded();
+
+    /// Wire the remote-control event sink (main.cpp owns the RemoteControl).
+    void setEventSink(RemoteControl *sink) { m_eventSink = sink; }
 
     /// Re-resolve assembler/emulator paths and the capability probe, updating
     /// the build service and status bar. Called at construction and after the
@@ -414,6 +418,12 @@ private:
     FileBrowser *m_fileBrowser = nullptr;
     QVector<struct SymbolEntry> m_symbols;
     QStringList m_consoleVerbs;
+    /// Where session events are published for remote-control watchers
+    /// (control/RemoteControl); null when no one wired one up (tests).
+    RemoteControl *m_eventSink = nullptr;
+    /// A stop was announced; the next state batch carries its PC, so the
+    /// stopped event is published from onStateUpdated with the detail filled.
+    bool m_stopEventPending = false;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QDockWidget *m_problemsDock = nullptr;

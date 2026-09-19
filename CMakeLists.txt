@@ -180,6 +180,22 @@ qt_add_executable(pist
 )
 target_link_libraries(pist PRIVATE pist_core)
 
+# The MCP stdio shim: lets Claude/Cursor-class agents discover a running PiST
+# as a native tool, bridging MCP JSON-RPC (stdio) to the RemoteControl TCP
+# protocol. Console application everywhere — WIN32_EXECUTABLE would detach
+# stdout and silently break the transport.
+qt_add_executable(pist-mcp
+    src/control/mcp/main.cpp
+    src/control/mcp/McpServer.cpp
+    src/control/mcp/McpServer.h
+    src/control/mcp/ControlClient.cpp
+    src/control/mcp/ControlClient.h
+)
+target_include_directories(pist-mcp PRIVATE src)
+target_link_libraries(pist-mcp PRIVATE Qt6::Core Qt6::Network)
+target_compile_definitions(pist-mcp PRIVATE "PIST_VERSION=\"${PROJECT_VERSION}\"")
+set_target_properties(pist-mcp PROPERTIES WIN32_EXECUTABLE FALSE)
+
 # ---------------------------------------------------------------------------
 # Installation
 # ---------------------------------------------------------------------------
@@ -208,6 +224,9 @@ if(APPLE)
 endif()
 
 install(TARGETS pist
+    BUNDLE  DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS pist-mcp
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 

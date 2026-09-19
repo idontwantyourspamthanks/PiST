@@ -179,6 +179,7 @@ int main(int argc, char *argv[])
     // listening socket without being asked would be a surprise. --control-port
     // wins over the environment variable.
     pist::RemoteControl remoteControl(&window);
+    window.setEventSink(&remoteControl);
     {
         QString portText = parser.value(controlPort);
         if (portText.isEmpty())

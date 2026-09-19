@@ -421,12 +421,60 @@ cmd <command>      run an arbitrary Hatari debugger command (block reply)
 screenshot <file>  save the window as a PNG (default /tmp/pist-screenshot.png)
 console            the build & debug console text (block reply)
 state              registers and PC (block reply)
+watch              receive events as the session changes state (see below)
+unwatch            stop receiving events; the connection stays open
 help               list the commands
 quit               close the IDE
 ```
 
 `build` and `run` answer only once the work is actually done, so a script does
 not have to poll: `run` returning `ok` means the emulator session is up.
+
+### Events: not having to poll for a stop
+
+`watch` turns the connection into an event stream. The reply to `watch` is the
+usual `ok`, and after it the server pushes one line per state change, without
+waiting to be asked:
+
+```
+event stopped pc=0x12596
+event running
+```
+
+The format is `event <name>` with optional trailing detail, always one line. The
+IDE currently publishes `stopped` (with the program counter, when known) and
+`running`; more event names may be added, so a client should ignore names it does
+not recognise rather than treat them as errors. Watching is additive: a watcher
+still gets ordinary replies to ordinary commands, and a connection that never
+sends `watch` behaves exactly as it always did. Several connections may watch at
+once. Send `unwatch` to stop the events while keeping the connection, or just
+close it. Because `watch` and its `ok` share the socket with the events, a client
+must read the `ok` before treating subsequent lines as events.
+
+The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
+
+## MCP server (`pist-mcp`)
+
+`pist-mcp` is a small companion program that exposes the same capability over
+[Model Context Protocol](https://modelcontextprotocol.io) on stdio, so an MCP
+client — Claude, Cursor and the like — discovers the IDE as a native tool set
+rather than being taught a line protocol:
+
+```sh
+pist --control-port 9999 your-program.s &   # start the IDE with control on
+PIST_CONTROL_PORT=9999 pist-mcp             # the client launches this instead
+```
+
+Point the client at the `pist-mcp` binary; the control port comes from `--port`
+or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it. The tools are
+`pist_run`, `pist_build`, `pist_stop`, `pist_step`, `pist_stepover`,
+`pist_continue`, `pist_state`, `pist_console`, `pist_breakpoints`,
+`pist_breakpoint`, `pist_setreg`, `pist_setmem`, `pist_watchpoint`, `pist_cmd`,
+`pist_screenshot` and `pist_watch`. `pist_watch` subscribes to the events above
+and returns them; they also arrive as MCP log notifications, so an agent waiting
+for a breakpoint does not have to poll. The shim speaks newline-delimited
+JSON-RPC 2.0 — one message per line, never `Content-Length` headers, which belong
+to a different protocol — and logs to stderr only, since stdout is the transport.
 
 A minimal client in Python:
 

@@ -21,6 +21,7 @@
 #include "ui/InstructionRefView.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
+#include "control/RemoteControl.h"
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
 #include "ui/MainWindow.h"
@@ -155,6 +156,7 @@ private slots:
     void instructionReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void symbolsPanelListsLabelsAfterBuild();
+    void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
@@ -585,6 +587,63 @@ void TstGui::symbolsPanelListsLabelsAfterBuild()
     QVERIFY(editor);
     emit tree->itemActivated(tree->topLevelItem(helperRow), 0);
     QCOMPARE(editor->textCursor().blockNumber(), 4);  // line 5, 0-based 4
+}
+
+// A `watch` subscription turns the control connection into an event stream:
+// running/stopped edges arrive with the stop's PC, so an agent never polls to
+// notice a breakpoint.
+void TstGui::remoteControlWatchersSeeSessionEvents()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/watch.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#0,d0\nloop:\taddq.w\t#1,d0\n\tbra.s\tloop\n\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.show();
+    RemoteControl control(&window);
+    window.setEventSink(&control);
+    QVERIFY2(control.listen(0, &error), qPrintable(error));
+
+    QTcpSocket watcher;
+    watcher.connectToHost(QHostAddress::LocalHost, control.boundPort());
+    QVERIFY(watcher.waitForConnected(3000));
+    watcher.write("watch\n");
+    // waitForReadyRead does not spin the window's event loop, where the
+    // server runs — poll in short slices instead of one long wait.
+    QString events;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
+         events.contains(QLatin1String("ok\n"))),
+        5000);
+
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
+         events.contains(QLatin1String("event stopped pc=0x"))),
+        30000);
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
+         events.contains(QLatin1String("event running"))),
+        10000);
+
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    host->stop();
 }
 
 void TstGui::clearAllRemovesWatchpoints()

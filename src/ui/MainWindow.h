@@ -34,6 +34,7 @@ namespace pist {
 class BuildService;
 class CodeEditor;
 class BreakpointPanel;
+class InstructionRefView;
 class DisassemblyView;
 class FileBrowser;
 class IDebugBackend;
@@ -406,6 +407,7 @@ private:
     class PcHistoryView *m_pcHistory = nullptr;
     HardwareView *m_hardware = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
+    class InstructionRefView *m_instrRef = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;

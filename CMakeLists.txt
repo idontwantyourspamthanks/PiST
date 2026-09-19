@@ -44,6 +44,8 @@ qt_add_library(pist_core OBJECT
     src/ui/Appearance.h
     src/ui/Icons.cpp
     src/editor/CodeEditor.h
+    src/editor/InstrRef.cpp
+    src/editor/InstrRef.h
 
     src/build/BuildService.cpp
     src/build/BuildService.h
@@ -126,6 +128,8 @@ qt_add_library(pist_core OBJECT
     src/ui/MemoryView.h
     src/ui/PcHistoryView.cpp
     src/ui/PcHistoryView.h
+    src/ui/InstructionRefView.cpp
+    src/ui/InstructionRefView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp

@@ -10,6 +10,7 @@
 #include "emu/DebugBackend.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
+#include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -50,6 +51,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QTextBlock>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -261,6 +263,26 @@ void MainWindow::wireEditor(CodeEditor *editor)
             toggleBreakpointAtLine(line);
         else if (button == Qt::RightButton)
             editBreakpointCondition(line);
+    });
+
+    // The instruction reference follows the word under the cursor, but only
+    // when its dock is on show — otherwise an idle panel would churn on every
+    // keystroke.
+    connect(editor, &CodeEditor::cursorPositionChanged, this, [this, editor] {
+        if (!m_instrRef || editor != m_editor || !m_instrRef->isVisible())
+            return;
+        const QTextCursor cursor = editor->textCursor();
+        const QString line = cursor.block().text();
+        const int col = cursor.positionInBlock();
+        int start = col;
+        while (start > 0
+               && (line.at(start - 1).isLetterOrNumber() || line.at(start - 1) == QLatin1Char('.')))
+            --start;
+        int end = col;
+        while (end < line.size()
+               && (line.at(end).isLetterOrNumber() || line.at(end) == QLatin1Char('.')))
+            ++end;
+        m_instrRef->showInstruction(line.mid(start, end - start));
     });
     connect(editor, &CodeEditor::gutterContextMenuRequested, this,
             [this, editor](int line, const QPoint &pos) {
@@ -1047,12 +1069,14 @@ void MainWindow::createDocks()
     m_breakpointPanel = new BreakpointPanel(this);
 
     m_pcHistory = new PcHistoryView(this);
+    m_instrRef = new InstructionRefView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
               << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
-              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel);
+              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
+              << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef);
 
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
     for (int i = 1; i < debugTabs.size(); ++i)
@@ -1307,6 +1331,8 @@ void MainWindow::applyAppearance()
         m_breakpointPanel->applyAppearance();
     for (MemoryView *view : m_memoryPanes)
         view->applyAppearance();
+    if (m_instrRef)
+        m_instrRef->applyAppearance();
 }
 
 void MainWindow::createStatusBar()

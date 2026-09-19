@@ -18,6 +18,7 @@
 #include "ui/SheetCanvas.h"
 #include "ui/NewImageDialog.h"
 #include "ui/BitplaneExportDialog.h"
+#include "ui/InstructionRefView.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
@@ -149,6 +150,7 @@ private slots:
     void breakpointSetBeforeRunFiresAndEditorFollows();
     void stepOutAndRunToCursorReachTheirTargets();
     void openRecentMenuListsAndOpensFiles();
+    void instructionReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
@@ -1244,6 +1246,40 @@ void TstGui::openRecentMenuListsAndOpensFiles()
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);
     QTRY_COMPARE(editor->filePath(), one);
+}
+
+// The instruction reference dock follows the word under the cursor while it
+// is visible: an instruction word selects its entry, a label leaves the panel
+// alone.
+void TstGui::instructionReferenceFollowsTheCursor()
+{
+    const QString source = m_work->path() + QStringLiteral("/instr.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#1,d0\n\taddq.w\t#1,d0\n\trts\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    window.openPath(source);
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("instructionRefDock"));
+    QVERIFY(dock);
+    auto *view = dock->findChild<pist::InstructionRefView *>();
+    QVERIFY(view);
+    dock->show();  // the follow-cursor path is gated on visibility
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    window.show();  // follow-cursor is gated on the dock being visible
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(2).position() + 2);
+    editor->setTextCursor(cursor);
+    QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));
+
+    cursor.setPosition(editor->document()->findBlockByNumber(1).position());
+    editor->setTextCursor(cursor);
+    QTest::qWait(50);
+    QCOMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));  // a label: no-op
 }
 
 // The panel arrangement is Photoshop-style: docks are movable/floatable/

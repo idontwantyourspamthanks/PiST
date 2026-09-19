@@ -12,15 +12,19 @@ Write 68000 assembly, assemble it, run it in an emulator, and debug it — witho
 editor. `PiST` bundles the pieces that are otherwise scattered across a text editor, a build
 script, a terminal, a debugger and an emulator, and presents them as one tool.
 
+![PiST with hello.s open — editor, project files with disks, breakpoint and memory panes](docs/screenshots/ide.png)
+
+![The sprite editor: pixel grid, ST palette, frames and phases](docs/screenshots/sprite-editor.png)
+
 > **Status: early, and usable.** The full loop works — write, assemble, run under Hatari, and
 > debug with breakpoints, stepping, registers, memory, disassembly, watchpoints, a stack
 > view and hardware registers, with the editor following the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
-> What is missing is breadth rather than core function: the emulator ships only
-> in the Linux AppImage — the macOS and Windows archives still expect you to install Hatari. The
-> integration itself has only been exercised on Linux — see
-> [Known limitations](#known-limitations). [docs/PLAN.md](docs/PLAN.md) has the full design.
+> What is missing is breadth rather than core function: the macOS archive still expects you to
+> install Hatari (`brew install hatari`). The emulator integration is exercised in CI on all
+> three platforms — see [Known limitations](#known-limitations).
+> [docs/PLAN.md](docs/PLAN.md) has the full design.
 
 ---
 

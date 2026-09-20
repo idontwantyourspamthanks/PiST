@@ -29,8 +29,10 @@ PiST — an IDE for Atari ST assembly development.
 - **Sprite editor.** One key re-exports the bitplane data with the same
   settings as the last export.
 - **Remote control and MCP.** The remote-control socket publishes watch
-  events for session state changes, and a small `pist-mcp` shim — built from
-  source, not yet part of the archives — exposes the IDE to MCP-aware tools.
+  events for session state changes, and a small `pist-mcp` shim exposes the
+  IDE to MCP-aware tools. It ships in the Linux packages (AppImage, deb,
+  rpm); the Windows and macOS archives don't carry it yet, though it builds
+  from source there.
 - **Every archive now bundles vlink**, so multi-file projects link out of the
   box, and **the Windows archive also bundles the emulator** (the hrdb-main
   fork, built with MSYS2 — experimental; see Known limitations).

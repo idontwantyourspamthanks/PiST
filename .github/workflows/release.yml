@@ -290,7 +290,11 @@ jobs:
           set -euo pipefail
           mkdir -p bundle
           cp -R build/pist.app bundle/
-          macdeployqt bundle/pist.app -always-overwrite
+          # pist-mcp rides inside the app bundle: Contents/MacOS is where its
+          # rpath resolves the Qt macdeployqt deploys into Contents/Frameworks.
+          cp build/pist-mcp bundle/pist.app/Contents/MacOS/
+          macdeployqt bundle/pist.app -always-overwrite \
+            -executable=bundle/pist.app/Contents/MacOS/pist-mcp
           # The assembler and linker belong beside the executable inside the
           # bundle, which is where discovery looks first, so the archive stays
           # self-sufficient wherever it is unpacked from.
@@ -302,9 +306,11 @@ jobs:
         if: matrix.deployed && runner.os == 'Windows'
         shell: bash
         run: |
-          set -euo pipefail
           mkdir -p bundle/bin
-          cp build/Release/pist.exe bundle/bin/
+          cp build/Release/pist.exe build/Release/pist-mcp.exe bundle/bin/
+          # pist-mcp.exe links only Qt6Core and Qt6Network, both of which the
+          # pist.exe deploy already places beside it, so it needs no pass of
+          # its own.
           windeployqt --release --no-translations bundle/bin/pist.exe
 
       - name: Copy binary (Linux)

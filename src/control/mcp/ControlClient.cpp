@@ -93,6 +93,15 @@ void ControlClient::subscribe()
 {
     if (m_subscribed || m_watchAckPending)
         return;
+    if (!hasEndpoint()) {
+        // No dial will ever be attempted, so answer now — arming
+        // m_subscribeWhenConnected here would wait on a connection that
+        // cannot exist (the same "no endpoint" answer request() gives).
+        emit subscribeReplied(false, QStringLiteral(
+            "PiST remote control is not configured: pass --port <n> or set "
+            "PIST_CONTROL_PORT to the port PiST was started with"));
+        return;
+    }
     // Arm the request whether or not the socket is up: the connected handler
     // sends it, so a subscription asked for before the IDE is reachable (or
     // after a failed attempt) still lands once the connection succeeds.
@@ -233,8 +242,9 @@ void ControlClient::onDisconnected()
     emit connectionChanged(false);
     const bool wasSubscribed = m_subscribed;
     m_subscribed = false;
-    m_watchAckPending = false;
     m_partial.clear();
+    // m_watchAckPending is left for failEverything, which turns it into a
+    // failed subscription answer rather than dropping it silently.
     failEverything(QStringLiteral("PiST closed the connection"));
 
     // An agent's client keeps the shim alive across an IDE restart, so a
@@ -269,6 +279,16 @@ void ControlClient::failEverything(const QString &message)
     }
     while (!m_queue.isEmpty())
         emit failed(m_queue.dequeue().token, message);
+
+    // A pending watch subscription is answered too: subscribe() writes raw
+    // and starts no reply timer, so it is in neither the queue nor the
+    // in-flight slot — and without this a pist_watch against an unreachable
+    // IDE hangs on a reply that only a live socket could produce.
+    if (m_watchAckPending || m_subscribeWhenConnected) {
+        m_watchAckPending = false;
+        m_subscribeWhenConnected = false;
+        emit subscribeReplied(false, message);
+    }
 
     // Drop the socket so the next request dials again. The IDE may not have been
     // started when the agent's client connected the shim, and a client that

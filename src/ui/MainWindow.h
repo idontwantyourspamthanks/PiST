@@ -193,6 +193,12 @@ public:
     /// command. Returns false (and logs) when the machine is not stopped.
     bool setRegister(const QString &regName, quint32 value);
 
+    /// Whether the current editor's file has an instruction at `line`,
+    /// according to the program map. True when there is no map yet — arming
+    /// will decide then, so "can't tell" must not read as "cannot fire".
+    /// For the remote `breakpoint` reply.
+    bool lineHasCode(int line) const;
+
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use
     /// it without a prompt. Returns false and sets error on a bad address.

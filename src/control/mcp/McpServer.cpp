@@ -224,7 +224,9 @@ void McpServer::handleInitialize(const QJsonValue &id, const QJsonObject &params
     QJsonObject serverInfo;
     serverInfo.insert(QStringLiteral("name"), QStringLiteral("pist"));
     serverInfo.insert(QStringLiteral("title"), QStringLiteral("PiST Atari ST IDE"));
-    serverInfo.insert(QStringLiteral("version"), QStringLiteral("0.6.1"));
+    // From the build, not a literal: a hardcoded version here already shipped
+    // one release stale (a 0.6.2 binary introducing itself as 0.6.1).
+    serverInfo.insert(QStringLiteral("version"), QStringLiteral(PIST_VERSION));
 
     QJsonObject result;
     result.insert(QStringLiteral("protocolVersion"), QString::fromLatin1(kProtocolVersion));
@@ -461,7 +463,8 @@ QJsonArray McpServer::tools()
         props.insert(QStringLiteral("line"), line);
         list.append(toolObject(
             QStringLiteral("pist_breakpoint"), QStringLiteral("Toggle breakpoint"),
-            QStringLiteral("Toggle a breakpoint at a source line."),
+            QStringLiteral("Toggle a breakpoint at a source line. Only lines holding an "
+                           "instruction can fire; the reply says when a line has none."),
             props, QJsonArray{QStringLiteral("line")}));
     }
 
@@ -539,7 +542,8 @@ QJsonArray McpServer::tools()
         list.append(toolObject(
             QStringLiteral("pist_screenshot"), QStringLiteral("Screenshot"),
             QStringLiteral("Save the IDE window, including the embedded emulator "
-                           "display, as a PNG."),
+                           "display, as a PNG. Needs a visible window; it fails "
+                           "against a headless (offscreen) IDE."),
             props, {}));
     }
 

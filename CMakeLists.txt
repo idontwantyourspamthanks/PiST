@@ -482,6 +482,23 @@ add_dependencies(tst_remotecontrol pist)
 add_test(NAME remotecontrol COMMAND tst_remotecontrol)
 set_tests_properties(remotecontrol PROPERTIES TIMEOUT 120)
 
+# MCP shim: the JSON-RPC surface an agent talks to. Driven in-process through
+# handleLine/sendLine, with tool calls answered by a scripted fake IDE over
+# loopback TCP — the framing table and the watch failure paths are where a
+# regression would hang or mis-frame an agent. Needs no display or emulator.
+qt_add_executable(tst_mcp
+    tests/tst_mcp.cpp
+    src/control/mcp/McpServer.cpp
+    src/control/mcp/McpServer.h
+    src/control/mcp/ControlClient.cpp
+    src/control/mcp/ControlClient.h
+)
+target_include_directories(tst_mcp PRIVATE src)
+target_link_libraries(tst_mcp PRIVATE Qt6::Network Qt6::Test)
+target_compile_definitions(tst_mcp PRIVATE "PIST_VERSION=\"${PROJECT_VERSION}\"")
+add_test(NAME mcp COMMAND tst_mcp)
+set_tests_properties(mcp PROPERTIES TIMEOUT 120)
+
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp

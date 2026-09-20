@@ -3259,6 +3259,17 @@ void MainWindow::toggleBreakpointAtLine(int line)
         armBreakpoints();
 }
 
+bool MainWindow::lineHasCode(int line) const
+{
+    if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
+        return false;
+    if (!m_programMap.isResolved())
+        return true; // no build map to judge by; arming will decide
+    quint32 address = 0;
+    return m_programMap.codeAddressFor(QFileInfo(m_editor->filePath()).fileName(),
+                                       line, &address);
+}
+
 void MainWindow::removeBreakpoint(const QString &file, int line)
 {
     auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
@@ -3400,7 +3411,12 @@ void MainWindow::onStateUpdated(const MachineState &state)
 {
     m_lastState = state;
     m_registers->setState(state);
-    if (m_stopEventPending) {
+    // Publish the stop only once a register batch has landed: the entry
+    // attach's standalone `info basepage` emits a state update with pc still
+    // 0, and publishing that (observed as "event stopped pc=0x00000000")
+    // tells a watcher the machine stopped at address 0. The refresh that
+    // follows every stop carries real registers, so the event keeps its pc.
+    if (m_stopEventPending && state.regs.valid) {
         m_stopEventPending = false;
         if (m_eventSink)
             m_eventSink->publishEvent(QStringLiteral("stopped"),
@@ -3501,8 +3517,13 @@ QString MainWindow::debugConsoleText() const
 
 QString MainWindow::stateSummary() const
 {
-    if (!m_lastState.regs.valid)
+    if (!m_lastState.regs.valid) {
+        // "no session state" reads like failure to a remote caller whose
+        // natural first move after `run` is `state`; say why instead.
+        if (m_host && m_host->isRunning() && !m_host->isStopped())
+            return tr("machine is running; state is captured when the debugger stops\n");
         return tr("no session state\n");
+    }
 
     const Registers &r = m_lastState.regs;
     QStringList lines;

@@ -285,9 +285,16 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("breakpoint")) {
+        const int line = arg.toInt();
         QMetaObject::invokeMethod(m_window, "toggleBreakpointAtLine", Qt::DirectConnection,
-                                  Q_ARG(int, arg.toInt()));
-        reply(guarded, QStringLiteral("ok"));
+                                  Q_ARG(int, line));
+        // "ok" reads as "this will fire", but arming skips lines with no
+        // instruction, so say so when the map already knows that — an agent
+        // told plain ok would wait on a stop that can never come.
+        reply(guarded, m_window->lineHasCode(line)
+                          ? QStringLiteral("ok")
+                          : QStringLiteral("ok (line %1 has no instruction; the breakpoint is set but cannot fire)")
+                                .arg(line));
 
     } else if (cmd == QLatin1String("setreg")) {
         const QString name = arg.section(QLatin1Char(' '), 0, 0);
@@ -350,7 +357,7 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "step             step one instruction\n"
             "stepover         step over a subroutine\n"
             "continue         resume execution\n"
-            "breakpoint <n>   toggle a breakpoint at source line n\n"
+            "breakpoint <n>   toggle a breakpoint at source line n (code lines only)\n"
             "setreg <n> <v>   write register <n> to <v> (when stopped)\n"
             "setmem <a> <v>   write memory byte at <a> to <v> (when stopped)\n"
             "watchpoint <a>   break when the value at address <a> changes (optional .b/.w/.l)\n"

@@ -503,6 +503,10 @@ void EmulatorHost::processStderrData()
     // from *before* the command we are waiting on, so only a prompt that has
     // arrived since is a completion signal. Tracked by remembering the length the
     // buffer had when the command was dispatched.
+    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
+    if (stderrEndsWithPrompt(m_stderrBuffer))
+        emit logLine(QStringLiteral("[diag] stderr prompt gate: endsWith=1 size=%1 atDispatch=%2")
+                         .arg(m_stderrBuffer.size()).arg(m_stderrAtDispatch));
     if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch)
         onPrompt();
     // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)

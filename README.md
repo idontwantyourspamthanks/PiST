@@ -22,8 +22,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
 > What is missing is breadth rather than core function: the macOS archive still expects you to
-> install Hatari (`brew install hatari`). The emulator integration is exercised in CI on all
-> three platforms — see [Known limitations](#known-limitations).
+> install Hatari (`brew install hatari`). The emulator integration is exercised in CI on Linux
+> and macOS — Windows unit-tests only, since its stock Hatari never enters the debugger over
+> pipes; see [Known limitations](#known-limitations).
 > [docs/PLAN.md](docs/PLAN.md) has the full design.
 
 ---

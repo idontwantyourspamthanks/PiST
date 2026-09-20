@@ -10,6 +10,39 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.6.2
+
+- **CPU profiler.** Profile Start/Stop from the debug toolbar while a program
+  runs; the results dock lists per-instruction counts and cycles, a hot-line
+  view maps them back to source, and the editor gutter is tinted by heat.
+- **Symbols browser.** A dock listing the labels from the build's own symbol
+  table, click to jump to the source line.
+- **68000 instruction reference.** A dock that follows the cursor and shows
+  the addressing forms, sizes and cycle counts of the mnemonic under it.
+- **Debugger console input.** Type debugger commands directly, with history
+  (Up/Down) and completion.
+- **More stepping.** Step out of a subroutine, and run to the cursor line,
+  join the existing step / step-over.
+- **Editor navigation.** Ctrl+click opens an `include`d file or jumps to a
+  label; F4 / Shift+F4 tour the Problems pane; File > Open Recent lists
+  recent sources.
+- **Sprite editor.** One key re-exports the bitplane data with the same
+  settings as the last export.
+- **Remote control and MCP.** The remote-control socket publishes watch
+  events for session state changes, and a small `pist-mcp` shim — built from
+  source, not yet part of the archives — exposes the IDE to MCP-aware tools.
+- **Every archive now bundles vlink**, so multi-file projects link out of the
+  box, and **the Windows archive also bundles the emulator** (the hrdb-main
+  fork, built with MSYS2 — experimental; see Known limitations).
+- **Emulator support is now exercised in CI on macOS as well as Linux** —
+  which flushed out and fixed three real session bugs: control sockets
+  overflowing macOS's 104-byte socket-path limit under the system temp
+  directory, and two prompt-framing races in the debug transport that could
+  leave a session looking like it never stopped.
+- Smaller things: the toolbar's Continue is no longer the same icon as Run,
+  the project root stays where you put it, and the root picker starts at the
+  home directory until a root is chosen.
+
 Every archive contains PiST, the `vasmm68k_mot` assembler, the `vlink` linker,
 and an EmuTOS ROM. The Linux AppImage and the Windows archive additionally
 contain the Hatari emulator, so on Linux and Windows they run and debug with

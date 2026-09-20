@@ -74,8 +74,12 @@ jobs:
           make -C vasm-win CPU=m68k SYNTAX=mot CC=x86_64-w64-mingw32-gcc
           file vasm-win/vasmm68k_mot.exe
           # vlink's Win32FromLinux makefile hardcodes the 32-bit triplet, so
-          # the compilers are overridden to x86_64.
-          cp -r vlink vlink-win
+          # the compilers are overridden to x86_64. Freshly extracted, not a
+          # copy of the Linux build tree: that tree's host-compiled objects
+          # satisfy make's timestamps, and mingw-ld then links glibc symbols
+          # (__fprintf_chk and friends) and fails.
+          mkdir vlink-win
+          tar xzf vlink.tar.gz -C vlink-win --strip-components=1
           make -C vlink-win -f Makefile.Win32FromLinux \
             CC=x86_64-w64-mingw32-gcc LD=x86_64-w64-mingw32-gcc
           file vlink-win/vlink.exe

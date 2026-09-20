@@ -1112,6 +1112,9 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
         config.hatariPath = m_hatari;
         config.programPath = m_program;
         config.tosPath = m_tos;
+        // Short leaf names: macOS's sun_path is 104 bytes, and QTemporaryDir
+        // lives under the deep /var/folders $TMPDIR there — "second-session-1"
+        // overflowed it and QLocalServer::listen failed (CI, macOS leg).
         config.sessionDir = m_work->path() + QLatin1Char('/') + name;
         config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
         config.gemdosDir = m_sourceDir;
@@ -1131,7 +1134,7 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
     // resetTransport() does. Ending the session cleanly instead would leave
     // nothing the reset owns, and the test would pass with the reset deleted.
     QSignalSpy entry1(&host, &EmulatorHost::stoppedChanged);
-    QVERIFY2(host.start(configFor(QStringLiteral("second-session-1")), nullptr),
+    QVERIFY2(host.start(configFor(QStringLiteral("ss1")), nullptr),
              "session 1 failed to start");
     QVERIFY2(entry1.wait(15000), "session 1 never stopped at program entry");
     host.armBreakpoint(QStringLiteral("b pc = $100 && pc < $e00000 :once"));
@@ -1143,7 +1146,7 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
     // queue-empty dispatch write `c`, so the new session resumes itself instead
     // of waiting stopped at the entry stop, and its first command never returns.
     QSignalSpy entry2(&host, &EmulatorHost::stoppedChanged);
-    QVERIFY2(host.start(configFor(QStringLiteral("second-session-2")), nullptr),
+    QVERIFY2(host.start(configFor(QStringLiteral("ss2")), nullptr),
              "session 2 failed to start");
     QVERIFY2(entry2.wait(15000), "session 2 never stopped at program entry");
     QVERIFY2(host.isStopped(),

@@ -631,11 +631,23 @@ void TstGui::remoteControlWatchersSeeSessionEvents()
         5000);
 
     window.openPath(source);
+    // A modal from a failed Run would hang the offscreen suite until the
+    // watchdog; answer it if one appears, and dump the console on failure.
+    QTimer::singleShot(0, &window, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->accept();
+    });
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
-    QTRY_VERIFY_WITH_TIMEOUT(
-        (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
-         events.contains(QLatin1String("event stopped pc=0x"))),
+    const bool entered = QTest::qWaitFor(
+        [&] {
+            return watcher.waitForReadyRead(100)
+                   && (events += QString::fromUtf8(watcher.readAll()))
+                          .contains(QLatin1String("event stopped pc=0x"));
+        },
         30000);
+    if (!entered)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(entered);
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     QTRY_VERIFY_WITH_TIMEOUT(
         (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
@@ -696,7 +708,9 @@ void TstGui::profilerCollectsAndMapsHotLines()
 
     QVERIFY(QMetaObject::invokeMethod(&window, "profileStart", Qt::DirectConnection));
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
-    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 4, 30000);
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 4; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 4);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "profileStop", Qt::DirectConnection));
 
@@ -1299,7 +1313,11 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
     // The editor reaching the entry line means bases arrived and armBreakpoints
     // has been queued. Resume then flushes those `b` commands before `c` —
     // a fixed wait after the first stop was racing the attach.
-    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+    // When the session never starts, the console transcript is the only
+    // evidence a headless CI runner leaves — dump it on the failure path.
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
@@ -1343,7 +1361,9 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
 
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
-    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
 
     // Run to the cursor on line 4, inside the subroutine: the bsr at the
     // entry line executes, and the one-shot breakpoint traps at `sub`.

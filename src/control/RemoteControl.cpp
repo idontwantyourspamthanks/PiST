@@ -8,7 +8,12 @@
 #include "ui/EmbedX11.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QStandardPaths>
 #include <QGuiApplication>
 #include <QPointer>
 #include <QScreen>
@@ -50,6 +55,28 @@ RemoteControl::RemoteControl(MainWindow *window, QObject *parent)
 {
 }
 
+RemoteControl::~RemoteControl()
+{
+    // Leave no stale address behind: a shim that reads a dead file connects
+    // to nothing and gets a refused connection rather than silence. If the
+    // file is not ours (a second IDE overwrote it), leave it alone.
+    QFile file(discoveryFilePath());
+    if (file.exists() && file.open(QIODevice::ReadOnly)
+        && QString::fromUtf8(file.readAll()).trimmed() == m_publishedAddress) {
+        file.close();
+        QFile::remove(discoveryFilePath());
+    }
+}
+
+QString RemoteControl::discoveryFilePath()
+{
+    // GenericDataLocation is application-name-independent: pist (org/app
+    // "PiST") and pist-mcp must land on the same path, which AppDataLocation
+    // would not give them.
+    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+           + QStringLiteral("/PiST/PiST/control-port");
+}
+
 bool RemoteControl::listen(quint16 port, QString *error)
 {
     m_server = new QTcpServer(this);
@@ -61,6 +88,13 @@ bool RemoteControl::listen(quint16 port, QString *error)
             *error = m_server->errorString();
         return false;
     }
+
+    // Publish the address for zero-configuration shims.
+    m_publishedAddress = QStringLiteral("127.0.0.1 %1").arg(m_server->serverPort());
+    QDir().mkpath(QFileInfo(discoveryFilePath()).absolutePath());
+    QFile file(discoveryFilePath());
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(m_publishedAddress.toUtf8() + '\n');
     return true;
 }
 
@@ -286,14 +320,21 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
 
     } else if (cmd == QLatin1String("breakpoint")) {
         const int line = arg.toInt();
+        bool toggled = false;
         QMetaObject::invokeMethod(m_window, "toggleBreakpointAtLine", Qt::DirectConnection,
-                                  Q_ARG(int, line));
+                                  Q_RETURN_ARG(bool, toggled), Q_ARG(int, line));
+        if (!toggled) {
+            reply(guarded, QStringLiteral("error no source file open, or an invalid line number"));
+            return;
+        }
         // "ok" reads as "this will fire", but arming skips lines with no
         // instruction, so say so when the map already knows that — an agent
-        // told plain ok would wait on a stop that can never come.
+        // told plain ok would wait on a stop that can never come. The note is
+        // action-neutral: this verb toggles, so the call may have *removed*
+        // the breakpoint rather than set it.
         reply(guarded, m_window->lineHasCode(line)
                           ? QStringLiteral("ok")
-                          : QStringLiteral("ok (line %1 has no instruction; the breakpoint is set but cannot fire)")
+                          : QStringLiteral("ok; line %1 emits no code, so a breakpoint there cannot fire")
                                 .arg(line));
 
     } else if (cmd == QLatin1String("setreg")) {
@@ -348,9 +389,42 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
     } else if (cmd == QLatin1String("state")) {
         replyBlock(guarded, m_window->stateSummary());
 
+    } else if (cmd == QLatin1String("read")) {
+        // The current document as "path\ncontent". An agent needs to see what
+        // the IDE is showing, not guess from its own copy of the filesystem.
+        const QString snapshot = m_window->documentSnapshot();
+        if (snapshot.isEmpty())
+            reply(guarded, QStringLiteral("error no source file is open"));
+        else
+            replyBlock(guarded, snapshot);
+
+    } else if (cmd == QLatin1String("statejson")) {
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_window->stateJson()).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("problems")) {
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_window->problemsJson()).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("profile")) {
+        const QString sub = arg.section(QLatin1Char(' '), 0, 0);
+        if (sub == QLatin1String("start")) {
+            QMetaObject::invokeMethod(m_window, "profileStart", Qt::DirectConnection);
+            reply(guarded, QStringLiteral("ok"));
+        } else if (sub == QLatin1String("stop")) {
+            QMetaObject::invokeMethod(m_window, "profileStop", Qt::DirectConnection);
+            reply(guarded, QStringLiteral("ok"));
+        } else if (sub == QLatin1String("results")) {
+            replyBlock(guarded, QString::fromUtf8(
+                QJsonDocument(m_window->profilerResultsJson()).toJson(QJsonDocument::Compact)));
+        } else {
+            reply(guarded, QStringLiteral("error usage: profile start|stop|results"));
+        }
+
     } else if (cmd == QLatin1String("help")) {
         replyBlock(guarded, QStringLiteral(
             "open <path>      open a source file\n"
+            "read             the current document as 'path' then its text\n"
             "build            assemble, answering when the build finishes\n"
             "run              build and start the emulator, answering when running\n"
             "stop             stop the emulator session\n"
@@ -363,7 +437,10 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "watchpoint <a>   break when the value at address <a> changes (optional .b/.w/.l)\n"
             "screenshot <f>   save the window to <f> (default /tmp/pist-screenshot.png)\n"
             "console          the build & debug console text\n"
-            "state            registers and PC\n"
+            "state            registers and PC (text)\n"
+            "statejson        registers and PC as a JSON object\n"
+            "problems         the Problems pane as a JSON array\n"
+            "profile <v>      start|stop collection, results as a JSON array\n"
             "watch            receive events as the session changes state\n"
             "unwatch          stop receiving events (connection stays open)\n"
             "quit             close the IDE\n"

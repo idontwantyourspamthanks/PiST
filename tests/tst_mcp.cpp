@@ -10,7 +10,8 @@
 
 #include "control/mcp/McpServer.h"
 
-#include <QJsonDocument>
+#include <algorithm>
+#include <memory>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>
@@ -185,10 +186,12 @@ private slots:
         // workflow breaks without anything here noticing.
         QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
                                      "pist_cmd", "pist_console", "pist_continue",
-                                     "pist_run", "pist_screenshot", "pist_setmem",
-                                     "pist_setreg", "pist_state", "pist_step",
-                                     "pist_stepover", "pist_stop", "pist_watch",
-                                     "pist_watchpoint"}));
+                                     "pist_open", "pist_problems", "pist_profile_results",
+                                     "pist_profile_start", "pist_profile_stop",
+                                     "pist_read", "pist_run", "pist_screenshot",
+                                     "pist_setmem", "pist_setreg", "pist_state",
+                                     "pist_step", "pist_stepover", "pist_stop",
+                                     "pist_watch", "pist_watchpoint"}));
     }
 
     void lineAndBlockRepliesAreFramedCorrectly()
@@ -205,15 +208,18 @@ private slots:
         QCOMPARE(resultText(reply), QStringLiteral("ok"));
         QVERIFY(!resultIsError(reply));
 
-        // A block reply: `state` answers with lines ended by a lone `.` — the
-        // terminator is framing and must not survive into the content.
+        // pist_state goes to statejson and comes back in both shapes: parsed
+        // structuredContent and the same JSON pretty-printed as the text block.
         send(server.get(), 2, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_state")));
-        QCOMPARE(ide.nextLine(), QStringLiteral("state"));
-        ide.send("pc  00012596\n.\n");
+        QCOMPARE(ide.nextLine(), QStringLiteral("statejson"));
+        ide.send("{\"running\":false,\"stopped\":true,\"pc\":\"0x00012596\"}\n.\n");
         reply = waitReply(2);
-        QCOMPARE(resultText(reply), QStringLiteral("pc  00012596"));
+        QVERIFY(resultText(reply).contains(QLatin1String("0x00012596")));
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("structuredContent")).toObject()
+                     .value(QStringLiteral("pc")).toString(),
+                 QStringLiteral("0x00012596"));
         QVERIFY(!resultIsError(reply));
-
         // An IDE-side `error …` is a tool error (isError), not a protocol error.
         send(server.get(), 3, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_step")));
         QCOMPARE(ide.nextLine(), QStringLiteral("step"));

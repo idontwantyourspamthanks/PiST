@@ -17,6 +17,7 @@
 #include <QCommandLineParser>
 #include <QFile>
 #include <QMetaObject>
+#include <QStandardPaths>
 #include <QThread>
 
 #include <cstdio>
@@ -26,7 +27,9 @@ using namespace pist::mcp;
 namespace {
 
 /// Where PiST is listening. `--port` wins over `PIST_CONTROL_PORT`, mirroring
-/// how pist itself resolves the same two (src/main.cpp).
+/// how pist itself resolves the same two (src/main.cpp); with neither, the
+/// discovery file a listening IDE publishes (RemoteControl::discoveryFilePath)
+/// is the zero-configuration answer.
 quint16 controlPort(const QCommandLineParser &parser, const QCommandLineOption &option,
                     QString *error)
 {
@@ -34,14 +37,24 @@ quint16 controlPort(const QCommandLineParser &parser, const QCommandLineOption &
     if (text.isEmpty())
         text = qEnvironmentVariable("PIST_CONTROL_PORT");
     if (text.isEmpty()) {
+        QFile file(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                   + QStringLiteral("/PiST/PiST/control-port"));
+        if (file.open(QIODevice::ReadOnly)) {
+            const QStringList parts = QString::fromUtf8(file.readAll()).trimmed()
+                                          .split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (parts.size() == 2)
+                text = parts.at(1);
+        }
+    }
+    if (text.isEmpty()) {
         // Not fatal: the server still completes the MCP handshake, and every
         // tool call reports exactly what to do about it. Refusing to start would
         // make the failure invisible to the agent (the client would just see a
         // dead server).
         *error = QStringLiteral(
-            "PiST control port is not set: pass --port <n>, or set "
-            "PIST_CONTROL_PORT to the port PiST was started with "
-            "(pist --control-port <n>)");
+            "PiST control port is not set: pass --port <n>, set "
+            "PIST_CONTROL_PORT, or start pist with --control-port <n> (it writes "
+            "a discovery file pist-mcp reads)");
         return 0;
     }
     bool ok = false;

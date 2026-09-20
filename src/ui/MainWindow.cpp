@@ -736,10 +736,18 @@ void MainWindow::wireBackend()
         // edge here; the stopped edge waits for onStateUpdated, which has the
         // PC worth reporting.
         if (m_eventSink) {
-            if (stopped)
+            if (stopped) {
                 m_stopEventPending = true;
-            else
+            } else {
+                // A stop whose state never became valid (no register batch
+                // followed) must not leave a watcher hanging: publish it
+                // without the pc detail rather than drop it.
+                if (m_stopEventPending) {
+                    m_stopEventPending = false;
+                    m_eventSink->publishEvent(QStringLiteral("stopped"));
+                }
                 m_eventSink->publishEvent(QStringLiteral("running"));
+            }
         }
         m_actStep->setEnabled(stopped);
         m_actStepOver->setEnabled(stopped);
@@ -3230,10 +3238,10 @@ void MainWindow::refreshBreakpointMarkers()
         m_breakpointPanel->setBreakpoints(m_breakpoints);
 }
 
-void MainWindow::toggleBreakpointAtLine(int line)
+bool MainWindow::toggleBreakpointAtLine(int line)
 {
     if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
-        return;
+        return false;
 
     const QString file = QFileInfo(m_editor->filePath()).fileName();
 
@@ -3257,6 +3265,78 @@ void MainWindow::toggleBreakpointAtLine(int line)
     // breakpoint takes effect without restarting.
     if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
         armBreakpoints();
+    return true;
+}
+
+QString MainWindow::documentSnapshot() const
+{
+    if (!m_editor || m_editor->filePath().isEmpty())
+        return QString();
+    return m_editor->filePath() + QLatin1Char('\n') + m_editor->toPlainText();
+}
+
+QJsonObject MainWindow::stateJson() const
+{
+    QJsonObject object;
+    const bool running = m_host && m_host->isRunning();
+    const bool stopped = m_host && m_host->isStopped();
+    object.insert(QStringLiteral("running"), running);
+    object.insert(QStringLiteral("stopped"), stopped);
+    if (!m_lastState.regs.valid)
+        return object;
+
+    const Registers &r = m_lastState.regs;
+    const auto hex = [](quint32 value) {
+        return QStringLiteral("0x%1").arg(value, 8, 16, QLatin1Char('0'));
+    };
+    object.insert(QStringLiteral("pc"), hex(m_lastState.pc));
+    QJsonObject d, a;
+    for (int i = 0; i < 8; ++i) {
+        d.insert(QStringLiteral("d%1").arg(i), hex(r.d[i]));
+        a.insert(QStringLiteral("a%1").arg(i), hex(r.a[i]));
+    }
+    object.insert(QStringLiteral("d"), d);
+    object.insert(QStringLiteral("a"), a);
+    object.insert(QStringLiteral("sr"),
+                  QStringLiteral("0x%1").arg(r.sr, 4, 16, QLatin1Char('0')));
+    return object;
+}
+
+QJsonArray MainWindow::problemsJson() const
+{
+    QJsonArray list;
+    if (!m_problems)
+        return list;
+    for (int i = 0; i < m_problems->topLevelItemCount(); ++i) {
+        const QTreeWidgetItem *item = m_problems->topLevelItem(i);
+        QJsonObject problem;
+        problem.insert(QStringLiteral("file"), item->text(0));
+        problem.insert(QStringLiteral("line"), item->text(1).toInt());
+        problem.insert(QStringLiteral("message"), item->text(2));
+        list.append(problem);
+    }
+    return list;
+}
+
+QJsonArray MainWindow::profilerResultsJson() const
+{
+    QJsonArray list;
+    if (!m_profiler)
+        return list;
+    const QHash<int, quint64> counts = m_profiler->lineCounts();
+    QList<QPair<int, quint64>> sorted;
+    sorted.reserve(counts.size());
+    for (auto it = counts.begin(); it != counts.end(); ++it)
+        sorted.append({it.key(), it.value()});
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto &lhs, const auto &rhs) { return lhs.second > rhs.second; });
+    for (const auto &[line, count] : sorted) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("line"), line);
+        entry.insert(QStringLiteral("count"), QString::number(count));
+        list.append(entry);
+    }
+    return list;
 }
 
 bool MainWindow::lineHasCode(int line) const

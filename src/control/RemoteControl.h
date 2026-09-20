@@ -40,6 +40,13 @@ class RemoteControl : public QObject
 
 public:
     explicit RemoteControl(MainWindow *window, QObject *parent = nullptr);
+    ~RemoteControl() override;
+
+    /// The well-known file a listening instance publishes its address to, so a
+    /// `pist-mcp` shim with no --port can find the running IDE. GenericData-
+    /// Location-based, because the shim and the IDE have different application
+    /// names and must compute the same path.
+    static QString discoveryFilePath();
 
     /// Listen on 127.0.0.1:<port>. Returns false and sets `error` on failure.
     bool listen(quint16 port, QString *error);
@@ -79,7 +86,9 @@ private:
 
     MainWindow *m_window;
     QTcpServer *m_server = nullptr;
-    /// Clients that asked for events. QPointer-like liveness is handled by
+    /// What listen() wrote to the discovery file, so the destructor only
+    /// removes a file that is still ours.
+    QString m_publishedAddress;
     /// dropping the entry in the socket's destroyed handler, so a socket can
     /// never be written to after Qt has deleted it.
     QSet<class QTcpSocket *> m_watchers;

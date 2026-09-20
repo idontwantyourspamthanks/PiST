@@ -14,6 +14,8 @@
 #include "control/RemoteControl.h"
 #include "ui/MainWindow.h"
 
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStandardPaths>
 #include <QTcpSocket>
 #include <QSettings>
@@ -40,6 +42,11 @@ private slots:
     void cmdDisconnectDuringWaitSurvives();
     void runWithoutSourceFailsFast();
     void secondBlockingCommandIsRefusedWhileOneWaits();
+    void readWithNoDocumentErrors();
+    void readReturnsTheOpenDocument();
+    void statejsonIsAJsonObject();
+    void problemsIsAJsonArray();
+    void profileUsageErrorNamesTheSubverbs();
     void initTestCase();
 };
 
@@ -294,6 +301,80 @@ void TstRemoteControl::runWithoutSourceFailsFast()
     QVERIFY2(reply.startsWith(QStringLiteral("error")),
              qPrintable(QStringLiteral("run replied: %1\nconsole: %2")
                             .arg(reply, s.window.debugConsoleText().right(400))));
+}
+
+void TstRemoteControl::readWithNoDocumentErrors()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // The pristine editor has no file, so there is nothing to read back.
+    QVERIFY(roundTrip(s.client, "read").startsWith(QStringLiteral("error")));
+}
+
+void TstRemoteControl::readReturnsTheOpenDocument()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("prog.s"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("\tmoveq\t#1,d0\n\trts\n");
+    file.close();
+
+    QCOMPARE(roundTrip(s.client, "open " + path.toUtf8()), QStringLiteral("ok"));
+    const QString reply = roundTripBlock(s.client, "read");
+    // First line is the path, then the document text — the agent sees what
+    // the IDE shows, not its own guess at the filesystem.
+    QVERIFY(reply.startsWith(path));
+    QVERIFY(reply.contains(QStringLiteral("moveq\t#1,d0")));
+}
+
+void TstRemoteControl::statejsonIsAJsonObject()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    // No session: the JSON carries the flags and nothing else, and must parse.
+    // roundTripBlock keeps the framing terminator, which is not JSON.
+    QString reply = roundTripBlock(s.client, "statejson");
+    reply.chop(3);
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8(), &parseError);
+    QVERIFY2(parseError.error == QJsonParseError::NoError, qPrintable(reply));
+    const QJsonObject object = doc.object();
+    QCOMPARE(object.value(QStringLiteral("running")).toBool(), false);
+    QCOMPARE(object.value(QStringLiteral("stopped")).toBool(), false);
+}
+
+void TstRemoteControl::problemsIsAJsonArray()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    QString reply = roundTripBlock(s.client, "problems");
+    reply.chop(3);
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8(), &parseError);
+    QVERIFY2(parseError.error == QJsonParseError::NoError, qPrintable(reply));
+    QVERIFY(doc.isArray());
+}
+
+void TstRemoteControl::profileUsageErrorNamesTheSubverbs()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    const QString reply = roundTrip(s.client, "profile sideways");
+    QVERIFY(reply.startsWith(QStringLiteral("error")));
+    QVERIFY(reply.contains(QStringLiteral("start|stop|results")));
 }
 
 void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()

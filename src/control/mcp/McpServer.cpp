@@ -286,7 +286,15 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
     QString command;
     bool block = false;
     if (name == QLatin1String("pist_state")) {
-        command = QStringLiteral("state");
+        // statejson, not state: the JSON is served as structured content (see
+        // deliverReply), which is what an agent should consume.
+        command = QStringLiteral("statejson");
+        block = true;
+    } else if (name == QLatin1String("pist_problems")) {
+        command = QStringLiteral("problems");
+        block = true;
+    } else if (name == QLatin1String("pist_read")) {
+        command = QStringLiteral("read");
         block = true;
     } else if (name == QLatin1String("pist_console")) {
         command = QStringLiteral("console");
@@ -301,14 +309,23 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         command = QStringLiteral("run");
     } else if (name == QLatin1String("pist_build")) {
         command = QStringLiteral("build");
+    } else if (name == QLatin1String("pist_continue")) {
+        command = QStringLiteral("continue");
+    } else if (name == QLatin1String("pist_open")) {
+        command = QStringLiteral("open %1").arg(args.value(QStringLiteral("path")).toString());
+    } else if (name == QLatin1String("pist_profile_start")) {
+        command = QStringLiteral("profile start");
+    } else if (name == QLatin1String("pist_profile_stop")) {
+        command = QStringLiteral("profile stop");
+    } else if (name == QLatin1String("pist_profile_results")) {
+        command = QStringLiteral("profile results");
+        block = true;
     } else if (name == QLatin1String("pist_stop")) {
         command = QStringLiteral("stop");
     } else if (name == QLatin1String("pist_step")) {
         command = QStringLiteral("step");
     } else if (name == QLatin1String("pist_stepover")) {
         command = QStringLiteral("stepover");
-    } else if (name == QLatin1String("pist_continue")) {
-        command = QStringLiteral("continue");
     } else if (name == QLatin1String("pist_setreg")) {
         const QString reg = args.value(QStringLiteral("register")).toString();
         const QString value = args.value(QStringLiteral("value")).toString();
@@ -353,6 +370,32 @@ void McpServer::deliverReply(quint64 token, const QString &text)
     // the call was well-formed and the IDE answered, so it goes back in a
     // result with isError, which is what the spec prescribes for API failures.
     const bool isError = text.startsWith(QLatin1String("error"));
+
+    // Tools whose answer is a JSON document get it in both shapes: parsed as
+    // structuredContent for clients that consume fields, and pretty-printed
+    // as the text block for clients that render content. Arrays are wrapped,
+    // because structuredContent must be an object.
+    if (!isError && (outstanding.tool == QLatin1String("pist_state")
+                     || outstanding.tool == QLatin1String("pist_problems")
+                     || outstanding.tool == QLatin1String("pist_profile_results"))) {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &parseError);
+        if (parseError.error == QJsonParseError::NoError) {
+            QJsonObject structured;
+            if (doc.isObject())
+                structured = doc.object();
+            else if (doc.isArray())
+                structured.insert(QStringLiteral("items"), doc.array());
+            QJsonObject result;
+            result.insert(QStringLiteral("structuredContent"), structured);
+            result.insert(QStringLiteral("content"),
+                          textContent(QString::fromUtf8(doc.toJson(QJsonDocument::Indented))));
+            result.insert(QStringLiteral("isError"), false);
+            sendResult(outstanding.id, result);
+            return;
+        }
+    }
+
     QJsonObject result;
     result.insert(QStringLiteral("content"), textContent(text));
     result.insert(QStringLiteral("isError"), isError);
@@ -415,7 +458,15 @@ QJsonArray McpServer::tools()
     list.append(toolObject(
         QStringLiteral("pist_build"), QStringLiteral("Build"),
         QStringLiteral("Assemble and link the current source. Answers only when the "
-                       "build has finished."),
+                       "build has finished. Call pist_problems for the diagnostics "
+                       "when it fails."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_state"), QStringLiteral("Machine state"),
+        QStringLiteral("Registers and program counter of the stopped machine, as a "
+                       "JSON object (also in structuredContent). While running it "
+                       "carries only the running/stopped flags."),
         empty, {}));
 
     list.append(toolObject(
@@ -436,11 +487,6 @@ QJsonArray McpServer::tools()
     list.append(toolObject(
         QStringLiteral("pist_continue"), QStringLiteral("Continue"),
         QStringLiteral("Resume execution until a breakpoint or watchpoint is hit."),
-        empty, {}));
-
-    list.append(toolObject(
-        QStringLiteral("pist_state"), QStringLiteral("Machine state"),
-        QStringLiteral("Registers and program counter of the stopped machine."),
         empty, {}));
 
     list.append(toolObject(
@@ -546,6 +592,54 @@ QJsonArray McpServer::tools()
                            "against a headless (offscreen) IDE."),
             props, {}));
     }
+
+    {
+        QJsonObject props;
+        QJsonObject path;
+        path.insert(QStringLiteral("type"), QStringLiteral("string"));
+        path.insert(QStringLiteral("description"),
+                    QStringLiteral("Source file to open in the IDE"));
+        props.insert(QStringLiteral("path"), path);
+        list.append(toolObject(
+            QStringLiteral("pist_open"), QStringLiteral("Open a source file"),
+            QStringLiteral("Open a source file in the IDE, making it the current "
+                           "document (what build/run/breakpoint act on)."),
+            props, QJsonArray{QStringLiteral("path")}));
+    }
+
+    list.append(toolObject(
+        QStringLiteral("pist_read"), QStringLiteral("Read the current document"),
+        QStringLiteral("The document the IDE is showing: its path on the first "
+                       "line, then its full text."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_problems"), QStringLiteral("Build problems"),
+        QStringLiteral("The Problems pane — file, line and message for every "
+                       "diagnostic from the last build, as a JSON array (also in "
+                       "structuredContent). Call this after pist_build instead of "
+                       "parsing pist_console output."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_profile_start"), QStringLiteral("Start profiling"),
+        QStringLiteral("Start collecting per-instruction execution counts "
+                       "(debugger must be stopped; resume after starting)."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_profile_stop"), QStringLiteral("Stop profiling"),
+        QStringLiteral("Stop collecting. Answers when the stop is requested; the "
+                       "results arrive asynchronously, so call pist_profile_results "
+                       "after the machine stops."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_profile_results"), QStringLiteral("Profile results"),
+        QStringLiteral("Per-source-line execution counts from the last profile, "
+                       "sorted hottest first, as a JSON array (also in "
+                       "structuredContent). Empty until a profile is collected."),
+        empty, {}));
 
     list.append(toolObject(
         QStringLiteral("pist_watch"), QStringLiteral("Watch for events"),

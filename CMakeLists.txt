@@ -582,7 +582,7 @@ set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 # Test binaries must be console applications on Windows. qt_add_executable marks
 # them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
 # nothing at all, making a red run on Windows undiagnosable.
-foreach(test_target IN ITEMS tst_parsers tst_image tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol tst_toolfetch tst_hrdb)
+foreach(test_target IN ITEMS tst_parsers tst_image tst_tosrom tst_debug tst_settings tst_gui tst_emulatorhost tst_link tst_remotecontrol tst_toolfetch tst_hrdb tst_mcp)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

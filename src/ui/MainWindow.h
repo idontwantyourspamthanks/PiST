@@ -15,6 +15,8 @@
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QMainWindow>
 
 class QTabWidget;
@@ -167,7 +169,7 @@ private slots:
 
     void removeBreakpoint(const QString &file, int line);
     void goToBreakpoint(const QString &file, int line);
-    void toggleBreakpointAtLine(int line);
+    bool toggleBreakpointAtLine(int line);
     void editBreakpointCondition(int line);
     void clearAllBreakpoints();
     /// The breakpoints dock's "Clear all": removes breakpoints AND watchpoints
@@ -198,6 +200,25 @@ public:
     /// will decide then, so "can't tell" must not read as "cannot fire".
     /// For the remote `breakpoint` reply.
     bool lineHasCode(int line) const;
+
+    /// The current editor document as "path\ncontent", for the remote `read`
+    /// verb — what the IDE is showing, so an agent needn't guess. Empty when
+    /// no source is open.
+    QString documentSnapshot() const;
+
+    /// Machine state as JSON: {running, stopped}, plus pc/d0-7/a0-7/sr when a
+    /// register batch has landed. For the remote `statejson` verb, which the
+    /// MCP shim serves as structured content.
+    QJsonObject stateJson() const;
+
+    /// The Problems pane as JSON objects {file, line, message}, for the
+    /// remote `problems` verb.
+    QJsonArray problemsJson() const;
+
+    /// Profiler hot lines as JSON objects {line, count}, sorted by descending
+    /// count, for the remote `profile results` verb. Empty when no profile
+    /// has been collected.
+    QJsonArray profilerResultsJson() const;
 
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use

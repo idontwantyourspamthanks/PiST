@@ -418,6 +418,7 @@ containing only `.`:
 
 ```
 open <path>        open a source file
+read               the current document: its path, then its text (block reply)
 build              assemble; the reply arrives when the build finishes
 run                build and start the emulator; the reply arrives when it is running
 stop               stop the emulator session
@@ -430,6 +431,10 @@ cmd <command>      run an arbitrary Hatari debugger command (block reply)
 screenshot <file>  save the window as a PNG (default /tmp/pist-screenshot.png)
 console            the build & debug console text (block reply)
 state              registers and PC (block reply)
+statejson          registers and PC as a JSON object (block reply)
+problems           the Problems pane as a JSON array (block reply)
+profile start|stop|results   collect execution counts; results are a JSON
+                   array of {line, count}, hottest first (block reply)
 watch              receive events as the session changes state (see below)
 unwatch            stop receiving events; the connection stays open
 help               list the commands
@@ -475,15 +480,22 @@ PIST_CONTROL_PORT=9999 pist-mcp             # the client launches this instead
 ```
 
 Point the client at the `pist-mcp` binary; the control port comes from `--port`
-or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it. The tools are
+or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it — and with
+neither, from the discovery file a `pist --control-port` session publishes, so
+a locally started IDE needs no configuration at all. The tools are
 `pist_run`, `pist_build`, `pist_stop`, `pist_step`, `pist_stepover`,
-`pist_continue`, `pist_state`, `pist_console`, `pist_breakpoints`,
-`pist_breakpoint`, `pist_setreg`, `pist_setmem`, `pist_watchpoint`, `pist_cmd`,
-`pist_screenshot` and `pist_watch`. `pist_watch` subscribes to the events above
-and returns them; they also arrive as MCP log notifications, so an agent waiting
-for a breakpoint does not have to poll. The shim speaks newline-delimited
-JSON-RPC 2.0 — one message per line, never `Content-Length` headers, which belong
-to a different protocol — and logs to stderr only, since stdout is the transport.
+`pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
+`pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
+`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
+`pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
+`pist_watch`. `pist_state`, `pist_problems` and `pist_profile_results` answer
+with structured JSON (in `structuredContent` as well as text), so an agent
+consumes fields instead of parsing console text. `pist_watch` subscribes to
+the events above and returns them; they also arrive as MCP log notifications,
+so an agent waiting for a breakpoint does not have to poll. The shim speaks
+newline-delimited JSON-RPC 2.0 — one message per line, never `Content-Length`
+headers, which belong to a different protocol — and logs to stderr only, since
+stdout is the transport.
 
 A minimal client in Python:
 

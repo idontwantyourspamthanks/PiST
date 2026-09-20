@@ -295,6 +295,11 @@ jobs:
           cp build/pist-mcp bundle/pist.app/Contents/MacOS/
           macdeployqt bundle/pist.app -always-overwrite \
             -executable=bundle/pist.app/Contents/MacOS/pist-mcp
+          # The helper must resolve Qt from the bundle it rides in, not the host.
+          otool -L bundle/pist.app/Contents/MacOS/pist-mcp \
+            | grep -q '@executable_path/../Frameworks/QtCore.framework' \
+            || { echo "ERROR: pist-mcp not fixed up into the bundle"; \
+                 otool -L bundle/pist.app/Contents/MacOS/pist-mcp; exit 1; }
           # The assembler and linker belong beside the executable inside the
           # bundle, which is where discovery looks first, so the archive stays
           # self-sufficient wherever it is unpacked from.
@@ -306,6 +311,7 @@ jobs:
         if: matrix.deployed && runner.os == 'Windows'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p bundle/bin
           cp build/Release/pist.exe build/Release/pist-mcp.exe bundle/bin/
           # pist-mcp.exe links only Qt6Core and Qt6Network, both of which the
@@ -530,6 +536,11 @@ jobs:
           dpkg-deb -x "pist-$V-linux-amd64.deb" debx
           env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
             xvfb-run -a debx/usr/bin/pist --diagnose > diagnose-deb.txt 2>&1 || true
+          # pist-mcp must resolve the bundled Qt too — it is not the --diagnose
+          # binary, so it gets its own self-containment probe.
+          env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
+            debx/usr/bin/pist-mcp --version | grep -q pist-mcp \
+            || { echo "ERROR: deb pist-mcp not self-contained"; exit 1; }
           for needle in vasmm68k_mot hatari EmuTOS; do
             grep -q "debx/usr" diagnose-deb.txt || { echo "ERROR: deb not self-contained ($needle)"; cat diagnose-deb.txt; exit 1; }
           done

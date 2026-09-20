@@ -490,6 +490,12 @@ void EmulatorHost::processStderrData()
     while ((nl = m_stderrBuffer.indexOf('\n')) >= 0) {
         const QByteArray raw = m_stderrBuffer.left(nl);
         m_stderrBuffer.remove(0, nl + 1);
+        // Consuming a line moves the dispatch watermark with it: handlers run
+        // by the line loop (the entry banner arms queued commands) can dispatch
+        // while the buffer still holds un-consumed lines, and without this the
+        // recorded offset would point past bytes that no longer exist — which
+        // is how every stop went undetected on stderr-prompt builds (macOS CI).
+        m_stderrAtDispatch = qMax(0, m_stderrAtDispatch - (nl + 1));
         handleStderrLine(QString::fromUtf8(raw).remove(QLatin1Char('\r')));
     }
 
@@ -499,21 +505,16 @@ void EmulatorHost::processStderrData()
     // in the buffer. The `> cmd` echoes from DebugUI_ParseLine/ParseFile cannot be
     // confused with it, because those always end in a newline.
     //
-    // A prompt already sitting at the front of the buffer is stale: it is the one
-    // from *before* the command we are waiting on, so only a prompt that has
-    // arrived since is a completion signal. Tracked by remembering the length the
-    // buffer had when the command was dispatched.
-    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
-    if (stderrEndsWithPrompt(m_stderrBuffer))
-        emit logLine(QStringLiteral("[diag] stderr prompt gate: endsWith=1 size=%1 atDispatch=%2")
-                         .arg(m_stderrBuffer.size()).arg(m_stderrAtDispatch));
-    if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch)
+    // A prompt already sitting in the buffer is stale: it is the one from
+    // *before* the command we are waiting on, so only a prompt that has arrived
+    // since is a completion signal. Tracked by remembering the length the buffer
+    // had when the command was dispatched — an offset the line loop above keeps
+    // valid as it consumes — and by consuming the prompt on fire, so unrelated
+    // stderr noise cannot re-fire the same prompt once the watermark has shifted.
+    if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch) {
+        m_stderrBuffer.chop(2);
         onPrompt();
-    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
-    emit logLine(QStringLiteral("[diag] stderr chunk tail: ")
-                 + QString::fromUtf8(m_stderrBuffer.right(160))
-                       .replace(QLatin1Char('\n'), QStringLiteral("\\n"))
-                       .replace(QLatin1Char('\r'), QStringLiteral("\\r")));
+    }
 }
 
 void EmulatorHost::drainStderr()
@@ -760,10 +761,6 @@ void EmulatorHost::dumpRegisters()
 void EmulatorHost::onPrompt()
 {
     m_promptCount += 1;
-    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
-    emit logLine(QStringLiteral("[diag] prompt: inflight=%1 stopped=%2 owed=%3 count=%4 target=%5")
-                     .arg(m_haveCurrent).arg(m_stopped).arg(m_owedPrompts)
-                     .arg(m_promptCount).arg(m_promptTarget));
 
     // A prompt for a command that already timed out is not a completion: the
     // command's slot is gone, so this prompt is simply swallowed. Otherwise the

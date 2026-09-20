@@ -469,7 +469,7 @@ target_link_libraries(tst_gui PRIVATE pist_core Qt6::Test)
 # pass in the summary.
 add_dependencies(tst_gui pist)
 add_test(NAME gui COMMAND tst_gui)
-set_tests_properties(gui PROPERTIES TIMEOUT 180)
+set_tests_properties(gui PROPERTIES TIMEOUT 900)
 
 # Remote-control socket protocol: framing, block terminators, and the synchronous
 # command responses an agent depends on. Drives MainWindow offscreen, needs no

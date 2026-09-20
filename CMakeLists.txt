@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(pist
-    VERSION 0.6.1
+    VERSION 0.6.2
     DESCRIPTION "PiST - an IDE for Atari ST assembly development"
     LANGUAGES CXX)
 
@@ -44,10 +44,18 @@ qt_add_library(pist_core OBJECT
     src/ui/Appearance.h
     src/ui/Icons.cpp
     src/editor/CodeEditor.h
+    src/editor/InstrRef.cpp
+    src/editor/InstrRef.h
+    src/editor/IncludeNav.cpp
+    src/editor/IncludeNav.h
 
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
+    src/emu/ProfileData.cpp
+    src/emu/ProfileData.h
+    src/build/SymbolTable.cpp
+    src/build/SymbolTable.h
     src/build/FloppyImage.cpp
     src/build/FloppyImage.h
 
@@ -124,8 +132,16 @@ qt_add_library(pist_core OBJECT
     src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/ConsoleInput.cpp
+    src/ui/ConsoleInput.h
     src/ui/PcHistoryView.cpp
     src/ui/PcHistoryView.h
+    src/ui/InstructionRefView.cpp
+    src/ui/InstructionRefView.h
+    src/ui/SymbolsView.cpp
+    src/ui/SymbolsView.h
+    src/ui/ProfilerView.cpp
+    src/ui/ProfilerView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
     src/ui/SettingsDialog.cpp
@@ -168,6 +184,22 @@ qt_add_executable(pist
 )
 target_link_libraries(pist PRIVATE pist_core)
 
+# The MCP stdio shim: lets Claude/Cursor-class agents discover a running PiST
+# as a native tool, bridging MCP JSON-RPC (stdio) to the RemoteControl TCP
+# protocol. Console application everywhere — WIN32_EXECUTABLE would detach
+# stdout and silently break the transport.
+qt_add_executable(pist-mcp
+    src/control/mcp/main.cpp
+    src/control/mcp/McpServer.cpp
+    src/control/mcp/McpServer.h
+    src/control/mcp/ControlClient.cpp
+    src/control/mcp/ControlClient.h
+)
+target_include_directories(pist-mcp PRIVATE src)
+target_link_libraries(pist-mcp PRIVATE Qt6::Core Qt6::Network)
+target_compile_definitions(pist-mcp PRIVATE "PIST_VERSION=\"${PROJECT_VERSION}\"")
+set_target_properties(pist-mcp PROPERTIES WIN32_EXECUTABLE FALSE)
+
 # ---------------------------------------------------------------------------
 # Installation
 # ---------------------------------------------------------------------------
@@ -196,6 +228,9 @@ if(APPLE)
 endif()
 
 install(TARGETS pist
+    BUNDLE  DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS pist-mcp
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -434,7 +469,7 @@ target_link_libraries(tst_gui PRIVATE pist_core Qt6::Test)
 # pass in the summary.
 add_dependencies(tst_gui pist)
 add_test(NAME gui COMMAND tst_gui)
-set_tests_properties(gui PROPERTIES TIMEOUT 180)
+set_tests_properties(gui PROPERTIES TIMEOUT 900)
 
 # Remote-control socket protocol: framing, block terminators, and the synchronous
 # command responses an agent depends on. Drives MainWindow offscreen, needs no

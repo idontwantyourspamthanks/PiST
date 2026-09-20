@@ -34,18 +34,27 @@ from pathlib import Path
 
 NOTICES_DIR = Path(__file__).resolve().parent / "notices"
 
-# Substring of a library's file name -> (component, [licence texts], licence
+# File-name substrings of a library -> (component, [licence texts], licence
 # name). These are the libraries whose licences oblige us to ship their text
 # when they travel inside the archive. Which of them Hatari links — and which
-# linuxdeploy consequently bundles — is a property of the build host, not of
-# Hatari's source, so it is discovered per artifact. Each text names its own
-# copyright holder: SDL2's licence file is not zlib's.
+# the deploy step consequently bundles — is a property of the build host, not
+# of Hatari's source, so it is discovered per artifact. Each text names its own
+# copyright holder: SDL2's licence file is not zlib's. Windows names differ
+# from Unix ones (SDL2.dll, zlib1.dll), so each component carries every name
+# its library goes by.
 KNOWN_LIBS = {
-    "libreadline": ("readline", ["GPL-3.0.txt"], "GPL v3 or later"),
-    "libSDL2": ("SDL2", ["SDL2-LICENSE.txt"], "zlib licence"),
-    "libpng": ("libpng", ["libpng.txt"], "libpng licence"),
-    "libcapstone": ("Capstone", ["BSD-3-Clause-Capstone.txt"], "BSD 3-clause"),
-    "libz.": ("zlib", ["zlib.txt"], "zlib licence"),
+    ("libreadline",): ("readline", ["GPL-3.0.txt"], "GPL v3 or later"),
+    ("libSDL2", "SDL2.dll"): ("SDL2", ["SDL2-LICENSE.txt"], "zlib licence"),
+    ("libpng",): ("libpng", ["libpng.txt"], "libpng licence"),
+    ("libcapstone", "capstone.dll"): ("Capstone", ["BSD-3-Clause-Capstone.txt"], "BSD 3-clause"),
+    ("libz.", "zlib1"): ("zlib", ["zlib.txt"], "zlib licence"),
+    # The MinGW runtime DLLs an MSYS2-built emulator carries. GCC's runtime
+    # libraries are GPL v3 with the Runtime Library Exception, and the
+    # exception text is what permits shipping them beside a GPL v2 program.
+    ("libgcc_s", "libstdc++", "libwinpthread"): (
+        "GCC runtime (libgcc/libstdc++/libwinpthread)",
+        ["GPL-3.0.txt", "GCC-Runtime-Exception.txt"],
+        "GPL v3 or later, with the GCC Runtime Library Exception"),
 }
 
 
@@ -90,36 +99,34 @@ def bundled_library_names(root):
     return names
 
 
-def vasm_licence_text(tarball):
-    """Extract the Legal section from doc/vasm.texi in the pinned tarball.
+def manual_licence_text(tarball, texi_suffix, header):
+    """Extract the Legal section from a texinfo manual in the pinned tarball.
 
-    vasm ships no standalone licence file; its redistribution terms are the
-    'Legal' section of the manual. They must travel with the binary, and
-    extracting them from the pinned source means the text cannot drift from
-    what was actually built.
+    vasm and vlink ship no standalone licence file; their redistribution terms
+    are the 'Legal' section of the manual. They must travel with the binary,
+    and extracting them from the pinned source means the text cannot drift
+    from what was actually built.
     """
     # List-then-extract-exact: GNU tar needs --wildcards for patterns while
     # bsdtar patterns implicitly and rejects the flag, so patterns are avoided.
     members = subprocess.run(["tar", "-tzf", str(tarball)], capture_output=True, text=True)
     if members.returncode != 0:
         fail(f"could not list {tarball}: {members.stderr}")
-    member = next((m for m in members.stdout.splitlines() if m.endswith("/doc/vasm.texi")), None)
+    member = next((m for m in members.stdout.splitlines() if m.endswith(texi_suffix)), None)
     if not member:
-        fail(f"{tarball} contains no doc/vasm.texi; the licence terms must ship with vasm")
+        fail(f"{tarball} contains no {texi_suffix}; the licence terms must ship with the binary")
     out = subprocess.run(["tar", "-xOf", str(tarball), member],
                          capture_output=True, text=True)
     if out.returncode != 0 or not out.stdout:
         fail(f"could not read {member} from {tarball}")
     match = re.search(r"@section Legal\n(.*?)\n@section ", out.stdout, re.DOTALL)
     if not match:
-        fail("doc/vasm.texi has no Legal section; the licence terms must ship with vasm")
+        fail(f"{member} has no Legal section; the licence terms must ship with the binary")
     body = match.group(1)
     # texinfo markup the reader does not need.
     body = re.sub(r"@code\{([^}]*)\}", r"\1", body)
     body = re.sub(r"@emph\{([^}]*)\}", r"\1", body)
-    return "vasm licence terms (from the Legal section of doc/vasm.texi,\n" \
-           "in the pinned upstream source tarball this binary was built from)\n\n" \
-           + body.strip() + "\n"
+    return header + body.strip() + "\n"
 
 
 def main():
@@ -131,6 +138,8 @@ def main():
                         help="Qt version the bundle deploys, for the LGPL source offer")
     parser.add_argument("--vasm-tarball", type=Path,
                         help="the pinned vasm source tarball (its licence section ships)")
+    parser.add_argument("--vlink-tarball", type=Path,
+                        help="the pinned vlink source tarball (its licence section ships)")
     parser.add_argument("--expect-qt", action="store_true",
                         help="Qt is deployed AFTER this script runs (the AppDir case): "
                              "ship its notice without the marker check. The archive "
@@ -174,23 +183,38 @@ def main():
         if not args.vasm_tarball:
             fail("vasm is bundled but --vasm-tarball was not given: "
                  "its licence terms cannot be shipped without it")
-        (licenses / "vasm-LICENCE.txt").write_text(vasm_licence_text(args.vasm_tarball))
+        (licenses / "vasm-LICENCE.txt").write_text(manual_licence_text(
+            args.vasm_tarball, "/doc/vasm.texi",
+            "vasm licence terms (from the Legal section of doc/vasm.texi,\n"
+            "in the pinned upstream source tarball this binary was built from)\n\n"))
         components.append(("vasm (vasmm68k_mot)", "non-free; redistribution unmodified, "
                            "non-commercial use", ["vasm-LICENCE.txt"],
                            "source: http://sun.hasenbraten.de/vasm/ (pinned tarball)"))
+
+    # vlink: same author-hosted terms as vasm, same extraction route; the
+    # manual lives at the tarball's top level rather than in doc/.
+    if find_binary(root, {"vlink", "vlink.exe"}):
+        if not args.vlink_tarball:
+            fail("vlink is bundled but --vlink-tarball was not given: "
+                 "its licence terms cannot be shipped without it")
+        (licenses / "vlink-LICENCE.txt").write_text(manual_licence_text(
+            args.vlink_tarball, "/vlink.texi",
+            "vlink licence terms (from the Legal section of vlink.texi,\n"
+            "in the pinned upstream source tarball this binary was built from)\n\n"))
+        components.append(("vlink", "non-free; redistribution unmodified, "
+                           "non-commercial use", ["vlink-LICENCE.txt"],
+                           "source: http://sun.hasenbraten.de/vlink/ (pinned tarball)"))
 
     # EmuTOS: the default ROM.
     if list(root.rglob("etos1024k.img")):
         components.append(("EmuTOS 1.4 (etos1024k.img)", "GPL v2", ["GPL-2.0.txt"],
                            "source: https://emutos.sourceforge.net/"))
 
-    # Hatari: only the Linux archive bundles it. On Windows we cannot inspect
-    # linked libraries at all, so one turning up there is a packaging change
-    # that must fail loudly rather than ship unnoticed.
+    # Hatari: bundled in the Linux AppImage and the Windows archive. Linked
+    # libraries can be inspected on Linux/macOS only; on Windows the KNOWN_LIBS
+    # matching below relies on the DLLs staged beside the emulator, which the
+    # packaging job copies from the MSYS2 sysroot the emulator was built against.
     hatari = find_binary(root, {"hatari", "hatari.exe", "Hatari"})
-    if hatari and args.platform == "windows":
-        fail(f"an emulator ({hatari}) is present in a Windows bundle, which this "
-             "script cannot inspect for linked libraries — extend it or stop bundling")
 
     # The known-licence libraries that travel with the artifact, found two
     # ways: the bundled Hatari's direct links (which the deployer will bundle),
@@ -212,16 +236,18 @@ def main():
         else:
             components.append(("Hatari 2.6.1", "GPL v2 or later", ["GPL-2.0.txt"],
                                "source: https://www.hatari-emu.org/ (pinned tarball)"))
-        found_libs.update(linked_libraries(hatari, args.platform))
+        if args.platform != "windows":
+            found_libs.update(linked_libraries(hatari, args.platform))
     found_libs.update(bundled_library_names(root))
 
     known_found = []
-    for needle, (name, texts, licence) in KNOWN_LIBS.items():
-        if any(needle in lib for lib in found_libs):
+    for needles, (name, texts, licence) in KNOWN_LIBS.items():
+        if any(needle in lib for needle in needles for lib in found_libs):
             known_found.append(name)
             components.append((f"{name} (bundled with the archive)", licence, texts, ""))
+    all_needles = [needle for needles in KNOWN_LIBS for needle in needles]
     for lib in sorted(found_libs):
-        if not any(k in lib for k in KNOWN_LIBS):
+        if not any(needle in lib for needle in all_needles):
             print(f"collect-notices: note: {lib} present, no licence text required")
 
     # Copy the licence texts for the components actually present.

@@ -8,8 +8,17 @@
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
+#include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
+#include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
+#include "editor/IncludeNav.h"
+#include "ui/ConsoleInput.h"
+#include "ui/SymbolsView.h"
+#include "control/RemoteControl.h"
+#include "ui/ProfilerView.h"
+#include "emu/ProfileData.h"
+#include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "image/ImageDocument.h"
@@ -49,6 +58,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QTextBlock>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -230,6 +240,7 @@ ImageEditor *MainWindow::addImageTab(const QString &path)
 
     auto *editor = new ImageEditor(this);
     wireImage(editor);
+    wireImageReExport(editor);
     if (!path.isEmpty()) {
         const bool ok = isPimPath(path) ? editor->loadFile(path) : editor->importFile(path, false);
         if (!ok) {
@@ -261,6 +272,26 @@ void MainWindow::wireEditor(CodeEditor *editor)
         else if (button == Qt::RightButton)
             editBreakpointCondition(line);
     });
+
+    // The instruction reference follows the word under the cursor, but only
+    // when its dock is on show — otherwise an idle panel would churn on every
+    // keystroke.
+    connect(editor, &CodeEditor::cursorPositionChanged, this, [this, editor] {
+        if (!m_instrRef || editor != m_editor || !m_instrRef->isVisible())
+            return;
+        const QTextCursor cursor = editor->textCursor();
+        const QString line = cursor.block().text();
+        const int col = cursor.positionInBlock();
+        int start = col;
+        while (start > 0
+               && (line.at(start - 1).isLetterOrNumber() || line.at(start - 1) == QLatin1Char('.')))
+            --start;
+        int end = col;
+        while (end < line.size()
+               && (line.at(end).isLetterOrNumber() || line.at(end) == QLatin1Char('.')))
+            ++end;
+        m_instrRef->showInstruction(line.mid(start, end - start));
+    });
     connect(editor, &CodeEditor::gutterContextMenuRequested, this,
             [this, editor](int line, const QPoint &pos) {
                 QMenu menu;
@@ -288,6 +319,36 @@ void MainWindow::wireImage(ImageEditor *editor)
         if (editor == m_image)
             updateModifiedState();
     });
+}
+
+void MainWindow::wireImageReExport(ImageEditor *editor)
+{
+    // A re-export repeats the block map in the console, same as the explicit
+    // export leaves it.
+    connect(editor, &ImageEditor::bitplaneReExported, this,
+            [this](const QString &path, const QString &scroller, const QString &error) {
+                if (!m_log)
+                    return;
+                if (!error.isEmpty()) {
+                    m_log->appendPlainText(tr("[export] re-export failed: %1").arg(error));
+                    return;
+                }
+                m_log->appendPlainText(tr("--- bitplane data (re-export): %1 ---")
+                                           .arg(QFileInfo(path).fileName()));
+                const ImageDocument &doc = m_image->document();
+                const QVector<BitplaneBlock> blocks = bitplaneLayout(
+                    doc.phases().at(m_image->lastBitplaneExportPhase()).cellW,
+                    doc.phases().at(m_image->lastBitplaneExportPhase()).cellH,
+                    doc.phases().at(m_image->lastBitplaneExportPhase()).frames.size(),
+                    m_image->lastBitplaneExportOptions());
+                for (const BitplaneBlock &block : blocks)
+                    m_log->appendPlainText(QStringLiteral("%1 equ $%2")
+                                               .arg(block.name, -20)
+                                               .arg(block.offset, 4, 16, QLatin1Char('0')));
+                if (!scroller.isEmpty())
+                    m_log->appendPlainText(tr("%1 — press F7 to assemble it and watch this "
+                                              "sprite scroll").arg(QFileInfo(scroller).fileName()));
+            });
 }
 
 QList<CodeEditor *> MainWindow::openEditors() const
@@ -355,6 +416,9 @@ void MainWindow::onTabChanged(int index)
         m_actExportSpriteSheet->setEnabled(m_image != nullptr
                                            && m_image->currentSheetIndex() >= 0);
         m_actExportBitplanes->setEnabled(m_image != nullptr);
+        if (m_actReExportBitplanes)
+            m_actReExportBitplanes->setEnabled(m_image != nullptr
+                                               && m_image->canReExportBitplane());
     }
     // Find and replace act on the text editor, so they come and go with it: an
     // image tab has nothing to search.
@@ -451,6 +515,34 @@ void MainWindow::createActions()
     m_actFind->setObjectName(QStringLiteral("findAction"));
     m_actFind->setShortcut(QKeySequence::Find);
     m_actFind->setEnabled(false);
+
+    m_actNextDiagnostic = new QAction(tr("Next Diagnostic"), this);
+    m_actNextDiagnostic->setShortcut(QKeySequence(Qt::Key_F4));
+    connect(m_actNextDiagnostic, &QAction::triggered, this, &MainWindow::nextDiagnostic);
+
+    // No shortcut here: the editor's own action owns Ctrl+Shift+E (two actions
+    // with one shortcut is an ambiguity warning, not a feature).
+    m_actReExportBitplanes = new QAction(tr("Re-export Bitplane Data"), this);
+    m_actReExportBitplanes->setEnabled(false);
+    connect(m_actReExportBitplanes, &QAction::triggered, this, [this] {
+        if (m_image)
+            m_image->reExportBitplaneData();
+    });
+
+    m_actPrevDiagnostic = new QAction(tr("Previous Diagnostic"), this);
+    m_actPrevDiagnostic->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F4));
+
+    m_actProfileStart = new QAction(tr("Profile &Start"), this);
+    m_actProfileStart->setEnabled(false);
+    m_actProfileStart->setToolTip(tr("Start collecting CPU profile counts from here "
+                                     "(arm the stopping breakpoint first)"));
+    connect(m_actProfileStart, &QAction::triggered, this, &MainWindow::profileStart);
+
+    m_actProfileStop = new QAction(tr("Profile &Stop and Show"), this);
+    m_actProfileStop->setEnabled(false);
+    m_actProfileStop->setToolTip(tr("Save the profile, then show hot lines and gutter heat"));
+    connect(m_actProfileStop, &QAction::triggered, this, &MainWindow::profileStop);
+    connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
 
     m_actFindNext = new QAction(tr("Find &Next"), this);
@@ -521,6 +613,16 @@ void MainWindow::createActions()
     m_actStepOver->setEnabled(false);
     connect(m_actStepOver, &QAction::triggered, this, &MainWindow::stepOver);
 
+    m_actStepOut = new QAction(tr("Step O&ut"), this);
+    m_actStepOut->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F11));
+    m_actStepOut->setEnabled(false);
+    connect(m_actStepOut, &QAction::triggered, this, &MainWindow::stepOut);
+
+    m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
+    m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
+    m_actRunToCursor->setEnabled(false);
+    connect(m_actRunToCursor, &QAction::triggered, this, &MainWindow::runToCursor);
+
     m_actClearBreakpoints = new QAction(tr("Clear &Breakpoints"), this);
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     connect(m_actClearBreakpoints, &QAction::triggered, this, &MainWindow::clearAllBreakpoints);
@@ -575,7 +677,11 @@ void MainWindow::wireBackend()
         if (m_sessionArmed) {
             if (m_actStep) m_actStep->setEnabled(false);
             if (m_actStepOver) m_actStepOver->setEnabled(false);
+            if (m_actStepOut) m_actStepOut->setEnabled(false);
+            if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
+            if (m_actProfileStart) m_actProfileStart->setEnabled(false);
+            if (m_actProfileStop) m_actProfileStop->setEnabled(false);
             m_log->appendPlainText(tr("[session] emulator is no longer running"));
         }
         // One owner for everything an ended session leaves behind — the same
@@ -583,6 +689,11 @@ void MainWindow::wireBackend()
         // cached machine state and a pending remote command cannot survive
         // into whatever happens next.
         resetSessionState();
+        // A session's profile and its gutter heat belong to that session.
+        if (m_profiler)
+            m_profiler->clear();
+        for (CodeEditor *editor : openEditors())
+            editor->setLineHeat({});
     });
     connect(m_host, &IDebugBackend::memoryDumpReady, this,
             [this](quint32, const QString &response, int tag) {
@@ -598,6 +709,11 @@ void MainWindow::wireBackend()
                     m_hardware->setInfo(response);
                 else if (m_pcHistory && command.startsWith(QLatin1String("history ")))
                     m_pcHistory->setHistory(response);
+                else if (m_profileSavePending
+                         && command.startsWith(QLatin1String("profile save"))) {
+                    m_profileSavePending = false;
+                    showProfileResults();
+                }
                 if (!m_pendingDebugCommand.isEmpty() && command == m_pendingDebugCommand) {
                     m_pendingDebugCommand.clear();
                     emit debugCommandFinished(command, response);
@@ -616,9 +732,22 @@ void MainWindow::wireBackend()
             });
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
+        // Watchers (remote-control `watch`, the MCP shim) learn the running
+        // edge here; the stopped edge waits for onStateUpdated, which has the
+        // PC worth reporting.
+        if (m_eventSink) {
+            if (stopped)
+                m_stopEventPending = true;
+            else
+                m_eventSink->publishEvent(QStringLiteral("running"));
+        }
         m_actStep->setEnabled(stopped);
         m_actStepOver->setEnabled(stopped);
+        m_actStepOut->setEnabled(stopped);
+        m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
+        m_actProfileStart->setEnabled(stopped);
+        m_actProfileStop->setEnabled(stopped);
         m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
         // The embedded panel renders no frames while stopped, so tell it to show
         // its paused hint rather than look frozen.
@@ -637,6 +766,33 @@ void MainWindow::wireBackend()
 
     connect(m_host, &IDebugBackend::stackDumpReady, this,
             [this](quint32 sp, const QString &response) {
+                // A step-out dump is consumed here regardless of the stack
+                // view: any stack response is at the same SP with the return
+                // address on top.
+                if (m_stepOutPending) {
+                    m_stepOutPending = false;
+                    const QList<MemoryRow> rows = parseMemoryDump(response);
+                    const quint32 returnAddress =
+                        (!rows.isEmpty() && rows.first().bytes.size() >= 4)
+                        ? readLongBE(QByteArray::fromRawData(
+                                         reinterpret_cast<const char *>(
+                                             rows.first().bytes.constData()),
+                                         rows.first().bytes.size()),
+                                     0)
+                        : 0;
+                    if (!looksLikeAddress(returnAddress)) {
+                        m_log->appendPlainText(
+                            tr("[step out] no plausible return address at A7 "
+                               "(0x%1) — not inside a subroutine?")
+                                .arg(returnAddress, 0, 16));
+                        return;
+                    }
+                    m_log->appendPlainText(tr("[step out] to 0x%1")
+                                               .arg(returnAddress, 0, 16));
+                    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once")
+                                              .arg(returnAddress, 0, 16));
+                    m_host->resume();
+                }
                 if (!m_stack)
                     return;
                 // The annotation needs the *text* extent, not the data base.
@@ -668,12 +824,32 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
     fileMenu->addAction(m_actSave);
+    // Rebuilt on every opening: the list is persisted, and entries whose file
+    // has gone away are pruned as they are shown.
+    auto *recentMenu = new QMenu(tr("Open &Recent"), this);
+    recentMenu->setObjectName(QStringLiteral("openRecentMenu"));
+    connect(recentMenu, &QMenu::aboutToShow, this, [this, recentMenu] {
+        recentMenu->clear();
+        QStringList recent = settings::recentSources();
+        QStringList existing;
+        for (const QString &path : recent)
+            if (QFileInfo::exists(path))
+                existing << path;
+        for (const QString &path : existing)
+            connect(recentMenu->addAction(QFileInfo(path).fileName() + QStringLiteral("    ")
+                                          + path),
+                    &QAction::triggered, this, [this, path] { openPath(path); });
+        if (existing.isEmpty())
+            recentMenu->addAction(tr("No Recent Files"))->setEnabled(false);
+    });
+    fileMenu->addMenu(recentMenu);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actImportImage);
     fileMenu->addAction(m_actExportImage);
     fileMenu->addAction(m_actExportImageSafe);
     fileMenu->addAction(m_actExportSpriteSheet);
     fileMenu->addAction(m_actExportBitplanes);
+    fileMenu->addAction(m_actReExportBitplanes);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -695,6 +871,9 @@ void MainWindow::createMenus()
     searchMenu->addAction(m_actFindPrevious);
     searchMenu->addSeparator();
     searchMenu->addAction(m_actReplace);
+    searchMenu->addSeparator();
+    searchMenu->addAction(m_actNextDiagnostic);
+    searchMenu->addAction(m_actPrevDiagnostic);
 
     auto *toolsMenu = menuBar()->addMenu(tr("&Tools"));
     toolsMenu->addAction(tr("Set up tools and ROMs…"), this, &MainWindow::showToolSetup);
@@ -708,6 +887,10 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actResume);
     runMenu->addAction(m_actStep);
     runMenu->addAction(m_actStepOver);
+    runMenu->addAction(m_actStepOut);
+    runMenu->addAction(m_actRunToCursor);
+    runMenu->addAction(m_actProfileStart);
+    runMenu->addAction(m_actProfileStop);
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
@@ -824,6 +1007,36 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     }
 
     auto *w = qobject_cast<QWidget *>(watched);
+
+    // Ctrl+click in an editor: an include directive opens its target (resolved
+    // against the current file's directory and the project's include paths);
+    // any other word jumps to its label definition in the same document.
+    if (type == QEvent::MouseButtonPress && me->button() == Qt::LeftButton
+        && me->modifiers().testFlag(Qt::ControlModifier)) {
+        if (auto *editor = qobject_cast<CodeEditor *>(w ? w->parentWidget() : nullptr)) {
+            const QTextCursor cursor = editor->cursorForPosition(me->position().toPoint());
+            const QString lineText = cursor.block().text();
+            const QString include = includeTargetAt(lineText);
+            if (!include.isEmpty()) {
+                const QString target = resolveInclude(
+                    include, QFileInfo(editor->filePath()).absolutePath(),
+                    m_settings.includePaths);
+                if (!target.isEmpty())
+                    openPath(target);
+                else
+                    statusBar()->showMessage(tr("Include not found: %1").arg(include), 5000);
+                return true;
+            }
+            const QString word = wordAtCursor(lineText, cursor.positionInBlock());
+            if (!word.isEmpty()) {
+                const int line = labelLine(editor->toPlainText(), word);
+                if (line > 0) {
+                    editor->gotoLine(line);
+                    return true;
+                }
+            }
+        }
+    }
     QDockWidget *dock = w ? dockAtPress(w, me->globalPosition().toPoint()) : nullptr;
     if (!dock)
         return QMainWindow::eventFilter(watched, event);
@@ -963,6 +1176,7 @@ void MainWindow::createDocks()
     m_display = new EmulatorDisplayWidget(this);
     m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
     m_displayDock->setVisible(m_embeddedDisplay);
+    m_profiler = new ProfilerView(this);
     addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
 
     // --- right, below the display: the debug views, tabbed together -----------
@@ -973,20 +1187,32 @@ void MainWindow::createDocks()
     m_breakpointPanel = new BreakpointPanel(this);
 
     m_pcHistory = new PcHistoryView(this);
+    m_instrRef = new InstructionRefView(this);
+    m_symbolsView = new SymbolsView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
               << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
-              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel);
+              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
+              << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
+              << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
+              << (m_profilerDock = makeDock(tr("Profiler"), QStringLiteral("profilerDock"),
+                                            m_profiler));
 
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
     for (int i = 1; i < debugTabs.size(); ++i)
         tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
+    connect(m_profiler, &ProfilerView::lineActivated, this, [this](int line) {
+        if (m_editor)
+            m_editor->gotoLine(line);
+    });
 
     connect(m_breakpointPanel, &BreakpointPanel::removeRequested,
             this, &MainWindow::removeBreakpoint);
     connect(m_breakpointPanel, &BreakpointPanel::breakpointActivated,
+            this, &MainWindow::goToBreakpoint);
+    connect(m_symbolsView, &SymbolsView::symbolActivated,
             this, &MainWindow::goToBreakpoint);
     connect(m_breakpointPanel, &BreakpointPanel::clearRequested,
             this, &MainWindow::clearAllDebugTargets);
@@ -1053,12 +1279,21 @@ void MainWindow::createDocks()
     // console: commands go through the backend's normal queue and the response
     // is appended when it arrives (matched by command text in the
     // commandFinished handler in wireBackend).
-    m_consoleInput = new QLineEdit(this);
+    m_consoleInput = new ConsoleInput(this);
     m_consoleInput->setObjectName(QStringLiteral("consoleInput"));
     appearance::markMono(m_consoleInput);
     m_consoleInput->setPlaceholderText(
         tr("Debugger command (e.g. r, d, m $12596 20)"));
     m_consoleInput->setEnabled(false);
+    // The command verbs are always completable; symbol names join the
+    // candidate list when a build's listings are parsed (rebuildProgramMap).
+    m_consoleVerbs = {QStringLiteral("r"), QStringLiteral("d"), QStringLiteral("m"),
+                      QStringLiteral("w"), QStringLiteral("l"), QStringLiteral("s"),
+                      QStringLiteral("n"), QStringLiteral("c"), QStringLiteral("b"),
+                      QStringLiteral("info"), QStringLiteral("symbols"),
+                      QStringLiteral("profile"), QStringLiteral("setopt"),
+                      QStringLiteral("help"), QStringLiteral("quit")};
+    m_consoleInput->setCompletions(m_consoleVerbs);
     connect(m_consoleInput, &QLineEdit::returnPressed, this, [this] {
         const QString cmd = m_consoleInput->text().trimmed();
         if (cmd.isEmpty())
@@ -1190,6 +1425,7 @@ void MainWindow::createToolBar()
     bar->addAction(m_actResume);
     bar->addAction(m_actStep);
     bar->addAction(m_actStepOver);
+    bar->addAction(m_actStepOut);
     bar->addSeparator();
     bar->addAction(m_actClearBreakpoints);
 }
@@ -1232,6 +1468,12 @@ void MainWindow::applyAppearance()
         m_breakpointPanel->applyAppearance();
     for (MemoryView *view : m_memoryPanes)
         view->applyAppearance();
+    if (m_instrRef)
+        m_instrRef->applyAppearance();
+    if (m_symbolsView)
+        m_symbolsView->applyAppearance();
+    if (m_profiler)
+        m_profiler->applyAppearance();
 }
 
 void MainWindow::createStatusBar()
@@ -2059,6 +2301,13 @@ void MainWindow::exportBitplaneData()
         return;
     }
 
+    // Remember the pair for Ctrl+Shift+E (re-export), scroller included; an
+    // empty scroller records "no scroller", so a declined overwrite is not
+    // re-asked on every re-export.
+    m_image->setBitplaneExportScroller(scroller);
+    if (m_actReExportBitplanes)
+        m_actReExportBitplanes->setEnabled(m_image->canReExportBitplane());
+
     // The blob carries no offsets of its own, and the source needs them for its
     // `equ`s — so leave the map where it can still be read after the dialog
     // closes. `bitplaneLayout()` is what the encoder walked, so these are the
@@ -2581,6 +2830,100 @@ void MainWindow::stepOver()
     m_host->refresh();
 }
 
+void MainWindow::stepOut()
+{
+    // Hatari has no step-out primitive, so: read the return address from the
+    // top of the stack (valid inside a jsr/bsr subroutine that has not
+    // adjusted A7), arm a one-shot breakpoint there and resume. The read is
+    // asynchronous — the stackDumpReady handler does the arming.
+    if (!m_host->isStopped() || !m_lastState.regs.valid) {
+        m_log->appendPlainText(tr("[step out] needs a stopped program with known registers"));
+        return;
+    }
+    if (m_stepOutPending)
+        return;
+    m_stepOutPending = true;
+    m_host->requestStackDump(m_lastState.regs.a[7], 16);
+}
+
+void MainWindow::runToCursor()
+{
+    if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty())
+        return;
+    const int line = m_editor->textCursor().blockNumber() + 1;
+    quint32 address = 0;
+    if (!m_programMap.codeAddressFor(m_editor->filePath(), line, &address)) {
+        m_log->appendPlainText(tr("[run to cursor] no code address for %1:%2")
+                                   .arg(m_editor->filePath())
+                                   .arg(line));
+        return;
+    }
+    m_log->appendPlainText(tr("[run to cursor] %1:%2 -> 0x%3")
+                               .arg(m_editor->filePath())
+                               .arg(line)
+                               .arg(address, 0, 16));
+    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
+    m_host->resume();
+}
+
+
+void MainWindow::profileStart()
+{
+    // Hatari starts collecting on continue (DebugCpu_SetDebugging) and zeroes
+    // the counters if any breakpoint command is issued mid-run — including
+    // Pause's one-shot — so profiling is armed while stopped and the stopping
+    // breakpoint must exist before this. The flow that works: set a
+    // breakpoint, Profile Start here, continue, the breakpoint stops the run.
+    if (!m_host->isStopped()) {
+        m_log->appendPlainText(
+            tr("[profile] stop at a pre-armed breakpoint first: arming anything "
+               "mid-run (including Pause) resets the counters"));
+        return;
+    }
+    m_host->command(QStringLiteral("profile on"));
+    m_log->appendPlainText(tr("[profile] on — continue to collect, then use "
+                              "Profile Stop at the next breakpoint stop"));
+}
+
+void MainWindow::profileStop()
+{
+    if (!m_host->isStopped() || m_currentSessionDir.isEmpty()) {
+        m_log->appendPlainText(tr("[profile] Profile Stop works from a stopped "
+                                  "machine — the save command needs the debugger"));
+        return;
+    }
+    // The UAE disassembler core (the default with PiST's isolated config)
+    // writes profile disassembly to the trace file instead of the save file,
+    // so the save would contain only "[...]" gap markers — switch engines for
+    // the save. Without Capstone the save stays empty and the parser's error
+    // says so plainly.
+    m_profileSavePending = true;
+    m_host->command(QStringLiteral("setopt --disasm ext"));
+    m_host->command(QStringLiteral("profile save %1/profile.txt").arg(m_currentSessionDir));
+    m_host->command(QStringLiteral("profile off"));
+}
+
+void MainWindow::showProfileResults()
+{
+    ProfileData data;
+    QString error;
+    if (!parseProfile(m_currentSessionDir + QStringLiteral("/profile.txt"), &data, &error)) {
+        m_log->appendPlainText(QStringLiteral("[profile] ") + error);
+        return;
+    }
+    m_profiler->setProfile(data, &m_programMap,
+                           m_editor ? m_editor->filePath() : QString());
+    if (m_profilerDock) {
+        m_profilerDock->show();
+        m_profilerDock->raise();
+    }
+    if (m_editor)
+        m_editor->setLineHeat(m_profiler->lineCounts());
+    m_log->appendPlainText(tr("[profile] %1 instructions, %2 cycles at %3 Hz")
+                               .arg(data.totalCount)
+                               .arg(data.totalCycles)
+                               .arg(data.clockHz));
+}
 
 void MainWindow::pauseSession()
 {
@@ -2660,6 +3003,22 @@ void MainWindow::rebuildProgramMap()
         }
     }
 
+
+    // The symbol browser reads the same listings. Addresses stay blank until
+    // a session resolves the live bases (the view is re-fed in onStateUpdated);
+    // the names feed the console's completion immediately.
+    if (m_symbolsView) {
+        m_symbols.clear();
+        for (int i = 0; i < listings.size() && i < sources.size(); ++i)
+            m_symbols += symbolsFromListing(listings.at(i), sources.at(i));
+        m_symbolsView->setSymbols(m_symbols, &m_programMap);
+        if (m_consoleInput) {
+            QStringList all = m_consoleVerbs;
+            for (const SymbolEntry &s : m_symbols)
+                all << s.name;
+            m_consoleInput->setCompletions(all);
+        }
+    }
     const QStringList unplaced = m_programMap.unplacedModules();
     if (!unplaced.isEmpty()) {
         m_log->appendPlainText(
@@ -2927,6 +3286,42 @@ void MainWindow::goToBreakpoint(const QString &file, int line)
     m_editor->gotoLine(line);
 }
 
+void MainWindow::stepDiagnostic(int direction)
+{
+    const int count = m_problems ? m_problems->topLevelItemCount() : 0;
+    if (count == 0)
+        return;
+
+    // From the current row, wrapping; an item without a line (build-level
+    // messages) cannot be navigated to, so it is skipped.
+    int row = m_problems->indexOfTopLevelItem(m_problems->currentItem());
+    for (int i = 0; i < count; ++i) {
+        row = ((row + direction) % count + count) % count;
+        QTreeWidgetItem *item = m_problems->topLevelItem(row);
+        const int line = item->text(1).toInt();
+        if (line <= 0)
+            continue;
+        // Same contract as double-clicking the item: navigate within the open
+        // document only (goToBreakpoint's rule), never switch files blindly.
+        const QString file = item->text(0);
+        m_problems->setCurrentItem(item);
+        if (m_editor && (file.isEmpty() || file == tr("(build)")
+                         || LineMap::sameSource(file, m_editor->filePath())))
+            m_editor->gotoLine(line);
+        return;
+    }
+}
+
+void MainWindow::nextDiagnostic()
+{
+    stepDiagnostic(+1);
+}
+
+void MainWindow::previousDiagnostic()
+{
+    stepDiagnostic(-1);
+}
+
 void MainWindow::editBreakpointCondition(int line)
 {
     if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
@@ -3005,6 +3400,12 @@ void MainWindow::onStateUpdated(const MachineState &state)
 {
     m_lastState = state;
     m_registers->setState(state);
+    if (m_stopEventPending) {
+        m_stopEventPending = false;
+        if (m_eventSink)
+            m_eventSink->publishEvent(QStringLiteral("stopped"),
+                                      QStringLiteral("pc=0x%1").arg(state.pc, 8, 16, QLatin1Char('0')));
+    }
     m_disassembly->setState(state);
 
     bool navigated = false;
@@ -3019,6 +3420,10 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // editor never follows the program counter (docs/code-review-glm-001.md
         // P1 root cause B).
         m_programMap.setLiveBases(m_bases);
+
+        // The symbol browser resolves addresses only now that the bases exist.
+        if (m_symbolsView && !m_symbols.isEmpty())
+            m_symbolsView->setSymbols(m_symbols, &m_programMap);
 
         // Arm breakpoints when the bases they resolve against actually arrive —
         // here, where they are set — not on a zero-delay timer that always fires

@@ -169,8 +169,17 @@ void rememberLastProject(const QString &projectPath, const QString &sourcePath)
     QSettings store;
     if (!projectPath.isEmpty())
         store.setValue(QStringLiteral("last/project"), projectPath);
-    if (!sourcePath.isEmpty())
+    if (!sourcePath.isEmpty()) {
         store.setValue(QStringLiteral("last/source"), sourcePath);
+        // The recent list feeds the Open Recent submenu: MRU first, each path
+        // once, capped so the menu stays a menu.
+        QStringList recent = store.value(QStringLiteral("last/recentSources")).toStringList();
+        recent.removeAll(sourcePath);
+        recent.prepend(sourcePath);
+        while (recent.size() > 10)
+            recent.removeLast();
+        store.setValue(QStringLiteral("last/recentSources"), recent);
+    }
 }
 
 QString lastProjectPath()
@@ -181,6 +190,11 @@ QString lastProjectPath()
 QString lastSourcePath()
 {
     return QSettings().value(QStringLiteral("last/source")).toString();
+}
+
+QStringList recentSources()
+{
+    return QSettings().value(QStringLiteral("last/recentSources")).toStringList();
 }
 
 } // namespace settings

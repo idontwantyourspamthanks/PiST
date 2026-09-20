@@ -228,7 +228,23 @@ FileBrowser::FileBrowser(QWidget *parent)
     m_pathEdit->setPlaceholderText(tr("Project directory"));
     m_pathEdit->setToolTip(tr("Press Enter to browse this directory."));
     connect(m_pathEdit, &QLineEdit::returnPressed, this, &FileBrowser::onPathEntered);
-    hd->layout()->addWidget(m_pathEdit);
+    auto *browse = new QPushButton(tr("Browse…"), hd);
+    browse->setObjectName(QStringLiteral("hardDriveBrowse"));
+    browse->setToolTip(tr("Choose the project directory with a folder picker."));
+    compactButton(browse);
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const QString chosen = QFileDialog::getExistingDirectory(
+            this, tr("Choose Project Directory"),
+            // rootPath() defaults to ".", so "no root yet" is m_rootChosen.
+            m_rootChosen ? m_model->rootPath() : QDir::homePath());
+        if (!chosen.isEmpty())
+            showDirectory(chosen);
+    });
+    auto *pathRow = new QHBoxLayout;
+    pathRow->setContentsMargins(0, 0, 0, 0);
+    pathRow->addWidget(m_pathEdit, 1);
+    pathRow->addWidget(browse);
+    hd->layout()->addItem(pathRow);
 
     m_model = new QFileSystemModel(this);
     m_model->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot);
@@ -237,6 +253,23 @@ FileBrowser::FileBrowser(QWidget *parent)
     m_model->setReadOnly(false);
     connect(m_model, &QFileSystemModel::fileRenamed, this,
             &FileBrowser::onModelPathRenamed);
+    // The model populates in a thread: a root or reveal target asked for
+    // before its directory lands is an invalid index, so both are repaired
+    // here, when the load finishes.
+    connect(m_model, &QFileSystemModel::directoryLoaded, this, [this] {
+        const QModelIndex rootIndex = m_model->index(m_model->rootPath());
+        if (rootIndex.isValid() && m_view->rootIndex() != rootIndex)
+            m_view->setRootIndex(rootIndex);
+        if (!m_pendingCurrent.isEmpty()) {
+            const QModelIndex current = m_model->index(m_pendingCurrent);
+            if (current.isValid()) {
+                m_pendingCurrent.clear();
+                m_view->setCurrentIndex(current);
+            }
+        }
+        if (!m_pendingReveal.isEmpty())
+            reveal(m_pendingReveal);
+    });
 
     auto *browserView = new BrowserView(hd);
     m_view = browserView;
@@ -384,14 +417,40 @@ void FileBrowser::showFor(const QString &sourcePath)
     if (!info.exists())
         return;
 
-    showDirectory(info.absolutePath());
+    // The root is the user's chosen project directory: it moves only when they
+    // choose another (the path field or Browse…), never because a file was
+    // opened or focused. The first open seeds it, so a fresh window still
+    // lands somewhere useful. (The model's default rootPath is ".", so the
+    // choice is tracked explicitly rather than read back from it.)
+    const QString absolute = info.absoluteFilePath();
+    if (!m_rootChosen)
+        showDirectory(info.absolutePath());
 
-    // Select the file being edited, so the browser and the editor agree.
-    const QModelIndex index = m_model->index(info.absoluteFilePath());
-    if (index.isValid()) {
-        m_view->setCurrentIndex(index);
-        m_view->scrollTo(index, QAbstractItemView::PositionAtCenter);
+    // Outside the shown project: leave the browser where the user put it.
+    if (QDir(m_model->rootPath()).relativeFilePath(absolute).startsWith(QStringLiteral("..")))
+        return;
+
+    reveal(absolute);
+}
+
+void FileBrowser::reveal(const QString &path)
+{
+    const QModelIndex index = m_model->index(path);
+    if (!index.isValid()) {
+        // Not loaded yet; directoryLoaded retries.
+        m_pendingReveal = path;
+        return;
     }
+    m_pendingReveal.clear();
+    // A revealed file is the selection; a parked "select the new root" from
+    // an earlier showDirectory must not clobber it when the load lands.
+    m_pendingCurrent.clear();
+    // Inside the shown project: reveal the file — expand the chain down to
+    // it and select it — without moving the root.
+    for (QModelIndex p = index.parent(); p.isValid(); p = p.parent())
+        m_view->expand(p);
+    m_view->setCurrentIndex(index);
+    m_view->scrollTo(index, QAbstractItemView::PositionAtCenter);
 }
 
 QString FileBrowser::directory() const
@@ -407,12 +466,20 @@ void FileBrowser::showDirectory(const QString &path)
 
     const QString root = info.absoluteFilePath();
     m_model->setRootPath(root);
+    m_rootChosen = true;
+    // An explicit root change cancels any reveal still waiting on the old one.
+    m_pendingReveal.clear();
     const QModelIndex rootIndex = m_model->index(root);
     m_view->setRootIndex(rootIndex);
     // Make the shown directory the current entry. Otherwise the context menu
     // and the clipboard keep acting on the previous folder's selection, which
-    // is no longer visible — a "New File…" would land there, not here.
-    m_view->setCurrentIndex(rootIndex);
+    // is no longer visible — a "New File…" would land there, not here. The
+    // index is invalid until the model's thread has read the directory, so
+    // park it for directoryLoaded in that case.
+    if (rootIndex.isValid())
+        m_view->setCurrentIndex(rootIndex);
+    else
+        m_pendingCurrent = root;
     m_pathEdit->setText(root);
 }
 

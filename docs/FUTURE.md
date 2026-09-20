@@ -11,9 +11,11 @@ records *why* it isn't done, so a future decision has the context rather than ju
 over the control socket (entering the debugger properly; `hatari-stop` alone only halts the VBL
 loop and wedges the session), and over HRDB's `break` on the fork, which works on Windows too.
 Live breakpoint editing works on both as well. Live floppy insert/eject in a *stopped* session
-uses debugger `setopt` (stdin / HRDB `console`) and is not socket-bound. What remains uncovered
-on Windows for stock Hatari: floppy swap and other `hatari-option` changes while the program is
-*running*. The upstream patch below remains the right route for those.
+uses debugger `setopt` (stdin / HRDB `console`) and is not socket-bound. Since 2026-09 the
+Windows release archive bundles the fork itself (MSYS2 ucrt64 build), so a fresh Windows download
+has all of this. What remains uncovered on Windows for *stock* Hatari: pause, live breakpoints,
+and floppy swap or other `hatari-option` changes while the program is *running*. The upstream
+patch below remains the right route for those.
 
 ### The gap
 
@@ -158,23 +160,24 @@ Do it for macOS polish, not as an architectural simplification.
 
 ## 5. Packaging and toolchain acquisition
 
-**Status:** partly delivered. Release artefacts already carry the assembler and EmuTOS, and the
-Linux AppImage bundles the hrdb-main fork of Hatari (2.6.1-based) too. The first-run setup flow is delivered
-(`ui/SetupDialog`: checksum-pinned vasm source build and EmuTOS download, shown when the
-assembler or ROM is missing); installers and Hatari-on-macOS/Windows remain open.
+**Status:** mostly delivered. Release artefacts carry the assembler, the linker (vlink, same
+licence shape as vasm) and EmuTOS on every platform; per-platform installers exist (AppImage, deb
+and rpm on Linux; dmg on macOS; MSI on Windows); and the Linux AppImage and the Windows archive
+both bundle the hrdb-main fork of Hatari (2.6.1-based) — the Windows one built with MSYS2 ucrt64,
+with its runtime DLLs beside the exe. The first-run setup flow is delivered (`ui/SetupDialog`:
+checksum-pinned vasm source build and EmuTOS download, shown when the assembler or ROM is
+missing). What remains open here is Hatari-on-macOS bundling: the fork links Homebrew SDL2, and
+rewiring those dylibs into the .app is unbuilt work — `brew install hatari` (2.6.1) covers it.
 
 Because `PiST` is free software, vasm's redistribution terms permit bundling it **unmodified** for
 non-commercial use, and EmuTOS can ship as the default ROM — so a one-click install is legally
 achievable. The plan (`docs/PLAN.md` §7) is to keep the repository free of non-free binaries and to
-bundle everything a release artefact can carry: the Linux AppImage now does, Hatari included, while
-the macOS and Windows archives still leave the emulator to the user (there is no MSYS2 Hatari
-package for Windows, and no distribution package is a usable version — Ubuntu 22.04 ships 2.3.1 and
-24.04 ships 2.4.1, against the 2.6.1 the project is verified on). A source build bundles none of it.
+bundle everything a release artefact can carry. A source build bundles none of it.
 Original TOS ROMs stay user-supplied, always.
 
-The pieces that do not exist yet: per-platform installers. (The dependency-notice generation is
-delivered as `packaging/collect-notices.py`, which derives the shipped licence texts from each
-archive's actual contents — including whether the bundled Hatari links Capstone.)
+The dependency-notice generation is delivered as `packaging/collect-notices.py`, which derives the
+shipped licence texts from each archive's actual contents — including whether the bundled Hatari
+links Capstone, and the MinGW runtime DLLs a Windows emulator carries.
 
 ---
 

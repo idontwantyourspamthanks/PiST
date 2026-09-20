@@ -19,6 +19,11 @@ permissions:
 env:
   VASM_URL: http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
   VASM_SHA256: c84b2de1cbb87831795fe64a85c5d9a7002a766e3a7c30b0a2d7d5e99d878f49
+  # vlink, the linker for multi-file projects: same author, same licence shape
+  # (unmodified redistribution, non-commercial use), so it ships under the same
+  # terms vasm does — and its licence text must travel the same way.
+  VLINK_URL: http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
+  VLINK_SHA256: 8d151cdd30a4feb575a364e68810c2bc300fe1a7c074dbbee6fd1175a6c5bfae
   # EmuTOS 1.4, the 1024k emulator build: one image that works on ST through
   # Falcon, and the same one Hatari itself ships. Verified to autostart a GEMDOS
   # HD program, which is what the run-and-debug path needs.
@@ -30,7 +35,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build the assembler.
+  # Build the assembler and the linker.
   #
   # The Windows build is cross-compiled here with mingw-w64 rather than built on a
   # Windows runner with MSYS2: it is one plain-C program with no platform API
@@ -54,7 +59,13 @@ jobs:
           tar xzf vasm.tar.gz
 
       - name: Build for Linux
-        run: make -C vasm CPU=m68k SYNTAX=mot
+        run: |
+          set -euo pipefail
+          make -C vasm CPU=m68k SYNTAX=mot
+          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
+          echo "$VLINK_SHA256  vlink.tar.gz" | sha256sum -c -
+          tar xzf vlink.tar.gz
+          make -C vlink
 
       - name: Build for Windows
         run: |
@@ -62,17 +73,33 @@ jobs:
           cp -r vasm vasm-win
           make -C vasm-win CPU=m68k SYNTAX=mot CC=x86_64-w64-mingw32-gcc
           file vasm-win/vasmm68k_mot.exe
+          # vlink's Win32FromLinux makefile hardcodes the 32-bit triplet, so
+          # the compilers are overridden to x86_64.
+          cp -r vlink vlink-win
+          make -C vlink-win -f Makefile.Win32FromLinux \
+            CC=x86_64-w64-mingw32-gcc LD=x86_64-w64-mingw32-gcc
+          file vlink-win/vlink.exe
+
+      # Staged flat, one directory per platform: upload-artifact preserves the
+      # directory structure of multiple paths relative to their common
+      # ancestor, so the two build trees would arrive nested and the package
+      # job's bundle/bin would miss them.
+      - name: Stage the tool artifacts
+        run: |
+          mkdir -p dist-linux dist-windows
+          cp vasm/vasmm68k_mot vlink/vlink dist-linux/
+          cp vasm-win/vasmm68k_mot.exe vlink-win/vlink.exe dist-windows/
 
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-linux
-          path: vasm/vasmm68k_mot
+          path: dist-linux
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-windows
-          path: vasm-win/vasmm68k_mot.exe
+          path: dist-windows
           if-no-files-found: error
 
   vasm-macos:
@@ -87,12 +114,25 @@ jobs:
           tar xzf vasm.tar.gz
 
       - name: Build
-        run: make -C vasm CPU=m68k SYNTAX=mot
+        run: |
+          set -euo pipefail
+          make -C vasm CPU=m68k SYNTAX=mot
+          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
+          echo "$VLINK_SHA256  vlink.tar.gz" | shasum -a 256 -c -
+          tar xzf vlink.tar.gz
+          make -C vlink
+
+      # Staged flat: uploading the two build trees as two paths would nest
+      # them under vasm/ and vlink/ in the artifact (common-ancestor rule).
+      - name: Stage the tool artifact
+        run: |
+          mkdir -p dist-macos
+          cp vasm/vasmm68k_mot vlink/vlink dist-macos/
 
       - uses: actions/upload-artifact@v4
         with:
           name: vasm-macos
-          path: vasm/vasmm68k_mot
+          path: dist-macos
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -111,8 +151,11 @@ jobs:
           # host, and sidesteps the archive-area policy problem of shipping a
           # non-free assembler (an AppImage is not a distro package, so the DFSG
           # does not apply — only vasm's own redistribution terms do).
-          # emulator: only Linux bundles Hatari, and the comment below explains
-          # why that is a capability difference rather than an oversight.
+          # emulator: Linux and Windows bundle the hrdb-main fork of Hatari —
+          # on Windows it is what gives the archive pause and live breakpoints,
+          # since the stock Windows build has no control channel. macOS does
+          # not bundle: the fork links Homebrew SDL2, and rewiring those dylibs
+          # into the .app is unbuilt work (brew install hatari covers it).
           - name: linux-x86_64
             os: ubuntu-22.04
             vasm_artifact: vasm-linux
@@ -127,7 +170,7 @@ jobs:
             os: windows-latest
             vasm_artifact: vasm-windows
             deployed: true
-            emulator: false
+            emulator: true
 
     steps:
       - uses: actions/checkout@v4
@@ -137,16 +180,20 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
 
-      # The licence terms of the bundled assembler live only in its source
-      # tarball's manual, and they must travel with the binary — so the
-      # packaging job needs the tarball, pinned exactly as the build jobs.
-      - name: Fetch and verify the vasm source (for its licence)
+      # The licence terms of the bundled assembler and linker live only in
+      # their source tarballs' manuals, and they must travel with the binaries
+      # — so the packaging job needs both tarballs, pinned exactly as the
+      # build jobs.
+      - name: Fetch and verify the vasm and vlink sources (for their licences)
         shell: bash
         run: |
           set -euo pipefail
           curl -fsSL -o vasm.tar.gz "$VASM_URL"
           echo "$VASM_SHA256  vasm.tar.gz" | shasum -a 256 -c - 2>/dev/null \
             || echo "$VASM_SHA256  vasm.tar.gz" | sha256sum -c -
+          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
+          echo "$VLINK_SHA256  vlink.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$VLINK_SHA256  vlink.tar.gz" | sha256sum -c -
 
       # xvfb and the ALSA/X libraries are needed for two different reasons: xvfb to
       # run the AppImage at all (the offscreen plugin is deliberately not bundled),
@@ -154,19 +201,16 @@ jobs:
       # smoke test is dishonest if the runner happens to have everything.
 
       - name: Install the emulator and its libraries
-        if: matrix.emulator
+        if: matrix.emulator && runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libsdl2-2.0-0 libreadline8 libpng16-16
 
       # Same action the test job uses, so the emulator that ships is one the
-      # test suites ran against (the fork on the hrdb leg, upstream on the
-      # native one). Only the Linux AppImage bundles it: on macOS
-      # the archive is built from a bundle whose executable does not run
-      # standalone (which is why the CI matrix has it switched off), and Windows
-      # has no MSYS2 Hatari package. Both therefore still ask the user to install
-      # Hatari, which the release notes say plainly.
+      # test suites ran against. On Windows this is the MSYS2 ucrt64 build and
+      # the action stages its runtime DLLs beside the exe; on Linux the
+      # AppImage deploy step bundles its libraries.
       - name: 'Build Hatari (the bundled emulator: hrdb fork)'
         if: matrix.emulator
         uses: ./.github/actions/build-hatari
@@ -195,7 +239,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x bundle/bin/vasmm68k_mot
+          chmod +x bundle/bin/vasmm68k_mot bundle/bin/vlink
           ls -l bundle/bin/
 
       - name: Fetch and verify EmuTOS
@@ -243,10 +287,10 @@ jobs:
           mkdir -p bundle
           cp -R build/pist.app bundle/
           macdeployqt bundle/pist.app -always-overwrite
-          # The assembler belongs beside the executable inside the bundle, which
-          # is where discovery looks first, so the archive stays self-sufficient
-          # wherever it is unpacked from.
-          cp bundle/bin/vasmm68k_mot bundle/pist.app/Contents/MacOS/
+          # The assembler and linker belong beside the executable inside the
+          # bundle, which is where discovery looks first, so the archive stays
+          # self-sufficient wherever it is unpacked from.
+          cp bundle/bin/vasmm68k_mot bundle/bin/vlink bundle/pist.app/Contents/MacOS/
           rm -rf bundle/bin
           find bundle -maxdepth 4 -type f | head -20
 
@@ -296,7 +340,7 @@ jobs:
           # copy and the `-e` below, because splitting them means the AppImage
           # builds the moment the flag is flipped and then fails confusingly; kept
           # together, a no-emulator build is simply a smaller AppImage.
-          cp bundle/bin/vasmm68k_mot AppDir/usr/bin/
+          cp bundle/bin/vasmm68k_mot bundle/bin/vlink AppDir/usr/bin/
           mkdir -p AppDir/usr/share/emutos
           cp bundle/share/emutos/etos1024k.img AppDir/usr/share/emutos/
           EXE_ARGS=(-e AppDir/usr/bin/pist)
@@ -314,7 +358,8 @@ jobs:
           # the bytes we ship. Qt lands during the deploy itself, hence
           # --expect-qt; the final artifact's notices are asserted below.
           python3 packaging/collect-notices.py --root AppDir/usr --platform linux \
-            --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz --expect-qt
+            --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz \
+            --vlink-tarball vlink.tar.gz --expect-qt
 
 
           export QMAKE="$(command -v qmake6 || command -v qmake)"
@@ -383,7 +428,7 @@ jobs:
           # The notices must travel too, and they must be the generated set.
           for f in THIRD-PARTY.txt licenses/GPL-2.0.txt licenses/GPL-3.0.txt \
                    licenses/LGPL-3.0.txt licenses/zlib.txt licenses/SDL2-LICENSE.txt \
-                   licenses/libpng.txt licenses/vasm-LICENCE.txt; do
+                   licenses/libpng.txt licenses/vasm-LICENCE.txt licenses/vlink-LICENCE.txt; do
             if [ ! -f "verify-appimage/squashfs-root/usr/share/doc/pist/$f" ]; then
               echo "ERROR: the AppImage lacks doc/pist/$f"
               exit 1
@@ -500,7 +545,8 @@ jobs:
           PLATFORM=macos
           [ "${{ runner.os }}" = "Windows" ] && PLATFORM=windows
           python3 packaging/collect-notices.py --root bundle --platform "$PLATFORM" \
-            --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz
+            --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz \
+            --vlink-tarball vlink.tar.gz
 
       # The point of the exercise: prove the packaged archive resolves the
       # assembler *it* carries, rather than one on the machine building it.
@@ -552,6 +598,42 @@ jobs:
             exit 1
           fi
 
+          # The linker gets the same treatment: bundled on every platform, and
+          # the archive must resolve its own copy.
+          linker="$(grep -F 'Linker (vlink):' diagnose.txt \
+                    | head -1 | sed 's/^Linker (vlink): //' | tr -d '\r')"
+          if [ "$linker" = "NOT FOUND" ] || [ -z "$linker" ]; then
+            echo "ERROR: no linker was found at all"
+            exit 1
+          fi
+          case "$linker" in
+            *bundle*) ;;
+            *) echo "ERROR: resolved linker is outside the bundle: $linker"; exit 1 ;;
+          esac
+          if ! cmp -s "$linker" "$(dirname "$linker")/vlink" \
+             && ! cmp -s "$linker" "$(dirname "$linker")/vlink.exe"; then
+            echo "ERROR: the resolved linker is not the packaged one"
+            exit 1
+          fi
+
+          # The Windows archive bundles the hrdb fork (the MSYS2 build staged
+          # into bundle/bin above): the diagnose output must name it, inside
+          # the bundle, and the content probe must select HRDB — an upstream
+          # binary here would ship the wrong debug channel.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            emu="$(grep -F 'Emulator (hatari):' diagnose.txt \
+                   | head -1 | sed 's/^Emulator (hatari): //' | tr -d '\r')"
+            case "$emu" in
+              *bundle*) ;;
+              *) echo "ERROR: resolved emulator is outside the bundle: $emu"; exit 1 ;;
+            esac
+            if ! grep -q 'transport: hrdb' diagnose.txt; then
+              echo "ERROR: the bundled emulator is not the HRDB fork:"
+              cat diagnose.txt
+              exit 1
+            fi
+          fi
+
           # The ROM it carries must be recognised and usable: one that cannot
           # autostart would break the Run path, so copying a file in is not enough.
           if ! grep -q 'EmuTOS' diagnose.txt; then
@@ -589,7 +671,7 @@ jobs:
 
           # The generated notices must be inside what ships — asserting on the
           # tree being archived, not on the script having run.
-          for f in THIRD-PARTY.txt licenses/LGPL-3.0.txt licenses/vasm-LICENCE.txt; do
+          for f in THIRD-PARTY.txt licenses/LGPL-3.0.txt licenses/vasm-LICENCE.txt licenses/vlink-LICENCE.txt; do
             if [ ! -f "bundle/share/doc/pist/$f" ]; then
               echo "ERROR: the archive lacks doc/pist/$f"
               exit 1
@@ -674,74 +756,7 @@ jobs:
             ${{ env.ASSET_DMG }}
             ${{ env.ASSET_MSI }}
           generate_release_notes: true
-          body: |
-            PiST — an IDE for Atari ST assembly development.
-
-            Every archive contains PiST, the `vasmm68k_mot` assembler, and an
-            EmuTOS ROM. The Linux AppImage additionally contains the Hatari
-            emulator, so on Linux it runs and debugs with nothing else installed.
-
-            **Assembler:** vasm is not free software. It is redistributed
-            unmodified and for non-commercial use, which its licence permits; see
-            `share/doc/pist/NOTICE`. PiST never patches it.
-
-            **ROM:** EmuTOS 1.4 (GPLv2), a free TOS replacement. Original Atari
-            TOS images are copyrighted and are not included — supply your own in
-            Project Settings if you need one.
-
-            **Emulator:** the Linux AppImage bundles the hrdb-main fork of Hatari
-            (upstream 2.6.1 plus the remote-debug listener PiST's HRDB transport
-            uses), GPL-2.0-or-later, built unmodified from a checksum-pinned
-            commit tarball (it never patches it and runs it as a separate
-            process). The macOS and Windows
-            archives do **not** include it: there install Hatari yourself, or point
-            PiST at one in Project Settings. Use 2.5 or later — 2.4.1 returns
-            truncated debugger responses that break source-line debugging, and
-            Ubuntu 24.04 ships exactly that, so a distribution package is often not
-            recent enough. See `share/doc/pist/NOTICE` for the full licence details,
-            including the GNU Readline that the bundled build links.
-
-            ### Linux
-
-            Nothing else to install: assemble, run and debug straight away.
-
-            `pist-*-linux-x86_64.AppImage` is self-contained — Qt, the assembler,
-            the emulator and the ROM are all inside it:
-
-            ```sh
-            chmod +x pist-*-linux-x86_64.AppImage
-            ./pist-*-linux-x86_64.AppImage your-program.s
-            ```
-
-            It is built on Ubuntu 22.04, so it needs glibc 2.35 or newer (Ubuntu
-            22.04+, Debian 12+, Fedora 36+, and anything more recent).
-
-            ### What works
-
-            Write, assemble, run and debug: source-line and conditional
-            breakpoints, stepping, step-over, registers, a memory viewer, and
-            labelled disassembly, with the editor following the program counter.
-            Projects keep their settings — include paths, defines, target CPU,
-            machine, ROM, RAM and disk images — in a small JSON file beside the
-            source.
-
-            ### Known limitations
-
-            - **The emulator integration has only been exercised on Linux**, which
-              is now the one platform that runs the emulator test suite against a
-              real Hatari. Windows has no Hatari package for MSYS2, and the macOS
-              Hatari build produces an application bundle whose executable does not
-              start standalone, so neither runner can exercise it. Assembling and
-              debugging on Windows and macOS is therefore untested. Reports from
-              real machines are welcome.
-            - **On Windows**, pausing, changing breakpoints while running, and
-              swapping disks at runtime are unavailable — Hatari compiles its
-              control channel only on POSIX systems. Breakpoints and stepping
-              work regardless.
-            - **No installers**: these are tarballs and zips.
-            - **No linker step**: multi-file builds via include paths work, but
-              separate compilation and vlink are not yet supported.
-            - The interface is functional rather than polished.
-
-            Run `pist --diagnose` to see which assembler, emulator and ROMs PiST
-            can find, and the paths it searched.
+          # The notes live in the tree, reviewed like any other doc, instead of
+          # inline here where they drifted from the workflow's own behaviour
+          # once already (docs/agents/release-report.md).
+          body_path: docs/release-notes.md

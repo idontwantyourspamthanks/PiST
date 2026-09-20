@@ -460,7 +460,15 @@ void EmulatorHost::dispatchNext()
     m_promptTarget = m_promptCount;
     m_current.raw.clear();
     m_current.response.clear();
-    m_settleTimer->stop();
+    // A trailing prompt already in the buffer belongs to the idle state the
+    // debugger is sitting at, not to this command — and it must not survive
+    // into the completion check: on builds whose prompt lives on stderr
+    // (macOS readline puts it there, not on stdout), every command leaves the
+    // buffer ending in "> " again, so a size-only comparison can never tell
+    // the new prompt from the stale one. Chopping it makes any later trailing
+    // prompt provably new.
+    if (stderrEndsWithPrompt(m_stderrBuffer))
+        m_stderrBuffer.chop(2);
     m_stderrAtDispatch = m_stderrBuffer.size();
 
     m_process->write(m_current.text.toUtf8() + "\n");
@@ -478,6 +486,12 @@ void EmulatorHost::processStderrData()
     while ((nl = m_stderrBuffer.indexOf('\n')) >= 0) {
         const QByteArray raw = m_stderrBuffer.left(nl);
         m_stderrBuffer.remove(0, nl + 1);
+        // Consuming a line moves the dispatch watermark with it: handlers run
+        // by the line loop (the entry banner arms queued commands) can dispatch
+        // while the buffer still holds un-consumed lines, and without this the
+        // recorded offset would point past bytes that no longer exist — which
+        // is how every stop went undetected on stderr-prompt builds (macOS CI).
+        m_stderrAtDispatch = qMax(0, m_stderrAtDispatch - (nl + 1));
         handleStderrLine(QString::fromUtf8(raw).remove(QLatin1Char('\r')));
     }
 
@@ -487,12 +501,16 @@ void EmulatorHost::processStderrData()
     // in the buffer. The `> cmd` echoes from DebugUI_ParseLine/ParseFile cannot be
     // confused with it, because those always end in a newline.
     //
-    // A prompt already sitting at the front of the buffer is stale: it is the one
-    // from *before* the command we are waiting on, so only a prompt that has
-    // arrived since is a completion signal. Tracked by remembering the length the
-    // buffer had when the command was dispatched.
-    if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch)
+    // A prompt already sitting in the buffer is stale: it is the one from
+    // *before* the command we are waiting on, so only a prompt that has arrived
+    // since is a completion signal. Tracked by remembering the length the buffer
+    // had when the command was dispatched — an offset the line loop above keeps
+    // valid as it consumes — and by consuming the prompt on fire, so unrelated
+    // stderr noise cannot re-fire the same prompt once the watermark has shifted.
+    if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch) {
+        m_stderrBuffer.chop(2);
         onPrompt();
+    }
 }
 
 void EmulatorHost::drainStderr()
@@ -601,11 +619,14 @@ void EmulatorHost::resume()
     // Keep `b` / `b all` / watchpoint commands; drop dumps and register
     // queries. Continue is enabled at the entry stop, which is before
     // armBreakpoints() has been flushed, and writing `c` immediately used to
-    // discard those unsent arms so a pre-Run breakpoint never fired.
+    // discard those unsent arms so a pre-Run breakpoint never fired. `profile`
+    // control commands are kept too: they take effect at the continue itself
+    // (Profile_CpuStart runs in DebugCpu_SetDebugging), so a `profile on`
+    // armed at a stop and pruned here would silently collect nothing.
     QQueue<Pending> arms;
     while (!m_queue.isEmpty()) {
         const Pending p = m_queue.dequeue();
-        if (isBreakpointCommand(p.text))
+        if (isBreakpointCommand(p.text) || p.text.startsWith(QLatin1String("profile ")))
             arms.enqueue(p);
     }
     m_queue = arms;

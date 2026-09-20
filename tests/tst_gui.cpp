@@ -18,8 +18,10 @@
 #include "ui/SheetCanvas.h"
 #include "ui/NewImageDialog.h"
 #include "ui/BitplaneExportDialog.h"
+#include "ui/InstructionRefView.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
+#include "control/RemoteControl.h"
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
 #include "ui/MainWindow.h"
@@ -67,6 +69,10 @@
 #include <QFontDatabase>
 #include <QSettings>
 #include <QtTest>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTreeWidget>
 
 #include <functional>
 
@@ -143,6 +149,15 @@ private slots:
     /// asynchronous build finishes, not alongside it.
     void runStartsAnEmulatorSession();
     void breakpointSetBeforeRunFiresAndEditorFollows();
+    void stepOutAndRunToCursorReachTheirTargets();
+    void openRecentMenuListsAndOpensFiles();
+    void ctrlClickOpensIncludesAndJumpsToLabels();
+    void debugConsoleRecallsHistoryWithArrowKeys();
+    void instructionReferenceFollowsTheCursor();
+    void diagnosticKeyboardFlowToursProblems();
+    void symbolsPanelListsLabelsAfterBuild();
+    void profilerCollectsAndMapsHotLines();
+    void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
@@ -522,6 +537,215 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
     QVERIFY(host);
     QTest::qWait(1500);
     QVERIFY(!host->isRunning());
+}
+
+// After a build the symbols dock lists the program's labels with their source
+// locations, parsed from the listing the build just wrote — and activating one
+// navigates the editor to its definition.
+void TstGui::symbolsPanelListsLabelsAfterBuild()
+{
+    const QString source = m_work->path() + QStringLiteral("/syms.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#1,d0\n"       // line 2
+              "\tbsr\thelper\n"              // line 3
+              "\trts\n"                      // line 4
+              "helper:\tmoveq\t#2,d1\n"      // line 5
+              "\trts\n"                      // line 6
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    MainWindow window;
+    window.show();
+    window.openPath(source);
+    QSignalSpy completed(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 30000);
+    QCOMPARE(completed.first().first().toBool(), true);
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("symbolsDock"));
+    QVERIFY(dock);
+    auto *tree = dock->findChild<QTreeWidget *>();
+    QVERIFY(tree);
+
+    auto rowFor = [&](const QString &name) -> int {
+        for (int i = 0; i < tree->topLevelItemCount(); ++i)
+            if (tree->topLevelItem(i)->text(0) == name)
+                return i;
+        return -1;
+    };
+    const int startRow = rowFor(QStringLiteral("start"));
+    const int helperRow = rowFor(QStringLiteral("helper"));
+    QVERIFY(startRow >= 0);
+    QVERIFY(helperRow >= 0);
+    QCOMPARE(tree->topLevelItem(startRow)->text(2), QStringLiteral("syms.s:2"));
+    QCOMPARE(tree->topLevelItem(helperRow)->text(2), QStringLiteral("syms.s:5"));
+
+    // Activation navigates the editor to the definition, like a breakpoint.
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    emit tree->itemActivated(tree->topLevelItem(helperRow), 0);
+    QCOMPARE(editor->textCursor().blockNumber(), 4);  // line 5, 0-based 4
+}
+
+// A `watch` subscription turns the control connection into an event stream:
+// running/stopped edges arrive with the stop's PC, so an agent never polls to
+// notice a breakpoint.
+void TstGui::remoteControlWatchersSeeSessionEvents()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/watch.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#0,d0\nloop:\taddq.w\t#1,d0\n\tbra.s\tloop\n\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.show();
+    RemoteControl control(&window);
+    window.setEventSink(&control);
+    QVERIFY2(control.listen(0, &error), qPrintable(error));
+
+    QTcpSocket watcher;
+    watcher.connectToHost(QHostAddress::LocalHost, control.boundPort());
+    QVERIFY(watcher.waitForConnected(3000));
+    watcher.write("watch\n");
+    // waitForReadyRead does not spin the window's event loop, where the
+    // server runs — poll in short slices instead of one long wait.
+    QString events;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
+         events.contains(QLatin1String("ok\n"))),
+        5000);
+
+    window.openPath(source);
+    // A modal from a failed Run would hang the offscreen suite until the
+    // watchdog; answer it if one appears, and dump the console on failure.
+    QTimer::singleShot(0, &window, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->accept();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    const bool entered = QTest::qWaitFor(
+        [&] {
+            return watcher.waitForReadyRead(100)
+                   && (events += QString::fromUtf8(watcher.readAll()))
+                          .contains(QLatin1String("event stopped pc=0x"));
+        },
+        30000);
+    if (!entered)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(entered);
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (watcher.waitForReadyRead(100), events += QString::fromUtf8(watcher.readAll()),
+         events.contains(QLatin1String("event running"))),
+        10000);
+
+    auto *host = window.findChild<EmulatorHost *>();
+
+    QVERIFY(host);
+    host->stop();
+}
+// The profiling flow end to end against a real Hatari: a breakpoint armed
+// before Profile Start (arming one mid-run would reset the counters), collect
+// over the run, Profile Stop saves and parses, and the hot lines land in the
+// profiler dock and the gutter heat.
+void TstGui::profilerCollectsAndMapsHotLines()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/prof.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#0,d0\n"       // line 2
+              "loop:\taddq.w\t#1,d0\n"       // line 3  <- the hot line
+              "\tcmp.w\t#100,d0\n"           // line 4
+              "\tblo.s\tloop\n"              // line 5
+              "done:\tbra.s\tdone\n"         // line 6
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.show();
+    window.openPath(source);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host && editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // The stopping breakpoint goes in BEFORE Profile Start — arming anything
+    // after `profile on` resets the counters (Profile_CpuStart memsets).
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    input->setText(QStringLiteral("b d0 = 50 :once"));
+    QTest::keyClick(input, Qt::Key_Return);
+    QTest::qWait(300);  // let the command complete before profile on
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "profileStart", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 4; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "profileStop", Qt::DirectConnection));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
+    QVERIFY(dock);
+    auto *table = dock->findChild<QTableWidget *>();
+    QVERIFY(table);
+
+    // Wait for the parse outcome itself: rows, or the parser's error in the
+    // console. (Hatari's own stop-time stats say "executed instructions", so
+    // matching on "instructions" alone would race profileStop's commands.)
+    QTRY_VERIFY_WITH_TIMEOUT(
+        table->rowCount() > 0
+        || window.debugConsoleText().contains(QLatin1String("[profile] no"))
+        || window.debugConsoleText().contains(QLatin1String("[profile] not")),
+        15000);
+    // Stop before the skip path too: bailing with a live session aborts the
+    // process on teardown (observed on CI as exit 134 after the QSKIP).
+    const bool haveRows = table->rowCount() > 0;
+    if (!haveRows) {
+        // The save needs the external disassembler (the UAE core writes
+        // profile text to the trace file, not the save file): a Hatari
+        // without Capstone produces no instruction lines.
+        host->stop();
+        QSKIP("this Hatari build has no Capstone disassembler for profile save");
+    }
+
+    // The loop body dominates, and its line is mapped from the address.
+    QStringList lines;
+    for (int i = 0; i < table->rowCount(); ++i)
+        lines << table->item(i, 0)->text();
+    QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
+    QVERIFY(editor->hasLineHeat());
+
+    host->stop();
 }
 
 void TstGui::clearAllRemovesWatchpoints()
@@ -1089,11 +1313,283 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
     // The editor reaching the entry line means bases arrived and armBreakpoints
     // has been queued. Resume then flushes those `b` commands before `c` —
     // a fixed wait after the first stop was racing the attach.
-    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+    // When the session never starts, the console transcript is the only
+    // evidence a headless CI runner leaves — dump it on the failure path.
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
     host->stop();
+}
+
+// Step out and run to cursor are built from one-shot breakpoints over the
+// existing arm/resume path, so the observable contract is where the editor
+// lands: run-to-cursor stops on the cursor's line, step-out stops on the
+// line after the call that entered the subroutine.
+void TstGui::stepOutAndRunToCursorReachTheirTargets()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/steps.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                    // line 1
+              "start:\tbsr\tsub\n"          // line 2
+              "spin:\tbra.s\tspin\n"        // line 3  <- step-out lands here
+              "sub:\tmoveq\t#1,d0\n"        // line 4  <- run-to-cursor lands here
+              "\trts\n"                     // line 5
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host);
+    QVERIFY(editor);
+
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
+
+    // Run to the cursor on line 4, inside the subroutine: the bsr at the
+    // entry line executes, and the one-shot breakpoint traps at `sub`.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(3).position());
+    editor->setTextCursor(cursor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "runToCursor", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 4, 30000);
+
+    // Stopped inside `sub`, the top of the stack is the return address —
+    // step out must land on line 3, the instruction after the bsr.
+    QVERIFY(QMetaObject::invokeMethod(&window, "stepOut", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+
+
+    host->stop();
+}
+// F4/Shift+F4 tour the Problems pane without the mouse: each step selects the
+// next diagnostic carrying a source line (wrapping, skipping line-less build
+// messages) and the editor follows, exactly like double-clicking the item.
+void TstGui::diagnosticKeyboardFlowToursProblems()
+{
+    const QString source = m_work->path() + QStringLiteral("/diag.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#1,d0\n\tmoveq\t#2,d1\n\tmoveq\t#3,d2\n"
+              "\tmoveq\t#4,d3\n\tmoveq\t#5,d4\n\tmoveq\t#6,d5\n\trts\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"));
+    QVERIFY(dock);
+    auto *problems = dock->findChild<QTreeWidget *>();
+    QVERIFY(problems);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    window.openPath(source);
+
+    auto addItem = [&](const QString &file, int line) {
+        auto *item = new QTreeWidgetItem(problems);
+        item->setText(0, file);
+        item->setText(1, line > 0 ? QString::number(line) : QString());
+        item->setText(2, QStringLiteral("diagnostic"));
+    };
+    addItem(source, 2);
+    addItem(QStringLiteral("(build)"), 0);  // no line: skipped, never landed on
+    addItem(source, 7);
+
+    auto editorLine = [&] { return editor->textCursor().blockNumber() + 1; };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 0);
+    QCOMPARE(editorLine(), 2);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 2);  // the line-less item was skipped
+    QCOMPARE(editorLine(), 7);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 0);  // wrapped
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "previousDiagnostic", Qt::DirectConnection));
+    QCOMPARE(problems->currentIndex().row(), 2);  // backwards wraps too
+    QCOMPARE(editorLine(), 7);
+}
+
+// File ▸ Open Recent lists the persisted MRU sources (skipping files that no
+// longer exist) and opening an entry loads it — the table-stakes follow-up to
+// reopen-last-on-start.
+void TstGui::openRecentMenuListsAndOpensFiles()
+{
+    const QString one = m_work->path() + QStringLiteral("/one.s");
+    const QString two = m_work->path() + QStringLiteral("/two.s");
+    for (const QString &p : {one, two}) {
+        QFile f(p);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\nstart:\trts\n\tend\n");
+    }
+    const QString gone = m_work->path() + QStringLiteral("/deleted.s");
+    QSettings().setValue(QStringLiteral("last/recentSources"),
+                         QStringList{two, gone, one});
+
+    MainWindow window;
+    auto *menu = window.findChild<QMenu *>(QStringLiteral("openRecentMenu"));
+    QVERIFY(menu);
+
+    menu->popup(QPoint());
+    QStringList titles;
+    for (QAction *a : menu->actions())
+        titles << a->text();
+    menu->close();
+
+    QCOMPARE(titles.size(), 2);  // the deleted file was pruned
+    QVERIFY(titles.at(0).contains(QStringLiteral("two.s")));  // MRU order kept
+    QVERIFY(titles.at(1).contains(QStringLiteral("one.s")));
+
+    menu->popup(QPoint());
+    menu->actions().at(1)->trigger();
+    menu->close();
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QTRY_COMPARE(editor->filePath(), one);
+}
+
+// The instruction reference dock follows the word under the cursor while it
+// is visible: an instruction word selects its entry, a label leaves the panel
+// alone.
+void TstGui::instructionReferenceFollowsTheCursor()
+{
+    const QString source = m_work->path() + QStringLiteral("/instr.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#1,d0\n\taddq.w\t#1,d0\n\trts\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    window.openPath(source);
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("instructionRefDock"));
+    QVERIFY(dock);
+    auto *view = dock->findChild<pist::InstructionRefView *>();
+    QVERIFY(view);
+    dock->show();  // the follow-cursor path is gated on visibility
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    window.show();  // follow-cursor is gated on the dock being visible
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(2).position() + 2);
+    editor->setTextCursor(cursor);
+    QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));
+
+    cursor.setPosition(editor->document()->findBlockByNumber(1).position());
+    editor->setTextCursor(cursor);
+    QTest::qWait(50);
+    QCOMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));  // a label: no-op
+}
+
+// Ctrl+click on an include opens the target file (resolved via the current
+// directory and the project's include paths); Ctrl+click on a symbol jumps to
+// its definition in the same document.
+void TstGui::ctrlClickOpensIncludesAndJumpsToLabels()
+{
+    const QString lib = m_work->path() + QStringLiteral("/lib.s");
+    QFile lf(lib);
+    QVERIFY(lf.open(QIODevice::WriteOnly | QIODevice::Text));
+    lf.write("\ttext\nhelper:\tmoveq\t#3,d0\n\trts\n\tend\n");
+    lf.close();
+
+    const QString main = m_work->path() + QStringLiteral("/main.s");
+    QFile mf(main);
+    QVERIFY(mf.open(QIODevice::WriteOnly | QIODevice::Text));
+    mf.write("\ttext\n"                      // line 1
+             "\tinclude\t\"lib.s\"\n"        // line 2
+             "start:\tmoveq\t#1,d0\n"        // line 3
+             "\tbra.s\tdone\n"               // line 4
+             "\tmoveq\t#2,d1\n"              // line 5
+             "done:\trts\n"                  // line 6
+             "\tend\n");
+    mf.close();
+
+    MainWindow window;
+    window.show();
+    window.openPath(main);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    auto ctrlClickLine = [&](int line, int col) {
+        QTextCursor c = editor->textCursor();
+        c.setPosition(editor->document()->findBlockByNumber(line - 1).position() + col);
+        const QPoint pos = editor->cursorRect(c).center();
+        QTest::mouseClick(editor->viewport(), Qt::LeftButton, Qt::ControlModifier, pos);
+    };
+
+    // On the include line: lib.s opens (in a new editor tab, so the window —
+    // not the first editor pointer — is asked for it).
+    ctrlClickLine(2, 14);
+    auto haveEditorFor = [&] (const QString &path) {
+        for (CodeEditor *e : window.findChildren<CodeEditor *>())
+            if (e->filePath() == path)
+                return true;
+        return false;
+    };
+    QTRY_VERIFY(haveEditorFor(lib));
+
+    // Back in main.s: Ctrl+click the `done` operand jumps to its definition.
+    window.openPath(main);
+    QTRY_VERIFY(editor->isVisible());
+
+    ctrlClickLine(4, 8);
+    QCOMPARE(editor->textCursor().blockNumber(), 5);  // line 6, 0-based 5
+
+    // Ctrl+click on an instruction (no such label) does not move the cursor.
+    ctrlClickLine(3, 3);  // on `moveq`
+    QCOMPARE(editor->textCursor().blockNumber(), 2);
+}
+// The debugger console recalls its session history with the arrow keys:
+// newest-first from Up, repeats collapse, and Down past the newest restores
+// the half-typed line.
+void TstGui::debugConsoleRecallsHistoryWithArrowKeys()
+{
+    MainWindow window;
+    window.show();
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    input->setEnabled(true);  // the shell enables it when a session starts
+    QVERIFY(input);
+
+    QTest::keyClicks(input, QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Return);   // no session: logged, but recorded
+    QTest::keyClicks(input, QStringLiteral("d"));
+    QTest::keyClick(input, Qt::Key_Return);
+    QTest::keyClicks(input, QStringLiteral("d"));  // a repeat: collapses
+    QTest::keyClick(input, Qt::Key_Return);
+
+    QTest::keyClicks(input, QStringLiteral("m $1"));
+    QTest::keyClick(input, Qt::Key_Up);
+    QCOMPARE(input->text(), QStringLiteral("d"));
+    QTest::keyClick(input, Qt::Key_Up);
+    QCOMPARE(input->text(), QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Up);             // clamped at the oldest
+    QCOMPARE(input->text(), QStringLiteral("r"));
+    QTest::keyClick(input, Qt::Key_Down);
+    QCOMPARE(input->text(), QStringLiteral("d"));
+    QTest::keyClick(input, Qt::Key_Down);
+    QCOMPARE(input->text(), QStringLiteral("m $1"));  // the half-typed line back
 }
 
 // The panel arrangement is Photoshop-style: docks are movable/floatable/
@@ -1488,19 +1984,60 @@ void TstGui::fileBrowserShowsTheProjectDirectory()
     auto *browser = window.findChild<FileBrowser *>();
     QVERIFY2(browser, "MainWindow must own a FileBrowser");
 
-    // Opening a file must point the browser at that file's directory, so the
-    // browser and the editor never disagree about which project is open.
+    // The first open seeds the browser with the file's directory, so a fresh
+    // window still lands on the project being edited.
     window.openPath(src);
 
     auto *view = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
     QVERIFY(view);
     QVERIFY2(view->model(), "the browser must have a model");
-    const QString rootPath = view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString();
-    QCOMPARE(rootPath, dir);
+    // The file system model populates in a thread, so the root and the
+    // selection land when the directory read finishes.
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(),
+                              dir, 5000);
 
     // The file being edited is the selected entry.
-    const QString selected = view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString();
-    QCOMPARE(selected, src);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              src, 5000);
+
+    // A file inside the project — here one level down — is revealed by
+    // expanding the tree to it; the root itself does not move.
+    const QString sub = dir + QStringLiteral("/sub");
+    QVERIFY(QDir().mkpath(sub));
+    const QString nested = sub + QStringLiteral("/nested.s");
+    QFile n(nested);
+    QVERIFY(n.open(QIODevice::WriteOnly | QIODevice::Text));
+    n.write("\tnop\n");
+    n.close();
+    window.openPath(nested);
+    QCOMPARE(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(), dir);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              nested, 5000);
+    QVERIFY(view->isExpanded(view->currentIndex().parent()));
+
+    // A file outside the project leaves the browser where the user put it:
+    // the root is a choice, not a shadow of whatever tab is focused.
+    const QString elsewhere = m_work->path() + QStringLiteral("/elsewhere");
+    QVERIFY(QDir().mkpath(elsewhere));
+    const QString foreign = elsewhere + QStringLiteral("/foreign.s");
+    QFile g(foreign);
+    QVERIFY(g.open(QIODevice::WriteOnly | QIODevice::Text));
+    g.write("\tnop\n");
+    g.close();
+    window.openPath(foreign);
+    QCOMPARE(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(), dir);
+    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), nested);
+
+    // The root moves only on an explicit choice: the Browse… button opens a
+    // folder picker, and dismissing it changes nothing.
+    auto *browse = browser->findChild<QPushButton *>(QStringLiteral("hardDriveBrowse"));
+    QVERIFY(browse);
+    QTimer::singleShot(0, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    browse->click();
+    QCOMPARE(view->model()->data(view->rootIndex(), Qt::UserRole + 1).toString(), dir);
 }
 
 
@@ -1524,14 +2061,16 @@ void TstGui::fileBrowserDirectorySwitchMovesSelection()
 
     auto *view = browser->findChild<QTreeView *>(QStringLiteral("hardDriveView"));
     QVERIFY(view);
-    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), src);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              src, 5000);
 
     // Typing another folder into the path field moves the selection to that
     // folder: the context menu (New File…, Paste) acts on the current index,
     // so with the old selection left in place a new file was created in dirA
     // while the user was looking at dirB.
     browser->showDirectory(dirB);
-    QCOMPARE(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(), dirB);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->data(view->currentIndex(), Qt::UserRole + 1).toString(),
+                              dirB, 5000);
     QCOMPARE(browser->selectedHardDrivePaths(), QStringList{dirB});
 }
 
@@ -3098,6 +3637,16 @@ void TstGui::searchMenuFollowsTheEditor()
     QCOMPARE(nextAction->shortcut(), QKeySequence(Qt::Key_F3));
 
     // A session starts on a text tab, so they are live from the first frame.
+    // Open a real file rather than relying on the pristine tab: an untouched
+    // tab is REPLACED when the image opens below (addImageTab), and whether the
+    // tab is pristine otherwise depends on QSettings left by whichever test ran
+    // before — which is how this test flaked.
+    const QString source = m_work->path() + QStringLiteral("/search.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\trts\n\tend\n");
+    src.close();
+    window.openPath(source);
     QVERIFY(findAction->isEnabled());
     QVERIFY(replaceAction->isEnabled());
 

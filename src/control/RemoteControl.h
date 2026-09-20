@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 class QTcpServer;
@@ -25,6 +26,14 @@ class MainWindow;
 /// speaks: a simple line-based protocol over a localhost socket. See the README
 /// for the command set and framing. The server is off unless a port is given;
 /// an IDE that opens a listening socket by default would be a surprise.
+///
+/// Two kinds of client share the one listener. An ordinary client is
+/// request/response: it writes a command and reads the answer. A client that
+/// sends `watch` becomes a *watcher* and additionally receives unsolicited
+/// `event` lines as the IDE's state changes — so an agent no longer has to poll
+/// `state` to notice that a breakpoint was hit. Watching is strictly additive:
+/// a watcher still gets ordinary replies to ordinary commands, and a watcher
+/// that never sends `watch`-related traffic behaves exactly as before.
 class RemoteControl : public QObject
 {
     Q_OBJECT
@@ -37,6 +46,21 @@ public:
 
     /// The port actually bound, for reporting to the user.
     quint16 boundPort() const;
+
+    /// Push one event to every watching client. `name` is the event kind
+    /// (`stopped`, `running`, …) and `detail` is optional trailing text
+    /// (`pc=0x12596`), so the wire line is `event <name>` or
+    /// `event <name> <detail>`.
+    ///
+    /// MainWindow calls this from the backend's state signals. Publishing with
+    /// no watchers is a no-op, so the IDE can publish unconditionally without
+    /// knowing whether anyone is listening. Newlines in either argument are
+    /// flattened to spaces: the protocol is line-framed and an event must stay
+    /// one line, whatever the caller passes.
+    void publishEvent(const QString &name, const QString &detail = QString());
+
+    /// How many clients are currently watching. Diagnostics and tests.
+    int watcherCount() const;
 
 private slots:
     void onNewConnection();
@@ -55,6 +79,11 @@ private:
 
     MainWindow *m_window;
     QTcpServer *m_server = nullptr;
+    /// Clients that asked for events. QPointer-like liveness is handled by
+    /// dropping the entry in the socket's destroyed handler, so a socket can
+    /// never be written to after Qt has deleted it.
+    QSet<class QTcpSocket *> m_watchers;
+
     /// A blocking command (build/run/cmd) is waiting on its nested loop. The
     /// nested loop services every other connection, so without this a second
     /// blocking command would wait on the same signals and be answered with

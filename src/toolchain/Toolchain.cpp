@@ -66,6 +66,23 @@ QString probeVersion(const QString &path)
     return {};
 }
 
+/// Whether a process probe can answer the version at all.
+///
+/// On Windows, hatari is excluded: its --version opens a NEW console, prints
+/// there and then waits for Enter (opencon.c / Main_ErrorExit), and with no
+/// arguments it launches the full emulator GUI — so probing it pops windows
+/// and stalls for the timeout. Its version comes from the content probe
+/// (emu/HatariProbe) instead.
+bool canProbeByProcess(const QString &program)
+{
+#ifdef Q_OS_WIN
+    return program != QLatin1String("hatari");
+#else
+    Q_UNUSED(program);
+    return true;
+#endif
+}
+
 ToolInfo locate(const QString &program, const QString &overridePath)
 {
     ToolInfo info;
@@ -94,7 +111,8 @@ ToolInfo locate(const QString &program, const QString &overridePath)
     const QString beside = QStandardPaths::findExecutable(program, preferred);
     if (!beside.isEmpty()) {
         info.path = beside;
-        info.version = probeVersion(info.path);
+        if (canProbeByProcess(program))
+            info.version = probeVersion(info.path);
         return info;
     }
 
@@ -102,8 +120,10 @@ ToolInfo locate(const QString &program, const QString &overridePath)
     const QString onPath = QStandardPaths::findExecutable(program);
     if (!onPath.isEmpty()) {
         info.path = onPath;
-        info.version = probeVersion(info.path);
+        if (canProbeByProcess(program))
+            info.version = probeVersion(info.path);
     }
+
 
     return info;
 }

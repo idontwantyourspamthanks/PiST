@@ -202,6 +202,14 @@ void TstEmulatorHost::cleanup()
     m_log.clear();
 }
 
+/// The control socket path for a session, or empty when this Hatari build has
+/// no socket (stock Windows builds): MainWindow gates the option on exactly
+/// this probe, and passing it to a socketless build fails the launch.
+static QString controlSocketFor(const HatariCapabilities &caps, const QString &sessionDir)
+{
+    return caps.hasControlSocket ? sessionDir + QStringLiteral("/ctl.sock") : QString();
+}
+
 void TstEmulatorHost::debuggerStopsAtProgramEntry()
 {
     HatariCapabilities caps = probeHatari(m_hatari);
@@ -212,7 +220,7 @@ void TstEmulatorHost::debuggerStopsAtProgramEntry()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s1");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
 
     QString error;
@@ -253,7 +261,7 @@ void TstEmulatorHost::registersRoundTrip()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s2");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -294,7 +302,7 @@ void TstEmulatorHost::stackDumpRoutesSeparatelyFromMemoryDump()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/stackroute");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -326,7 +334,7 @@ void TstEmulatorHost::basepageReportsProgramSections()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s3");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -370,7 +378,7 @@ void TstEmulatorHost::disassemblyIsLabelled()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s4");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -415,7 +423,7 @@ void TstEmulatorHost::steppingAdvancesPc()
     config.programPath = m_program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/s5");
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+    config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
     config.gemdosDir = m_sourceDir;
     config.bootstrapScriptPath = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
 
@@ -1104,8 +1112,11 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
         config.hatariPath = m_hatari;
         config.programPath = m_program;
         config.tosPath = m_tos;
+        // Short leaf names: macOS's sun_path is 104 bytes, and QTemporaryDir
+        // lives under the deep /var/folders $TMPDIR there — "second-session-1"
+        // overflowed it and QLocalServer::listen failed (CI, macOS leg).
         config.sessionDir = m_work->path() + QLatin1Char('/') + name;
-        config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
+        config.controlSocketPath = controlSocketFor(caps, config.sessionDir);
         config.gemdosDir = m_sourceDir;
         config.bootstrapScriptPath
             = EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
@@ -1123,7 +1134,7 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
     // resetTransport() does. Ending the session cleanly instead would leave
     // nothing the reset owns, and the test would pass with the reset deleted.
     QSignalSpy entry1(&host, &EmulatorHost::stoppedChanged);
-    QVERIFY2(host.start(configFor(QStringLiteral("second-session-1")), nullptr),
+    QVERIFY2(host.start(configFor(QStringLiteral("ss1")), nullptr),
              "session 1 failed to start");
     QVERIFY2(entry1.wait(15000), "session 1 never stopped at program entry");
     host.armBreakpoint(QStringLiteral("b pc = $100 && pc < $e00000 :once"));
@@ -1135,7 +1146,7 @@ void TstEmulatorHost::secondSessionOnOneHostReframesCleanly()
     // queue-empty dispatch write `c`, so the new session resumes itself instead
     // of waiting stopped at the entry stop, and its first command never returns.
     QSignalSpy entry2(&host, &EmulatorHost::stoppedChanged);
-    QVERIFY2(host.start(configFor(QStringLiteral("second-session-2")), nullptr),
+    QVERIFY2(host.start(configFor(QStringLiteral("ss2")), nullptr),
              "session 2 failed to start");
     QVERIFY2(entry2.wait(15000), "session 2 never stopped at program entry");
     QVERIFY2(host.isStopped(),

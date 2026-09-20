@@ -146,7 +146,17 @@ QString sessionBaseDir()
     QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (base.isEmpty())
         base = QDir::tempPath();
-    return QDir(base).absoluteFilePath(QStringLiteral("pist"));
+    base = QDir(base).absoluteFilePath(QStringLiteral("pist"));
+#ifdef Q_OS_MACOS
+    // macOS $TMPDIR is /var/folders/<two>/.../T — 50+ characters before our
+    // name — and a session's control socket sits another ~25 deeper still.
+    // That overflows sockaddr_un's 104-byte sun_path (measured on CI:
+    // QLocalServer::listen fails, the session never starts). /tmp is the
+    // short, sanctioned macOS temp path.
+    if (base.length() > 60)
+        base = QStringLiteral("/tmp/pist");
+#endif
+    return base;
 }
 
 bool ensureDirectory(const QString &dir, QString *error)

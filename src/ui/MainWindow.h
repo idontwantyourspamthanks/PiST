@@ -34,7 +34,11 @@ namespace pist {
 class BuildService;
 class CodeEditor;
 class BreakpointPanel;
+class InstructionRefView;
+class SymbolsView;
+class RemoteControl;
 class DisassemblyView;
+class ProfilerView;
 class FileBrowser;
 class IDebugBackend;
 class ImageEditor;
@@ -70,6 +74,9 @@ public slots:
     /// once from main() after the window is shown, so a first run offers the
     /// guided fetch instead of failing the first build with it.
     void showSetupIfNeeded();
+
+    /// Wire the remote-control event sink (main.cpp owns the RemoteControl).
+    void setEventSink(RemoteControl *sink) { m_eventSink = sink; }
 
     /// Re-resolve assembler/emulator paths and the capability probe, updating
     /// the build service and status bar. Called at construction and after the
@@ -139,6 +146,22 @@ private slots:
     void stopSession();
     void step();
     void stepOver();
+    /// Step out of the current subroutine: one-shot breakpoint at the return
+    /// address read from the stack, then resume (no Hatari primitive exists).
+    void stepOut();
+    /// One-shot breakpoint at the cursor line's code address, then resume.
+    void runToCursor();
+    /// Profiling is armed/collected while stopped: Hatari starts collection on
+    /// continue and zeroes it if any breakpoint is armed mid-run, so both
+    /// actions refuse a running machine.
+    void profileStart();
+    void profileStop();
+    void showProfileResults();
+    /// F4 / Shift+F4: step through the Problems pane without the mouse,
+    /// wrapping, skipping diagnostics that carry no source line.
+    void nextDiagnostic();
+    void previousDiagnostic();
+    void stepDiagnostic(int direction);
     void pauseSession();
     void resume();
 
@@ -265,6 +288,7 @@ private:
     /// Connect one editor's signals. Runs for every editor tab created.
     void wireEditor(CodeEditor *editor);
     void wireImage(ImageEditor *editor);
+    void wireImageReExport(ImageEditor *editor);
 
     /// Every open text editor, in tab order.
     QList<CodeEditor *> openEditors() const;
@@ -383,7 +407,7 @@ private:
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
-    QLineEdit *m_consoleInput = nullptr;
+    class ConsoleInput *m_consoleInput = nullptr;
 
     /// Every open memory pane, keyed by the dump-routing tag each one carries, so
     /// a dump is routed back to the pane that asked for it. m_memory is the first
@@ -395,8 +419,22 @@ private:
     StackView *m_stack = nullptr;
     class PcHistoryView *m_pcHistory = nullptr;
     HardwareView *m_hardware = nullptr;
+    class SymbolsView *m_symbolsView = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
+    class InstructionRefView *m_instrRef = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
+    QVector<struct SymbolEntry> m_symbols;
+    QStringList m_consoleVerbs;
+    /// Where session events are published for remote-control watchers
+    /// (control/RemoteControl); null when no one wired one up (tests).
+    RemoteControl *m_eventSink = nullptr;
+    class ProfilerView *m_profiler = nullptr;
+    QDockWidget *m_profilerDock = nullptr;
+    /// A `profile save` is in flight; its commandFinished parses the file.
+    bool m_profileSavePending = false;
+    /// A stop was announced; the next state batch carries its PC, so the
+    /// stopped event is published from onStateUpdated with the detail filled.
+    bool m_stopEventPending = false;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QDockWidget *m_problemsDock = nullptr;
@@ -435,6 +473,11 @@ private:
     /// loses that race), so this guards doing it exactly once, when they arrive.
     bool m_breakpointsArmedThisSession = false;
 
+    /// A stack dump requested by stepOut() is in flight; the next
+    /// stackDumpReady arms the return-address breakpoint instead of only
+    /// feeding the stack view.
+    bool m_stepOutPending = false;
+
     /// Set by Run, consumed by onBuildFinished. Needed because the build is
     /// asynchronous: the launch has to wait for it, not run alongside it.
     bool m_launchAfterBuild = false;
@@ -456,11 +499,14 @@ private:
     QAction *m_actExportImageSafe = nullptr;
     QAction *m_actExportSpriteSheet = nullptr;
     QAction *m_actExportBitplanes = nullptr;
+    QAction *m_actReExportBitplanes = nullptr;
     QAction *m_actFind = nullptr;
     QAction *m_actFindNext = nullptr;
     QAction *m_actFindPrevious = nullptr;
     QAction *m_actReplace = nullptr;
     QAction *m_actOpenProject = nullptr;
+    QAction *m_actProfileStart = nullptr;
+    QAction *m_actProfileStop = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;
@@ -468,8 +514,12 @@ private:
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
     QAction *m_actEmbedDisplay = nullptr;
+    QAction *m_actNextDiagnostic = nullptr;
+    QAction *m_actPrevDiagnostic = nullptr;
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
+    QAction *m_actStepOut = nullptr;
+    QAction *m_actRunToCursor = nullptr;
     QAction *m_actResume = nullptr;
     QAction *m_actClearBreakpoints = nullptr;
     QAction *m_actPause = nullptr;

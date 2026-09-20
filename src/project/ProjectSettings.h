@@ -123,6 +123,8 @@ bool load(ProjectSettings *settings, const QString &path, QString *error);
 void rememberLastProject(const QString &projectPath, const QString &sourcePath);
 QString lastProjectPath();
 QString lastSourcePath();
+/// Most-recently-opened source files, MRU first, for File ▸ Open Recent.
+QStringList recentSources();
 
 } // namespace settings
 

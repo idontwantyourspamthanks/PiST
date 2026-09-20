@@ -23,6 +23,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <cmath>
+
 namespace pist {
 
 namespace {
@@ -351,6 +353,29 @@ void CodeEditor::setBreakpointLines(const QList<int> &lines)
         m_lineNumberArea->update();
 }
 
+void CodeEditor::setLineHeat(const QHash<int, quint64> &counts)
+{
+    m_lineHeat.clear();
+    quint64 maximum = 0;
+    for (auto it = counts.constBegin(); it != counts.constEnd(); ++it) {
+        // A zero count is not heat: it would tint a cold line at the bottom of
+        // the scale for no reason. Profile saves omit unexecuted addresses
+        // anyway, so this only guards a caller passing a full line-number map.
+        if (it.value() == 0)
+            continue;
+        m_lineHeat.insert(it.key(), it.value());
+        if (it.value() > maximum)
+            maximum = it.value();
+    }
+    // log(count)/log(max): execution counts span orders of magnitude, and only a
+    // logarithmic scale lets a merely busy line be visible beside a runaway one.
+    // A single distinct count has no scale to speak of, so it paints at full
+    // strength rather than all-but-invisibly.
+    m_lineHeatScale = maximum > 1 ? std::log(double(maximum)) : 0.0;
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
+}
+
 // Maps a y offset inside the gutter to a block number, so a click lands on the
 // line the user actually aimed at rather than the nearest text position.
 int CodeEditor::lineAtY(int y) const
@@ -395,6 +420,19 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
         if (block.isVisible() && bottom >= event->rect().top()) {
             const int line = blockNumber + 1;
             const int height = fontMetrics().height();
+
+            // Profiler heat, painted first so every existing marker — the PC
+            // bar, the breakpoint dot, the error bang, the number itself —
+            // stays on top of it and remains as legible as before.
+            const auto heat = m_lineHeat.constFind(line);
+            if (heat != m_lineHeat.constEnd()) {
+                const double scaled = m_lineHeatScale > 0.0
+                                          ? std::log(double(*heat)) / m_lineHeatScale
+                                          : 1.0;
+                QColor tint(0xd8, 0x8a, 0x30); // warm amber, in either theme
+                tint.setAlphaF(0.55 * qBound(0.0, scaled, 1.0));
+                painter.fillRect(0, top, m_lineNumberArea->width(), bottom - top, tint);
+            }
 
             if (line == m_currentExecutionLine)
                 painter.fillRect(0, top, 3, bottom - top, c.gutterPc);

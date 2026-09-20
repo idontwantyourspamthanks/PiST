@@ -18,9 +18,9 @@
 
 name: Build Hatari
 description: >-
-  Builds the pinned Hatari from source on Linux (apt) and macOS (Homebrew),
-  copies the resulting `hatari` binary into `destination`, and puts that
-  directory on PATH. Windows is not supported.
+  Builds the pinned Hatari from source on Linux (apt), macOS (Homebrew) and
+  Windows (MSYS2 ucrt64), copies the resulting `hatari` binary into
+  `destination`, and puts that directory on PATH.
 
 inputs:
   version:
@@ -63,25 +63,21 @@ inputs:
 outputs:
   path:
     description: Absolute path to the built `hatari` binary.
-    value: ${{ steps.install.outputs.path }}
+    # One of the two install steps always runs and the other always skips, so
+    # exactly one of these expressions is non-empty.
+    value: ${{ steps.install.outputs.path }}${{ steps.install-win.outputs.path }}
 
 runs:
   using: composite
   steps:
-    # The platform check happens here rather than in the caller, so an
-    # unsupported runner fails immediately and with an explanation. Windows is
-    # refused up front: Hatari needs SDL2 development packages, and nothing here
-    # wires those up for MSYS2 or MSVC — no Hatari package exists for MSYS2, so
-    # the CI matrix test-builds Windows without ever exercising the emulator.
-    # Saying that beats failing obscurely inside `cmake`.
     - name: Check the platform
       shell: bash
       run: |
         set -euo pipefail
         case "${{ runner.os }}" in
-          Linux|macOS) ;;
+          Linux|macOS|Windows) ;;
           *)
-            echo "::error::Hatari can only be built on Linux and macOS; ${{ runner.os }} is not supported. Windows needs SDL2 development packages that are not wired up yet, so there is no emulator to build here."
+            echo "::error::Hatari can only be built on Linux, macOS and Windows; ${{ runner.os }} is not supported."
             exit 1
             ;;
         esac
@@ -123,6 +119,7 @@ runs:
         fi
 
     - name: Install Hatari build dependencies
+      if: runner.os != 'Windows'
       shell: bash
       run: |
         set -euo pipefail
@@ -135,10 +132,35 @@ runs:
           # what is being tested, not an incidental.
           sudo apt-get install -y -qq libsdl2-dev libpng-dev zlib1g-dev libreadline-dev
         else
-          brew install sdl2 libpng pkg-config
+          # readline matters as much here as on Linux (above): without it the
+          # debugger prints its prompt to stderr and PiST's stdin transport
+          # starves — every command times out. Homebrew's is keg-only, so the
+          # prefix below names it explicitly.
+          brew install sdl2 libpng pkg-config readline
         fi
 
+    # Windows builds with MSYS2 ucrt64. The `msys2` shell is not a runner
+    # built-in — it is registered by setup-msys2, which must run first (here in
+    # the action, so every caller gets it) and also installs the dependencies.
+    # No readline: the only Windows build we make is the hrdb fork, whose
+    # debugger channels are HRDB's TCP socket — its stdin is never read, so the
+    # readline/fgets prompt difference does not apply to it.
+    - name: Set up MSYS2 (Windows)
+      if: runner.os == 'Windows'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: >-
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-cmake
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-SDL2
+          mingw-w64-ucrt-x86_64-libpng
+          mingw-w64-ucrt-x86_64-zlib
+
     - name: Configure and build Hatari
+      if: runner.os != 'Windows'
       shell: bash
       env:
         HATARI_VERSION: ${{ inputs.version }}
@@ -160,12 +182,33 @@ runs:
             *)             ARCH=x86_64 ;;
           esac
           echo "Homebrew prefix: $BREW_PREFIX -> targeting $ARCH"
-          PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$BREW_PREFIX -DCMAKE_OSX_ARCHITECTURES=$ARCH"
+          # ENABLE_OSX_BUNDLE defaults to ON on Apple and produces a binary
+          # that only runs from inside Hatari.app (SDL_MAIN_NEEDED, an
+          # @executable_path rpath and a ../Resources data dir) — useless to a
+          # subprocess-driven debugger. Homebrew's own formula disables it the
+          # same way, and its `hatari -v` test proves the result standalone.
+          # The readline keg is named explicitly: keg-only formulae are not in
+          # the default prefix search.
+          PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$BREW_PREFIX;$BREW_PREFIX/opt/readline -DCMAKE_OSX_ARCHITECTURES=$ARCH -DENABLE_OSX_BUNDLE=OFF"
         fi
         cmake -S "hatari-src-${{ inputs.variant }}" -B "hatari-build-${{ inputs.variant }}" -DCMAKE_BUILD_TYPE=Release $PREFIX_ARGS
         cmake --build "hatari-build-${{ inputs.variant }}" --parallel
 
+    - name: Configure and build Hatari (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      env:
+        # Selects the ucrt64 toolchain: PATH gains /ucrt64/bin, so cmake, gcc
+        # and ninja below are the mingw variants, not the msys ones.
+        MSYSTEM: UCRT64
+      run: |
+        set -euo pipefail
+        cmake -S "hatari-src-${{ inputs.variant }}" -B "hatari-build-${{ inputs.variant }}" \
+          -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake --build "hatari-build-${{ inputs.variant }}" --parallel
+
     - name: Install Hatari
+      if: runner.os != 'Windows'
       id: install
       shell: bash
       env:
@@ -173,9 +216,8 @@ runs:
         BINARY_NAME: ${{ inputs.binary-name }}
       run: |
         set -euo pipefail
-        # macOS builds an application bundle, so the executable is named
-        # `Hatari` inside Contents/MacOS rather than `hatari` at the top level.
-        # The copy below lands it at the requested name either way.
+        # With ENABLE_OSX_BUNDLE=OFF every platform produces a plain `hatari`
+        # executable; the find stays defensive about where the build tree puts it.
         mkdir -p "$HATARI_DEST"
         HATARI_BIN=$(find "hatari-build-${{ inputs.variant }}" -type f -perm -u+x -iname hatari | head -1)
         if [ -z "$HATARI_BIN" ]; then
@@ -186,3 +228,31 @@ runs:
         cp "$HATARI_BIN" "$HATARI_DEST/$BINARY_NAME"
         echo "$HATARI_DEST" >> "$GITHUB_PATH"
         echo "path=$HATARI_DEST/$BINARY_NAME" >> "$GITHUB_OUTPUT"
+
+    - name: Install Hatari (Windows)
+      if: runner.os == 'Windows'
+      id: install-win
+      shell: msys2 {0}
+      env:
+        HATARI_DEST: ${{ inputs.destination }}
+        BINARY_NAME: ${{ inputs.binary-name }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HATARI_DEST"
+        BIN="hatari-build-${{ inputs.variant }}/src/hatari.exe"
+        if [ ! -f "$BIN" ]; then
+          echo "ERROR: no hatari.exe produced; tree:"
+          find "hatari-build-${{ inputs.variant }}" -maxdepth 4 -name '*atari*' | head -20
+          exit 1
+        fi
+        cp "$BIN" "$HATARI_DEST/$BINARY_NAME.exe"
+        # The exe needs its mingw runtime DLLs beside it: stage everything ldd
+        # resolves inside the ucrt64 sysroot (SDL2, libpng, zlib, the GCC
+        # runtime). System DLLs under C:\Windows exist on every machine and
+        # are not copied.
+        ldd "$BIN" | awk '/ucrt64/ {print $3}' | while read -r dll; do
+          cp "$dll" "$HATARI_DEST/"
+        done
+        ls -l "$HATARI_DEST"
+        echo "$(cygpath -m "$HATARI_DEST")" >> "$GITHUB_PATH"
+        echo "path=$(cygpath -m "$HATARI_DEST")/$BINARY_NAME.exe" >> "$GITHUB_OUTPUT"

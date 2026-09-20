@@ -16,6 +16,8 @@
 #include <QTcpSocket>
 #include <QTimer>
 
+#include <utility>
+
 namespace pist {
 
 namespace {
@@ -73,7 +75,43 @@ void RemoteControl::onNewConnection()
         client->setParent(this);
         connect(client, &QTcpSocket::readyRead, this, [this, client] { onReadyRead(client); });
         connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
+        // A watcher that disconnects must leave the set, or publishEvent would
+        // write to a deleted socket. deleteLater is the only deletion path, and
+        // `destroyed` is emitted from it, so removing on destroyed — rather than
+        // on disconnected — also covers a socket deleted for any other reason.
+        connect(client, &QObject::destroyed, this, [this, client] {
+            m_watchers.remove(client);
+        });
     }
+}
+
+void RemoteControl::publishEvent(const QString &name, const QString &detail)
+{
+    if (m_watchers.isEmpty())
+        return;
+
+    // The protocol is line-framed, so an event must be exactly one line: a
+    // caller-supplied newline would otherwise be read as a second, malformed
+    // line by the client. Flatten rather than reject — a publish is not a place
+    // to fail an agent's subscription.
+    const auto flatten = [](QString text) {
+        return text.replace(QLatin1Char('\n'), QLatin1Char(' '))
+            .replace(QLatin1Char('\r'), QLatin1Char(' '));
+    };
+    QString line = QStringLiteral("event ") + flatten(name);
+    const QString tail = flatten(detail).trimmed();
+    if (!tail.isEmpty())
+        line += QLatin1Char(' ') + tail;
+    line += QLatin1Char('\n');
+    const QByteArray bytes = line.toUtf8();
+
+    for (QTcpSocket *client : std::as_const(m_watchers))
+        client->write(bytes);
+}
+
+int RemoteControl::watcherCount() const
+{
+    return m_watchers.size();
 }
 
 void RemoteControl::onReadyRead(QTcpSocket *client)
@@ -319,10 +357,32 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "screenshot <f>   save the window to <f> (default /tmp/pist-screenshot.png)\n"
             "console          the build & debug console text\n"
             "state            registers and PC\n"
+            "watch            receive events as the session changes state\n"
+            "unwatch          stop receiving events (connection stays open)\n"
             "quit             close the IDE\n"
             "\n"
             "build, run and cmd block until they finish; one at a time — a second\n"
-            "blocking command while one is waiting is answered 'error busy'.\n"));
+            "blocking command while one is waiting is answered 'error busy'.\n"
+            "watch turns this connection into an event stream: after the 'ok', the\n"
+            "server pushes 'event <name> [detail]' lines (e.g. 'event stopped\n"
+            "pc=0x12596', 'event running') until unwatch or disconnect.\n"));
+
+    } else if (cmd == QLatin1String("watch")) {
+        // Turn this connection into an event stream. The reply is sent first so
+        // the client can safely switch to reading events the moment it sees
+        // `ok` — otherwise an event published between the request and the reply
+        // would interleave ahead of it (same socket, same order) and be read as
+        // the reply. Idempotent: a second `watch` re-confirms rather than
+        // double-subscribing, which QSet would collapse anyway.
+        m_watchers.insert(client);
+        reply(guarded, QStringLiteral("ok"));
+
+    } else if (cmd == QLatin1String("unwatch")) {
+        // Stop events but keep the connection: the client can go back to plain
+        // request/response. Idempotent, and an `ok` either way, so a client
+        // doing best-effort cleanup never has to distinguish "was watching".
+        m_watchers.remove(client);
+        reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("quit")) {
         reply(guarded, QStringLiteral("ok"));

@@ -12,15 +12,20 @@ Write 68000 assembly, assemble it, run it in an emulator, and debug it — witho
 editor. `PiST` bundles the pieces that are otherwise scattered across a text editor, a build
 script, a terminal, a debugger and an emulator, and presents them as one tool.
 
+![PiST with hello.s open — editor, project files with disks, breakpoint and memory panes](docs/screenshots/ide.png)
+
+![The sprite editor: pixel grid, ST palette, frames and phases](docs/screenshots/sprite-editor.png)
+
 > **Status: early, and usable.** The full loop works — write, assemble, run under Hatari, and
 > debug with breakpoints, stepping, registers, memory, disassembly, watchpoints, a stack
 > view and hardware registers, with the editor following the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
-> What is missing is breadth rather than core function: no installers, and the emulator ships only
-> in the Linux AppImage — the macOS and Windows archives still expect you to install Hatari. The
-> integration itself has only been exercised on Linux — see
-> [Known limitations](#known-limitations). [docs/PLAN.md](docs/PLAN.md) has the full design.
+> What is missing is breadth rather than core function: the macOS archive still expects you to
+> install Hatari (`brew install hatari`). The emulator integration is exercised in CI on Linux
+> and macOS — Windows unit-tests only, since its stock Hatari never enters the debugger over
+> pipes; see [Known limitations](#known-limitations).
+> [docs/PLAN.md](docs/PLAN.md) has the full design.
 
 ---
 
@@ -33,8 +38,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 ```
 
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
-  and find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
-  match-case and whole-word options)
+  find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
+  match-case and whole-word options), **Ctrl+click** to open an `include` or jump to a label,
+  and a searchable **68000 instruction reference** dock that follows the word under the cursor
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats
@@ -51,9 +57,12 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
   monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
+  and toured from the keyboard (**F4** / Shift+F4); multi-file projects link with vlink, and a
+  **symbols dock** lists every label and equate with its address once the program is running
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
-- **Debug** with breakpoints, single-step, step-over, registers, memory and labelled
-  disassembly — and the editor following the program counter as you step
+- **Debug** with breakpoints, single-step, step-over, **step out** and **run to cursor**
+  (Ctrl+F10), registers, memory and labelled disassembly — and the editor following the
+  program counter as you step
   - **edit registers and memory** while stopped — poke a value and keep debugging
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
@@ -63,15 +72,19 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     Hatari's `info` commands
   - a **PC history** view of how the machine reached the current stop
   - an **interactive debugger console** — type any Hatari debugger command (`r`, `d`,
-    `m $12596 20`, …) and see its output in the console dock
+    `m $12596 20`, …) and see its output in the console dock, with arrow-key history and
+    Tab completion of commands and symbol names
+  - a **profiler**: Hatari's CPU profiling per *source line* — Profile Start at a breakpoint
+    stop, continue, and Profile Stop shows the hot lines in a dock and as heat in the editor
+    gutter
 - **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
   a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
   to rearrange), or right-click for a "Move to" menu. The layout persists.
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
-your first line of code. The Linux AppImage meets that goal today; the macOS and Windows archives
-still need Hatari installed separately.
+your first line of code. The Linux AppImage and the Windows archive meet that goal today
+(both bundle the emulator); the macOS archive still needs `brew install hatari`.
 
 On a machine with no assembler or ROM, the first run offers a **guided setup**: a
 checksum-pinned vasm source build and an EmuTOS download, each named with its URL and checksum
@@ -270,9 +283,10 @@ of an upstream Hatari limitation rather than anything in `PiST`:
 
 \* Pause on Windows, and live breakpoint / running-disk changes there, work when the debug
 transport is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (Project Settings → Debug
-transport), which speaks typed TCP instead of the POSIX-only control socket. Stock Hatari on
-Windows still lacks those *while the program is running*; a stopped session can still insert or
-eject a floppy via the debugger (`setopt`).
+transport), which speaks typed TCP instead of the POSIX-only control socket. The Windows release
+archive bundles exactly that fork, so a fresh download is unaffected; a user-installed *stock*
+Hatari on Windows still lacks those *while the program is running*, and a stopped session can
+still insert or eject a floppy via the debugger (`setopt`).
 
 The three gaps are all downstream of one thing: Hatari's control channel is compiled only on
 POSIX systems (`HAVE_UNIX_DOMAIN_SOCKETS`), and it is the only way to command an *already running*
@@ -287,8 +301,8 @@ approach, in **[docs/FUTURE.md](docs/FUTURE.md)**.
 
 Multi-file projects are assembled separately and linked with **vlink**, from the
 same author as vasm and under the same licence terms (unmodified redistribution,
-non-commercial use). Release archives do not include it — a source build needs it
-installed separately if you use more than one source file:
+non-commercial use). Release archives bundle it beside the assembler; a source
+build needs it installed separately if you use more than one source file:
 
 ```
 http://sun.hasenbraten.de/vlink/
@@ -416,12 +430,53 @@ cmd <command>      run an arbitrary Hatari debugger command (block reply)
 screenshot <file>  save the window as a PNG (default /tmp/pist-screenshot.png)
 console            the build & debug console text (block reply)
 state              registers and PC (block reply)
+watch              receive events as the session changes state (see below)
+unwatch            stop receiving events; the connection stays open
 help               list the commands
 quit               close the IDE
 ```
 
 `build` and `run` answer only once the work is actually done, so a script does
 not have to poll: `run` returning `ok` means the emulator session is up.
+
+### Events: not having to poll for a stop
+
+`watch` turns the connection into an event stream. The reply to `watch` is the
+usual `ok`, and after it the server pushes one line per state change, without
+waiting to be asked:
+
+```
+event stopped pc=0x12596
+event running
+```
+
+The format is `event <name>` with optional trailing detail, always one line. The
+IDE currently publishes `stopped` (with the program counter, when known) and
+`running`; more event names may be added, so a client should ignore names it does
+not recognise rather than treat them as errors. Watching is additive: a watcher
+still gets ordinary replies to ordinary commands, and a connection that never
+sends `watch` behaves exactly as it always did. Several connections may watch at
+once. Send `unwatch` to stop the events while keeping the connection, or just
+close it. Because `watch` and its `ok` share the socket with the events, a client
+must read the `ok` before treating subsequent lines as events.
+
+The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
+
+## MCP server (`pist-mcp`)
+
+`pist-mcp` is a small companion program that exposes the same capability over
+[Model Context Protocol](https://modelcontextprotocol.io) on stdio, so an MCP
+
+Point the client at the `pist-mcp` binary; the control port comes from `--port`
+or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it. The tools are
+`pist_run`, `pist_build`, `pist_stop`, `pist_step`, `pist_stepover`,
+`pist_continue`, `pist_state`, `pist_console`, `pist_breakpoints`,
+`pist_breakpoint`, `pist_setreg`, `pist_setmem`, `pist_watchpoint`, `pist_cmd`,
+`pist_screenshot` and `pist_watch`. `pist_watch` subscribes to the events above
+and returns them; they also arrive as MCP log notifications, so an agent waiting
+for a breakpoint does not have to poll. The shim speaks newline-delimited
+JSON-RPC 2.0 — one message per line, never `Content-Length` headers, which belong
+to a different protocol — and logs to stderr only, since stdout is the transport.
 
 A minimal client in Python:
 
@@ -464,33 +519,32 @@ follow.
 ## Known limitations
 
 Stated plainly, because an early release should not imply more than it does:
-- **The emulator integration has only been exercised on Linux.** CI builds and
-  tests on Windows and macOS, and the path handling, tool discovery and install
-  steps are verified there — but neither runner runs the emulator suite: Windows
-  has no Hatari package for MSYS2, and the macOS Hatari build produces an
-  application bundle whose binary does not run standalone. Linux CI builds the
-  pinned Hatari 2.6.1 *and* the hrdb-main fork, and exercises assembling and
-  debugging against both transports, so bug reports from real Windows or macOS
-  machines remain genuinely useful.
+- **The emulator integration is exercised in CI on Linux and macOS.** Both
+  build the pinned Hatari 2.6.1 *and* the hrdb-main fork from source and run
+  the emulator suites against both transports. Windows builds and unit-tests
+  only: the official Windows Hatari is a GUI-subsystem binary whose debugger
+  never answers over pipes, and our MSYS2 build of the fork does not get the
+  suite to a session either — so the Windows-bundled fork is **experimental**,
+  and bug reports from real Windows machines are especially useful.
 - **On stock Hatari, pause, changing breakpoints while running, and swapping disks at runtime
-  do not work on Windows.** Hatari compiles its control channel only on POSIX systems.
-  Breaking at entry, on exceptions, and at source-line breakpoints all work. The bundled
-  emulator (the hrdb-main fork, in the Linux AppImage) is not affected; on Windows a
-  user-installed [hrdb-main Hatari](https://github.com/tattlemuss/hatari) build gets pause and
-  live breakpoints back (auto-detected). See [docs/FUTURE.md](docs/FUTURE.md) for the upstream
-  fix that would cover the rest.
-- **No installers** — releases are an AppImage on Linux and tarballs/zips elsewhere,
-  not deb/RPM/MSI/dmg.
-- **Hatari is bundled only in the Linux AppImage.** That copy is the hrdb-main fork
-  (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified from a
-  checksum-pinned commit tarball, so it debugs with nothing else installed — over HRDB. The macOS
-  and Windows archives do not include it (and neither does a source build), so
-  there the emulator must be installed separately — and no distribution package
-  will do: Ubuntu 22.04 ships 2.3.1 and 24.04 ships 2.4.1, whose truncated
-  debugger responses break source-line debugging, while the IDE is developed and
-  verified against 2.6.1.
+  do not work on Windows.** Hatari compiles its control channel only on POSIX systems, and
+  the official Windows build is a GUI-subsystem binary whose debugger does not answer over
+  pipes at all (see the bullet above). The bundled emulator is the hrdb-main fork — marked
+  experimental on Windows until reports from real machines come in. See
+  [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix that would cover stock Hatari.
+- **Installers and plain archives** — Linux gets an AppImage plus deb and RPM packages,
+  macOS a dmg and a tarball, Windows an MSI and a zip.
+- **Hatari is bundled in the Linux AppImage and the Windows archive.** Both copies are the
+  hrdb-main fork (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified
+  from a checksum-pinned commit tarball — the Windows one built with MSYS2 ucrt64 with its
+  runtime DLLs beside the exe, and **experimental** there until real-machine reports confirm
+  it — so they debug with nothing else installed, over HRDB. The
+  macOS archive does not include it (`brew install hatari` is 2.6.1), and neither does a
+  source build. Avoid distribution packages on Linux: Ubuntu 22.04 ships 2.3.1 and 24.04
+  ships 2.4.1, whose truncated debugger responses break source-line debugging, while the
+  IDE is developed and verified against 2.6.1.
 - Multi-file projects are supported through the linker (add sources in Project
-  Settings; needs `vlink`, which is not bundled with the source build).
+  Settings; release archives bundle `vlink`, a source build needs it installed).
 - The interface is functional rather than polished.
 
 ## Documentation

@@ -38,10 +38,13 @@ public:
     explicit FileBrowser(QWidget *parent = nullptr);
 
 public slots:
-    /// Show the directory containing `sourcePath`, selecting the file itself.
+    /// Reveal `sourcePath` in the tree, expanding and selecting it — without
+    /// moving the project root. The root changes only through showDirectory
+    /// (the path field or the Browse… button); the first showFor on an empty
+    /// browser seeds it with the file's directory.
     void showFor(const QString &sourcePath);
 
-    /// Show an explicit directory.
+    /// Choose an explicit project directory: the only way the root moves.
     void showDirectory(const QString &path);
 
     /// The directory currently shown, or empty before the first show.
@@ -199,6 +202,11 @@ private:
     void refreshFloppy(int drive);
     int driveOfSender() const;
 
+    /// Expand the tree down to `path` and select it. The model populates in a
+    /// thread, so an index asked for too early is invalid: then the path is
+    /// parked in m_pendingReveal and retried on directoryLoaded.
+    void reveal(const QString &path);
+
     struct FloppyPane {
         QPushButton *change = nullptr;
         QPushButton *eject = nullptr;
@@ -212,6 +220,11 @@ private:
     QLineEdit *m_pathEdit = nullptr;
     QPushButton *m_export = nullptr;
     FloppyPane m_floppy[2];
+    /// Whether the project root was ever chosen (showDirectory). The model's
+    /// default rootPath is ".", so "no root yet" cannot be read back from it.
+    bool m_rootChosen = false;
+    QString m_pendingReveal;
+    QString m_pendingCurrent;
     QString m_floppyPath[2];
     Clipboard m_clipboard;
 };

@@ -897,9 +897,11 @@ load-bearing dependency — which the detection order above already guarantees.
   the VBL loop — no prompt ever arrives and the session wedges. BreakCond operators are the
   single characters `= ! < >` (no `<>` form)
 - **The stderr-prompt dispatch watermark must move as the buffer is consumed.** On no-readline
-  builds (macOS's `libedit` shim fails Hatari's `rl_filename_completion_function` check, so it
-  builds with the `fgets` fallback) the prompt goes to stderr, and completion is a trailing
-  `"> "` in the stderr buffer that grew past the size recorded at dispatch. A dispatch issued
+  builds the prompt goes to stderr, and completion is a trailing `"> "` in the stderr buffer
+  that grew past the size recorded at dispatch. (macOS CI hits this path: Hatari's CMake finds
+  brew's GNU readline, but its `rl_filename_completion_function` link probe fails — seen in the
+  configure log — so `HAVE_LIBREADLINE` stays off and the debugger uses the `fgets` fallback.)
+  A dispatch issued
   *from a line handler* — the entry banner arming queued commands — ran mid-`processStderrData`,
   while the buffer still held un-consumed lines; the recorded offset then pointed past bytes the
   line loop was about to remove, no later trailing prompt ever compared as new, and every stop

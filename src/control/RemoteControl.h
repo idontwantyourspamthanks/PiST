@@ -89,6 +89,7 @@ private:
     /// What listen() wrote to the discovery file, so the destructor only
     /// removes a file that is still ours.
     QString m_publishedAddress;
+    /// Clients that asked for events. QPointer-like liveness is handled by
     /// dropping the entry in the socket's destroyed handler, so a socket can
     /// never be written to after Qt has deleted it.
     QSet<class QTcpSocket *> m_watchers;

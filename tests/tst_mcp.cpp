@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <QJsonDocument>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>

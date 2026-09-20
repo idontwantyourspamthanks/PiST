@@ -303,6 +303,9 @@ jobs:
       # absent, which is the case on every runner. They report as skipped rather
       # than passed, so a green run never overstates what was verified.
       - name: Test
+        # The Linux suite takes minutes. An emulator-transport failure on a new
+        # platform otherwise shows up as per-test timeouts for hours — bound it.
+        timeout-minutes: 45
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen

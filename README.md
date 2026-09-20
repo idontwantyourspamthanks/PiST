@@ -466,6 +466,13 @@ The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
 
 `pist-mcp` is a small companion program that exposes the same capability over
 [Model Context Protocol](https://modelcontextprotocol.io) on stdio, so an MCP
+client — Claude, Cursor and the like — discovers the IDE as a native tool set
+rather than being taught a line protocol:
+
+```sh
+pist --control-port 9999 your-program.s &   # start the IDE with control on
+PIST_CONTROL_PORT=9999 pist-mcp             # the client launches this instead
+```
 
 Point the client at the `pist-mcp` binary; the control port comes from `--port`
 or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it. The tools are

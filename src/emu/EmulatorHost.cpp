@@ -357,10 +357,6 @@ void EmulatorHost::handleStdoutData(const QByteArray &data)
 {
     if (data.isEmpty())
         return;
-    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
-    emit logLine(QStringLiteral("[diag] stdout chunk: ")
-                 + QString::fromUtf8(data).replace(QLatin1Char('\n'), QStringLiteral("\\n"))
-                       .replace(QLatin1Char('\r'), QStringLiteral("\\r")));
 
     const QString previous = m_stdoutText;
     m_stdoutText += QString::fromUtf8(data);

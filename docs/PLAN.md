@@ -896,6 +896,17 @@ load-bearing dependency — which the detection order above already guarantees.
   over the control socket enters the debugger at the next instruction. `hatari-stop` only halts
   the VBL loop — no prompt ever arrives and the session wedges. BreakCond operators are the
   single characters `= ! < >` (no `<>` form)
+- **The stderr-prompt dispatch watermark must move as the buffer is consumed.** On no-readline
+  builds (macOS's `libedit` shim fails Hatari's `rl_filename_completion_function` check, so it
+  builds with the `fgets` fallback) the prompt goes to stderr, and completion is a trailing
+  `"> "` in the stderr buffer that grew past the size recorded at dispatch. A dispatch issued
+  *from a line handler* — the entry banner arming queued commands — ran mid-`processStderrData`,
+  while the buffer still held un-consumed lines; the recorded offset then pointed past bytes the
+  line loop was about to remove, no later trailing prompt ever compared as new, and every stop
+  after the entry stop went undetected (MainWindow sessions read as running forever on macOS CI).
+  Fixed by shifting the watermark down with each consumed line and consuming the prompt on fire,
+  so later stderr noise cannot re-fire it. Same latent class as the stale-prompt race above:
+  buffer offsets and pipe ordering are both unsafe to assume
 
 ### Verified by CI (executed on real runners)
 

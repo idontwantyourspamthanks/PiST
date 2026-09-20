@@ -414,14 +414,17 @@ PIST_CONTROL_PORT=9999 ./pist your-program.s
 
 Connect and send one command per line. Replies are a single line (`ok` or `error
 <message>`) or, for queries that return text, a block that ends with a line
-containing only `.`:
+containing only `.` — and a block-typed query returns its errors as a block too
+(the content begins `error `), so a reader waiting for the terminator always
+unblocks:
 
 ```
 open <path>        open a source file
-read               the current document: its path, then its text (block reply)
+read               the current document as a JSON object {path, text} (block reply)
 build              assemble; the reply arrives when the build finishes
 run                build and start the emulator; the reply arrives when it is running
 stop               stop the emulator session
+step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
 symbols [filter]   the build's symbols as a JSON array (block reply)
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)

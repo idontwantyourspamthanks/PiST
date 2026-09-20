@@ -167,6 +167,19 @@ bool ProgramLineMap::codeAddressFor(const QString &file, int line, quint32 *addr
     return false;
 }
 
+int ProgramLineMap::nextCodeLine(const QString &file, int line) const
+{
+    int best = 0;
+    for (const Module &module : m_modules) {
+        if (!LineMap::sameSource(module.sourceFile, file))
+            continue;
+        const int candidate = module.lines.nextCodeLine(file, line);
+        if (candidate && (!best || candidate < best))
+            best = candidate;
+    }
+    return best;
+}
+
 bool ProgramLineMap::lineFor(quint32 address, LineMap::Address *result) const
 {
     if (!m_resolved)

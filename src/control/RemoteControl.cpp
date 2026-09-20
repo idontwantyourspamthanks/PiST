@@ -232,9 +232,15 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
     QPointer<QTcpSocket> guarded(client);
 
     if (cmd == QLatin1String("open")) {
-        QMetaObject::invokeMethod(m_window, "openPath", Qt::DirectConnection,
-                                  Q_ARG(QString, arg));
-        reply(guarded, QStringLiteral("ok"));
+        // openPathQuiet, not openPath: the interactive path shows a modal on
+        // failure, and a modal nobody can dismiss (offscreen, or an agent on
+        // the other end) blocks this reply forever. A bare "ok" would tell
+        // the agent the IDE is showing a file it never opened.
+        bool opened = false;
+        QMetaObject::invokeMethod(m_window, "openPathQuiet", Qt::DirectConnection,
+                                  Q_RETURN_ARG(bool, opened), Q_ARG(QString, arg));
+        reply(guarded, opened ? QStringLiteral("ok")
+                              : QStringLiteral("error could not open %1").arg(arg));
 
     } else if (cmd == QLatin1String("build") || cmd == QLatin1String("run")) {
         // These are asynchronous: build compiles, run builds and then starts the
@@ -305,13 +311,16 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         if (line.length() > 4) {
             const QString dbg = line.mid(4);
             if (m_busy) {
-                reply(guarded, QStringLiteral("error busy: another command is still running"));
+                // Errors on block-framed verbs go back as blocks: a client
+                // waiting for the '.' terminator must never sit out its
+                // timeout on a plain error line.
+                replyBlock(guarded, QStringLiteral("error busy: another command is still running"));
                 return;
             }
             const QString response = blockingDebugCommand(dbg, 10000);
             replyBlock(guarded, response.isEmpty() ? QStringLiteral("(no response)") : response);
         } else {
-            reply(guarded, QStringLiteral("error usage: cmd <debugger command>"));
+            replyBlock(guarded, QStringLiteral("error usage: cmd <debugger command>"));
         }
 
     } else if (cmd == QLatin1String("readmem")) {
@@ -321,17 +330,17 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         bool lengthOk = false;
         const int length = arg.section(QLatin1Char(' '), 1, 1).toInt(&lengthOk);
         if (!parseValue(arg.section(QLatin1Char(' '), 0, 0), &address) || !lengthOk || length <= 0) {
-            reply(guarded, QStringLiteral("error usage: readmem <addr> <len>"));
+            replyBlock(guarded, QStringLiteral("error usage: readmem <addr> <len>"));
             return;
         }
         if (m_busy) {
-            reply(guarded, QStringLiteral("error busy: another command is still running"));
+            replyBlock(guarded, QStringLiteral("error busy: another command is still running"));
             return;
         }
         const QString dbg = QStringLiteral("m $%1 %2").arg(address, 0, 16).arg(length);
         const QString response = blockingDebugCommand(dbg, 10000);
         if (response.isEmpty()) {
-            reply(guarded, QStringLiteral("error no response (needs a stopped emulator session)"));
+            replyBlock(guarded, QStringLiteral("error no response (needs a stopped emulator session)"));
             return;
         }
         QJsonArray rows;
@@ -354,18 +363,18 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         if (!arg.isEmpty()) {
             quint32 address = 0;
             if (!parseValue(arg, &address)) {
-                reply(guarded, QStringLiteral("error usage: disasm [addr]"));
+                replyBlock(guarded, QStringLiteral("error usage: disasm [addr]"));
                 return;
             }
             dbg = QStringLiteral("d $%1").arg(address, 0, 16);
         }
         if (m_busy) {
-            reply(guarded, QStringLiteral("error busy: another command is still running"));
+            replyBlock(guarded, QStringLiteral("error busy: another command is still running"));
             return;
         }
         const QString response = blockingDebugCommand(dbg, 10000);
         if (response.isEmpty()) {
-            reply(guarded, QStringLiteral("error no response (needs a stopped emulator session)"));
+            replyBlock(guarded, QStringLiteral("error no response (needs a stopped emulator session)"));
             return;
         }
         MachineState state;
@@ -487,13 +496,19 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         replyBlock(guarded, m_window->stateSummary());
 
     } else if (cmd == QLatin1String("read")) {
-        // The current document as "path\ncontent". An agent needs to see what
-        // the IDE is showing, not guess from its own copy of the filesystem.
-        const QString snapshot = m_window->documentSnapshot();
-        if (snapshot.isEmpty())
-            reply(guarded, QStringLiteral("error no source file is open"));
+        // The current document as JSON {path, text}. JSON rather than raw
+        // source text: a block ends on a line holding only '.', and assembly
+        // source can legitimately contain one — echoing bytes into the block
+        // channel would truncate the read there. The error goes back as a
+        // block too, because a block-framed wait would otherwise sit out its
+        // timeout on a plain error line.
+        const QJsonObject document = m_window->documentJson();
+        if (document.isEmpty())
+            replyBlock(guarded, QStringLiteral("error no source file is open"));
         else
-            replyBlock(guarded, snapshot);
+            replyBlock(guarded, QString::fromUtf8(
+                QJsonDocument(document).toJson(QJsonDocument::Compact)));
+
 
     } else if (cmd == QLatin1String("statejson")) {
         replyBlock(guarded, QString::fromUtf8(
@@ -509,8 +524,37 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             QMetaObject::invokeMethod(m_window, "profileStart", Qt::DirectConnection);
             reply(guarded, QStringLiteral("ok"));
         } else if (sub == QLatin1String("stop")) {
-            QMetaObject::invokeMethod(m_window, "profileStop", Qt::DirectConnection);
-            reply(guarded, QStringLiteral("ok"));
+            // Block until the save is parsed: an agent that gets "ok" and
+            // immediately asks for results must never see the previous run's
+            // data (or nothing). Same nested-loop pattern as build/run.
+            bool started = false;
+            QMetaObject::invokeMethod(m_window, "profileStop", Qt::DirectConnection,
+                                      Q_RETURN_ARG(bool, started));
+            if (!started) {
+                reply(guarded, QStringLiteral(
+                    "error needs a stopped emulator session with a profile running"));
+                return;
+            }
+            QEventLoop loop;
+            QTimer timeout;
+            timeout.setSingleShot(true);
+            bool ready = false, ok = false;
+            QMetaObject::Connection c = connect(m_window, &MainWindow::profileResultsReady,
+                                                &loop, [&](bool parsed) {
+                ready = true;
+                ok = parsed;
+                loop.quit();
+            });
+            connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+            timeout.start(15000);
+            loop.exec();
+            disconnect(c);
+            if (!ready)
+                reply(guarded, QStringLiteral("error profile save timed out"));
+            else if (!ok)
+                reply(guarded, QStringLiteral("error profile save could not be parsed (see console)"));
+            else
+                reply(guarded, QStringLiteral("ok"));
         } else if (sub == QLatin1String("results")) {
             replyBlock(guarded, QString::fromUtf8(
                 QJsonDocument(m_window->profilerResultsJson()).toJson(QJsonDocument::Compact)));

@@ -68,6 +68,13 @@ public:
     bool codeAddressFor(const QString &file, int line, const SectionBases &bases,
                         quint32 *address) const;
 
+    /// First line at or after `line` in `file` whose entry is in an executable
+    /// section (text/code) — 0 when none. Base-independent: it reads the
+    /// listing entries only, so it works before a session supplies live bases.
+    /// A label on its own line emits no bytes, so resolving a code label to a
+    /// breakable line starts here, not at the definition line.
+    int nextCodeLine(const QString &file, int line) const;
+
     /// Nearest source line at or before `address`. Ignored if the address falls
     /// outside every known section.
     bool lineFor(quint32 address, const SectionBases &bases, Address *result) const;

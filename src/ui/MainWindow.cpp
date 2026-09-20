@@ -196,7 +196,7 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1280, 860);
 }
 
-CodeEditor *MainWindow::addEditorTab(const QString &path)
+CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
 {
     // A pristine tab (no path, no content, unmodified) is reused rather than
     // left behind as an empty first tab, matching how editors treat an
@@ -205,7 +205,8 @@ CodeEditor *MainWindow::addEditorTab(const QString &path)
         auto *only = qobject_cast<CodeEditor *>(m_tabs->widget(0));
         if (isPristineEditor(only)) {
             if (!only->loadFile(path)) {
-                QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
+                if (!quiet)
+                    QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
                 return nullptr;
             }
             updateTabTitle(only);
@@ -216,7 +217,8 @@ CodeEditor *MainWindow::addEditorTab(const QString &path)
     auto *editor = new CodeEditor(this);
     wireEditor(editor);
     if (!path.isEmpty() && !editor->loadFile(path)) {
-        QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
+        if (!quiet)
+            QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
         editor->deleteLater();
         return nullptr;
     }
@@ -226,7 +228,7 @@ CodeEditor *MainWindow::addEditorTab(const QString &path)
     return editor;
 }
 
-ImageEditor *MainWindow::addImageTab(const QString &path)
+ImageEditor *MainWindow::addImageTab(const QString &path, bool quiet)
 {
     // Opening an image into a single untouched assembly tab replaces it so the
     // session does not keep a stranded untitled .s.
@@ -244,8 +246,9 @@ ImageEditor *MainWindow::addImageTab(const QString &path)
     if (!path.isEmpty()) {
         const bool ok = isPimPath(path) ? editor->loadFile(path) : editor->importFile(path, false);
         if (!ok) {
-            QMessageBox::warning(this, tr("Open"),
-                                 tr("Could not open %1: %2").arg(path, editor->lastError()));
+            if (!quiet)
+                QMessageBox::warning(this, tr("Open"),
+                                     tr("Could not open %1: %2").arg(path, editor->lastError()));
             editor->deleteLater();
             return nullptr;
         }
@@ -1656,11 +1659,20 @@ void MainWindow::openFile()
         return;
     openPath(path);
 }
+bool MainWindow::openPath(const QString &path)
+{
+    return openPathImpl(path, /*quiet=*/false);
+}
 
-void MainWindow::openPath(const QString &path)
+bool MainWindow::openPathQuiet(const QString &path)
+{
+    return openPathImpl(path, /*quiet=*/true);
+}
+
+bool MainWindow::openPathImpl(const QString &path, bool quiet)
 {
     if (path.isEmpty())
-        return;
+        return false;
 
     // Already open documents are raised, not reloaded: the user's undo
     // history and cursor position in the existing tab are kept.
@@ -1669,10 +1681,10 @@ void MainWindow::openPath(const QString &path)
     } else if (ImageEditor *open = imageForPath(path)) {
         m_tabs->setCurrentWidget(open);
     } else if (isPimPath(path) || isImportableImagePath(path)) {
-        if (!addImageTab(path))
-            return;
-    } else if (!addEditorTab(path)) {
-        return;
+        if (!addImageTab(path, quiet))
+            return false;
+    } else if (!addEditorTab(path, quiet)) {
+        return false;
     }
 
     statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
@@ -1682,6 +1694,7 @@ void MainWindow::openPath(const QString &path)
 
     if (m_fileBrowser)
         m_fileBrowser->showFor(path);
+    return true;
 }
 
 QString MainWindow::extractedFloppyPath(const QString &imagePath, const QString &entryPath) const
@@ -2368,6 +2381,7 @@ void MainWindow::build()
     }
 
     m_problems->clear();
+    m_problemEntries.clear();
     m_log->appendPlainText(tr("--- build ---"));
 
     const QFileInfo info(source);
@@ -2471,9 +2485,14 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
             }
         }
 
+        const QString shownFile = file.isEmpty() ? tr("(build)") : file;
+        const int shownLine = line > 0 ? line : 0;
+        m_problemEntries.append({shownFile, shownLine, d.message,
+                                 d.severity == Diagnostic::Error});
+
         auto *item = new QTreeWidgetItem(m_problems);
-        item->setText(0, file.isEmpty() ? tr("(build)") : file);
-        item->setText(1, line > 0 ? QString::number(line) : QString());
+        item->setText(0, shownFile);
+        item->setText(1, shownLine > 0 ? QString::number(shownLine) : QString());
         item->setText(2, d.message);
         if (d.severity == Diagnostic::Error)
             item->setForeground(2, appearance::colors().error);
@@ -2893,12 +2912,12 @@ void MainWindow::profileStart()
                               "Profile Stop at the next breakpoint stop"));
 }
 
-void MainWindow::profileStop()
+bool MainWindow::profileStop()
 {
     if (!m_host->isStopped() || m_currentSessionDir.isEmpty()) {
         m_log->appendPlainText(tr("[profile] Profile Stop works from a stopped "
                                   "machine — the save command needs the debugger"));
-        return;
+        return false;
     }
     // The UAE disassembler core (the default with PiST's isolated config)
     // writes profile disassembly to the trace file instead of the save file,
@@ -2909,6 +2928,7 @@ void MainWindow::profileStop()
     m_host->command(QStringLiteral("setopt --disasm ext"));
     m_host->command(QStringLiteral("profile save %1/profile.txt").arg(m_currentSessionDir));
     m_host->command(QStringLiteral("profile off"));
+    return true;
 }
 
 void MainWindow::showProfileResults()
@@ -2917,6 +2937,7 @@ void MainWindow::showProfileResults()
     QString error;
     if (!parseProfile(m_currentSessionDir + QStringLiteral("/profile.txt"), &data, &error)) {
         m_log->appendPlainText(QStringLiteral("[profile] ") + error);
+        emit profileResultsReady(false);
         return;
     }
     m_profiler->setProfile(data, &m_programMap,
@@ -2931,6 +2952,7 @@ void MainWindow::showProfileResults()
                                .arg(data.totalCount)
                                .arg(data.totalCycles)
                                .arg(data.clockHz));
+    emit profileResultsReady(true);
 }
 
 void MainWindow::pauseSession()
@@ -3288,15 +3310,27 @@ bool MainWindow::toggleBreakpointAtLabel(const QString &name, QString *detail)
         // Breakpoints key by base name everywhere (gutter, arming, the
         // panel); the symbol table carries full paths.
         const QString base = QFileInfo(sym.file).fileName();
-        toggleBreakpoint(base, sym.line);
-        *detail = QStringLiteral("ok %1:%2").arg(base).arg(sym.line);
+        // A label written on its own line has no code there — `count:`
+        // followed by the instruction on the next line is the norm — and a
+        // breakpoint on that line can never fire. Resolve to the first code
+        // line at or after the definition; base-independent, so this holds
+        // before a session supplies live bases too. An `equ` has no code of
+        // its own and finds nothing, rather than resolving to whatever
+        // unrelated instruction follows it.
+        const int line = m_programMap.nextCodeLine(sym.file, sym.line);
+        if (!line) {
+            *detail = tr("error '%1' has no code at or after its definition "
+                         "(an equate cannot be broken on)").arg(name);
+            return false;
+        }
+        toggleBreakpoint(base, line);
+        *detail = QStringLiteral("ok %1:%2").arg(base).arg(line);
         // Tell the agent the address too, when the map can — it confirms the
         // label resolved to the instruction they meant.
-        if (m_programMap.isResolved()) {
-            quint32 address = 0;
-            if (m_programMap.codeAddressFor(sym.file, sym.line, &address))
-                *detail += QStringLiteral(" = 0x%1").arg(address, 8, 16, QLatin1Char('0'));
-        }
+        quint32 address = 0;
+        if (m_programMap.isResolved()
+            && m_programMap.codeAddressFor(sym.file, line, &address))
+            *detail += QStringLiteral(" = 0x%1").arg(address, 8, 16, QLatin1Char('0'));
         return true;
     }
     *detail = tr("error no symbol named '%1' (has the project been built?)").arg(name);
@@ -3328,11 +3362,14 @@ QJsonArray MainWindow::symbolsJson(const QString &filter) const
     return list;
 }
 
-QString MainWindow::documentSnapshot() const
+QJsonObject MainWindow::documentJson() const
 {
+    QJsonObject object;
     if (!m_editor || m_editor->filePath().isEmpty())
-        return QString();
-    return m_editor->filePath() + QLatin1Char('\n') + m_editor->toPlainText();
+        return object;
+    object.insert(QStringLiteral("path"), m_editor->filePath());
+    object.insert(QStringLiteral("text"), m_editor->toPlainText());
+    return object;
 }
 
 QJsonObject MainWindow::stateJson() const
@@ -3365,14 +3402,13 @@ QJsonObject MainWindow::stateJson() const
 QJsonArray MainWindow::problemsJson() const
 {
     QJsonArray list;
-    if (!m_problems)
-        return list;
-    for (int i = 0; i < m_problems->topLevelItemCount(); ++i) {
-        const QTreeWidgetItem *item = m_problems->topLevelItem(i);
+    for (const ProblemEntry &entry : m_problemEntries) {
         QJsonObject problem;
-        problem.insert(QStringLiteral("file"), item->text(0));
-        problem.insert(QStringLiteral("line"), item->text(1).toInt());
-        problem.insert(QStringLiteral("message"), item->text(2));
+        problem.insert(QStringLiteral("file"), entry.file);
+        problem.insert(QStringLiteral("line"), entry.line);
+        problem.insert(QStringLiteral("message"), entry.message);
+        problem.insert(QStringLiteral("severity"),
+                       entry.error ? QStringLiteral("error") : QStringLiteral("warning"));
         list.append(problem);
     }
     return list;
@@ -3388,12 +3424,16 @@ QJsonArray MainWindow::profilerResultsJson() const
     sorted.reserve(counts.size());
     for (auto it = counts.begin(); it != counts.end(); ++it)
         sorted.append({it.key(), it.value()});
-    std::sort(sorted.begin(), sorted.end(),
-              [](const auto &lhs, const auto &rhs) { return lhs.second > rhs.second; });
+    // Counts descend; ties break by line, the same order the profiler table
+    // and the gutter heat use, so all three presentations agree.
+    std::sort(sorted.begin(), sorted.end(), [](const auto &lhs, const auto &rhs) {
+        return lhs.second != rhs.second ? lhs.second > rhs.second : lhs.first < rhs.first;
+    });
     for (const auto &[line, count] : sorted) {
         QJsonObject entry;
         entry.insert(QStringLiteral("line"), line);
-        entry.insert(QStringLiteral("count"), QString::number(count));
+        // A number, not a string: agents do arithmetic on these.
+        entry.insert(QStringLiteral("count"), QJsonValue::fromVariant(count));
         list.append(entry);
     }
     return list;

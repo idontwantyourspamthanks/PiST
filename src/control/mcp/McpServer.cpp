@@ -395,6 +395,7 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_problems")
                      || outstanding.tool == QLatin1String("pist_profile_results")
                      || outstanding.tool == QLatin1String("pist_symbols")
+                     || outstanding.tool == QLatin1String("pist_read")
                      || outstanding.tool == QLatin1String("pist_readmem")
                      || outstanding.tool == QLatin1String("pist_disasm"))) {
         QJsonParseError parseError;
@@ -684,8 +685,8 @@ QJsonArray McpServer::tools()
 
     list.append(toolObject(
         QStringLiteral("pist_read"), QStringLiteral("Read the current document"),
-        QStringLiteral("The document the IDE is showing: its path on the first "
-                       "line, then its full text."),
+        QStringLiteral("The document the IDE is showing, as a JSON object {path, "
+                       "text} (also in structuredContent)."),
         empty, {}));
 
     list.append(toolObject(
@@ -704,9 +705,9 @@ QJsonArray McpServer::tools()
 
     list.append(toolObject(
         QStringLiteral("pist_profile_stop"), QStringLiteral("Stop profiling"),
-        QStringLiteral("Stop collecting. Answers when the stop is requested; the "
-                       "results arrive asynchronously, so call pist_profile_results "
-                       "after the machine stops."),
+        QStringLiteral("Stop collecting. Answers once the results are parsed and "
+                       "ready, so pist_profile_results immediately after is this "
+                       "run's data, never the previous run's."),
         empty, {}));
 
     list.append(toolObject(

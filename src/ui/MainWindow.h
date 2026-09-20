@@ -61,7 +61,12 @@ public:
 public slots:
     /// Open a source file by path, without a dialog. Used for the command line
     /// and for anything that already knows what it wants to open.
-    void openPath(const QString &path);
+    bool openPath(const QString &path);
+
+    /// openPath without the failure modal: the remote `open` verb drives this,
+    /// because a modal offscreen (or against an agent with nobody to dismiss
+    /// it) blocks the reply forever. Failure is reported by the return value.
+    bool openPathQuiet(const QString &path);
 
     /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
     void addMemoryPane(quint32 initialAddress = 0);
@@ -104,6 +109,10 @@ signals:
     /// answer a `build` command. Success carries no diagnostics; a failure is
     /// accompanied by the console text.
     void buildCompleted(bool success);
+    /// showProfileResults has populated the profiler (ok) or failed to parse
+    /// the save (!ok). The remote `profile stop` waits on this, so a results
+    /// call right after it can never see the previous run's data.
+    void profileResultsReady(bool ok);
 
     /// The emulator session started or stopped, so the remote-control interface
     /// can answer `run` when the session is actually up rather than merely
@@ -157,7 +166,7 @@ private slots:
     /// continue and zeroes it if any breakpoint is armed mid-run, so both
     /// actions refuse a running machine.
     void profileStart();
-    void profileStop();
+    bool profileStop();
     void showProfileResults();
     /// F4 / Shift+F4: step through the Problems pane without the mouse,
     /// wrapping, skipping diagnostics that carry no source line.
@@ -212,11 +221,12 @@ public:
     /// naming why (unknown name, or a position-less symbol). For the remote
     /// `breakpoint <label>` form.
     bool toggleBreakpointAtLabel(const QString &name, QString *detail);
-
-    /// The current editor document as "path\ncontent", for the remote `read`
-    /// verb — what the IDE is showing, so an agent needn't guess. Empty when
-    /// no source is open.
-    QString documentSnapshot() const;
+    /// The current editor document as JSON {path, text}, for the remote
+    /// `read` verb — what the IDE is showing, so an agent needn't guess.
+    /// JSON rather than raw text because the block protocol terminates on a
+    /// lone `.` line, which assembly source can legitimately contain.
+    /// Empty object when no source is open.
+    QJsonObject documentJson() const;
 
     /// Machine state as JSON: {running, stopped}, plus pc/d0-7/a0-7/sr when a
     /// register batch has landed. For the remote `statejson` verb, which the
@@ -324,11 +334,15 @@ private:
     /// Create and wire a text-editor tab, loading `path` into it; empty means a
     /// pristine tab. Reuses a pristine tab when there is exactly one.
     /// Returns null when the file could not be loaded.
-    CodeEditor *addEditorTab(const QString &path);
+    CodeEditor *addEditorTab(const QString &path, bool quiet = false);
 
     /// Create and wire an image-editor tab. `path` is a `.pim` or an importable
     /// ST still-image; empty means a new untitled sprite.
-    ImageEditor *addImageTab(const QString &path);
+    ImageEditor *addImageTab(const QString &path, bool quiet = false);
+
+    /// Shared body of openPath (interactive) and openPathQuiet (remote): the
+    /// quiet form returns false where the interactive one shows a modal.
+    bool openPathImpl(const QString &path, bool quiet);
 
     /// Connect one editor's signals. Runs for every editor tab created.
     void wireEditor(CodeEditor *editor);
@@ -449,6 +463,20 @@ private:
     class QMenu *m_viewMenu = nullptr;
     HatariCapabilities m_caps;
     IDebugBackend *m_host = nullptr;
+
+    /// The Problems pane's contents as structured data — file, line, message
+    /// and severity, with linker offsets already resolved to source lines, so
+    /// the remote `problems` verb reports what the pane shows rather than
+    /// re-deriving it (severity never reaches the widget; it is only a colour
+    /// there).
+    struct ProblemEntry
+    {
+        QString file;
+        int line = 0;
+        QString message;
+        bool error = false;
+    };
+    QList<ProblemEntry> m_problemEntries;
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;

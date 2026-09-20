@@ -281,6 +281,28 @@ private slots:
         ide.send("[{\"address\":\"0x00012596\",\"bytes\":\"7000\",\"text\":\"moveq #$00,d0\"}]\n.\n");
         reply = waitReply(4);
         QVERIFY(resultText(reply).contains(QLatin1String("moveq")));
+        // Pre-existing tools: an edit-boundary slip once deleted these
+        // mappings while the catalog (which pins only names) stayed green.
+        send(server.get(), 5, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("build"));
+        ide.send("ok\n");
+        reply = waitReply(5);
+        QVERIFY(!resultIsError(reply));
+
+        send(server.get(), 6, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_profile_stop")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("profile stop"));
+        ide.send("ok\n");
+        reply = waitReply(6);
+        QVERIFY(!resultIsError(reply));
+
+        send(server.get(), 7, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_stop")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("stop"));
+        ide.send("ok\n");
+        reply = waitReply(7);
+        QVERIFY(!resultIsError(reply));
     }
 
     void unknownToolAndMethodGetProtocolErrors()

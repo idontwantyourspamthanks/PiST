@@ -44,9 +44,10 @@ private slots:
     void secondBlockingCommandIsRefusedWhileOneWaits();
     void readWithNoDocumentErrors();
     void readReturnsTheOpenDocument();
+    void profileUsageErrorNamesTheSubverbs();
+    void openFailureIsAnErrorNotASilentOk();
     void statejsonIsAJsonObject();
     void problemsIsAJsonArray();
-    void profileUsageErrorNamesTheSubverbs();
     void symbolsAfterBuildListTheLabels();
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
@@ -331,11 +332,14 @@ void TstRemoteControl::readReturnsTheOpenDocument()
     file.close();
 
     QCOMPARE(roundTrip(s.client, "open " + path.toUtf8()), QStringLiteral("ok"));
-    const QString reply = roundTripBlock(s.client, "read");
-    // First line is the path, then the document text — the agent sees what
-    // the IDE shows, not its own guess at the filesystem.
-    QVERIFY(reply.startsWith(path));
-    QVERIFY(reply.contains(QStringLiteral("moveq\t#1,d0")));
+    QString reply = roundTripBlock(s.client, "read");
+    reply.chop(3); // block terminator, not content
+    // JSON {path, text}: a lone '.' line in the source must not truncate the
+    // read, which is why the document travels as JSON rather than raw text.
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8());
+    QCOMPARE(doc.object().value(QStringLiteral("path")).toString(), path);
+    QVERIFY(doc.object().value(QStringLiteral("text")).toString()
+                .contains(QStringLiteral("moveq\t#1,d0")));
 }
 
 void TstRemoteControl::statejsonIsAJsonObject()
@@ -378,6 +382,20 @@ void TstRemoteControl::profileUsageErrorNamesTheSubverbs()
     const QString reply = roundTrip(s.client, "profile sideways");
     QVERIFY(reply.startsWith(QStringLiteral("error")));
     QVERIFY(reply.contains(QStringLiteral("start|stop|results")));
+}
+
+void TstRemoteControl::openFailureIsAnErrorNotASilentOk()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // A path that cannot be opened is an error, answered promptly — the
+    // interactive open path shows a modal on failure, which offscreen would
+    // hang this reply forever (and did, before openPathQuiet existed).
+    const QString reply = exchange(s.client, "open /nonexistent/nothing.s", false);
+    QVERIFY2(reply.startsWith(QStringLiteral("error")),
+             qPrintable(QStringLiteral("reply: %1").arg(reply)));
 }
 
 void TstRemoteControl::symbolsAfterBuildListTheLabels()
@@ -436,10 +454,11 @@ void TstRemoteControl::breakpointByLabelResolvesAndToggles()
     QCOMPARE(roundTrip(s.client, "open " + source.toUtf8()), QStringLiteral("ok"));
     QCOMPARE(roundTrip(s.client, "build"), QStringLiteral("ok"));
 
-    // The reply names where the breakpoint landed — `count` is defined on
-    // line 3 of the fixture.
+    // The reply names where the breakpoint landed: `count` is defined on its
+    // own line (3), which emitted no code, so resolution lands on the moveq
+    // (4) — a breakpoint on the label's own line could never fire.
     const QString reply = roundTrip(s.client, "breakpoint count");
-    QVERIFY2(reply.startsWith(QStringLiteral("ok prog.s:3")),
+    QVERIFY2(reply.startsWith(QStringLiteral("ok prog.s:4")),
              qPrintable(QStringLiteral("reply: %1").arg(reply)));
 
     // An unknown name is an error, not a silent no-op.

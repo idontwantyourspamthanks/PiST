@@ -70,6 +70,13 @@ public:
     /// arming, which must not arm at a data/bss address (finding B10).
     bool codeAddressFor(const QString &file, int line, quint32 *address) const;
 
+    /// First line at or after `line` in `file` that emitted code, over every
+    /// module — 0 when none. Base-independent: it reads listing entries only,
+    /// so unlike codeAddressFor it works before a session supplies live bases.
+    /// Resolving a code label to a breakable line uses this; arming still
+    /// resolves the address with codeAddressFor.
+    int nextCodeLine(const QString &file, int line) const;
+
     /// Address back to source line, searching every module and picking the one
     /// whose span contains it.
     bool lineFor(quint32 address, LineMap::Address *result) const;

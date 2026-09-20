@@ -51,6 +51,8 @@ private slots:
     void symbolsAfterBuildListTheLabels();
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
+    void wrongTokenIsRejectedAndDropped();
+    void commandBeforeAuthIsRejected();
     void initTestCase();
 };
 
@@ -64,6 +66,8 @@ void TstRemoteControl::initTestCase()
                             .arg(QSettings().fileName(), QDir::tempPath())));
 }
 namespace {
+
+QString exchange(QTcpSocket &client, const QByteArray &command, bool block);
 
 /// A control client bound to one MainWindow, listening on an OS-assigned port.
 struct Session
@@ -90,7 +94,12 @@ struct Session
         client.connectToHost(QHostAddress::LocalHost, control.boundPort());
         timer.start(5000);
         loop.exec();
-        return client.state() == QAbstractSocket::ConnectedState;
+        if (client.state() != QAbstractSocket::ConnectedState)
+            return false;
+
+        // Every connection opens with the session token.
+        return exchange(client, "auth " + control.token().toUtf8(), false).trimmed()
+               == QLatin1String("ok");
     }
 };
 
@@ -276,6 +285,8 @@ void TstRemoteControl::cmdDisconnectDuringWaitSurvives()
     timer.start(5000);
     loop.exec();
     QVERIFY(next.state() == QAbstractSocket::ConnectedState);
+    QCOMPARE(exchange(next, "auth " + s.control.token().toUtf8(), false).trimmed(),
+             QStringLiteral("ok"));
     QVERIFY(roundTripBlock(next, "help").endsWith(QLatin1String("\n.\n")));
 }
 
@@ -471,22 +482,24 @@ void TstRemoteControl::readmemAndDisasmRefuseWithoutASession()
     QString error;
     QVERIFY2(s.start(&error), qPrintable(error));
 
-    // Usage is validated before any debugger round trip.
-    QVERIFY(roundTrip(s.client, "readmem $100").startsWith(QStringLiteral("error usage")));
-    QVERIFY(roundTrip(s.client, "disasm bogus").startsWith(QStringLiteral("error usage")));
+    // Usage is validated before any debugger round trip. These errors are
+    // block-framed like the verbs themselves; reading them line-wise would
+    // leave the terminator queued and desync the next exchange.
+    QVERIFY(roundTripBlock(s.client, "readmem $100").startsWith(QStringLiteral("error usage")));
+    QVERIFY(roundTripBlock(s.client, "disasm bogus").startsWith(QStringLiteral("error usage")));
 
     // With no emulator session the debugger never answers, so the verb's
     // nested wait runs its full 10 s timeout before the refusal — the point
     // is that the client IS answered then, not left hanging.
     QByteArray received;
     QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
     QObject::connect(&s.client, &QTcpSocket::readyRead, &loop, [&] {
         received += s.client.readAll();
-        if (received.contains('\n'))
+        if (received.endsWith("\n.\n")) // the refusal is block-framed too
             loop.quit();
     });
+    QTimer timer;
+    timer.setSingleShot(true);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     s.client.write("readmem $100 16\n");
     timer.start(15000);
@@ -494,6 +507,54 @@ void TstRemoteControl::readmemAndDisasmRefuseWithoutASession()
     const QString reply = QString::fromUtf8(received);
     QVERIFY2(reply.startsWith(QStringLiteral("error")),
              qPrintable(QStringLiteral("reply: %1").arg(reply)));
+}
+
+void TstRemoteControl::wrongTokenIsRejectedAndDropped()
+{
+    Session s;
+    QString error;
+    // listen() itself still succeeds; the gate is per-connection.
+    if (!s.control.listen(0, &error))
+        QFAIL(qPrintable(error));
+
+    QTcpSocket intruder;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&intruder, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    intruder.connectToHost(QHostAddress::LocalHost, s.control.boundPort());
+    timer.start(5000);
+    loop.exec();
+    QVERIFY(intruder.state() == QAbstractSocket::ConnectedState);
+
+    const QString reply = exchange(intruder, "auth not-the-token", false);
+    QCOMPARE(reply.trimmed(), QStringLiteral("error auth required"));
+    // And the connection is dropped: the socket does not stay usable.
+    QTRY_VERIFY(intruder.state() != QAbstractSocket::ConnectedState);
+}
+
+void TstRemoteControl::commandBeforeAuthIsRejected()
+{
+    Session s;
+    QString error;
+    if (!s.control.listen(0, &error))
+        QFAIL(qPrintable(error));
+
+    QTcpSocket intruder;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&intruder, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    intruder.connectToHost(QHostAddress::LocalHost, s.control.boundPort());
+    timer.start(5000);
+    loop.exec();
+    QVERIFY(intruder.state() == QAbstractSocket::ConnectedState);
+
+    // A command as the very first line gets the same refusal as a bad token.
+    const QString reply = exchange(intruder, "state", false);
+    QCOMPARE(reply.trimmed(), QStringLiteral("error auth required"));
 }
 
 void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()
@@ -515,6 +576,8 @@ void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()
         loop.exec();
     }
     QVERIFY(other.state() == QAbstractSocket::ConnectedState);
+    QCOMPARE(exchange(other, "auth " + s.control.token().toUtf8(), false).trimmed(),
+             QStringLiteral("ok"));
 
     // The second command has to be written while the first one's wait is
     // already running, so it goes out from a timer that fires inside that

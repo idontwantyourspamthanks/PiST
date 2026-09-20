@@ -128,6 +128,12 @@ void McpServer::ensureSubscribed()
     m_events->subscribe();
 }
 
+void McpServer::setToken(const QString &token)
+{
+    m_control->setToken(token);
+    m_events->setToken(token);
+}
+
 void McpServer::handleLine(const QByteArray &line)
 {
     const QByteArray trimmed = line.trimmed();

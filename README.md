@@ -412,11 +412,17 @@ environment variable:
 PIST_CONTROL_PORT=9999 ./pist your-program.s
 ```
 
-Connect and send one command per line. Replies are a single line (`ok` or `error
-<message>`) or, for queries that return text, a block that ends with a line
-containing only `.` — and a block-typed query returns its errors as a block too
-(the content begins `error `), so a reader waiting for the terminator always
-unblocks:
+The first line on every connection must be the session token, as `auth <token>`
+— on a shared machine, "localhost only" still means every local user. A
+listening IDE writes the port and token to a discovery file,
+`~/.local/share/PiST/PiST/control-port` (owner-read-only, as is its directory;
+same relative path on all platforms), so anything the user runs can find them
+and nobody else can. A wrong or missing token is answered `error auth required`
+and the connection is dropped. After that, send one command per line. Replies
+are a single line (`ok` or `error <message>`) or, for queries that return text,
+a block that ends with a line containing only `.` — and a block-typed query
+returns its errors as a block too (the content begins `error `), so a reader
+waiting for the terminator always unblocks:
 
 ```
 open <path>        open a source file
@@ -485,9 +491,10 @@ PIST_CONTROL_PORT=9999 pist-mcp             # the client launches this instead
 ```
 
 Point the client at the `pist-mcp` binary; the control port comes from `--port`
-or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it — and with
-neither, from the discovery file a `pist --control-port` session publishes, so
-a locally started IDE needs no configuration at all. The tools are
+or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it, and the session
+token from `--token` or `PIST_CONTROL_TOKEN` — and with none of those, both
+come from the discovery file a `pist --control-port` session publishes, so a
+locally started IDE needs no configuration at all. The tools are
 `pist_run`, `pist_build`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
@@ -503,11 +510,15 @@ newline-delimited JSON-RPC 2.0 — one message per line, never `Content-Length`
 headers, which belong to a different protocol — and logs to stderr only, since
 stdout is the transport.
 
-A minimal client in Python:
+A minimal client in Python, taking the address and token from the discovery
+file:
 
 ```python
 import socket
-s = socket.create_connection(("127.0.0.1", 9999))
+from pathlib import Path
+host, port, token = (Path.home()
+    / ".local/share/PiST/PiST/control-port").read_text().split()
+s = socket.create_connection((host, int(port)))
 def cmd(line, block=False):
     s.sendall((line + "\n").encode())
     if not block:
@@ -517,14 +528,15 @@ def cmd(line, block=False):
         out += s.recv(4096)
     return out.decode()
 
-print(cmd("run"))                       # ok, once the session is up
-cmd("screenshot /tmp/pist.png")         # save the window (including the embedded display)
-print(cmd("state", block=True))         # registers
+print(cmd(f"auth {token}"))              # ok — every connection opens this way
+print(cmd("run"))                        # ok, once the session is up
+cmd("screenshot /tmp/pist.png")          # save the window (including the embedded display)
+print(cmd("state", block=True))          # registers
 ```
 
-There is no authentication, so the socket is bound to localhost and nothing else;
-do not forward or expose it. It is a debugging and automation aid, not a general
-IPC mechanism. The `screenshot` command raises the window first, so it reflects
+The token makes "localhost only" safe on a shared machine; still do not forward
+or expose the socket. It is a debugging and automation aid, not a general IPC
+mechanism. The `screenshot` command raises the window first, so it reflects
 what is actually on screen.
 
 ## Licence

@@ -51,6 +51,12 @@ public:
     /// Listen on 127.0.0.1:<port>. Returns false and sets `error` on failure.
     bool listen(quint16 port, QString *error);
 
+    /// The per-session token a client must present as `auth <token>` before
+    /// anything else. Generated at listen(); published next to the port in
+    /// the discovery file (written owner-only, as is its directory), because
+    /// on a shared machine the port alone is discoverable by any user.
+    QString token() const { return m_token; }
+
     /// The port actually bound, for reporting to the user.
     quint16 boundPort() const;
 
@@ -98,6 +104,12 @@ private:
     /// Clients that asked for events. QPointer-like liveness is handled by
     /// dropping the entry in the socket's destroyed handler, so a socket can
     /// never be written to after Qt has deleted it.
+
+    /// Generated at listen(). See token().
+    QString m_token;
+    /// Connections that have not yet presented the token. Everything they say
+    /// before a valid `auth` line is rejected and drops the connection.
+    QSet<class QTcpSocket *> m_pendingAuth;
     QSet<class QTcpSocket *> m_watchers;
 
     /// A blocking command (build/run/cmd) is waiting on its nested loop. The

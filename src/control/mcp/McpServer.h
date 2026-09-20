@@ -46,6 +46,9 @@ public:
     /// the MCP handshake must still succeed so the client sees a server.
     McpServer(const QString &controlHost, quint16 controlPort, QObject *parent = nullptr);
 
+    /// The session token both connections present on connect (the IDE's
+    /// discovery file carries it). Forwarded to both ControlClients.
+    void setToken(const QString &token);
     /// Feed one line (without the newline) as received on stdin. A JSON syntax
     /// error produces a JSON-RPC parse-error reply, as the spec requires.
     void handleLine(const QByteArray &line);

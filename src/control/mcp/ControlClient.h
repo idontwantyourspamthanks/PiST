@@ -45,6 +45,10 @@ public:
     void setEndpoint(const QString &host, quint16 port);
     bool hasEndpoint() const { return m_port != 0; }
 
+    /// The session token the IDE expects as the first line (its discovery
+    /// file carries it). Empty means the server predates authentication.
+    void setToken(const QString &token) { m_token = token; }
+
     /// Queue a command. `block` says which reply framing to expect — it must
     /// match the verb (help/state/console/cmd are blocks, everything else a
     /// line), because only the caller knows the command it sent.
@@ -113,9 +117,10 @@ private:
     QStringList m_blockLines;
 
     bool m_subscribed = false;
+    /// The session token sent on connect, and whether its ack is outstanding.
+    QString m_token;
+    bool m_authAckPending = false;
     /// A `watch` sent and not yet acknowledged. Its reply is recognised by
-    /// order rather than content, so the flag must be checked before ordinary
-    /// reply handling.
     bool m_watchAckPending = false;
     /// A `watch` still to be sent, because the socket was not up yet.
     bool m_subscribeWhenConnected = false;

@@ -19,6 +19,8 @@
 #include <QStandardPaths>
 #include <QGuiApplication>
 #include <QPointer>
+#include <QTimer>
+#include <QUuid>
 #include <QScreen>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -84,20 +86,38 @@ bool RemoteControl::listen(quint16 port, QString *error)
 {
     m_server = new QTcpServer(this);
     connect(m_server, &QTcpServer::newConnection, this, &RemoteControl::onNewConnection);
-    // Localhost only. The protocol has no authentication, so it must not be
-    // reachable from another machine.
+    // Localhost only, but on a shared machine that still means every local
+    // user: the per-session token is what keeps "reachable" from meaning
+    // "drivable by anyone who can read the port number".
     if (!m_server->listen(QHostAddress::LocalHost, port)) {
         if (error)
             *error = m_server->errorString();
         return false;
     }
 
-    // Publish the address for zero-configuration shims.
-    m_publishedAddress = QStringLiteral("127.0.0.1 %1").arg(m_server->serverPort());
-    QDir().mkpath(QFileInfo(discoveryFilePath()).absolutePath());
+    m_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    // Publish the address for zero-configuration shims — but only for a port
+    // the caller chose. Tests bind port 0 (OS-assigned) by the hundred; they
+    // must not overwrite a real IDE's discovery file.
+    if (port == 0)
+        return true;
+    m_publishedAddress = QStringLiteral("127.0.0.1 %1 %2")
+                             .arg(m_server->serverPort())
+                             .arg(m_token);
+    const QString dirPath = QFileInfo(discoveryFilePath()).absolutePath();
+    QDir().mkpath(dirPath);
+    // Owner-only, directory and file: the token is the credential, and a
+    // world-readable credential is no credential.
+    QFile::setPermissions(dirPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                       | QFileDevice::ExeOwner);
     QFile file(discoveryFilePath());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(m_publishedAddress.toUtf8() + '\n');
+        file.close();
+        QFile::setPermissions(discoveryFilePath(),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
     return true;
 }
 
@@ -112,12 +132,15 @@ void RemoteControl::onNewConnection()
         client->setParent(this);
         connect(client, &QTcpSocket::readyRead, this, [this, client] { onReadyRead(client); });
         connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
+        // Unauthenticated until it presents the token (see onReadyRead).
+        m_pendingAuth.insert(client);
         // A watcher that disconnects must leave the set, or publishEvent would
         // write to a deleted socket. deleteLater is the only deletion path, and
         // `destroyed` is emitted from it, so removing on destroyed — rather than
         // on disconnected — also covers a socket deleted for any other reason.
         connect(client, &QObject::destroyed, this, [this, client] {
             m_watchers.remove(client);
+            m_pendingAuth.remove(client);
         });
     }
 }
@@ -164,8 +187,22 @@ void RemoteControl::onReadyRead(QTcpSocket *client)
     // socket (QAbstractSocketPrivate::canReadNotification after the
     // emission). One loop hop later there is no socket dispatch on the
     // stack; the QPointer covers the gap between queuing and running.
-    while (client->canReadLine())
-        queueCommand(client, QString::fromUtf8(client->readLine()).trimmed());
+    while (client->canReadLine()) {
+        const QString line = QString::fromUtf8(client->readLine()).trimmed();
+        // The first line a connection says must be the token. Anything else —
+        // or the wrong token — is an error and the end of the connection.
+        if (m_pendingAuth.contains(client)) {
+            m_pendingAuth.remove(client);
+            if (line == QLatin1String("auth ") + m_token) {
+                reply(client, QStringLiteral("ok"));
+            } else {
+                reply(client, QStringLiteral("error auth required"));
+                client->disconnectFromHost();
+            }
+            continue;
+        }
+        queueCommand(client, line);
+    }
 }
 
 void RemoteControl::queueCommand(QTcpSocket *client, const QString &line)

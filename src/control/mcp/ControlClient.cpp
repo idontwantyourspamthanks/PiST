@@ -46,6 +46,12 @@ void ControlClient::connectNow()
         if (m_connectTimer)
             m_connectTimer->stop();
         emit connectionChanged(true);
+        // The token goes first, always: the server rejects anything said
+        // before it and drops the connection.
+        if (!m_token.isEmpty()) {
+            m_authAckPending = true;
+            sendRaw(QStringLiteral("auth ") + m_token);
+        }
         // A subscription asked for before the socket existed goes out now, so
         // an event connection is established without the shim having to retry.
         if (m_subscribeWhenConnected) {
@@ -182,6 +188,15 @@ void ControlClient::dispatchLine(const QByteArray &rawLine)
         const QString detail = rest.section(QLatin1Char(' '), 1).trimmed();
         if (!name.isEmpty())
             emit event(name, detail);
+        return;
+    }
+
+    // The authentication ack arrives before any other reply, so it is checked
+    // first — before the watch ack, which follows it on an event connection.
+    if (m_authAckPending) {
+        m_authAckPending = false;
+        if (line != QLatin1String("ok"))
+            failEverything(QStringLiteral("authentication rejected by PiST: ") + line);
         return;
     }
 

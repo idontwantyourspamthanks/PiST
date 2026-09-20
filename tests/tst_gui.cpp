@@ -621,7 +621,8 @@ void TstGui::remoteControlWatchersSeeSessionEvents()
     QTcpSocket watcher;
     watcher.connectToHost(QHostAddress::LocalHost, control.boundPort());
     QVERIFY(watcher.waitForConnected(3000));
-    watcher.write("watch\n");
+    // One write is fine: the server reads line-wise, auth first.
+    watcher.write("auth " + control.token().toUtf8() + "\nwatch\n");
     // waitForReadyRead does not spin the window's event loop, where the
     // server runs — poll in short slices instead of one long wait.
     QString events;

@@ -31,7 +31,7 @@ namespace {
 /// discovery file a listening IDE publishes (RemoteControl::discoveryFilePath)
 /// is the zero-configuration answer.
 quint16 controlPort(const QCommandLineParser &parser, const QCommandLineOption &option,
-                    QString *error)
+                    QString *discoveryToken, QString *error)
 {
     QString text = parser.value(option);
     if (text.isEmpty())
@@ -42,8 +42,10 @@ quint16 controlPort(const QCommandLineParser &parser, const QCommandLineOption &
         if (file.open(QIODevice::ReadOnly)) {
             const QStringList parts = QString::fromUtf8(file.readAll()).trimmed()
                                           .split(QLatin1Char(' '), Qt::SkipEmptyParts);
-            if (parts.size() == 2)
+            if (parts.size() >= 2)
                 text = parts.at(1);
+            if (parts.size() >= 3)
+                *discoveryToken = parts.at(2);
         }
     }
     if (text.isEmpty()) {
@@ -92,16 +94,29 @@ int main(int argc, char *argv[])
         QStringLiteral("Host to reach PiST on (default 127.0.0.1)."),
         QStringLiteral("host"), QStringLiteral("127.0.0.1"));
     parser.addOption(hostOption);
+    QCommandLineOption tokenOption(
+        QStringLiteral("token"),
+        QStringLiteral("Session token the IDE expects (or set PIST_CONTROL_TOKEN; "
+                       "the discovery file carries it)."),
+        QStringLiteral("token"));
+    parser.addOption(tokenOption);
     parser.process(app);
 
+    QString discoveryToken;
     QString configError;
-    const quint16 port = controlPort(parser, portOption, &configError);
+    const quint16 port = controlPort(parser, portOption, &discoveryToken, &configError);
     if (!configError.isEmpty())
         fprintf(stderr, "pist-mcp: %s\n", qPrintable(configError));
 
     const QString host = parser.value(hostOption);
+    QString token = parser.value(tokenOption);
+    if (token.isEmpty())
+        token = qEnvironmentVariable("PIST_CONTROL_TOKEN");
+    if (token.isEmpty())
+        token = discoveryToken;
 
     McpServer server(host, port);
+    server.setToken(token);
 
     // stdout is the MCP transport: exactly one JSON object per line, nothing
     // else. Written through stdio rather than QTextStream so the flush is

@@ -464,7 +464,15 @@ void EmulatorHost::dispatchNext()
     m_promptTarget = m_promptCount;
     m_current.raw.clear();
     m_current.response.clear();
-    m_settleTimer->stop();
+    // A trailing prompt already in the buffer belongs to the idle state the
+    // debugger is sitting at, not to this command — and it must not survive
+    // into the completion check: on builds whose prompt lives on stderr
+    // (macOS readline puts it there, not on stdout), every command leaves the
+    // buffer ending in "> " again, so a size-only comparison can never tell
+    // the new prompt from the stale one. Chopping it makes any later trailing
+    // prompt provably new.
+    if (stderrEndsWithPrompt(m_stderrBuffer))
+        m_stderrBuffer.chop(2);
     m_stderrAtDispatch = m_stderrBuffer.size();
 
     m_process->write(m_current.text.toUtf8() + "\n");

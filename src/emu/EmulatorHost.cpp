@@ -739,6 +739,10 @@ void EmulatorHost::dumpRegisters()
 void EmulatorHost::onPrompt()
 {
     m_promptCount += 1;
+    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
+    emit logLine(QStringLiteral("[diag] prompt: inflight=%1 stopped=%2 owed=%3 count=%4 target=%5")
+                     .arg(m_haveCurrent).arg(m_stopped).arg(m_owedPrompts)
+                     .arg(m_promptCount).arg(m_promptTarget));
 
     // A prompt for a command that already timed out is not a completion: the
     // command's slot is gone, so this prompt is simply swallowed. Otherwise the

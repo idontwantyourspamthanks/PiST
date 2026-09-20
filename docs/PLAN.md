@@ -904,13 +904,15 @@ install cleanly.** This is the first genuine cross-platform evidence in the
 project; everything before it was either Linux-only or read from source.
 
 - **gcc, clang and MSVC all compile the tree with no warnings**, and the test
-  suites pass on each. The emulator suites now run on all three platforms:
-  Linux and macOS build the pinned 2.6.1 and the hrdb-main fork from source;
-  Windows runs the native transport against the official stock 2.6.1 binary
-  and HRDB against an MSYS2 ucrt64 build of the fork. The tests that need a
-  capability a build lacks (the control socket on stock Windows Hatari)
-  report as *skipped*, never as passed, so a green run does not overstate
-  what was verified.
+  suites pass on each. The emulator suites run on Linux and macOS (both build
+  the pinned 2.6.1 and the hrdb-main fork from source, both transports
+  exercised). Windows runs them no longer: the official stock build is a
+  GUI-subsystem binary that never reaches the debugger over pipes, and the
+  MSYS2 ucrt64 fork build fails the same suites there too — so the Windows leg
+  unit-tests only, and the Windows-bundled fork ships as experimental. The
+  tests that need a capability a build lacks (the control socket on stock
+  Windows Hatari) report as *skipped*, never as passed, so a green run does
+  not overstate what was verified.
 - **`cmake --install` works on all three**, and the installed binary starts from a
   staged prefix — which is what `CMAKE_INSTALL_RPATH_USE_LINK_PATH` provides. The
   release archives go further: macdeployqt/windeployqt/linuxdeploy make each

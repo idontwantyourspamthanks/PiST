@@ -93,19 +93,19 @@ jobs:
             # only runs from inside Hatari.app, which is what used to park
             # this leg.
             emulator: true
-          # No MSYS2 Hatari package exists, so the native backend is exercised
-          # against the official pinned Windows binary (downloaded below) and
-          # the HRDB transport against the fork, built here with MSYS2. The
-          # stock build has no control socket (POSIX-only), so the socket-
-          # gated tests skip themselves by capability probe — honest, since
-          # that is exactly what a stock-Hatari Windows session can do.
+          # The emulator suite was tried here (0.6.2 branch history): the
+          # official Windows build is a GUI-subsystem binary whose debugger
+          # never answers over pipes — sessions never reach the entry stop —
+          # and the MSYS2-built fork fails the same way. Untestable without a
+          # real Windows machine, so the leg builds and unit-tests only, and
+          # the Windows-bundled fork in release archives is experimental.
           - name: Windows (MSVC)
             os: windows-latest
             vasm: false
             # The shipping Windows assembler and linker (cross-built above)
             # are run natively here.
             windowsVasm: true
-            emulator: true
+            emulator: false
 
     steps:
       - uses: actions/checkout@v4

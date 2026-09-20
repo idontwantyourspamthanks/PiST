@@ -67,12 +67,13 @@ Projects keep their settings — include paths, defines, target CPU, machine,
 ROM, RAM and disk images — in a small JSON file beside the source.
 
 ### Known limitations
-
-- **CI exercises the emulator integration on all three platforms** — Linux and
-  macOS build the pinned Hatari 2.6.1 and the hrdb-main fork from source;
-  Windows runs the native transport against the official stock 2.6.1 binary and
-  HRDB against an MSYS2 fork build. Reports from real machines remain welcome
-  all the same.
+- **CI exercises the emulator integration on Linux and macOS** (both build the
+  pinned Hatari 2.6.1 and the hrdb-main fork from source and run the emulator
+  suites against both transports). Windows builds and unit-tests only: the
+  official Windows Hatari is a GUI-subsystem binary whose debugger never
+  answers over pipes, so the bundled Windows emulator — the same fork, built
+  with MSYS2 ucrt64 — is **experimental**; reports from real Windows machines
+  are particularly welcome.
 - **A user-installed *stock* Hatari on Windows** still cannot pause, change
   breakpoints while running, or swap disks at runtime — Hatari compiles its
   control channel only on POSIX systems. The bundled fork is unaffected (HRDB

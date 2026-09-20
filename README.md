@@ -465,13 +465,6 @@ The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
 
 `pist-mcp` is a small companion program that exposes the same capability over
 [Model Context Protocol](https://modelcontextprotocol.io) on stdio, so an MCP
-client — Claude, Cursor and the like — discovers the IDE as a native tool set
-rather than being taught a line protocol:
-
-```sh
-pist --control-port 9999 your-program.s &   # start the IDE with control on
-PIST_CONTROL_PORT=9999 pist-mcp             # the client launches this instead
-```
 
 Point the client at the `pist-mcp` binary; the control port comes from `--port`
 or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it. The tools are
@@ -525,25 +518,26 @@ follow.
 ## Known limitations
 
 Stated plainly, because an early release should not imply more than it does:
-- **The emulator integration is exercised in CI on all three platforms.** Linux
-  and macOS build the pinned Hatari 2.6.1 *and* the hrdb-main fork from source
-  and run the emulator suites against both transports; Windows runs the native
-  transport against the official stock 2.6.1 binary and HRDB against an MSYS2
-  build of the fork (the stock Windows build has no control socket, so the
-  socket-gated tests skip there by capability probe — exactly what a stock
-  Windows session can do). Bug reports from real machines remain useful.
+- **The emulator integration is exercised in CI on Linux and macOS.** Both
+  build the pinned Hatari 2.6.1 *and* the hrdb-main fork from source and run
+  the emulator suites against both transports. Windows builds and unit-tests
+  only: the official Windows Hatari is a GUI-subsystem binary whose debugger
+  never answers over pipes, and our MSYS2 build of the fork does not get the
+  suite to a session either — so the Windows-bundled fork is **experimental**,
+  and bug reports from real Windows machines are especially useful.
 - **On stock Hatari, pause, changing breakpoints while running, and swapping disks at runtime
-  do not work on Windows.** Hatari compiles its control channel only on POSIX systems.
-  Breaking at entry, on exceptions, and at source-line breakpoints all work. The bundled
-  emulator is not affected: the Linux AppImage and the Windows archive both carry the
-  hrdb-main fork, whose TCP transport covers all three. See
+  do not work on Windows.** Hatari compiles its control channel only on POSIX systems, and
+  the official Windows build is a GUI-subsystem binary whose debugger does not answer over
+  pipes at all (see the bullet above). The bundled emulator is the hrdb-main fork — marked
+  experimental on Windows until reports from real machines come in. See
   [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix that would cover stock Hatari.
 - **Installers and plain archives** — Linux gets an AppImage plus deb and RPM packages,
   macOS a dmg and a tarball, Windows an MSI and a zip.
 - **Hatari is bundled in the Linux AppImage and the Windows archive.** Both copies are the
   hrdb-main fork (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified
   from a checksum-pinned commit tarball — the Windows one built with MSYS2 ucrt64 with its
-  runtime DLLs beside the exe — so they debug with nothing else installed, over HRDB. The
+  runtime DLLs beside the exe, and **experimental** there until real-machine reports confirm
+  it — so they debug with nothing else installed, over HRDB. The
   macOS archive does not include it (`brew install hatari` is 2.6.1), and neither does a
   source build. Avoid distribution packages on Linux: Ubuntu 22.04 ships 2.3.1 and 24.04
   ships 2.4.1, whose truncated debugger responses break source-line debugging, while the

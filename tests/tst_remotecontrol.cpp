@@ -47,6 +47,9 @@ private slots:
     void statejsonIsAJsonObject();
     void problemsIsAJsonArray();
     void profileUsageErrorNamesTheSubverbs();
+    void symbolsAfterBuildListTheLabels();
+    void breakpointByLabelResolvesAndToggles();
+    void readmemAndDisasmRefuseWithoutASession();
     void initTestCase();
 };
 
@@ -375,6 +378,103 @@ void TstRemoteControl::profileUsageErrorNamesTheSubverbs()
     const QString reply = roundTrip(s.client, "profile sideways");
     QVERIFY(reply.startsWith(QStringLiteral("error")));
     QVERIFY(reply.contains(QStringLiteral("start|stop|results")));
+}
+
+void TstRemoteControl::symbolsAfterBuildListTheLabels()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot")).isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.path() + QStringLiteral("/prog.s");
+    {
+        QFile f(source);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("_start:\n\trts\ncount:\n\tmoveq #1,d0\n");
+    }
+
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QCOMPARE(roundTrip(s.client, "open " + source.toUtf8()), QStringLiteral("ok"));
+    QCOMPARE(roundTrip(s.client, "build"), QStringLiteral("ok"));
+
+    QString reply = roundTripBlock(s.client, "symbols");
+    reply.chop(3);
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8());
+    QVERIFY(doc.isArray());
+    QStringList names;
+    for (const QJsonValue &entry : doc.array())
+        names.append(entry.toObject().value(QStringLiteral("name")).toString());
+    QVERIFY(names.contains(QStringLiteral("count")));
+
+    // The filter narrows by name, case-insensitively.
+    reply = roundTripBlock(s.client, "symbols COU");
+    reply.chop(3);
+    const QJsonDocument filtered = QJsonDocument::fromJson(reply.toUtf8());
+    QCOMPARE(filtered.array().size(), 1);
+}
+
+void TstRemoteControl::breakpointByLabelResolvesAndToggles()
+{
+    if (QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot")).isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.path() + QStringLiteral("/prog.s");
+    {
+        QFile f(source);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("_start:\n\trts\ncount:\n\tmoveq #1,d0\n");
+    }
+
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QCOMPARE(roundTrip(s.client, "open " + source.toUtf8()), QStringLiteral("ok"));
+    QCOMPARE(roundTrip(s.client, "build"), QStringLiteral("ok"));
+
+    // The reply names where the breakpoint landed — `count` is defined on
+    // line 3 of the fixture.
+    const QString reply = roundTrip(s.client, "breakpoint count");
+    QVERIFY2(reply.startsWith(QStringLiteral("ok prog.s:3")),
+             qPrintable(QStringLiteral("reply: %1").arg(reply)));
+
+    // An unknown name is an error, not a silent no-op.
+    QVERIFY(roundTrip(s.client, "breakpoint nosuch").startsWith(QStringLiteral("error")));
+}
+
+void TstRemoteControl::readmemAndDisasmRefuseWithoutASession()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // Usage is validated before any debugger round trip.
+    QVERIFY(roundTrip(s.client, "readmem $100").startsWith(QStringLiteral("error usage")));
+    QVERIFY(roundTrip(s.client, "disasm bogus").startsWith(QStringLiteral("error usage")));
+
+    // With no emulator session the debugger never answers, so the verb's
+    // nested wait runs its full 10 s timeout before the refusal — the point
+    // is that the client IS answered then, not left hanging.
+    QByteArray received;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&s.client, &QTcpSocket::readyRead, &loop, [&] {
+        received += s.client.readAll();
+        if (received.contains('\n'))
+            loop.quit();
+    });
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    s.client.write("readmem $100 16\n");
+    timer.start(15000);
+    loop.exec();
+    const QString reply = QString::fromUtf8(received);
+    QVERIFY2(reply.startsWith(QStringLiteral("error")),
+             qPrintable(QStringLiteral("reply: %1").arg(reply)));
 }
 
 void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()

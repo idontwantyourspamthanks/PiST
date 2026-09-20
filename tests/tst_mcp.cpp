@@ -146,6 +146,7 @@ class TstMcp : public QObject
     }
 
 private slots:
+
     void initializeReportsTheBuildVersion()
     {
         auto server = makeServer(0);
@@ -187,11 +188,12 @@ private slots:
         // workflow breaks without anything here noticing.
         QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
                                      "pist_cmd", "pist_console", "pist_continue",
-                                     "pist_open", "pist_problems", "pist_profile_results",
-                                     "pist_profile_start", "pist_profile_stop",
-                                     "pist_read", "pist_run", "pist_screenshot",
-                                     "pist_setmem", "pist_setreg", "pist_state",
-                                     "pist_step", "pist_stepover", "pist_stop",
+                                     "pist_disasm", "pist_open", "pist_problems",
+                                     "pist_profile_results", "pist_profile_start",
+                                     "pist_profile_stop", "pist_read", "pist_readmem",
+                                     "pist_run", "pist_screenshot", "pist_setmem",
+                                     "pist_setreg", "pist_state", "pist_step",
+                                     "pist_stepover", "pist_stop", "pist_symbols",
                                      "pist_watch", "pist_watchpoint"}));
     }
 
@@ -228,6 +230,57 @@ private slots:
         reply = waitReply(3);
         QCOMPARE(resultText(reply), QStringLiteral("error not stopped"));
         QVERIFY(resultIsError(reply));
+    }
+
+    void newToolMappingsAndStructuredReplies()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        // symbols: a filtered query maps to the verb, and a JSON array answer
+        // comes back wrapped in structuredContent.
+        QJsonObject args;
+        args.insert(QStringLiteral("filter"), QStringLiteral("cou"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_symbols"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("symbols cou"));
+        ide.send("[{\"name\":\"count\",\"file\":\"hello.s\",\"line\":22}]\n.\n");
+        QJsonObject reply = waitReply(1);
+        const QJsonArray items = reply.value(QStringLiteral("result")).toObject()
+                                     .value(QStringLiteral("structuredContent")).toObject()
+                                     .value(QStringLiteral("items")).toArray();
+        QCOMPARE(items.size(), 1);
+        QCOMPARE(items.first().toObject().value(QStringLiteral("name")).toString(),
+                 QStringLiteral("count"));
+
+        // breakpoint by label goes to the label form of the verb.
+        args = {};
+        args.insert(QStringLiteral("label"), QStringLiteral("count"));
+        send(server.get(), 2, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_breakpoint"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("breakpoint count"));
+        ide.send("ok hello.s:22 = 0x000125a8\n");
+        reply = waitReply(2);
+        QVERIFY(!resultIsError(reply));
+
+        // readmem and disasm map with their arguments in the debugger's shape.
+        args = {};
+        args.insert(QStringLiteral("address"), QStringLiteral("$12596"));
+        args.insert(QStringLiteral("length"), QStringLiteral("16"));
+        send(server.get(), 3, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_readmem"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("readmem $12596 16"));
+        ide.send("[{\"address\":\"0x00012596\",\"bytes\":\"7000\"}]\n.\n");
+        reply = waitReply(3);
+        QVERIFY(resultText(reply).contains(QLatin1String("7000")));
+
+        send(server.get(), 4, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_disasm")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("disasm"));
+        ide.send("[{\"address\":\"0x00012596\",\"bytes\":\"7000\",\"text\":\"moveq #$00,d0\"}]\n.\n");
+        reply = waitReply(4);
+        QVERIFY(resultText(reply).contains(QLatin1String("moveq")));
     }
 
     void unknownToolAndMethodGetProtocolErrors()

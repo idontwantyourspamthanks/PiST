@@ -6,6 +6,9 @@
 
 #include "ui/MainWindow.h"
 #include "ui/EmbedX11.h"
+#include "emu/HatariTextParse.h"
+#include "emu/MachineState.h"
+#include "emu/MemoryDump.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -192,6 +195,32 @@ void RemoteControl::replyBlock(QTcpSocket *client, const QString &text)
     client->write(".\n");
 }
 
+QString RemoteControl::blockingDebugCommand(const QString &command, int timeoutMs)
+{
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QString response;
+    // Match on the command text: the window routes debugger responses through
+    // one signal, and the hardware view's own `info <subject>` refresh uses it
+    // too, so an unrelated response must not be delivered to this waiter.
+    QMetaObject::Connection c = connect(m_window, &MainWindow::debugCommandFinished,
+                                        &loop, [&](const QString &finished, const QString &r) {
+        if (finished != command)
+            return;
+        response = r;
+        loop.quit();
+    });
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(timeoutMs);
+    m_busy = true;
+    m_window->debugCommand(command);
+    loop.exec();
+    m_busy = false;
+    disconnect(c);
+    return response;
+}
+
 void RemoteControl::execute(QTcpSocket *client, const QString &line)
 {
     const QString cmd = line.section(QLatin1Char(' '), 0, 0);
@@ -274,37 +303,90 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         // An arbitrary debugger command, passed through verbatim (e.g. "info mfp").
         // Only meaningful while stopped. The response comes back as a block.
         if (line.length() > 4) {
+            const QString dbg = line.mid(4);
             if (m_busy) {
                 reply(guarded, QStringLiteral("error busy: another command is still running"));
                 return;
             }
-            const QString dbg = line.mid(4);
-            QEventLoop loop;
-            QTimer timeout;
-            timeout.setSingleShot(true);
-            QString response;
-            // Match on the command text: the window routes debugger responses
-            // through one signal, and the hardware view's own `info <subject>`
-            // refresh uses it too, so an unrelated response must not be
-            // delivered to this waiter.
-            QMetaObject::Connection c = connect(m_window, &MainWindow::debugCommandFinished,
-                                                &loop, [&](const QString &command, const QString &r) {
-                if (command != dbg)
-                    return;
-                response = r;
-                loop.quit();
-            });
-            connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-            timeout.start(10000);
-            m_busy = true;
-            m_window->debugCommand(dbg);
-            loop.exec();
-            m_busy = false;
-            disconnect(c);
+            const QString response = blockingDebugCommand(dbg, 10000);
             replyBlock(guarded, response.isEmpty() ? QStringLiteral("(no response)") : response);
         } else {
             reply(guarded, QStringLiteral("error usage: cmd <debugger command>"));
         }
+
+    } else if (cmd == QLatin1String("readmem")) {
+        // readmem <addr> <len>: a JSON array of rows, so an agent reads bytes
+        // instead of parsing the memdump text. Needs a stopped session.
+        quint32 address = 0;
+        bool lengthOk = false;
+        const int length = arg.section(QLatin1Char(' '), 1, 1).toInt(&lengthOk);
+        if (!parseValue(arg.section(QLatin1Char(' '), 0, 0), &address) || !lengthOk || length <= 0) {
+            reply(guarded, QStringLiteral("error usage: readmem <addr> <len>"));
+            return;
+        }
+        if (m_busy) {
+            reply(guarded, QStringLiteral("error busy: another command is still running"));
+            return;
+        }
+        const QString dbg = QStringLiteral("m $%1 %2").arg(address, 0, 16).arg(length);
+        const QString response = blockingDebugCommand(dbg, 10000);
+        if (response.isEmpty()) {
+            reply(guarded, QStringLiteral("error no response (needs a stopped emulator session)"));
+            return;
+        }
+        QJsonArray rows;
+        for (const MemoryRow &row : parseMemoryDump(response)) {
+            QJsonObject object;
+            object.insert(QStringLiteral("address"),
+                          QStringLiteral("0x%1").arg(row.address, 8, 16, QLatin1Char('0')));
+            QString bytes;
+            for (const quint8 byte : row.bytes)
+                bytes += QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0'));
+            object.insert(QStringLiteral("bytes"), bytes);
+            rows.append(object);
+        }
+        replyBlock(guarded, QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("disasm")) {
+        // disasm [addr]: the debugger's disassembly as JSON rows
+        // {address, bytes, text} — from the PC when no address is given.
+        QString dbg = QStringLiteral("d");
+        if (!arg.isEmpty()) {
+            quint32 address = 0;
+            if (!parseValue(arg, &address)) {
+                reply(guarded, QStringLiteral("error usage: disasm [addr]"));
+                return;
+            }
+            dbg = QStringLiteral("d $%1").arg(address, 0, 16);
+        }
+        if (m_busy) {
+            reply(guarded, QStringLiteral("error busy: another command is still running"));
+            return;
+        }
+        const QString response = blockingDebugCommand(dbg, 10000);
+        if (response.isEmpty()) {
+            reply(guarded, QStringLiteral("error no response (needs a stopped emulator session)"));
+            return;
+        }
+        MachineState state;
+        hataritext::parseDisassembly(response, &state);
+        QJsonArray rows;
+        for (const DisasmLine &disasm : state.disassembly) {
+            QJsonObject object;
+            object.insert(QStringLiteral("address"),
+                          QStringLiteral("0x%1").arg(disasm.address, 8, 16, QLatin1Char('0')));
+            object.insert(QStringLiteral("bytes"), disasm.bytes);
+            object.insert(QStringLiteral("text"), disasm.instruction);
+            rows.append(object);
+        }
+        replyBlock(guarded, QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("symbols")) {
+        // symbols [filter]: the build's symbol table as JSON; addresses appear
+        // once the program map has live bases.
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_window->symbolsJson(arg)).toJson(QJsonDocument::Compact)));
+
 
     } else if (cmd == QLatin1String("step")) {
         QMetaObject::invokeMethod(m_window, "step", Qt::DirectConnection);
@@ -319,7 +401,22 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("breakpoint")) {
-        const int line = arg.toInt();
+        bool numeric = false;
+        const int line = arg.toInt(&numeric);
+        if (!numeric) {
+            // Label form: resolve the symbol to its definition's file:line and
+            // toggle there. The reply names where it landed (and the address
+            // once the map has live bases), so the agent can check it meant
+            // the same `count` the IDE did.
+            if (arg.isEmpty()) {
+                reply(guarded, QStringLiteral("error usage: breakpoint <line|label>"));
+                return;
+            }
+            QString detail;
+            const bool toggled = m_window->toggleBreakpointAtLabel(arg, &detail);
+            reply(guarded, detail);
+            return;
+        }
         bool toggled = false;
         QMetaObject::invokeMethod(m_window, "toggleBreakpointAtLine", Qt::DirectConnection,
                                   Q_RETURN_ARG(bool, toggled), Q_ARG(int, line));
@@ -431,7 +528,11 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "step             step one instruction\n"
             "stepover         step over a subroutine\n"
             "continue         resume execution\n"
-            "breakpoint <n>   toggle a breakpoint at source line n (code lines only)\n"
+            "breakpoint <n|label>   toggle a breakpoint at a source line (code\n"
+            "                 lines only) or at a symbol's definition\n"
+            "symbols [filter] the build's symbols as a JSON array\n"
+            "readmem <a> <n>  read <n> bytes at <a> as JSON rows (when stopped)\n"
+            "disasm [a]       disassembly as JSON rows (when stopped)\n"
             "setreg <n> <v>   write register <n> to <v> (when stopped)\n"
             "setmem <a> <v>   write memory byte at <a> to <v> (when stopped)\n"
             "watchpoint <a>   break when the value at address <a> changes (optional .b/.w/.l)\n"

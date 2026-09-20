@@ -84,6 +84,12 @@ private:
     /// always knows where the data ends.
     void replyBlock(class QTcpSocket *client, const QString &text);
 
+    /// Run one debugger command with synchronous semantics (a nested loop, as
+    /// `cmd` has always had), returning its response. Empty on timeout or
+    /// when another blocking command owns the wait — the caller words the
+    /// error, since it knows what it asked.
+    QString blockingDebugCommand(const QString &command, int timeoutMs);
+
     MainWindow *m_window;
     QTcpServer *m_server = nullptr;
     /// What listen() wrote to the discovery file, so the destructor only

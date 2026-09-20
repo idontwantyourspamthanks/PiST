@@ -320,6 +320,21 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
     } else if (name == QLatin1String("pist_profile_results")) {
         command = QStringLiteral("profile results");
         block = true;
+    } else if (name == QLatin1String("pist_symbols")) {
+        const QString filter = args.value(QStringLiteral("filter")).toString();
+        command = filter.isEmpty() ? QStringLiteral("symbols")
+                                   : QStringLiteral("symbols ") + filter;
+        block = true;
+    } else if (name == QLatin1String("pist_readmem")) {
+        command = QStringLiteral("readmem %1 %2")
+                      .arg(args.value(QStringLiteral("address")).toString(),
+                           args.value(QStringLiteral("length")).toString());
+        block = true;
+    } else if (name == QLatin1String("pist_disasm")) {
+        const QString address = args.value(QStringLiteral("address")).toString();
+        command = address.isEmpty() ? QStringLiteral("disasm")
+                                    : QStringLiteral("disasm ") + address;
+        block = true;
     } else if (name == QLatin1String("pist_stop")) {
         command = QStringLiteral("stop");
     } else if (name == QLatin1String("pist_step")) {
@@ -335,8 +350,11 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         const QString value = args.value(QStringLiteral("value")).toString();
         command = QStringLiteral("setmem %1 %2").arg(address, value);
     } else if (name == QLatin1String("pist_breakpoint")) {
-        const int line = args.value(QStringLiteral("line")).toInt();
-        command = QStringLiteral("breakpoint %1").arg(line);
+        const QString label = args.value(QStringLiteral("label")).toString();
+        command = label.isEmpty()
+                      ? QStringLiteral("breakpoint %1")
+                            .arg(args.value(QStringLiteral("line")).toInt())
+                      : QStringLiteral("breakpoint ") + label;
     } else if (name == QLatin1String("pist_watchpoint")) {
         const QString address = args.value(QStringLiteral("address")).toString();
         command = QStringLiteral("watchpoint %1").arg(address);
@@ -373,11 +391,12 @@ void McpServer::deliverReply(quint64 token, const QString &text)
 
     // Tools whose answer is a JSON document get it in both shapes: parsed as
     // structuredContent for clients that consume fields, and pretty-printed
-    // as the text block for clients that render content. Arrays are wrapped,
-    // because structuredContent must be an object.
     if (!isError && (outstanding.tool == QLatin1String("pist_state")
                      || outstanding.tool == QLatin1String("pist_problems")
-                     || outstanding.tool == QLatin1String("pist_profile_results"))) {
+                     || outstanding.tool == QLatin1String("pist_profile_results")
+                     || outstanding.tool == QLatin1String("pist_symbols")
+                     || outstanding.tool == QLatin1String("pist_readmem")
+                     || outstanding.tool == QLatin1String("pist_disasm"))) {
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &parseError);
         if (parseError.error == QJsonParseError::NoError) {
@@ -506,12 +525,68 @@ QJsonArray McpServer::tools()
         line.insert(QStringLiteral("type"), QStringLiteral("integer"));
         line.insert(QStringLiteral("description"),
                     QStringLiteral("Source line number to toggle a breakpoint on"));
+        QJsonObject label;
+        label.insert(QStringLiteral("type"), QStringLiteral("string"));
+        label.insert(QStringLiteral("description"),
+                     QStringLiteral("Symbol to break at instead of a line number — "
+                                    "resolved to its definition's file:line; the reply "
+                                    "names where it landed"));
         props.insert(QStringLiteral("line"), line);
+        props.insert(QStringLiteral("label"), label);
         list.append(toolObject(
             QStringLiteral("pist_breakpoint"), QStringLiteral("Toggle breakpoint"),
-            QStringLiteral("Toggle a breakpoint at a source line. Only lines holding an "
+            QStringLiteral("Toggle a breakpoint at a source line or at a symbol's "
+                           "definition (pass label). Only lines holding an "
                            "instruction can fire; the reply says when a line has none."),
-            props, QJsonArray{QStringLiteral("line")}));
+            props, {}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject filter;
+        filter.insert(QStringLiteral("type"), QStringLiteral("string"));
+        filter.insert(QStringLiteral("description"),
+                      QStringLiteral("Optional case-insensitive name filter"));
+        props.insert(QStringLiteral("filter"), filter);
+        list.append(toolObject(
+            QStringLiteral("pist_symbols"), QStringLiteral("List symbols"),
+            QStringLiteral("The build's symbol table as a JSON array (also in "
+                           "structuredContent): name, file and line, and the address "
+                           "once the program is loaded."),
+            props, {}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject address;
+        address.insert(QStringLiteral("type"), QStringLiteral("string"));
+        address.insert(QStringLiteral("description"),
+                       QStringLiteral("Address to read from, e.g. $12596 or 0x12596"));
+        QJsonObject length;
+        length.insert(QStringLiteral("type"), QStringLiteral("string"));
+        length.insert(QStringLiteral("description"),
+                      QStringLiteral("How many bytes to read, decimal"));
+        props.insert(QStringLiteral("address"), address);
+        props.insert(QStringLiteral("length"), length);
+        list.append(toolObject(
+            QStringLiteral("pist_readmem"), QStringLiteral("Read memory"),
+            QStringLiteral("Read memory as JSON rows of hex bytes (also in "
+                           "structuredContent). Requires a stopped emulator session."),
+            props, QJsonArray{QStringLiteral("address"), QStringLiteral("length")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject address;
+        address.insert(QStringLiteral("type"), QStringLiteral("string"));
+        address.insert(QStringLiteral("description"),
+                       QStringLiteral("Address to disassemble from; the PC when omitted"));
+        props.insert(QStringLiteral("address"), address);
+        list.append(toolObject(
+            QStringLiteral("pist_disasm"), QStringLiteral("Disassemble"),
+            QStringLiteral("Disassembly as JSON rows {address, bytes, text} (also in "
+                           "structuredContent). Requires a stopped emulator session."),
+            props, {}));
     }
 
     {

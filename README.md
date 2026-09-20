@@ -422,8 +422,10 @@ read               the current document: its path, then its text (block reply)
 build              assemble; the reply arrives when the build finishes
 run                build and start the emulator; the reply arrives when it is running
 stop               stop the emulator session
-step / stepover / continue
-breakpoint <n>     toggle a breakpoint at source line n
+breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
+symbols [filter]   the build's symbols as a JSON array (block reply)
+readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
+disasm [addr]      disassembly as JSON rows (block reply, when stopped)
 watchpoint <addr>  break when the value at an address changes
 setreg <name> <value>   set a register (while stopped)
 setmem <addr> <value>  write a memory byte (while stopped)
@@ -487,10 +489,11 @@ a locally started IDE needs no configuration at all. The tools are
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
 `pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
-`pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
-`pist_watch`. `pist_state`, `pist_problems` and `pist_profile_results` answer
-with structured JSON (in `structuredContent` as well as text), so an agent
-consumes fields instead of parsing console text. `pist_watch` subscribes to
+`pist_symbols`, `pist_readmem`, `pist_disasm`,
+`pist_watch`. `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
+`pist_disasm` and `pist_profile_results` answer with structured JSON (in
+`structuredContent` as well as text), so an agent consumes fields instead of
+parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,
 so an agent waiting for a breakpoint does not have to poll. The shim speaks
 newline-delimited JSON-RPC 2.0 — one message per line, never `Content-Length`

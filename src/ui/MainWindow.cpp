@@ -3243,13 +3243,19 @@ bool MainWindow::toggleBreakpointAtLine(int line)
     if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
         return false;
 
-    const QString file = QFileInfo(m_editor->filePath()).fileName();
-
     // Breakpoints are keyed by base name, so two modules linked from different
     // directories under the same file name (`util.s`) collide here and in the
     // gutter. Re-keying on the full path is a larger change (the panel, the
     // listings and the linker map all identify modules the same way); until then
     // this is the documented limitation.
+    return toggleBreakpoint(QFileInfo(m_editor->filePath()).fileName(), line);
+}
+
+bool MainWindow::toggleBreakpoint(const QString &file, int line)
+{
+    if (file.isEmpty() || line <= 0)
+        return false;
+
     auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
                            [&](const Breakpoint &bp) {
                                return bp.line == line && bp.file == file;
@@ -3266,6 +3272,60 @@ bool MainWindow::toggleBreakpointAtLine(int line)
     if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
         armBreakpoints();
     return true;
+}
+
+bool MainWindow::toggleBreakpointAtLabel(const QString &name, QString *detail)
+{
+    for (const SymbolEntry &sym : m_symbols) {
+        if (sym.name != name)
+            continue;
+        if (sym.file.isEmpty()) {
+            // A command-line define or macro-generated name has no source
+            // position to break at.
+            *detail = tr("error symbol '%1' has no source position").arg(name);
+            return false;
+        }
+        // Breakpoints key by base name everywhere (gutter, arming, the
+        // panel); the symbol table carries full paths.
+        const QString base = QFileInfo(sym.file).fileName();
+        toggleBreakpoint(base, sym.line);
+        *detail = QStringLiteral("ok %1:%2").arg(base).arg(sym.line);
+        // Tell the agent the address too, when the map can — it confirms the
+        // label resolved to the instruction they meant.
+        if (m_programMap.isResolved()) {
+            quint32 address = 0;
+            if (m_programMap.codeAddressFor(sym.file, sym.line, &address))
+                *detail += QStringLiteral(" = 0x%1").arg(address, 8, 16, QLatin1Char('0'));
+        }
+        return true;
+    }
+    *detail = tr("error no symbol named '%1' (has the project been built?)").arg(name);
+    return false;
+}
+
+QJsonArray MainWindow::symbolsJson(const QString &filter) const
+{
+    QJsonArray list;
+    for (const SymbolEntry &sym : m_symbols) {
+        if (!filter.isEmpty() && !sym.name.contains(filter, Qt::CaseInsensitive))
+            continue;
+        QJsonObject object;
+        object.insert(QStringLiteral("name"), sym.name);
+        if (!sym.file.isEmpty()) {
+            object.insert(QStringLiteral("file"), sym.file);
+            object.insert(QStringLiteral("line"), sym.line);
+            // SymbolsView's honesty rule, shared: an address only once the map
+            // has live bases, and only from the definition's own line.
+            if (m_programMap.isResolved()) {
+                quint32 address = 0;
+                if (m_programMap.codeAddressFor(sym.file, sym.line, &address))
+                    object.insert(QStringLiteral("address"),
+                                  QStringLiteral("0x%1").arg(address, 8, 16, QLatin1Char('0')));
+            }
+        }
+        list.append(object);
+    }
+    return list;
 }
 
 QString MainWindow::documentSnapshot() const

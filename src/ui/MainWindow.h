@@ -170,6 +170,7 @@ private slots:
     void removeBreakpoint(const QString &file, int line);
     void goToBreakpoint(const QString &file, int line);
     bool toggleBreakpointAtLine(int line);
+
     void editBreakpointCondition(int line);
     void clearAllBreakpoints();
     /// The breakpoints dock's "Clear all": removes breakpoints AND watchpoints
@@ -201,6 +202,17 @@ public:
     /// For the remote `breakpoint` reply.
     bool lineHasCode(int line) const;
 
+    /// Toggle a breakpoint at (file, line) directly — the base-name keying the
+    /// whole IDE uses. Shared by toggleBreakpointAtLine (current editor) and
+    /// toggleBreakpointAtLabel (any module).
+    bool toggleBreakpoint(const QString &file, int line);
+
+    /// Toggle a breakpoint at a symbol's definition. `detail` carries the
+    /// reply text either way: "ok <file>:<line> [= 0x…]" or an "error …"
+    /// naming why (unknown name, or a position-less symbol). For the remote
+    /// `breakpoint <label>` form.
+    bool toggleBreakpointAtLabel(const QString &name, QString *detail);
+
     /// The current editor document as "path\ncontent", for the remote `read`
     /// verb — what the IDE is showing, so an agent needn't guess. Empty when
     /// no source is open.
@@ -219,6 +231,12 @@ public:
     /// count, for the remote `profile results` verb. Empty when no profile
     /// has been collected.
     QJsonArray profilerResultsJson() const;
+
+    /// The build's symbols as JSON objects {name, file?, line?, address?},
+    /// optionally name-filtered (case-insensitive). Addresses appear only once
+    /// the program map has live bases — SymbolsView's honesty rule. For the
+    /// remote `symbols` verb.
+    QJsonArray symbolsJson(const QString &filter) const;
 
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use

@@ -497,6 +497,11 @@ void EmulatorHost::processStderrData()
     // buffer had when the command was dispatched.
     if (stderrEndsWithPrompt(m_stderrBuffer) && m_stderrBuffer.size() > m_stderrAtDispatch)
         onPrompt();
+    // TEMP DIAGNOSTIC (macOS CI stop-detection failures; remove after)
+    emit logLine(QStringLiteral("[diag] stderr chunk tail: ")
+                 + QString::fromUtf8(m_stderrBuffer.right(160))
+                       .replace(QLatin1Char('\n'), QStringLiteral("\\n"))
+                       .replace(QLatin1Char('\r'), QStringLiteral("\\r")));
 }
 
 void EmulatorHost::drainStderr()

@@ -10,6 +10,14 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.6.3.1
+
+A point release for one security-relevant fix: a connection refused by the
+remote-control token check could have bytes it sent during the
+(asynchronous) disconnect window executed without a token. The client now
+stays refused until the socket is gone. Everything below from 0.6.3 is
+unchanged.
+
 ## What's new in 0.6.3
 
 This release is about driving PiST from another program — an AI agent, a

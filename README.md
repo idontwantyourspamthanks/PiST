@@ -76,9 +76,11 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   - an **interactive debugger console** — type any Hatari debugger command (`r`, `d`,
     `m $12596 20`, …) and see its output in the console dock, with arrow-key history and
     Tab completion of commands and symbol names
-  - a **profiler**: Hatari's CPU profiling per *source line* — Profile Start at a breakpoint
-    stop, continue, and Profile Stop shows the hot lines in a dock and as heat in the editor
-    gutter
+  - a **profiler**: Hatari's CPU profiling per *routine and source line* — put the cursor
+    where measuring should end and **Profile to cursor line** does the rest (or drive
+    Profile Start/Stop manually across several stops). Results land as a routines tree
+    (counts *and* cycles, with milliseconds and frames), the OS's share as a TOS/ROM row,
+    and heat in the editor gutter
 - **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
   a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
   to rearrange), or right-click for a "Move to" menu. The layout persists.

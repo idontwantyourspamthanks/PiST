@@ -304,7 +304,7 @@ ctest --test-dir build --output-on-failure
 There are two kinds of test:
 
 - **Parser/unit tests** (`tst_parsers`, `tst_image`, `tst_tosrom`, `tst_debug`, `tst_link`,
-  `tst_settings`, `tst_toolfetch`, `tst_oscall`) — always run, no emulator needed.
+  `tst_settings`, `tst_toolfetch`, `tst_oscall`, `tst_profile`) — always run, no emulator needed.
 - **Integration tests** (`tst_gui`, `tst_remotecontrol`, `tst_emulatorhost`) — run offscreen
   (`QT_QPA_PLATFORM=offscreen`), drive `MainWindow`, and `QSKIP` themselves unless Hatari,
   `vasmm68k_mot` and a TOS ROM are available (set `PIST_TOS_DIR`; `PIST_REQUIRE_EMULATOR=1` turns a

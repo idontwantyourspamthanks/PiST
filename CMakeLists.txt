@@ -396,6 +396,17 @@ target_include_directories(tst_tosrom PRIVATE src)
 target_link_libraries(tst_tosrom PRIVATE Qt6::Test)
 add_test(NAME tosrom COMMAND tst_tosrom)
 
+# The profile save parser: header fields and the memory-area lines that feed
+# the profiler's TOS/ROM row. Pure QtCore; no display or emulator required.
+qt_add_executable(tst_profile
+    tests/tst_profile.cpp
+    src/emu/ProfileData.cpp
+    src/emu/ProfileData.h
+)
+target_include_directories(tst_profile PRIVATE src)
+target_link_libraries(tst_profile PRIVATE Qt6::Test)
+add_test(NAME profile COMMAND tst_profile)
+
 # Breakpoint resolution and memory-dump parsing: pure functions, no emulator.
 qt_add_executable(tst_debug
     tests/tst_debug.cpp

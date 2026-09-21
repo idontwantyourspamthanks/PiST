@@ -434,7 +434,9 @@ run                build and start the emulator; the reply arrives when it is ru
 stop               stop the emulator session
 step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
-symbols [filter]   the build's symbols as a JSON array (block reply)
+problems           the Problems pane as a JSON array (block reply)
+tabs               the open documents as a JSON array (block reply)
+save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
 disasm [addr]      disassembly as JSON rows (block reply, when stopped)
 watchpoint <addr>  break when the value at an address changes
@@ -501,9 +503,13 @@ locally started IDE needs no configuration at all. The tools are
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
 `pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
-`pist_symbols`, `pist_readmem`, `pist_disasm`,
-`pist_watch`. `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
-`pist_disasm` and `pist_profile_results` answer with structured JSON (in
+`pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
+`pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
+`pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
+rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
+`destructiveHint`, so a client can decide what needs your confirmation.
+`pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
+`pist_disasm`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,
@@ -511,6 +517,12 @@ so an agent waiting for a breakpoint does not have to poll. The shim speaks
 newline-delimited JSON-RPC 2.0 — one message per line, never `Content-Length`
 headers, which belong to a different protocol — and logs to stderr only, since
 stdout is the transport.
+
+Beyond tools, the shim serves MCP **resources** — `pist://console`,
+`pist://state` and `pist://document`, with `pist://state` subscribable (its
+updates push on every stop/resume) — and two **prompts**: `diagnose-build`
+(work the Problems pane to fixes) and `find-hot-loop` (profile and report
+the hot lines).
 
 A minimal client in Python, taking the address and token from the discovery
 file:

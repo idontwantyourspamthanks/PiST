@@ -237,6 +237,15 @@ public:
     /// remote `problems` verb.
     QJsonArray problemsJson() const;
 
+    /// Every open document as JSON objects {path, modified, current}, for the
+    /// remote `tabs` verb — the agent's map of what the IDE has open.
+    QJsonArray tabsJson() const;
+
+    /// Save the current document without a dialog. False when it has no path
+    /// yet (a name can't be chosen remotely) or the write failed. For the
+    /// remote `save` verb.
+    bool saveCurrentDocument();
+
     /// Profiler hot lines as JSON objects {line, count}, sorted by descending
     /// count, for the remote `profile results` verb. Empty when no profile
     /// has been collected.

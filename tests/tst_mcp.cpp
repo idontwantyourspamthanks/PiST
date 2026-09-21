@@ -21,8 +21,9 @@ using namespace pist::mcp;
 
 namespace {
 
-/// A minimal stand-in for PiST's remote-control socket: accepts one
-/// connection, exposes complete received lines, and writes raw replies.
+/// A minimal stand-in for PiST's remote-control socket: accepts connections
+/// (the shim holds one for requests and one for events), exposes complete
+/// received lines, and writes replies to whoever asked last.
 class FakeIde : public QObject
 {
 public:
@@ -31,13 +32,14 @@ public:
         if (!m_server.listen(QHostAddress::LocalHost))
             return false;
         connect(&m_server, &QTcpServer::newConnection, this, [this] {
-            m_client = m_server.nextPendingConnection();
-            connect(m_client, &QTcpSocket::readyRead, this, [this] {
-                m_buffer += m_client->readAll();
+            QTcpSocket *client = m_server.nextPendingConnection();
+            connect(client, &QTcpSocket::readyRead, this, [this, client] {
+                QByteArray &buffer = m_buffers[client];
+                buffer += client->readAll();
                 int nl = 0;
-                while ((nl = m_buffer.indexOf('\n')) >= 0) {
-                    m_lines.append(QString::fromUtf8(m_buffer.left(nl)));
-                    m_buffer.remove(0, nl + 1);
+                while ((nl = buffer.indexOf('\n')) >= 0) {
+                    m_lines.append({client, QString::fromUtf8(buffer.left(nl))});
+                    buffer.remove(0, nl + 1);
                 }
             });
         });
@@ -46,27 +48,31 @@ public:
 
     quint16 port() const { return m_server.serverPort(); }
 
-    /// The next complete command line, waiting for one to arrive. Empty on
-    /// timeout — the caller's QCOMPARE then fails with a readable diff.
+    /// The next complete command line from any connection, waiting for one.
+    /// Empty on timeout — the caller's QCOMPARE then fails with a readable diff.
     QString nextLine(int timeoutMs = 5000)
     {
         if (!QTest::qWaitFor([this] { return !m_lines.isEmpty(); }, timeoutMs))
             return QString();
-        return m_lines.takeFirst();
+        const auto entry = m_lines.takeFirst();
+        m_lastFrom = entry.first;
+        return entry.second;
     }
 
     void send(const QByteArray &raw)
     {
-        QVERIFY(m_client);
-        m_client->write(raw);
-        m_client->flush();
+        // Replies belong to whoever asked last: on the wrong socket the shim
+        // would hang waiting for an answer that went to the other connection.
+        QVERIFY(m_lastFrom);
+        m_lastFrom->write(raw);
+        m_lastFrom->flush();
     }
 
 private:
     QTcpServer m_server;
-    QTcpSocket *m_client = nullptr;
-    QByteArray m_buffer;
-    QStringList m_lines;
+    QHash<QTcpSocket *, QByteArray> m_buffers;
+    QList<QPair<QTcpSocket *, QString>> m_lines;
+    QTcpSocket *m_lastFrom = nullptr;
 };
 
 } // namespace
@@ -77,6 +83,7 @@ class TstMcp : public QObject
 
     /// Everything the server has emitted, oldest first.
     QList<QJsonObject> m_out;
+
 
     std::unique_ptr<McpServer> makeServer(quint16 port)
     {
@@ -146,6 +153,9 @@ class TstMcp : public QObject
     }
 
 private slots:
+    /// QtTest reuses one instance across methods (and only slots named init
+    /// are invoked between them); earlier replies must not be matched later.
+    void init() { m_out.clear(); }
 
     void initializeReportsTheBuildVersion()
     {
@@ -191,10 +201,11 @@ private slots:
                                      "pist_disasm", "pist_open", "pist_problems",
                                      "pist_profile_results", "pist_profile_start",
                                      "pist_profile_stop", "pist_read", "pist_readmem",
-                                     "pist_run", "pist_screenshot", "pist_setmem",
-                                     "pist_setreg", "pist_state", "pist_step",
-                                     "pist_stepover", "pist_stop", "pist_symbols",
-                                     "pist_watch", "pist_watchpoint"}));
+                                     "pist_run", "pist_save", "pist_screenshot",
+                                     "pist_setmem", "pist_setreg", "pist_state",
+                                     "pist_step", "pist_stepover", "pist_stop",
+                                     "pist_symbols", "pist_tabs", "pist_watch",
+                                     "pist_watchpoint"}));
     }
 
     void lineAndBlockRepliesAreFramedCorrectly()
@@ -231,6 +242,123 @@ private slots:
         QCOMPARE(resultText(reply), QStringLiteral("error not stopped"));
         QVERIFY(resultIsError(reply));
     }
+
+    void annotationsResourcesPromptsAndChains()
+    {
+        // Annotations come free with the catalog — no IDE needed for this part.
+        {
+            auto server = makeServer(0);
+            send(server.get(), 1, QStringLiteral("tools/list"));
+            const QJsonObject reply = waitReply(1);
+            const QJsonArray tools = reply.value(QStringLiteral("result"))
+                                         .toObject()
+                                         .value(QStringLiteral("tools")).toArray();
+            for (const QJsonValue &value : tools) {
+                const QJsonObject tool = value.toObject();
+                const QString name = tool.value(QStringLiteral("name")).toString();
+                const QJsonObject annotations = tool.value(QStringLiteral("annotations")).toObject();
+                if (name == QLatin1String("pist_state"))
+                    QCOMPARE(annotations.value(QStringLiteral("readOnlyHint")).toBool(), true);
+                if (name == QLatin1String("pist_setmem"))
+                    QCOMPARE(annotations.value(QStringLiteral("destructiveHint")).toBool(), true);
+            }
+        }
+
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        // resources/list names the three resources; a read maps to its verb
+        // and wraps the body as contents.
+        send(server.get(), 1, QStringLiteral("resources/list"));
+        QJsonObject reply = waitReply(1);
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("resources")).toArray().size(), 3);
+
+        send(server.get(), 2, QStringLiteral("resources/read"),
+             QJsonObject{{QStringLiteral("uri"), QStringLiteral("pist://state")}});
+        QCOMPARE(ide.nextLine(), QStringLiteral("statejson"));
+        ide.send("{\"running\":false,\"stopped\":true}\n.\n");
+        reply = waitReply(2);
+        const QJsonArray contents = reply.value(QStringLiteral("result")).toObject()
+                                        .value(QStringLiteral("contents")).toArray();
+        QCOMPARE(contents.size(), 1);
+        QVERIFY(contents.first().toObject().value(QStringLiteral("text")).toString()
+                    .contains(QLatin1String("stopped")));
+
+        // Subscribe, then an event pushes notifications/resources/updated.
+        send(server.get(), 3, QStringLiteral("resources/subscribe"),
+             QJsonObject{{QStringLiteral("uri"), QStringLiteral("pist://state")}});
+        reply = waitReply(3);
+        QVERIFY(!reply.contains(QStringLiteral("error")));
+        send(server.get(), 4, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_watch")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("watch"));
+        ide.send("ok\n");
+        reply = waitReply(4);
+        ide.send("event stopped pc=0x00012596\n");
+        QJsonObject updated;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([this, &updated] {
+                 for (const QJsonObject &m : m_out) {
+                     if (m.value(QStringLiteral("method")).toString()
+                         == QLatin1String("notifications/resources/updated")) {
+                         updated = m;
+                         return true;
+                     }
+                 }
+                 return false;
+             }()),
+            5000);
+        QCOMPARE(updated.value(QStringLiteral("params")).toObject()
+                     .value(QStringLiteral("uri")).toString(),
+                 QStringLiteral("pist://state"));
+
+        // Prompts: the catalog and one expansion.
+        send(server.get(), 5, QStringLiteral("prompts/list"));
+        reply = waitReply(5);
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("prompts")).toArray().size(), 2);
+        send(server.get(), 6, QStringLiteral("prompts/get"),
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("diagnose-build")}});
+        reply = waitReply(6);
+        QVERIFY(reply.value(QStringLiteral("result")).toObject()
+                    .value(QStringLiteral("messages")).toArray().first().toObject()
+                    .value(QStringLiteral("content")).toObject()
+                    .value(QStringLiteral("text")).toString()
+                    .contains(QLatin1String("pist_problems")));
+
+        // tabs and save map to their verbs.
+        send(server.get(), 7, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_tabs")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("tabs"));
+        ide.send("[]\n.\n");
+        reply = waitReply(7);
+        QVERIFY(!resultIsError(reply));
+
+        send(server.get(), 8, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_save")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("save"));
+        ide.send("ok\n");
+        reply = waitReply(8);
+        QVERIFY(!resultIsError(reply));
+
+        // A failed build chains the problems query into its error result.
+        send(server.get(), 9, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("build"));
+        ide.send("error build failed\n");
+        QCOMPARE(ide.nextLine(), QStringLiteral("problems"));
+        ide.send("[{\"file\":\"a.s\",\"line\":3,\"message\":\"bad\",\"severity\":\"error\"}]\n.\n");
+        reply = waitReply(9);
+        QVERIFY(resultIsError(reply));
+        const QJsonArray problems = reply.value(QStringLiteral("result")).toObject()
+                                        .value(QStringLiteral("structuredContent")).toObject()
+                                        .value(QStringLiteral("problems")).toArray();
+        QCOMPARE(problems.size(), 1);
+        QVERIFY(resultText(reply).contains(QLatin1String("error build failed")));
+    }
+
 
     void newToolMappingsAndStructuredReplies()
     {

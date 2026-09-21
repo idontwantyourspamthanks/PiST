@@ -90,6 +90,19 @@ McpServer::McpServer(const QString &controlHost, quint16 controlPort, QObject *p
         notification.insert(QStringLiteral("method"), QStringLiteral("notifications/message"));
         notification.insert(QStringLiteral("params"), params);
         sendRaw(notification);
+
+        // A subscribed resource backed by session state updates with the same
+        // event — the client re-reads it to see the new state.
+        if (m_resourceSubs.contains(QStringLiteral("pist://state"))) {
+            QJsonObject updatedParams;
+            updatedParams.insert(QStringLiteral("uri"), QStringLiteral("pist://state"));
+            QJsonObject updated;
+            updated.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+            updated.insert(QStringLiteral("method"),
+                           QStringLiteral("notifications/resources/updated"));
+            updated.insert(QStringLiteral("params"), updatedParams);
+            sendRaw(updated);
+        }
     });
     connect(m_events, &ControlClient::subscribeReplied, this, [this](bool ok, const QString &error) {
         if (!m_havePendingWatch)
@@ -201,6 +214,33 @@ void McpServer::dispatch(const QJsonObject &message)
             handleToolsCall(id, params);
         return;
     }
+    if (method == QLatin1String("resources/list")) {
+        if (!isNotification)
+            handleResourcesList(id);
+        return;
+    }
+    if (method == QLatin1String("resources/read")) {
+        if (!isNotification)
+            handleResourcesRead(id, params);
+        return;
+    }
+    if (method == QLatin1String("resources/subscribe")
+        || method == QLatin1String("resources/unsubscribe")) {
+        if (!isNotification)
+            handleResourcesSubscribe(id, params, method.endsWith(QLatin1String("subscribe"))
+                                         && !method.endsWith(QLatin1String("unsubscribe")));
+        return;
+    }
+    if (method == QLatin1String("prompts/list")) {
+        if (!isNotification)
+            handlePromptsList(id);
+        return;
+    }
+    if (method == QLatin1String("prompts/get")) {
+        if (!isNotification)
+            handlePromptsGet(id, params);
+        return;
+    }
     if (method.startsWith(QLatin1String("notifications/")))
         return; // Unknown notification: ignore, per JSON-RPC.
 
@@ -222,9 +262,16 @@ void McpServer::handleInitialize(const QJsonValue &id, const QJsonObject &params
 
     QJsonObject capabilities;
     capabilities.insert(QStringLiteral("tools"), tools);
-    // Declared because the shim can emit notifications/message; unused today,
-    // but a client that gates its handling on the capability needs it present
-    // for the event stream to be meaningful.
+    QJsonObject resources;
+    resources.insert(QStringLiteral("subscribe"), true);
+    resources.insert(QStringLiteral("listChanged"), false);
+    capabilities.insert(QStringLiteral("resources"), resources);
+    QJsonObject prompts;
+    prompts.insert(QStringLiteral("listChanged"), false);
+    capabilities.insert(QStringLiteral("prompts"), prompts);
+    // Declared because the shim can emit notifications/message; a client that
+    // gates its handling on the capability needs it present for the event
+    // stream to be meaningful.
     capabilities.insert(QStringLiteral("logging"), QJsonObject());
 
     QJsonObject serverInfo;
@@ -243,6 +290,137 @@ void McpServer::handleInitialize(const QJsonValue &id, const QJsonObject &params
                                  "remote-control verbs; run/build answer only when the "
                                  "work has finished. Use pist_watch to be told when the "
                                  "debugger stops instead of polling pist_state."));
+    sendResult(id, result);
+}
+
+namespace {
+
+QJsonObject resourceObject(const QString &uri, const QString &name, const QString &description,
+                           const QString &mimeType)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("uri"), uri);
+    object.insert(QStringLiteral("name"), name);
+    object.insert(QStringLiteral("description"), description);
+    object.insert(QStringLiteral("mimeType"), mimeType);
+    return object;
+}
+
+} // namespace
+
+void McpServer::handleResourcesList(const QJsonValue &id)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("resources"), QJsonArray{
+        resourceObject(QStringLiteral("pist://console"), QStringLiteral("Console"),
+                       QStringLiteral("The IDE's build and debug console text."),
+                       QStringLiteral("text/plain")),
+        resourceObject(QStringLiteral("pist://state"), QStringLiteral("Machine state"),
+                       QStringLiteral("Registers and PC of the stopped machine, as JSON. "
+                                      "Subscribable: updates push on stop/resume."),
+                       QStringLiteral("application/json")),
+        resourceObject(QStringLiteral("pist://document"), QStringLiteral("Current document"),
+                       QStringLiteral("The document the IDE is showing, as JSON {path, text}."),
+                       QStringLiteral("application/json")),
+    });
+    sendResult(id, result);
+}
+
+void McpServer::handleResourcesRead(const QJsonValue &id, const QJsonObject &params)
+{
+    const QString uri = params.value(QStringLiteral("uri")).toString();
+    QString command;
+    if (uri == QLatin1String("pist://console"))
+        command = QStringLiteral("console");
+    else if (uri == QLatin1String("pist://state"))
+        command = QStringLiteral("statejson");
+    else if (uri == QLatin1String("pist://document"))
+        command = QStringLiteral("read");
+    else {
+        sendError(id, kInvalidParams, QStringLiteral("Unknown resource: ") + uri);
+        return;
+    }
+
+    const quint64 token = m_nextToken++;
+    m_outstanding.insert(token, Outstanding{id, QStringLiteral("resource:") + uri, QString()});
+    m_control->request(command, true, token);
+}
+
+void McpServer::handleResourcesSubscribe(const QJsonValue &id, const QJsonObject &params, bool on)
+{
+    const QString uri = params.value(QStringLiteral("uri")).toString();
+    if (uri != QLatin1String("pist://state")) {
+        // Only state has a change source (session events); everything else
+        // would be a subscription that never fires, which is worse than an
+        // honest refusal.
+        sendError(id, kInvalidParams,
+                  QStringLiteral("Only pist://state is subscribable"));
+        return;
+    }
+    if (on)
+        m_resourceSubs.insert(uri);
+    else
+        m_resourceSubs.remove(uri);
+    sendResult(id, QJsonObject());
+}
+
+void McpServer::handlePromptsList(const QJsonValue &id)
+{
+    const auto prompt = [](const QString &name, const QString &title, const QString &description) {
+        QJsonObject object;
+        object.insert(QStringLiteral("name"), name);
+        object.insert(QStringLiteral("title"), title);
+        object.insert(QStringLiteral("description"), description);
+        return object;
+    };
+    QJsonObject result;
+    result.insert(QStringLiteral("prompts"), QJsonArray{
+        prompt(QStringLiteral("diagnose-build"), QStringLiteral("Diagnose the build"),
+               QStringLiteral("Read the Problems pane and the affected source, then "
+                              "explain each diagnostic and suggest the fix.")),
+        prompt(QStringLiteral("find-hot-loop"), QStringLiteral("Find the hot loop"),
+               QStringLiteral("Profile the program and report where the cycles go, "
+                              "mapped back to source lines.")),
+    });
+    sendResult(id, result);
+}
+
+void McpServer::handlePromptsGet(const QJsonValue &id, const QJsonObject &params)
+{
+    const QString name = params.value(QStringLiteral("name")).toString();
+    QString text;
+    QString description;
+    if (name == QLatin1String("diagnose-build")) {
+        description = QStringLiteral("Diagnose the current build's diagnostics");
+        text = QStringLiteral(
+            "Call pist_problems for this project's build diagnostics. For each one, "
+            "call pist_read (or pist_open on its file first) to see the affected source "
+            "line in context, then explain what the diagnostic means and give the "
+            "smallest change that resolves it. If pist_problems is empty, build first "
+            "with pist_build and check again.");
+    } else if (name == QLatin1String("find-hot-loop")) {
+        description = QStringLiteral("Profile the program and report the hot lines");
+        text = QStringLiteral(
+            "Run the program with pist_run, wait for the entry stop with pist_watch, "
+            "then pist_profile_start and pist_continue. When the machine stops where "
+            "you wanted to measure (set a breakpoint first if needed), call "
+            "pist_profile_stop, then pist_profile_results. Report the hottest source "
+            "lines with their share of the total count, and read the surrounding code "
+            "with pist_read before suggesting why they dominate.");
+    } else {
+        sendError(id, kInvalidParams, QStringLiteral("Unknown prompt: ") + name);
+        return;
+    }
+
+    QJsonObject content;
+    content.insert(QStringLiteral("type"), QStringLiteral("text"));
+    content.insert(QStringLiteral("text"), text);
+    QJsonObject message;
+    message.insert(QStringLiteral("role"), QStringLiteral("user"));
+    message.insert(QStringLiteral("content"), content);
+    QJsonObject result;
+    result.insert(QStringLiteral("description"), description);
+    result.insert(QStringLiteral("messages"), QJsonArray{message});
     sendResult(id, result);
 }
 
@@ -368,6 +546,11 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         const QString text = args.value(QStringLiteral("command")).toString();
         command = QStringLiteral("cmd %1").arg(text);
         block = true;
+    } else if (name == QLatin1String("pist_tabs")) {
+        command = QStringLiteral("tabs");
+        block = true;
+    } else if (name == QLatin1String("pist_save")) {
+        command = QStringLiteral("save");
     } else if (name == QLatin1String("pist_screenshot")) {
         const QString path = args.value(QStringLiteral("path")).toString();
         command = path.isEmpty() ? QStringLiteral("screenshot")
@@ -390,10 +573,50 @@ void McpServer::deliverReply(quint64 token, const QString &text)
     const Outstanding outstanding = it.value();
     m_outstanding.erase(it);
 
-    // `error …` from the IDE is a *tool execution* error, not a protocol error:
-    // the call was well-formed and the IDE answered, so it goes back in a
-    // result with isError, which is what the spec prescribes for API failures.
     const bool isError = text.startsWith(QLatin1String("error"));
+
+    // A resource read wraps its body as resource contents, not a tool result.
+    if (outstanding.tool.startsWith(QLatin1String("resource:"))) {
+        const QString uri = outstanding.tool.mid(9);
+        QJsonObject content;
+        content.insert(QStringLiteral("uri"), uri);
+        content.insert(QStringLiteral("text"), text);
+        if (uri != QLatin1String("pist://console"))
+            content.insert(QStringLiteral("mimeType"), QStringLiteral("application/json"));
+        else
+            content.insert(QStringLiteral("mimeType"), QStringLiteral("text/plain"));
+        QJsonObject result;
+        result.insert(QStringLiteral("contents"), QJsonArray{content});
+        sendResult(outstanding.id, result);
+        return;
+    }
+
+    // A failed build owes the agent its diagnostics: chain the problems query
+    // and answer when it lands, with the original error kept as the text.
+    if (isError && outstanding.tool == QLatin1String("pist_build")) {
+        m_outstanding.insert(token, Outstanding{outstanding.id,
+                                                QStringLiteral("pist_build_diagnostics"), text});
+        m_control->request(QStringLiteral("problems"), true, token);
+        return;
+    }
+    if (outstanding.tool == QLatin1String("pist_build_diagnostics")) {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &parseError);
+        QJsonObject structured;
+        QString pretty = text;
+        if (parseError.error == QJsonParseError::NoError) {
+            structured.insert(QStringLiteral("problems"),
+                              doc.isArray() ? doc.array() : QJsonArray{});
+            pretty = QString::fromUtf8(doc.toJson(QJsonDocument::Indented));
+        }
+        QJsonObject result;
+        result.insert(QStringLiteral("structuredContent"), structured);
+        result.insert(QStringLiteral("content"),
+                      textContent(outstanding.detail + QLatin1Char('\n') + pretty));
+        result.insert(QStringLiteral("isError"), true);
+        sendResult(outstanding.id, result);
+        return;
+    }
 
     // Tools whose answer is a JSON document get it in both shapes: parsed as
     // structuredContent for clients that consume fields, and pretty-printed
@@ -401,6 +624,7 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_problems")
                      || outstanding.tool == QLatin1String("pist_profile_results")
                      || outstanding.tool == QLatin1String("pist_symbols")
+                     || outstanding.tool == QLatin1String("pist_tabs")
                      || outstanding.tool == QLatin1String("pist_read")
                      || outstanding.tool == QLatin1String("pist_readmem")
                      || outstanding.tool == QLatin1String("pist_disasm"))) {
@@ -730,6 +954,46 @@ QJsonArray McpServer::tools()
                        "instead of polling pist_state when waiting for a breakpoint "
                        "to be hit. Events also arrive as MCP log notifications."),
         empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_tabs"), QStringLiteral("Open documents"),
+        QStringLiteral("Every open document: path, modified flag, and which is "
+                       "current, as a JSON array (also in structuredContent)."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_save"), QStringLiteral("Save the current document"),
+        QStringLiteral("Save the current document without a dialog. Errors when it "
+                       "has no file name yet or the write fails."),
+        empty, {}));
+
+    // Annotations: how a client tells a read from a mutation without parsing
+    // prose. destructiveHint marks the calls that end or rewrite live state.
+    const QStringList readOnly = {
+        QStringLiteral("pist_state"), QStringLiteral("pist_console"),
+        QStringLiteral("pist_read"), QStringLiteral("pist_problems"),
+        QStringLiteral("pist_symbols"), QStringLiteral("pist_readmem"),
+        QStringLiteral("pist_disasm"), QStringLiteral("pist_profile_results"),
+        QStringLiteral("pist_breakpoints"), QStringLiteral("pist_watch"),
+        QStringLiteral("pist_tabs"),
+    };
+    const QStringList destructive = {
+        QStringLiteral("pist_stop"), QStringLiteral("pist_setreg"),
+        QStringLiteral("pist_setmem"),
+    };
+    for (int i = 0; i < list.size(); ++i) {
+        QJsonObject tool = list[i].toObject();
+        const QString name = tool.value(QStringLiteral("name")).toString();
+        QJsonObject annotations;
+        if (readOnly.contains(name))
+            annotations.insert(QStringLiteral("readOnlyHint"), true);
+        if (destructive.contains(name))
+            annotations.insert(QStringLiteral("destructiveHint"), true);
+        if (!annotations.isEmpty()) {
+            tool.insert(QStringLiteral("annotations"), annotations);
+            list[i] = tool;
+        }
+    }
 
     return list;
 }

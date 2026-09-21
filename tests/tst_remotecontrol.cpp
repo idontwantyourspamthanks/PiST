@@ -46,6 +46,8 @@ private slots:
     void readReturnsTheOpenDocument();
     void profileUsageErrorNamesTheSubverbs();
     void openFailureIsAnErrorNotASilentOk();
+    void tabsListsTheOpenDocument();
+    void saveWritesOrRefuses();
     void statejsonIsAJsonObject();
     void problemsIsAJsonArray();
     void symbolsAfterBuildListTheLabels();
@@ -408,6 +410,56 @@ void TstRemoteControl::openFailureIsAnErrorNotASilentOk()
     const QString reply = exchange(s.client, "open /nonexistent/nothing.s", false);
     QVERIFY2(reply.startsWith(QStringLiteral("error")),
              qPrintable(QStringLiteral("reply: %1").arg(reply)));
+}
+
+void TstRemoteControl::tabsListsTheOpenDocument()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("prog.s"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("\trts\n");
+    file.close();
+    QCOMPARE(roundTrip(s.client, "open " + path.toUtf8()), QStringLiteral("ok"));
+
+    QString reply = roundTripBlock(s.client, "tabs");
+    reply.chop(3);
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8());
+    QVERIFY(doc.isArray());
+    bool found = false;
+    for (const QJsonValue &entry : doc.array()) {
+        const QJsonObject tab = entry.toObject();
+        if (tab.value(QStringLiteral("path")).toString() == path) {
+            found = true;
+            QCOMPARE(tab.value(QStringLiteral("current")).toBool(), true);
+        }
+    }
+    QVERIFY(found);
+}
+
+void TstRemoteControl::saveWritesOrRefuses()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // The pristine tab has no path; a name can't be chosen remotely.
+    QVERIFY(roundTrip(s.client, "save").startsWith(QStringLiteral("error")));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("prog.s"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("\trts\n");
+    file.close();
+    QCOMPARE(roundTrip(s.client, "open " + path.toUtf8()), QStringLiteral("ok"));
+    QCOMPARE(roundTrip(s.client, "save"), QStringLiteral("ok"));
 }
 
 void TstRemoteControl::symbolsAfterBuildListTheLabels()

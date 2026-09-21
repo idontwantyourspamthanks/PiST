@@ -21,6 +21,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -71,6 +72,11 @@ private:
     void handleInitialize(const QJsonValue &id, const QJsonObject &params);
     void handleToolsList(const QJsonValue &id);
     void handleToolsCall(const QJsonValue &id, const QJsonObject &params);
+    void handleResourcesList(const QJsonValue &id);
+    void handleResourcesRead(const QJsonValue &id, const QJsonObject &params);
+    void handleResourcesSubscribe(const QJsonValue &id, const QJsonObject &params, bool on);
+    void handlePromptsList(const QJsonValue &id);
+    void handlePromptsGet(const QJsonValue &id, const QJsonObject &params);
 
     /// Begin the event subscription that backs the `pist_watch` tool, if it is
     /// not already running.
@@ -89,6 +95,9 @@ private:
     struct Outstanding {
         QJsonValue id;
         QString tool;
+        /// A chained answer's context: the original error text when this is
+        /// the `problems` follow-up to a failed pist_build.
+        QString detail;
     };
 
     QString m_host;
@@ -109,6 +118,10 @@ private:
     /// A `pist_watch` call waiting for its `watch` acknowledgement.
     QJsonValue m_pendingWatchId;
     bool m_havePendingWatch = false;
+
+    /// URIs with an active resources/subscribe (pist://state only: it is the
+    /// one resource whose updates map onto session events).
+    QSet<QString> m_resourceSubs;
 
     bool m_initialized = false;
 };

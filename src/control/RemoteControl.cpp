@@ -514,6 +514,18 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         else
             reply(guarded, QStringLiteral("error ") + error);
 
+    } else if (cmd == QLatin1String("tabs")) {
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_window->tabsJson()).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("save")) {
+        // Quiet save of the current document; an untitled document can't be
+        // named from here, so that is an error, not a dialog.
+        reply(guarded, m_window->saveCurrentDocument()
+                          ? QStringLiteral("ok")
+                          : QStringLiteral("error nothing to save, or the write failed"));
+
+
     } else if (cmd == QLatin1String("screenshot")) {
         const QString path = arg.isEmpty() ? QStringLiteral("/tmp/pist-screenshot.png") : arg;
         // Captured through XGetImage (src/ui/EmbedX11.cpp), because
@@ -626,6 +638,8 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             "state            registers and PC (text)\n"
             "statejson        registers and PC as a JSON object\n"
             "problems         the Problems pane as a JSON array\n"
+            "tabs             the open documents as a JSON array\n"
+            "save             save the current document\n"
             "profile <v>      start|stop collection, results as a JSON array\n"
             "watch            receive events as the session changes state\n"
             "unwatch          stop receiving events (connection stays open)\n"
@@ -655,6 +669,9 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         reply(guarded, QStringLiteral("ok"));
 
     } else if (cmd == QLatin1String("quit")) {
+        // Deliberately not exposed as an MCP tool: an agent that can close
+        // the user's IDE unprompted is a foot-gun, and whoever drives the
+        // socket by hand can say `quit` themselves.
         reply(guarded, QStringLiteral("ok"));
         QCoreApplication::quit();
 

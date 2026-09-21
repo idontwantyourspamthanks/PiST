@@ -3414,6 +3414,37 @@ QJsonArray MainWindow::problemsJson() const
     return list;
 }
 
+QJsonArray MainWindow::tabsJson() const
+{
+    QJsonArray list;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        QJsonObject tab;
+        QString path;
+        bool modified = false;
+        if (auto *editor = qobject_cast<CodeEditor *>(m_tabs->widget(i))) {
+            path = editor->filePath();
+            modified = editor->isModifiedSinceLoad();
+        } else if (auto *image = qobject_cast<ImageEditor *>(m_tabs->widget(i))) {
+            path = image->filePath();
+            modified = image->isModifiedSinceLoad();
+        }
+        tab.insert(QStringLiteral("path"), path);
+        tab.insert(QStringLiteral("modified"), modified);
+        tab.insert(QStringLiteral("current"), i == m_tabs->currentIndex());
+        list.append(tab);
+    }
+    return list;
+}
+
+bool MainWindow::saveCurrentDocument()
+{
+    if (m_image)
+        return !m_image->filePath().isEmpty() && m_image->saveFile(m_image->filePath());
+    if (!m_editor || m_editor->filePath().isEmpty())
+        return false;
+    return m_editor->saveFile(m_editor->filePath());
+}
+
 QJsonArray MainWindow::profilerResultsJson() const
 {
     QJsonArray list;

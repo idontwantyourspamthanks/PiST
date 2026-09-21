@@ -10,40 +10,46 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.6.2
+## What's new in 0.6.3
 
-- **CPU profiler.** Profile Start/Stop from the debug toolbar while a program
-  runs; the results dock lists per-instruction counts and cycles, a hot-line
-  view maps them back to source, and the editor gutter is tinted by heat.
-- **Symbols browser.** A dock listing the labels from the build's own symbol
-  table, click to jump to the source line.
-- **68000 instruction reference.** A dock that follows the cursor and shows
-  the addressing forms, sizes and cycle counts of the mnemonic under it.
-- **Debugger console input.** Type debugger commands directly, with history
-  (Up/Down) and completion.
-- **More stepping.** Step out of a subroutine, and run to the cursor line,
-  join the existing step / step-over.
-- **Editor navigation.** Ctrl+click opens an `include`d file or jumps to a
-  label; F4 / Shift+F4 tour the Problems pane; File > Open Recent lists
-  recent sources.
-- **Sprite editor.** One key re-exports the bitplane data with the same
-  settings as the last export.
-- **Remote control and MCP.** The remote-control socket publishes watch
-  events for session state changes, and a small `pist-mcp` shim exposes the
-  IDE to MCP-aware tools. It ships in the Linux packages (AppImage, deb,
-  rpm); the Windows and macOS archives don't carry it yet, though it builds
-  from source there.
-- **Every archive now bundles vlink**, so multi-file projects link out of the
-  box, and **the Windows archive also bundles the emulator** (the hrdb-main
-  fork, built with MSYS2 — experimental; see Known limitations).
-- **Emulator support is now exercised in CI on macOS as well as Linux** —
-  which flushed out and fixed three real session bugs: control sockets
-  overflowing macOS's 104-byte socket-path limit under the system temp
-  directory, and two prompt-framing races in the debug transport that could
-  leave a session looking like it never stopped.
-- Smaller things: the toolbar's Continue is no longer the same icon as Run,
-  the project root stays where you put it, and the root picker starts at the
-  home directory until a root is chosen.
+This release is about driving PiST from another program — an AI agent, a
+script, or a test harness. The remote-control socket and the `pist-mcp` MCP
+server grew a real feature set, and `pist-mcp` now ships in **every**
+archive, including the Windows and macOS ones.
+
+- **25 MCP tools.** Beyond build/run/step: open and read back the document
+  the IDE is showing (`pist_open`, `pist_read`), the Problems pane with
+  severities (`pist_problems`), the build's symbols (`pist_symbols`), memory
+  reads and disassembly (`pist_readmem`, `pist_disasm`), and the profiler
+  (`pist_profile_start` / `pist_profile_stop` / `pist_profile_results`).
+- **Structured results.** State, problems, symbols, memory, disassembly and
+  profile results answer as JSON — in `structuredContent` as well as text —
+  so an agent consumes fields instead of parsing console output.
+- **Breakpoints by label.** `pist_breakpoint` accepts a symbol name and
+  resolves it to the first code line at or after its definition (a label on
+  its own line has no code to break on), replying with the file:line and
+  address it actually armed at.
+- **Session token and zero configuration.** A listening IDE now requires a
+  per-session token (`auth <token>` is the first line on a connection — on a
+  shared machine, "localhost only" still means every local user) and
+  publishes it with the port in an owner-only discovery file. `pist-mcp`
+  finds both there, so against a locally started IDE it needs no flags at
+  all. **Note for existing raw-protocol clients: send `auth` first — see the
+  README.**
+- **Push events.** Watchers are told when the debugger stops (with the real
+  program counter) and resumes, as socket events and as MCP log
+  notifications — no polling for a breakpoint hit.
+- **Blocking semantics.** `run`, `build` and now `profile stop` answer only
+  when the work is genuinely done, and block-typed queries return errors in
+  the same framing, so a reader never hangs waiting for a terminator.
+- **Correctness throughout the agent surface**, much of it found by driving
+  the tools end-to-end: the shim no longer introduces itself with the wrong
+  version, watch subscriptions can't hang against an unreachable IDE,
+  breakpoints on non-code lines say so instead of promising a stop that
+  never comes, `open` errors on a path that never opened instead of
+  reporting success, and the shim's protocol suite runs in CI on all three
+  platforms (the Linux and macOS archives also assert `pist-mcp` resolves
+  its bundled Qt).
 
 Every archive contains PiST, the `vasmm68k_mot` assembler, the `vlink` linker,
 and an EmuTOS ROM. The Linux AppImage and the Windows archive additionally

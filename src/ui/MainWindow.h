@@ -167,6 +167,10 @@ private slots:
     /// actions refuse a running machine.
     void profileStart();
     bool profileStop();
+    /// The guided profile: arm a one-shot at the cursor line, start collecting
+    /// and resume — the results show themselves on the stop. Composes with the
+    /// user's breakpoints; an earlier stop ends the run with partial results.
+    void profileToCursor();
     void showProfileResults();
     /// F4 / Shift+F4: step through the Problems pane without the mouse,
     /// wrapping, skipping diagnostics that carry no source line.
@@ -514,6 +518,10 @@ private:
     QDockWidget *m_profilerDock = nullptr;
     /// A `profile save` is in flight; its commandFinished parses the file.
     bool m_profileSavePending = false;
+    /// A "profile to cursor line" run is collecting; the next stop saves and
+    /// shows, and deletes the one-shot if some other stop won the race.
+    bool m_profileGuided = false;
+    quint32 m_profileGuidedAddr = 0;
     /// A stop was announced; the next state batch carries its PC, so the
     /// stopped event is published from onStateUpdated with the detail filled.
     bool m_stopEventPending = false;
@@ -589,6 +597,7 @@ private:
     QAction *m_actOpenProject = nullptr;
     QAction *m_actProfileStart = nullptr;
     QAction *m_actProfileStop = nullptr;
+    QAction *m_actProfileToCursor = nullptr;
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;

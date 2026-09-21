@@ -571,6 +571,12 @@ void MainWindow::createActions()
     m_actProfileStop->setToolTip(tr("Save the profile, then show hot lines and gutter heat "
                                     "(works while stopped)"));
     connect(m_actProfileStop, &QAction::triggered, this, &MainWindow::profileStop);
+
+    m_actProfileToCursor = new QAction(tr("Profile to &cursor line"), this);
+    m_actProfileToCursor->setToolTip(
+        tr("Arm a one-shot at the cursor line, collect profile counts to it, "
+           "and show the results when the run stops there"));
+    connect(m_actProfileToCursor, &QAction::triggered, this, &MainWindow::profileToCursor);
     connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
 
@@ -924,6 +930,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actRunToCursor);
     runMenu->addAction(m_actProfileStart);
     runMenu->addAction(m_actProfileStop);
+    runMenu->addAction(m_actProfileToCursor);
     runMenu->addSeparator();
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
@@ -1210,7 +1217,7 @@ void MainWindow::createDocks()
     m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
     m_displayDock->setVisible(m_embeddedDisplay);
     m_profiler = new ProfilerView(this);
-    m_profiler->setActions(m_actProfileStart, m_actProfileStop);
+    m_profiler->setActions(m_actProfileStart, m_actProfileStop, m_actProfileToCursor);
     addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
 
     // --- right, below the display: the debug views, tabbed together -----------
@@ -2976,6 +2983,35 @@ bool MainWindow::profileStop()
     return true;
 }
 
+void MainWindow::profileToCursor()
+{
+    // The whole ritual in one gesture: a one-shot at the cursor line (armed
+    // BEFORE `profile on`, since any arm after it would zero the counters),
+    // collection on, continue — onDebuggerStopped saves and shows.
+    if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty()) {
+        m_log->appendPlainText(
+            tr("[profile] profile to cursor works from a stopped machine — start a "
+               "debug session and stop at a breakpoint first"));
+        return;
+    }
+    const int line = m_editor->textCursor().blockNumber() + 1;
+    quint32 address = 0;
+    if (!m_programMap.codeAddressFor(m_editor->filePath(), line, &address)) {
+        m_log->appendPlainText(tr("[profile] no code address for %1:%2")
+                                   .arg(m_editor->filePath())
+                                   .arg(line));
+        return;
+    }
+    m_profileGuided = true;
+    m_profileGuidedAddr = address;
+    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
+    m_host->command(QStringLiteral("profile on"));
+    m_log->appendPlainText(tr("[profile] collecting to %1:%2 — results show on the stop")
+                               .arg(m_editor->filePath())
+                               .arg(line));
+    m_host->resume();
+}
+
 void MainWindow::showProfileResults()
 {
     ProfileData data;
@@ -3018,6 +3054,16 @@ void MainWindow::onDebuggerStopped()
     // two-phase attach below, once per session.
     if (m_sessionArmed) {
         m_host->refresh();
+        if (m_profileGuided) {
+            m_profileGuided = false;
+            // Any stop ends the guided run: the one-shot's, or a user
+            // breakpoint that won the race (results are then partial, which is
+            // what "composes" means). The delete covers the race case; when
+            // the one-shot itself stopped the run it is already consumed and
+            // the delete is a harmless note in the console.
+            profileStop();
+            m_host->command(QStringLiteral("db pc = $%1 :once").arg(m_profileGuidedAddr, 0, 16));
+        }
         return;
     }
     m_sessionArmed = true;

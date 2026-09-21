@@ -95,10 +95,12 @@ ProfilerView::ProfilerView(QWidget *parent)
     clear();
 }
 
-void ProfilerView::setActions(QAction *start, QAction *stop)
+void ProfilerView::setActions(QAction *start, QAction *stop, QAction *toCursor)
 {
     auto *row = m_filter->parentWidget()->layout();
-    for (QAction *action : {start, stop}) {
+    for (QAction *action : {start, stop, toCursor}) {
+        if (!action)
+            continue;
         auto *button = new QToolButton(this);
         button->setDefaultAction(action);
         row->addWidget(button);

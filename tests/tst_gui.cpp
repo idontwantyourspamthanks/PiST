@@ -160,6 +160,7 @@ private slots:
     void diagnosticKeyboardFlowToursProblems();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
+    void profileToCursorCollectsAndShowsResults();
     void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
@@ -752,6 +753,80 @@ void TstGui::profilerCollectsAndMapsHotLines()
     }
     QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
     QVERIFY2(routines.contains(QStringLiteral("loop")), qPrintable(routines.join(',')));
+    QVERIFY(editor->hasLineHeat());
+
+    host->stop();
+}
+
+// The guided flow: cursor on the measurement's end line, one action, and the
+// results save and show themselves when the run stops there — no Profile
+// Stop step, no manual choreography.
+void TstGui::profileToCursorCollectsAndShowsResults()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/profguided.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#0,d0\n"       // line 2
+              "loop:\taddq.w\t#1,d0\n"       // line 3  <- the hot line
+              "\tcmp.w\t#100,d0\n"           // line 4
+              "\tblo.s\tloop\n"              // line 5
+              "done:\tbra.s\tdone\n"         // line 6  <- measurement ends here
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    window.show();
+    window.openPath(source);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host && editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // Cursor on the measurement's end, one gesture: arm the one-shot, profile
+    // on, continue — the stop saves and shows without another click.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(5).position());
+    editor->setTextCursor(cursor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "profileToCursor", Qt::DirectConnection));
+
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 6, 30000);
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
+    QVERIFY(dock);
+    auto *tree = dock->findChild<QTreeWidget *>(QStringLiteral("profilerTree"));
+    QVERIFY(tree);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        tree->topLevelItemCount() > 0
+        || window.debugConsoleText().contains(QLatin1String("[profile] no"))
+        || window.debugConsoleText().contains(QLatin1String("[profile] not")),
+        15000);
+    if (tree->topLevelItemCount() == 0) {
+        host->stop();
+        QSKIP("this Hatari build has no Capstone disassembler for profile save");
+    }
+
+    QStringList lines;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *root = tree->topLevelItem(i);
+        for (int c = 0; c < root->childCount(); ++c)
+            lines << root->child(c)->text(0);
+    }
+    QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("collecting to")));
     QVERIFY(editor->hasLineHeat());
 
     host->stop();

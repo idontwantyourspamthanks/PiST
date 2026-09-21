@@ -61,7 +61,7 @@ public slots:
     /// Offer the window's profile actions as buttons beside the filter. The
     /// same QActions drive the Run menu, so enabled state and tooltips stay
     /// in sync without a second copy.
-    void setActions(QAction *start, QAction *stop);
+    void setActions(QAction *start, QAction *stop, QAction *toCursor = nullptr);
 
     /// Per-source-line execution counts of what is currently shown, for the
     /// editor's gutter heat. These are the very numbers the tree renders, so

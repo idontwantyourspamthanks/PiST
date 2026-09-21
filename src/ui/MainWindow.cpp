@@ -2952,8 +2952,8 @@ void MainWindow::profileStart()
     // breakpoint must exist before this. The flow that works: set a
     // breakpoint, Profile Start here, continue, the breakpoint stops the run.
     if (!m_host->isStopped()) {
-        const QString hint = tr("Stop at a pre-armed breakpoint first: arming anything "
-                                "mid-run (including Pause) resets the counters");
+        const QString hint = tr("Needs a stopped session — run (F5), stop at a "
+                                "breakpoint, then Profile Start");
         m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
         m_profiler->showMessage(hint);
         return;
@@ -2966,8 +2966,8 @@ void MainWindow::profileStart()
 bool MainWindow::profileStop()
 {
     if (!m_host->isStopped() || m_currentSessionDir.isEmpty()) {
-        const QString hint = tr("Profile Stop works from a stopped machine — "
-                                "the save command needs the debugger");
+        const QString hint = tr("Needs a stopped session — the save command "
+                                "needs the debugger");
         m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
         m_profiler->showMessage(hint);
         return false;
@@ -2994,8 +2994,8 @@ void MainWindow::profileToCursor()
     // BEFORE `profile on`, since any arm after it would zero the counters),
     // collection on, continue — onDebuggerStopped saves and shows.
     if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty()) {
-        const QString hint = tr("Profile to cursor works from a stopped machine — "
-                                "start a debug session and stop at a breakpoint first");
+        const QString hint = tr("Needs a stopped session — run (F5) and stop at "
+                                "a breakpoint first");
         m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
         m_profiler->showMessage(hint);
         return;

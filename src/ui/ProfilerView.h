@@ -106,7 +106,7 @@ private:
     void applyFilter();
     void setRow(QTreeWidgetItem *item, const QString &name, quint64 count, quint64 cycles) const;
 
-    QHBoxLayout *m_topRow = nullptr;
+    QHBoxLayout *m_buttonRow = nullptr;
     QLineEdit *m_filter = nullptr;
     QCheckBox *m_showAll = nullptr;
     QTreeWidget *m_tree = nullptr;

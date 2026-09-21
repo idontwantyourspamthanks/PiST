@@ -48,23 +48,23 @@ ProfilerView::ProfilerView(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
 
-    m_topRow = new QHBoxLayout;
-    m_topRow->setSpacing(4);
+    auto *filterRow = new QHBoxLayout;
+    filterRow->setSpacing(4);
     m_filter = new QLineEdit(this);
     m_filter->setObjectName(QStringLiteral("profilerFilter"));
     m_filter->setPlaceholderText(tr("Filter routines and lines"));
     m_filter->setClearButtonEnabled(true);
-    m_topRow->addWidget(m_filter, 1);
+    filterRow->addWidget(m_filter, 1);
 
     m_showAll = new QCheckBox(tr("Show all"), this);
     m_showAll->setObjectName(QStringLiteral("profilerShowAll"));
     m_showAll->setToolTip(tr("Also show rows under 0.1% of the run"));
-    m_topRow->addWidget(m_showAll);
+    filterRow->addWidget(m_showAll);
 
     m_status = new QLabel(this);
     m_status->setObjectName(QStringLiteral("profilerStatus"));
-    m_topRow->addWidget(m_status);
-    layout->addLayout(m_topRow);
+    filterRow->addWidget(m_status);
+    layout->addLayout(filterRow);
 
     m_tree = new QTreeWidget(this);
     m_tree->setObjectName(QStringLiteral("profilerTree"));
@@ -76,6 +76,12 @@ ProfilerView::ProfilerView(QWidget *parent)
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
     appearance::markMono(m_tree);
     layout->addWidget(m_tree, 1);
+
+    // The actions sit at the bottom, where a button belongs in a dock; the row
+    // is created empty and setActions fills it with the window's actions.
+    m_buttonRow = new QHBoxLayout;
+    m_buttonRow->setSpacing(4);
+    layout->addLayout(m_buttonRow);
 
     // Double-click is what every other list in the IDE uses for "go there"
     // (BreakpointPanel, StackView, MemoryView), so a hot line — or the routine
@@ -97,12 +103,18 @@ ProfilerView::ProfilerView(QWidget *parent)
 
 void ProfilerView::setActions(QAction *start, QAction *stop, QAction *toCursor)
 {
-    for (QAction *action : {start, stop, toCursor}) {
+    const std::pair<QAction *, const char *> buttons[] = {
+        {start, "profilerStartButton"},
+        {stop, "profilerStopButton"},
+        {toCursor, "profilerToCursorButton"},
+    };
+    for (const auto &[action, name] : buttons) {
         if (!action)
             continue;
         auto *button = new QToolButton(this);
         button->setDefaultAction(action);
-        m_topRow->addWidget(button);
+        button->setObjectName(QString::fromLatin1(name));
+        m_buttonRow->addWidget(button);
     }
 }
 

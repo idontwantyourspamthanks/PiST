@@ -161,6 +161,7 @@ private slots:
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
+    void profilerButtonsExplainThemselvesInTheDock();
     void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
     void dockTabMoveMenuMovesDockBetweenAreas();
@@ -830,6 +831,32 @@ void TstGui::profileToCursorCollectsAndShowsResults()
     QVERIFY(editor->hasLineHeat());
 
     host->stop();
+}
+
+// The dock's buttons are real controls, not decoration: a click in a state
+// where profiling cannot run answers in the dock's own status line.
+void TstGui::profilerButtonsExplainThemselvesInTheDock()
+{
+    MainWindow window;
+    window.show();
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
+    QVERIFY(dock);
+    auto *status = dock->findChild<QLabel *>(QStringLiteral("profilerStatus"));
+    QVERIFY(status);
+    auto *start = dock->findChild<QToolButton *>(QStringLiteral("profilerStartButton"));
+    auto *toCursor = dock->findChild<QToolButton *>(QStringLiteral("profilerToCursorButton"));
+    QVERIFY(start && toCursor);
+
+    const QString empty = status->text();
+    QVERIFY(!empty.isEmpty()); // the empty state teaches the flow
+
+    QTest::mouseClick(start, Qt::LeftButton);
+    QVERIFY(status->text() != empty);
+    QVERIFY(status->text().contains(QStringLiteral("breakpoint"), Qt::CaseInsensitive));
+
+    QTest::mouseClick(toCursor, Qt::LeftButton);
+    QVERIFY(status->text().contains(QStringLiteral("F5")));
 }
 
 void TstGui::clearAllRemovesWatchpoints()

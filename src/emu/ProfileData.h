@@ -26,6 +26,19 @@ struct ProfileLine
     quint64 cycles = 0;
 };
 
+/// One memory area the emulator attributed profiled addresses to, from the
+/// save file's area lines (`ROM_TOS: 0xfc0000-0xfc0100`).
+///
+/// Retained so time spent inside the OS — trap handlers, often a real share
+/// of a frame — can be shown as its own row instead of being discarded as
+/// "unmapped" only because it is not in the user's source.
+struct ProfileRegion
+{
+    QString name;
+    quint32 first = 0;
+    quint32 last = 0; ///< inclusive, as the file writes it
+};
+
 /// Parsed `profile save` output.
 ///
 /// The save file is plain text, written by Profile_Save (src/debug/profile.c)
@@ -72,11 +85,14 @@ struct ProfileData
     quint64 totalCount = 0;
     quint64 totalCycles = 0;
 
+    /// The memory areas named in the header (ST_RAM, ROM_TOS, CARTRIDGE,
+    /// PROGRAM_TEXT), in the file's order. May be empty in older saves.
+    QList<ProfileRegion> regions;
+
     bool isEmpty() const { return lines.isEmpty(); }
 };
 
 /// Parse a profile file written by Hatari's `profile save <file>`.
-///
 /// Returns false and sets `error` when the file cannot be read, is not a
 /// Hatari profile at all, or contains no executed instruction — the last case
 /// being what a `profile on` issued while emulation was already running

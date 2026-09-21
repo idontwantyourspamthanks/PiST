@@ -2986,7 +2986,7 @@ void MainWindow::showProfileResults()
         return;
     }
     m_profiler->setProfile(data, &m_programMap,
-                           m_editor ? m_editor->filePath() : QString());
+                           m_editor ? m_editor->filePath() : QString(), m_symbols);
     if (m_profilerDock) {
         m_profilerDock->show();
         m_profilerDock->raise();

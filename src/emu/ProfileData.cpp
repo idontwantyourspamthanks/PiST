@@ -46,14 +46,14 @@ Re fieldRegexpRe()
 }
 
 // `ST_RAM:\t\t0x000000-0x100000` — one of the memory-area lines Profile_CpuSave
-// writes between the header and the disassembly. The values are ignored: PiST
-// already knows the program's extent from the line map, and these areas are a
-// hint for Hatari's own post-processor. Recognised only so the header block can
-// be told apart from the disassembly that follows it.
+// writes between the header and the disassembly. The name and span are kept so
+// time inside ROM can be attributed to the OS rather than discarded: PiST
+// already knows the program's extent from the line map, but a ROM address is
+// nobody's source line, and "unmapped" should not silently swallow it.
 Re areaRe()
 {
     static const QRegularExpression re(
-        QStringLiteral(R"RX(^([^:]+):\s*0x[0-9A-Fa-f]+-0x[0-9A-Fa-f]+\s*$)RX"));
+        QStringLiteral(R"RX(^([^:]+):\s*0x([0-9A-Fa-f]+)-0x([0-9A-Fa-f]+)\s*$)RX"));
     return re;
 }
 
@@ -165,7 +165,13 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
             ++at;
             continue;
         }
-        if (areaRe().match(line).hasMatch()) {
+        const QRegularExpressionMatch area = areaRe().match(line);
+        if (area.hasMatch()) {
+            ProfileRegion region;
+            region.name = area.captured(1).trimmed();
+            region.first = area.captured(2).toUInt(nullptr, 16);
+            region.last = area.captured(3).toUInt(nullptr, 16);
+            parsed.regions.append(region);
             ++at;
             continue;
         }

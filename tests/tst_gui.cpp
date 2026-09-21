@@ -57,6 +57,7 @@
 #include <QLabel>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QTreeWidget>
 #include <QTimer>
 #include <QSpinBox>
 #include <QToolButton>
@@ -719,20 +720,20 @@ void TstGui::profilerCollectsAndMapsHotLines()
 
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
     QVERIFY(dock);
-    auto *table = dock->findChild<QTableWidget *>();
-    QVERIFY(table);
+    auto *tree = dock->findChild<QTreeWidget *>(QStringLiteral("profilerTree"));
+    QVERIFY(tree);
 
     // Wait for the parse outcome itself: rows, or the parser's error in the
     // console. (Hatari's own stop-time stats say "executed instructions", so
     // matching on "instructions" alone would race profileStop's commands.)
     QTRY_VERIFY_WITH_TIMEOUT(
-        table->rowCount() > 0
+        tree->topLevelItemCount() > 0
         || window.debugConsoleText().contains(QLatin1String("[profile] no"))
         || window.debugConsoleText().contains(QLatin1String("[profile] not")),
         15000);
     // Stop before the skip path too: bailing with a live session aborts the
     // process on teardown (observed on CI as exit 134 after the QSKIP).
-    const bool haveRows = table->rowCount() > 0;
+    const bool haveRows = tree->topLevelItemCount() > 0;
     if (!haveRows) {
         // The save needs the external disassembler (the UAE core writes
         // profile text to the trace file, not the save file): a Hatari
@@ -741,11 +742,16 @@ void TstGui::profilerCollectsAndMapsHotLines()
         QSKIP("this Hatari build has no Capstone disassembler for profile save");
     }
 
-    // The loop body dominates, and its line is mapped from the address.
-    QStringList lines;
-    for (int i = 0; i < table->rowCount(); ++i)
-        lines << table->item(i, 0)->text();
+    // The loop body dominates: its line is a child row under its routine.
+    QStringList lines, routines;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *root = tree->topLevelItem(i);
+        routines << root->text(0);
+        for (int c = 0; c < root->childCount(); ++c)
+            lines << root->child(c)->text(0);
+    }
     QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
+    QVERIFY2(routines.contains(QStringLiteral("loop")), qPrintable(routines.join(',')));
     QVERIFY(editor->hasLineHeat());
 
     host->stop();

@@ -10,6 +10,29 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.7.0
+
+The instruction reference dock learned the operating system. It was always
+good at telling you what `addq.l` does; now it tells you what your *program*
+is doing:
+
+- **TOS system-call reference.** Cursor on a `trap #1`, `trap #13` or
+  `trap #14` line — or on any of the pushes feeding one — and the dock names
+  the GEMDOS, BIOS or XBIOS call being made: 111 entries covering the whole
+  TOS 1.x/2.x set, each with its C prototype, what d0 returns, the TOS
+  version it needs, and the stack layout.
+- **It reads the idiom, not just the word.** The dock resolves the function
+  number from the push above the trap (`move.w #9,-(sp)`, `#$0b`,
+  `#Cconws`, `clr.w`) and shows what the call is being made *with* —
+  "Calling with: #msg". A register-pushed number still shows the generic
+  TRAP entry.
+- Everything joins the one searchable list, CPU families first, so the
+  filter covers instructions and calls alike.
+
+The demo sources get a correction out of the bargain: function 7 is Crawcin,
+not Cnecin as their comments claimed — exactly the mix-up this feature
+exists to catch.
+
 ## What's new in 0.6.3.2
 
 The rest of the agent surface, in one point release:

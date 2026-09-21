@@ -205,11 +205,11 @@ unbuilt.
   and state-lossy.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
   the debugger is stopped, so a frozen frame is not mistaken for a crash.
-- **Profiler icons.** Not started, and they need a close look before any more profiler UI work.
-  Profile Start, Stop, and To Cursor (`paintProfileStart`, `paintProfileStop`,
-  `paintProfileToCursor` in `src/ui/Icons.cpp`) are the weak set in the hand-drawn toolbar: Start
-  is a bare record disc, Stop stacks a bar chart under a stop square, and To Cursor is a crosshair.
-  Redraw them in the same style as the other toolbar icons. Do not import an icon set.
+- **Profiler icons.** Redrawn in the hand-drawn toolbar style (`paintProfileStart`,
+  `paintProfileStop`, `paintProfileToCursor` in `src/ui/Icons.cpp`). The three share a rising
+  sample count: Start is the accent play mark over that count, Stop is the count on a baseline,
+  and To Cursor stands an I-beam beside it. The old set was a record disc, a chart stacked on
+  the stop square, and a crosshair.
 
 ---
 

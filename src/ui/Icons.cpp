@@ -1037,54 +1037,76 @@ void paintPaste(QPainter &p, const QRectF &r, qreal w)
     p.drawRoundedRect(tab, 1, 1);
 }
 
+// Three rising sample bars. The profiler icons share them so the three
+// buttons read as one tool: Start plays, Stop is the chart itself, and
+// To Cursor stands the caret beside the same bars.
+void paintProfileBars(QPainter &p, const QRectF &r, const QColor &tallest)
+{
+    p.setPen(Qt::NoPen);
+    const qreal bw = r.width() * 0.22;
+    const qreal gap = r.width() * 0.10;
+    const qreal total = 3 * bw + 2 * gap;
+    const qreal x0 = r.left() + (r.width() - total) * 0.5;
+    const qreal base = r.bottom();
+    const qreal frac[3] = {0.50, 0.74, 1.0};
+    for (int i = 0; i < 3; ++i) {
+        const qreal h = r.height() * frac[i];
+        p.setBrush(i == 2 ? tallest : ink());
+        p.drawRoundedRect(QRectF(x0 + i * (bw + gap), base - h, bw, h), 1, 1);
+    }
+}
+
 void paintProfileStart(QPainter &p, const QRectF &r, qreal w)
 {
-    // Record: a filled disc in the stop-red — the universal "start capturing".
+    // Run is a triangle alone. Start is that triangle over a sample count,
+    // so the two stay distinct on a toolbar.
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0xe0, 0x5a, 0x4a));
-    const qreal d = r.width() * 0.52;
-    p.drawEllipse(QRectF(r.center().x() - d / 2, r.center().y() - d / 2, d, d));
+    p.setBrush(accent());
+    QPainterPath tri;
+    const qreal top = r.top() + r.height() * 0.02;
+    const qreal bot = r.top() + r.height() * 0.52;
+    tri.moveTo(r.left() + r.width() * 0.28, top);
+    tri.lineTo(r.left() + r.width() * 0.28, bot);
+    tri.lineTo(r.left() + r.width() * 0.76, (top + bot) * 0.5);
+    tri.closeSubpath();
+    p.drawPath(tri);
+
+    const QRectF bars(r.left() + r.width() * 0.14, r.top() + r.height() * 0.62,
+                      r.width() * 0.72, r.height() * 0.36);
+    paintProfileBars(p, bars, ink());
     Q_UNUSED(w);
 }
 
 void paintProfileStop(QPainter &p, const QRectF &r, qreal w)
 {
-    // Stop and show: the stop square rides on a bar chart — collection ends,
-    // results appear.
-    p.setPen(Qt::NoPen);
-    p.setBrush(ink());
-    const qreal bw = r.width() * 0.13;
-    const qreal base = r.top() + r.height() * 0.76;
-    for (int i = 0; i < 3; ++i) {
-        const qreal h = r.height() * (0.22 + 0.16 * i);
-        p.drawRoundedRect(QRectF(r.left() + r.width() * (0.16 + 0.20 * i), base - h, bw, h), 1, 1);
-    }
-    const qreal sq = r.width() * 0.34;
-    p.setBrush(QColor(0xe0, 0x5a, 0x4a));
-    p.drawRoundedRect(QRectF(r.right() - sq - r.width() * 0.10, r.top() + r.height() * 0.12, sq, sq),
-                      w, w);
+    // The counts themselves. No stop-square: the toolbar Stop is already
+    // that, and stacking it on the bars made both unreadable.
+    const QRectF bars(r.left() + r.width() * 0.10, r.top() + r.height() * 0.06,
+                      r.width() * 0.80, r.height() * 0.74);
+    paintProfileBars(p, bars, ink());
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const qreal y = r.bottom() - w * 0.5;
+    p.drawLine(QPointF(r.left() + r.width() * 0.08, y), QPointF(r.right() - r.width() * 0.08, y));
 }
 
 void paintProfileToCursor(QPainter &p, const QRectF &r, qreal w)
 {
-    // Measure to a point: a crosshair with the accent dot at its centre.
-    p.setPen(stroke(ink(), w));
+    // The same counts, measured up to the caret. The I-beam is the cursor,
+    // not a fourth bar: it is a stroke, with serifs.
+    const QRectF bars(r.left() + r.width() * 0.02, r.top() + r.height() * 0.16,
+                      r.width() * 0.60, r.height() * 0.76);
+    paintProfileBars(p, bars, ink());
+
+    p.setPen(stroke(accent(), w));
     p.setBrush(Qt::NoBrush);
-    const qreal rad = r.width() * 0.26;
-    p.drawEllipse(r.center(), rad, rad);
-    const qreal arm = r.width() * 0.14;
-    p.drawLine(QPointF(r.center().x(), r.top() + r.height() * 0.10),
-               QPointF(r.center().x(), r.center().y() - rad - arm * 0.2));
-    p.drawLine(QPointF(r.center().x(), r.bottom() - r.height() * 0.10),
-               QPointF(r.center().x(), r.center().y() + rad + arm * 0.2));
-    p.drawLine(QPointF(r.left() + r.width() * 0.10, r.center().y()),
-               QPointF(r.center().x() - rad - arm * 0.2, r.center().y()));
-    p.drawLine(QPointF(r.right() - r.width() * 0.10, r.center().y()),
-               QPointF(r.center().x() + rad + arm * 0.2, r.center().y()));
-    p.setPen(Qt::NoPen);
-    p.setBrush(accent());
-    const qreal d = r.width() * 0.16;
-    p.drawEllipse(QRectF(r.center().x() - d / 2, r.center().y() - d / 2, d, d));
+    const qreal x = r.right() - r.width() * 0.16;
+    const qreal top = r.top() + r.height() * 0.10;
+    const qreal bot = r.bottom() - r.height() * 0.10;
+    const qreal serif = r.width() * 0.11;
+    p.drawLine(QPointF(x, top), QPointF(x, bot));
+    p.drawLine(QPointF(x - serif, top), QPointF(x + serif, top));
+    p.drawLine(QPointF(x - serif, bot), QPointF(x + serif, bot));
 }
 
 using PaintFn = void (*)(QPainter &, const QRectF &, qreal);

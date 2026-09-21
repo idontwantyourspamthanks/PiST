@@ -3066,13 +3066,30 @@ void MainWindow::syncProfileActions()
 {
     // Profiling is a mode: once collecting, Start and Profile-to-cursor make
     // no sense until Stop; with nothing collecting, Stop has nothing to save.
+    // The tooltip always says WHY, so a disabled button is never a riddle.
     const bool stopped = m_host && m_host->isStopped();
-    if (m_actProfileStart)
+    const QString needStopped = tr("Needs a stopped session — run (F5) and stop at a breakpoint");
+    if (m_actProfileStart) {
         m_actProfileStart->setEnabled(stopped && !m_profilingActive);
-    if (m_actProfileStop)
+        m_actProfileStart->setToolTip(m_profilingActive
+                                          ? tr("Already collecting — Profile Stop and Show ends the run")
+                                          : stopped ? tr("Start collecting CPU profile counts from here")
+                                                    : needStopped);
+    }
+    if (m_actProfileStop) {
         m_actProfileStop->setEnabled(stopped && m_profilingActive);
-    if (m_actProfileToCursor)
+        m_actProfileStop->setToolTip(!m_profilingActive
+                                         ? tr("Nothing is collecting — Profile Start begins a run")
+                                         : stopped ? tr("Save the profile, then show hot lines and gutter heat")
+                                                   : needStopped);
+    }
+    if (m_actProfileToCursor) {
         m_actProfileToCursor->setEnabled(stopped && !m_profilingActive);
+        m_actProfileToCursor->setToolTip(m_profilingActive
+                                             ? tr("Already collecting — Profile Stop and Show ends the run")
+                                             : stopped ? tr("Collect profile counts to the cursor line, then show the results")
+                                                       : needStopped);
+    }
 }
 
 void MainWindow::pauseSession()

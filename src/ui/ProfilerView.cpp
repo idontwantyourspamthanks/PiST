@@ -117,6 +117,8 @@ void ProfilerView::setActions(QAction *start, QAction *stop, QAction *toCursor)
         auto *button = new QToolButton(this);
         button->setDefaultAction(action);
         button->setObjectName(QString::fromLatin1(name));
+        // Glyph + tooltip only: the action's text would blow out the row.
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         m_buttonRow->addWidget(button);
     }
 }

@@ -296,8 +296,10 @@ jobs:
           macdeployqt bundle/pist.app -always-overwrite \
             -executable=bundle/pist.app/Contents/MacOS/pist-mcp
           # The helper must resolve Qt from the bundle it rides in, not the host.
+          # macdeployqt writes @loader_path for helpers (the loader is the
+          # executable, so this resolves to the same Contents/Frameworks).
           otool -L bundle/pist.app/Contents/MacOS/pist-mcp \
-            | grep -q '@executable_path/../Frameworks/QtCore.framework' \
+            | grep -q '@loader_path/../Frameworks/QtCore.framework' \
             || { echo "ERROR: pist-mcp not fixed up into the bundle"; \
                  otool -L bundle/pist.app/Contents/MacOS/pist-mcp; exit 1; }
           # The assembler and linker belong beside the executable inside the

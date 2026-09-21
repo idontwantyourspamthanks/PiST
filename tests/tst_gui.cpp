@@ -165,6 +165,9 @@ private slots:
     void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
     void viewMenuListsEveryDock();
+    void factoryLayoutShowsRegistersAndTheEditor();
+    void windowGeometryPersistsAcrossRestart();
+    void savedLayoutBeatsTheFactorySplit();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -2188,6 +2191,143 @@ void TstGui::viewMenuListsEveryDock()
     const bool secondShown = second->isVisibleTo(&window);
     second->toggleViewAction()->trigger();
     QCOMPARE(second->isVisibleTo(&window), !secondShown);
+}
+
+// A first run used to leave Profiler — the last dock tabified — covering
+// Registers, and Qt's default split gave the side docks as much room as the
+// editor. The factory arrangement raises Registers, gives the editor about
+// 60% of a 1280-wide window, and keeps the bottom group short.
+void TstGui::factoryLayoutShowsRegistersAndTheEditor()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *registers = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
+    auto *profiler = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
+    auto *problems = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"));
+    QVERIFY(registers && profiler && problems);
+
+    // Tabified docks all answer isVisibleTo. The selected tab is what the
+    // user sees, and a first run used to leave that on Profiler.
+    QTabBar *debugTabs = nullptr;
+    const auto bars = window.findChildren<QTabBar *>();
+    for (QTabBar *bar : bars) {
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabText(i) == QLatin1String("Profiler"))
+                debugTabs = bar;
+        }
+    }
+    QVERIFY2(debugTabs, "the debug docks must be tabbed together");
+    QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Registers"));
+
+    // 60% of the window, with room for frames and the splitter handles.
+    QVERIFY2(window.centralWidget()->width() * 100 >= window.width() * 55,
+             qPrintable(QStringLiteral("editor %1px in a %2px window")
+                            .arg(window.centralWidget()->width())
+                            .arg(window.width())));
+    // A strip, not a second editor. The dock's own size hint lands near 110px
+    // in an 860-tall window; half the window would be the failure.
+    QVERIFY2(problems->height() >= 80 && problems->height() * 3 < window.height(),
+             qPrintable(QStringLiteral("bottom group is %1px in a %2px window")
+                            .arg(problems->height())
+                            .arg(window.height())));
+
+    // Reset layout returns to that factory tab, not to whatever was raised.
+    int profilerIndex = -1;
+    for (int i = 0; i < debugTabs->count(); ++i) {
+        if (debugTabs->tabText(i) == QLatin1String("Profiler"))
+            profilerIndex = i;
+    }
+    QVERIFY(profilerIndex >= 0);
+    debugTabs->setCurrentIndex(profilerIndex);
+    QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Profiler"));
+    auto *reset = window.findChild<QAction *>(QStringLiteral("resetLayoutAction"));
+    QVERIFY2(reset, "View menu must offer Reset layout");
+    reset->trigger();
+    // restoreState rebuilds the tab bar, so the pointer from before is dead.
+    debugTabs = nullptr;
+    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabText(i) == QLatin1String("Registers"))
+                debugTabs = bar;
+        }
+    }
+    QVERIFY(debugTabs);
+    QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Registers"));
+}
+
+void TstGui::windowGeometryPersistsAcrossRestart()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+    int width = 0;
+    int height = 0;
+    {
+        // Inside the offscreen screen (800×800). The plugin nudges a
+        // requested size, so the contract is the size the window actually
+        // took, and that it stayed near the request.
+        MainWindow window;
+        window.resize(760, 520);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        window.resize(760, 520);
+        width = window.width();
+        height = window.height();
+        QVERIFY(window.close());
+    }
+    QVERIFY(qAbs(width - 760) < 80);
+    QVERIFY(qAbs(height - 520) < 80);
+    {
+        MainWindow window;
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCOMPARE(window.width(), width);
+        QCOMPARE(window.height(), height);
+    }
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+}
+
+// A saved arrangement is the user's. The factory split must not put Registers
+// back on top of a layout that closed it.
+void TstGui::savedLayoutBeatsTheFactorySplit()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+    {
+        MainWindow window;
+        auto *registers = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
+        QVERIFY(registers);
+        registers->setVisible(false);
+        QVERIFY(window.close());
+    }
+    {
+        MainWindow window;
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *registers = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
+        QVERIFY(registers);
+        QVERIFY2(!registers->isVisibleTo(&window),
+                 "a saved layout that hid Registers must stay hidden");
+    }
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
 }
 
 // Multiple memory panes: each is its own tabbed dock with its own routing tag,

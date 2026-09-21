@@ -124,6 +124,7 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
@@ -449,6 +450,15 @@ private:
     /// the user's current arrangement. Invoked from the View menu.
     void resetToDefaultLayout();
 
+    /// Widths of a first run: the editor keeps about 60% of a 1280-wide
+    /// window. The bottom group keeps its size hint, a short strip.
+    /// Captured into the factory state so Reset layout returns to it.
+    void applyFactoryDockSizes();
+
+    /// Size the window (restored geometry, or 1280×860), capture the factory
+    /// dock state, then put a saved arrangement back if there is one.
+    void finalizeLayout();
+
     /// Re-apply theme, icons, and monospace fonts after appearance preferences
     /// change, and once at construction so the first window is already themed.
     void applyAppearance();
@@ -481,6 +491,15 @@ private:
     /// The factory dock arrangement, captured after the default tab groupings are
     /// applied, so "Reset layout" can restore it. Saved/restored via QSettings.
     QByteArray m_defaultLayoutState;
+
+    /// True until the first show of a window that has no saved arrangement.
+    /// Dock sizes set before the window is on screen do not stick.
+    bool m_applyFactorySizes = false;
+
+    /// Client size saved alongside saveGeometry. restoreGeometry returns
+    /// success and then still adjusts the width, so the explicit size is
+    /// reapplied on show.
+    QSize m_restoredSize;
 
     /// The View menu, kept so the per-dock show/hide actions can be appended once
     /// the docks exist (menus are created before docks).

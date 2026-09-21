@@ -50,6 +50,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QShowEvent>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
@@ -196,7 +197,7 @@ MainWindow::MainWindow(QWidget *parent)
     // so run the per-tab pass once, or Find would stay greyed out until the
     // first tab switch.
     onTabChanged(m_tabs->currentIndex());
-    resize(1280, 860);
+    finalizeLayout();
 }
 
 CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
@@ -1271,6 +1272,15 @@ void MainWindow::createDocks()
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
     for (int i = 1; i < debugTabs.size(); ++i)
         tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
+    // tabifyDockWidget leaves the last dock on top, which made a first run
+    // open on Profiler. Registers is the tab the debug group should show.
+    debugTabs.first()->raise();
+    if (m_embeddedDisplay) {
+        // Vertical split: the first dock goes on top, the second underneath.
+        splitDockWidget(m_displayDock, debugTabs.first(), Qt::Vertical);
+        m_displayDock->raise();
+        debugTabs.first()->raise();
+    }
 
     // The reference dock's "insert binding" gesture drops the call's
     // canonical binding into the current source, above the cursor's line, as
@@ -1458,20 +1468,6 @@ void MainWindow::createDocks()
         for (QDockWidget *dock : rest)
             addDockToViewMenu(dock);
     }
-
-    // The factory arrangement, so Reset layout has something to return to.
-    m_defaultLayoutState = saveState();
-
-    // Restore the user's own arrangement, if any; the default above is what a
-    // first run gets.
-    const QByteArray saved =
-        QSettings().value(QStringLiteral("layout/state")).toByteArray();
-    if (!saved.isEmpty())
-        restoreState(saved);
-
-    // The embedded-display toggle owns the Emulator dock's visibility, so it is
-    // applied after any restored layout, which would otherwise override it.
-    m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::addMemoryPane(quint32 initialAddress)
@@ -1520,6 +1516,52 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
         else
             view->refresh();
     }
+}
+
+void MainWindow::applyFactoryDockSizes()
+{
+    // 1280-wide window: left ~200, right ~280, so the editor keeps about 60%
+    // once the splitter handles are counted. The bottom group is a strip, not
+    // a second editor.
+    auto *files = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    auto *registers = findChild<QDockWidget *>(QStringLiteral("registersDock"));
+    if (files && registers)
+        resizeDocks({files, registers}, {200, 280}, Qt::Horizontal);
+    // The bottom group keeps its size hint, which is already a short strip.
+    // Pinning it taller is recorded by saveState, and restoring that pin
+    // crashes, so Reset layout could not survive the force.
+}
+
+void MainWindow::finalizeLayout()
+{
+    const QByteArray savedLayout =
+        QSettings().value(QStringLiteral("layout/state")).toByteArray();
+    const QByteArray savedGeometry =
+        QSettings().value(QStringLiteral("layout/geometry")).toByteArray();
+
+    // Geometry is restored last. restoreState changes the window size, and
+    // the saved geometry is the size the user actually had.
+    if (savedGeometry.isEmpty())
+        resize(1280, 860);
+
+    // Dock sizes set before the window is on screen do not stick, so a first
+    // run applies them from showEvent and recaptures the factory state there.
+    // A saved arrangement is restored now and left alone.
+    m_defaultLayoutState = saveState();
+    m_applyFactorySizes = savedLayout.isEmpty();
+    if (!savedLayout.isEmpty())
+        restoreState(savedLayout);
+    if (!savedGeometry.isEmpty())
+        restoreGeometry(savedGeometry);
+    const int savedWidth = QSettings().value(QStringLiteral("layout/width")).toInt();
+    const int savedHeight = QSettings().value(QStringLiteral("layout/height")).toInt();
+    if (savedWidth >= 640 && savedHeight >= 400)
+        m_restoredSize = QSize(savedWidth, savedHeight);
+
+    // The embedded-display toggle owns the Emulator dock's visibility, so it is
+    // applied after any restored layout, which would otherwise override it.
+    if (m_displayDock)
+        m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::resetToDefaultLayout()
@@ -2940,6 +2982,23 @@ void MainWindow::stopSession()
     }
 }
 
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    if (m_restoredSize.isValid()
+        && !(windowState() & (Qt::WindowMaximized | Qt::WindowFullScreen))) {
+        resize(m_restoredSize);
+        m_restoredSize = QSize();
+    }
+    if (!m_applyFactorySizes)
+        return;
+    m_applyFactorySizes = false;
+    applyFactoryDockSizes();
+    // Reset layout should return to this sized arrangement, not the one
+    // captured before the window had a real size.
+    m_defaultLayoutState = saveState();
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     if (!maybeSave()) {
@@ -2947,9 +3006,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
-    // The panel arrangement persists across runs, so a layout the user has
-    // arranged to taste is there next time (docs/FUTURE.md §7).
-    QSettings().setValue(QStringLiteral("layout/state"), saveState());
+    // The panel arrangement and the window size persist across runs, so a
+    // layout the user has arranged to taste is there next time
+    // (docs/FUTURE.md §7).
+    QSettings settings;
+    settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("layout/width"), width());
+    settings.setValue(QStringLiteral("layout/height"), height());
+    settings.setValue(QStringLiteral("layout/state"), saveState());
 
     // Leaving this to the age-based prune would mean a directory survives every
     // ordinary quit, not just a crash.

@@ -22,8 +22,11 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QKeySequence>
+#include <QIcon>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPixmap>
@@ -190,10 +193,47 @@ QString swatchStyleSheet(const QColor &color)
         || qAbs(hue - ringHue) > 310;
     if (qAbs(color.lightness() - ring.lightness()) < 48 && similarHue)
         ring = pal.color(QPalette::WindowText);
-    return QStringLiteral("QToolButton { background-color: %1; border: 2px solid %2;"
-                          " border-radius: 3px; }"
-                          "QToolButton:checked { border: 3px solid %3; }")
-        .arg(color.name(), mute.name(), ring.name());
+    // The index glyph uses the same idea as the ring: a light chip gets dark
+    // type, a dark chip gets light type, so a yellow swatch is still readable.
+    const QColor ink = color.lightness() > 140 ? QColor(0x10, 0x13, 0x10)
+                                                : QColor(0xe6, 0xea, 0xe4);
+    return QStringLiteral("QToolButton { background-color: %1; color: %2;"
+                          " border: 2px solid %3; border-radius: 3px; }"
+                          "QToolButton:checked { border: 3px solid %4; color: %2; }")
+        .arg(color.name(), ink.name(), mute.name(), ring.name());
+}
+
+QString imageStatusColour(int colour)
+{
+    if (colour < 0)
+        return QObject::tr("erase");
+    return QObject::tr("colour %1").arg(colour);
+}
+
+QImage frameThumbnail(const ImageDocument &doc, int frame)
+{
+    const int w = doc.width();
+    const int h = doc.height();
+    if (w <= 0 || h <= 0)
+        return {};
+    QImage image(w, h, QImage::Format_ARGB32);
+    const QVector<int> &pixels = doc.frame(frame);
+    for (int y = 0; y < h; ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const int cube = pixels.value(y * w + x, kTransparent);
+            if (cube < 0) {
+                const bool checker = ((x + y) & 1) == 0;
+                line[x] = checker ? qRgb(48, 48, 48) : qRgb(32, 32, 32);
+            } else {
+                const Rgb rgb = cubeRgb(doc.paletteKind(), cube);
+                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
+            }
+        }
+    }
+    const int thumbH = 32;
+    const int thumbW = qBound(24, image.width() * thumbH / h, 72);
+    return image.scaled(thumbW, thumbH, Qt::KeepAspectRatio, Qt::FastTransformation);
 }
 
 /// The "slice a phase out of the imported sheet" dialog. Every field change
@@ -615,7 +655,10 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_modeStack = new QStackedWidget(this);
     m_modeStack->addWidget(m_scroll);
     m_modeStack->addWidget(sheetScroll);
-    body->addWidget(m_modeStack, 1);
+    auto *canvasColumn = new QVBoxLayout;
+    canvasColumn->setSpacing(4);
+    canvasColumn->addWidget(m_modeStack, 1);
+    body->addLayout(canvasColumn, 1);
 
     // m_phases does not exist yet at this point in the constructor, so the
     // lambda guards instead of using it as the context object.
@@ -668,30 +711,37 @@ ImageEditor::ImageEditor(QWidget *parent)
             return;
         const int zoom = m_canvas->cellSize() * 100;
         if (index < 0)
-            m_status->setText(tr("%1 × %2  frame %3/%4  %5%")
-                                  .arg(m_doc.width())
-                                  .arg(m_doc.height())
-                                  .arg(m_doc.currentFrame() + 1)
-                                  .arg(m_doc.frameCount())
-                                  .arg(zoom));
+            updateStatus();
         else
-            m_status->setText(tr("%1 × %2  (%3, %4)  %5%")
+            m_status->setText(tr("%1 × %2  (%3, %4)  %5%  %6")
                                   .arg(m_doc.width())
                                   .arg(m_doc.height())
                                   .arg(index % m_doc.width())
                                   .arg(index / m_doc.width())
-                                  .arg(zoom));
+                                  .arg(zoom)
+                                  .arg(imageStatusColour(m_colour)));
     });
 
     auto *right = new QVBoxLayout;
     right->setSpacing(4);
 
-    right->addWidget(new QLabel(tr("Frames"), this));
     m_frames = new QListWidget(this);
     m_frames->setObjectName(QStringLiteral("imageFrames"));
-    m_frames->setMaximumWidth(160);
+    m_frames->setViewMode(QListView::IconMode);
+    m_frames->setFlow(QListView::LeftToRight);
+    m_frames->setWrapping(false);
+    m_frames->setMovement(QListView::Static);
+    m_frames->setResizeMode(QListView::Adjust);
+    m_frames->setIconSize(QSize(72, 32));
+    m_frames->setGridSize(QSize(80, 56));
+    m_frames->setUniformItemSizes(true);
+    m_frames->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_frames->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_frames->setFixedHeight(64);
+    m_frames->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_frames->setToolTip(tr("Frames"));
     connect(m_frames, &QListWidget::currentRowChanged, this, &ImageEditor::selectFrame);
-    right->addWidget(m_frames, 1);
+    canvasColumn->addWidget(m_frames);
 
     auto makeIconButton = [this](appearance::Icon icon, const QString &tip) {
         auto *button = new QToolButton(this);
@@ -724,7 +774,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     frameBtns->addWidget(m_removeFrame);
     frameBtns->addWidget(m_frameUp);
     frameBtns->addWidget(m_frameDown);
-    right->addLayout(frameBtns);
+    canvasColumn->addLayout(frameBtns);
 
     m_preview = new QLabel(this);
     m_preview->setObjectName(QStringLiteral("imagePreview"));
@@ -753,7 +803,6 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_fpsBox, qOverload<int>(&QSpinBox::valueChanged), this, &ImageEditor::fpsChanged);
     playRow->addWidget(m_fpsBox);
     playRow->addStretch();
-    right->addLayout(playRow);
 
     m_onion = new QComboBox(this);
     m_onion->setObjectName(QStringLiteral("imageOnion"));
@@ -763,7 +812,8 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_onion->setToolTip(tr("Ghost a neighbouring frame over the canvas"));
     connect(m_onion, qOverload<int>(&QComboBox::currentIndexChanged), this,
             &ImageEditor::onionChanged);
-    right->addWidget(m_onion);
+    playRow->addWidget(m_onion);
+    canvasColumn->addLayout(playRow);
 
     m_previewPhaseBox = new QComboBox(this);
     m_previewPhaseBox->setObjectName(QStringLiteral("imagePreviewPhase"));
@@ -803,16 +853,28 @@ ImageEditor::ImageEditor(QWidget *parent)
     layerBtns->addWidget(m_layerDown);
     right->addLayout(layerBtns);
 
-    right->addWidget(new QLabel(tr("Phases"), this));
+    // The list stays the selection model (tests and sheet-canvas clicks drive
+    // it) but it is not a third full-height column. The combo is the control.
     m_phases = new QListWidget(this);
     m_phases->setObjectName(QStringLiteral("imagePhases"));
-    m_phases->setMaximumWidth(160);
-    m_phases->setMaximumHeight(100);
+    m_phases->setVisible(false);
     connect(m_phases, &QListWidget::currentRowChanged, this, &ImageEditor::selectPhase);
     connect(m_phases, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
         renamePhase();
     });
-    right->addWidget(m_phases);
+    m_phasePicker = new QComboBox(this);
+    m_phasePicker->setObjectName(QStringLiteral("imagePhasePicker"));
+    m_phasePicker->setToolTip(tr("This phase"));
+    m_phasePicker->installEventFilter(this);
+    connect(m_phasePicker, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this](int row) {
+                if (row >= 0 && m_phases && m_phases->currentRow() != row)
+                    m_phases->setCurrentRow(row);
+            });
+    auto *phaseRow = new QHBoxLayout;
+    phaseRow->addWidget(new QLabel(tr("This phase"), this));
+    phaseRow->addWidget(m_phasePicker, 1);
+    right->addLayout(phaseRow);
     m_addPhase = makeIconButton(appearance::Icon::AddFrame, tr("Add phase"));
     m_addPhase->setObjectName(QStringLiteral("imageAddPhase"));
     connect(m_addPhase, &QToolButton::clicked, this, &ImageEditor::addPhase);
@@ -1423,6 +1485,11 @@ void ImageEditor::zoomBy(int steps)
 
 bool ImageEditor::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_phasePicker && watched == m_phasePicker
+        && event->type() == QEvent::MouseButtonDblClick) {
+        renamePhase();
+        return true;
+    }
     if (m_scroll && watched == m_scroll->viewport() && event->type() == QEvent::Wheel) {
         auto *wheel = static_cast<QWheelEvent *>(event);
         if (wheel->modifiers() & Qt::ControlModifier) {
@@ -1455,7 +1522,9 @@ void ImageEditor::rebuildSwatches()
         button->setFocusPolicy(Qt::NoFocus);
         button->setFixedSize(28, 28);
         button->setProperty("cube", cube);
-        button->setToolTip(label);
+        button->setText(cube < 0 ? QStringLiteral("0") : QString::number(cube));
+        button->setToolTip(cube < 0 ? label
+                                    : tr("Colour %1 — %2").arg(cube).arg(label));
         button->setStyleSheet(swatchStyleSheet(color));
         m_swatches->addButton(button);
         box->addWidget(button);
@@ -1490,8 +1559,11 @@ void ImageEditor::refreshFrames()
         return;
     m_frames->blockSignals(true);
     m_frames->clear();
-    for (int i = 0; i < m_doc.frameCount(); ++i)
-        m_frames->addItem(tr("Frame %1").arg(i + 1));
+    for (int i = 0; i < m_doc.frameCount(); ++i) {
+        auto *item = new QListWidgetItem(QString::number(i + 1), m_frames);
+        item->setIcon(QIcon(QPixmap::fromImage(frameThumbnail(m_doc, i))));
+        item->setToolTip(tr("Frame %1").arg(i + 1));
+    }
     m_frames->setCurrentRow(m_doc.currentFrame());
     m_frames->blockSignals(false);
 }
@@ -1540,6 +1612,16 @@ void ImageEditor::refreshPhases()
     if (selected >= 0 && selected < m_phases->count())
         m_phases->setCurrentRow(selected);
     m_phases->blockSignals(false);
+
+    if (m_phasePicker) {
+        m_phasePicker->blockSignals(true);
+        m_phasePicker->clear();
+        for (const ImagePhase &phase : m_doc.phases())
+            m_phasePicker->addItem(phase.name);
+        if (selected >= 0 && selected < m_phasePicker->count())
+            m_phasePicker->setCurrentIndex(selected);
+        m_phasePicker->blockSignals(false);
+    }
 
     m_previewPhaseBox->blockSignals(true);
     m_previewPhaseBox->clear();
@@ -2081,12 +2163,13 @@ void ImageEditor::updateStatus()
     if (!m_status)
         return;
     const int zoom = m_canvas ? m_canvas->cellSize() * 100 : 100;
-    m_status->setText(tr("%1 × %2  frame %3/%4  %5%")
+    m_status->setText(tr("%1 × %2  frame %3/%4  %5%  %6")
                           .arg(m_doc.width())
                           .arg(m_doc.height())
                           .arg(m_doc.currentFrame() + 1)
                           .arg(m_doc.frameCount())
-                          .arg(zoom));
+                          .arg(zoom)
+                          .arg(imageStatusColour(m_colour)));
     if (m_canvas) {
         if (m_actZoomIn)
             m_actZoomIn->setEnabled(m_canvas->cellSize() < ImageCanvas::kMaxCellSize);

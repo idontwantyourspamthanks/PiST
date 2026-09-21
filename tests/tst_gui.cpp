@@ -49,6 +49,7 @@
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QLabel>
+#include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -195,6 +196,7 @@ private slots:
     void statusBarShowsCaretAndBuild();
     void statusBarNamesTheStop();
     void registerDockShowsFlagsUntilTheMachineStops();
+    void layoutPresetsHideDocksAndRestore();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -2622,6 +2624,120 @@ void TstGui::registerDockShowsFlagsUntilTheMachineStops()
     }
     QVERIFY2(sawSr, "the SR cell keeps the status word beside the flag chips");
     QVERIFY(strip->isHidden());
+}
+
+// View → Layout rearranges the docks and can put the previous arrangement
+// back. The sprite editor's palette carries colour indexes, and frames are a
+// horizontal filmstrip of thumbnails rather than a tall list.
+void TstGui::layoutPresetsHideDocksAndRestore()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+    settings.remove(QStringLiteral("layout/previous"));
+    settings.remove(QStringLiteral("layout/offeredSprite"));
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *registers = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
+    auto *disassembly = window.findChild<QDockWidget *>(QStringLiteral("disassemblyDock"));
+    auto *emulator = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    auto *project = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    QVERIFY(registers && disassembly && emulator && project);
+    QVERIFY(!registers->isHidden());
+
+    auto *editing = window.findChild<QAction *>(QStringLiteral("layoutEditing"));
+    auto *debugging = window.findChild<QAction *>(QStringLiteral("layoutDebugging"));
+    auto *sprite = window.findChild<QAction *>(QStringLiteral("layoutSprite"));
+    auto *restore = window.findChild<QAction *>(QStringLiteral("restoreMyLayoutAction"));
+    QVERIFY(editing && debugging && sprite && restore);
+    QVERIFY(!restore->isEnabled());
+
+    editing->trigger();
+    QVERIFY(registers->isHidden());
+    QVERIFY(disassembly->isHidden());
+    QVERIFY(restore->isEnabled());
+
+    restore->trigger();
+    QVERIFY(!registers->isHidden());
+    QVERIFY(!restore->isEnabled());
+
+    debugging->trigger();
+    QVERIFY(!registers->isHidden());
+    QVERIFY(!disassembly->isHidden());
+    QCOMPARE(window.dockWidgetArea(disassembly), Qt::RightDockWidgetArea);
+    QCOMPARE(window.dockWidgetArea(registers), Qt::BottomDockWidgetArea);
+    QVERIFY(emulator->isHidden());
+
+    sprite->trigger();
+    QVERIFY(registers->isHidden());
+    QVERIFY(project->isHidden());
+    QVERIFY(emulator->isHidden());
+
+    const QString dir = m_work->path() + QStringLiteral("/layoutsprite");
+    QVERIFY(QDir().mkpath(dir));
+    const QString pim = dir + QStringLiteral("/sprite.pim");
+    QString error;
+    QVERIFY2(ImageDocument::create(16, 16, PaletteKind::Ste).save(pim, &error),
+             qPrintable(error));
+    window.openPath(pim);
+    QTRY_VERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Sprite")));
+    QVERIFY(settings.value(QStringLiteral("layout/offeredSprite")).toBool());
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    auto *swatches = image->findChild<QWidget *>(QStringLiteral("imageSwatches"));
+    QVERIFY(swatches);
+    bool sawErase = false;
+    bool sawNumber = false;
+    for (QToolButton *button : swatches->findChildren<QToolButton *>()) {
+        const int cube = button->property("cube").toInt();
+        if (cube == kTransparent) {
+            QCOMPARE(button->text(), QStringLiteral("0"));
+            QCOMPARE(button->toolTip(), QStringLiteral("Erase"));
+            sawErase = true;
+        } else if (!button->text().isEmpty()) {
+            QCOMPARE(button->text(), QString::number(cube));
+            QVERIFY(button->toolTip().startsWith(QStringLiteral("Colour ")));
+            QVERIFY(button->toolTip().contains(QStringLiteral("—")));
+            sawNumber = true;
+        }
+    }
+    QVERIFY(sawErase);
+    QVERIFY(sawNumber);
+
+    auto *frames = image->findChild<QListWidget *>(QStringLiteral("imageFrames"));
+    QVERIFY(frames);
+    QCOMPARE(frames->flow(), QListView::LeftToRight);
+    QCOMPARE(frames->viewMode(), QListView::IconMode);
+    QVERIFY(frames->count() >= 1);
+    QVERIFY(!frames->item(0)->icon().isNull());
+
+    auto *phases = image->findChild<QListWidget *>(QStringLiteral("imagePhases"));
+    auto *picker = image->findChild<QComboBox *>(QStringLiteral("imagePhasePicker"));
+    QVERIFY(phases && phases->isHidden());
+    QVERIFY(picker && !picker->isHidden());
+    QVERIFY(!picker->currentText().isEmpty());
+
+    bool sawColour = false;
+    for (QLabel *label : image->findChildren<QLabel *>()) {
+        if (label->text().contains(QStringLiteral("colour ")))
+            sawColour = true;
+    }
+    QVERIFY2(sawColour, "the canvas status names the active colour index");
+
+    settings.remove(QStringLiteral("layout/previous"));
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
 }
 
 // Multiple memory panes: each is its own tabbed dock with its own routing tag,

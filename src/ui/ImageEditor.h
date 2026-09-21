@@ -283,6 +283,7 @@ private:
     QListWidget *m_frames = nullptr;
     QListWidget *m_layers = nullptr;
     QListWidget *m_phases = nullptr;
+    QComboBox *m_phasePicker = nullptr;
     QLabel *m_preview = nullptr;
     QComboBox *m_onion = nullptr;
     QComboBox *m_previewPhaseBox = nullptr;

@@ -459,6 +459,19 @@ void MainWindow::onTabChanged(int index)
         refreshBreakpointMarkers();
     updateModifiedState();
     updateCaretChip();
+    // Deferred so a following "Opened …" status line does not eat the offer.
+    // A modal would hang the offscreen image tests.
+    if (m_image && !QSettings().value(QStringLiteral("layout/offeredSprite")).toBool()) {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_image
+                || QSettings().value(QStringLiteral("layout/offeredSprite")).toBool())
+                return;
+            QSettings().setValue(QStringLiteral("layout/offeredSprite"), true);
+            if (statusBar())
+                statusBar()->showMessage(
+                    tr("View → Layout → Sprite gives the canvas the window."), 8000);
+        });
+    }
     if (m_instrStrip)
         m_instrStrip->setVisible(m_editor != nullptr);
     if (m_editor)
@@ -807,8 +820,17 @@ void MainWindow::wireBackend()
         if (m_memory)
             m_memory->setEditingEnabled(stopped);
         syncProfileActions();
-        if (stopped)
+        if (stopped) {
             onDebuggerStopped();
+            // A status line, not a dialog: a modal here hangs the offscreen
+            // stop tests. The key makes the offer once per settings store.
+            if (!QSettings().value(QStringLiteral("layout/offeredDebugging")).toBool()) {
+                QSettings().setValue(QStringLiteral("layout/offeredDebugging"), true);
+                statusBar()->showMessage(
+                    tr("View → Layout → Debugging arranges the panels around a stop."),
+                    8000);
+            }
+        }
     });
 
     connect(m_host, &IDebugBackend::stackDumpReady, this,
@@ -1432,6 +1454,27 @@ void MainWindow::createDocks()
         // and a dock created later (another memory pane) joins the same group.
         auto *sectionEnd = m_viewMenu->addSeparator();
         sectionEnd->setObjectName(QStringLiteral("viewDockSectionEnd"));
+        auto *layoutMenu = m_viewMenu->addMenu(tr("Layout"));
+        layoutMenu->setObjectName(QStringLiteral("layoutMenu"));
+        const struct {
+            const char *id;
+            const char *title;
+        } presets[] = {
+            {"Editing", QT_TR_NOOP("Editing")},
+            {"Debugging", QT_TR_NOOP("Debugging")},
+            {"Sprite", QT_TR_NOOP("Sprite")},
+        };
+        for (const auto &preset : presets) {
+            auto *action = layoutMenu->addAction(tr(preset.title));
+            action->setObjectName(QStringLiteral("layout") + QLatin1String(preset.id));
+            const QString id = QString::fromLatin1(preset.id);
+            connect(action, &QAction::triggered, this, [this, id] { applyLayoutPreset(id); });
+        }
+        m_restoreLayoutAction = layoutMenu->addAction(tr("Restore my layout"), this,
+                                                      &MainWindow::restorePreviousLayout);
+        m_restoreLayoutAction->setObjectName(QStringLiteral("restoreMyLayoutAction"));
+        m_restoreLayoutAction->setEnabled(false);
+
         auto *reset = m_viewMenu->addAction(tr("Reset layout"), this,
                                             &MainWindow::resetToDefaultLayout);
         reset->setObjectName(QStringLiteral("resetLayoutAction"));
@@ -1576,6 +1619,88 @@ void MainWindow::resetToDefaultLayout()
     restoreState(m_defaultLayoutState);
     // Keep the toggle authoritative over the Emulator dock's visibility.
     m_displayDock->setVisible(m_embeddedDisplay);
+}
+
+void MainWindow::applyLayoutPreset(const QString &preset)
+{
+    const bool editing = preset == QLatin1String("Editing");
+    const bool debugging = preset == QLatin1String("Debugging");
+    const bool sprite = preset == QLatin1String("Sprite");
+    if (!editing && !debugging && !sprite)
+        return;
+
+    QSettings().setValue(QStringLiteral("layout/previous"), saveState());
+    if (m_restoreLayoutAction)
+        m_restoreLayoutAction->setEnabled(true);
+
+    // Debugging is the preset that wants the picture. It may check the box
+    // when embedding is actually possible; it does not uncheck it, and every
+    // preset finishes by letting the box own the Emulator dock.
+    if (debugging && canEmbedDisplay(m_caps) && m_actEmbedDisplay && !m_actEmbedDisplay->isChecked())
+        m_actEmbedDisplay->setChecked(true);
+
+    auto dockNamed = [this](const QString &name) -> QDockWidget * {
+        return findChild<QDockWidget *>(name);
+    };
+    const auto isDebugDock = [](const QString &name) {
+        return name == QLatin1String("registersDock")
+            || name == QLatin1String("disassemblyDock")
+            || name == QLatin1String("stackDock")
+            || name == QLatin1String("hardwareDock")
+            || name == QLatin1String("pcHistoryDock")
+            || name == QLatin1String("breakpointsDock")
+            || name == QLatin1String("instructionRefDock")
+            || name == QLatin1String("symbolsDock")
+            || name == QLatin1String("profilerDock")
+            || name.startsWith(QLatin1String("memoryDock"));
+    };
+
+    if (QDockWidget *project = dockNamed(QStringLiteral("projectFilesDock")))
+        project->setVisible(!sprite);
+    if (QDockWidget *problems = dockNamed(QStringLiteral("problemsDock")))
+        problems->setVisible(!sprite);
+    if (QDockWidget *console = dockNamed(QStringLiteral("consoleDock")))
+        console->setVisible(!sprite);
+
+    QDockWidget *console = dockNamed(QStringLiteral("consoleDock"));
+    QDockWidget *disassembly = dockNamed(QStringLiteral("disassemblyDock"));
+    const bool disassemblyOnRight = debugging && !m_embeddedDisplay;
+    for (QDockWidget *dock : findChildren<QDockWidget *>()) {
+        if (!isDebugDock(dock->objectName()))
+            continue;
+        const bool onRight = disassemblyOnRight && dock == disassembly;
+        dock->setVisible(debugging);
+        if (!debugging)
+            continue;
+        if (onRight) {
+            addDockWidget(Qt::RightDockWidgetArea, dock);
+            dock->raise();
+        } else if (console) {
+            tabifyDockWidget(console, dock);
+        }
+    }
+    if (debugging && m_embeddedDisplay && m_displayDock)
+        addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
+    if (debugging) {
+        if (QDockWidget *regs = dockNamed(QStringLiteral("registersDock")))
+            regs->raise();
+    }
+
+    if (m_displayDock)
+        m_displayDock->setVisible(m_embeddedDisplay);
+}
+
+void MainWindow::restorePreviousLayout()
+{
+    const QByteArray previous = QSettings().value(QStringLiteral("layout/previous")).toByteArray();
+    if (previous.isEmpty())
+        return;
+    restoreState(previous);
+    QSettings().remove(QStringLiteral("layout/previous"));
+    if (m_restoreLayoutAction)
+        m_restoreLayoutAction->setEnabled(false);
+    if (m_displayDock)
+        m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::createToolBar()

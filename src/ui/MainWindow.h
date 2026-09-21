@@ -308,6 +308,12 @@ private:
     /// Bring the Instructions dock forward. The strip under the editor does this.
     void raiseInstructionRef();
 
+    /// View → Layout. Saves the current arrangement first so Restore my
+    /// layout can undo it. The embed checkbox stays the owner of the
+    /// emulator dock.
+    void applyLayoutPreset(const QString &preset);
+    void restorePreviousLayout();
+
     /// Open `file` (already open, or found beside the project) and move the
     /// caret to `line`. A missing file is reported on the status bar.
     bool navigateToSourceLine(const QString &file, int line);
@@ -527,6 +533,7 @@ private:
     /// The View menu, kept so the per-dock show/hide actions can be appended once
     /// the docks exist (menus are created before docks).
     class QMenu *m_viewMenu = nullptr;
+    QAction *m_restoreLayoutAction = nullptr;
     HatariCapabilities m_caps;
     IDebugBackend *m_host = nullptr;
 

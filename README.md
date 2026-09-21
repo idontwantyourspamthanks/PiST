@@ -434,7 +434,7 @@ run                build and start the emulator; the reply arrives when it is ru
 stop               stop the emulator session
 step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
-problems           the Problems pane as a JSON array (block reply)
+symbols [filter]   the build's symbols as a JSON array (block reply)
 tabs               the open documents as a JSON array (block reply)
 save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)

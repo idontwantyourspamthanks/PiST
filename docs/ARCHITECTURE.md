@@ -243,7 +243,9 @@ the debugger round-trips behind `cmd`/`readmem`/`disasm`) spin a nested event lo
 helpers (`documentJson`, `stateJson`, `problemsJson`, `symbolsJson`, `profilerResultsJson`;
 `screenshot` uses `captureWindowImage`, not `grabWindow`). `src/control/mcp/` bridges all of
 this to MCP: `pist-mcp` is a stdio JSON-RPC server whose tools map onto the verbs, serving the
-JSON ones as `structuredContent`, with session events pushed as MCP log notifications.
+JSON ones as `structuredContent`, with session events pushed as MCP log notifications. The `quit`
+verb is deliberately not exposed as a tool: an agent that can close the user's IDE unprompted is
+a foot-gun (the decision lives at the verb, RemoteControl.cpp).
 
 ## Invariants — the rules that will bite you
 

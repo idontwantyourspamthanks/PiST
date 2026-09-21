@@ -153,10 +153,11 @@ OsCallMatch resolveTrap(const QStringList &lines, int trapIndex, int trap)
 
     int fnIndex = -1;
     QString fnOperand;
-    for (int i = trapIndex - 1, scanned = 0; i >= 0 && scanned < kScanBound; --i, ++scanned) {
+    for (int i = trapIndex - 1, scanned = 0; i >= 0 && scanned < kScanBound; --i) {
         const QString raw = lines.at(i);
         if (codePart(raw).isEmpty())
-            continue; // blanks and comments ride inside a sequence
+            continue; // blanks and comments ride inside a sequence, uncounted
+        ++scanned;
         const QString code = instructionPart(raw);
         if (code.isEmpty())
             break; // a line holding only a label: the sequence is over
@@ -188,10 +189,11 @@ OsCallMatch resolveTrap(const QStringList &lines, int trapIndex, int trap)
     // reversed into push (source) order at the end. A reserved zero word
     // (Mshrink, Frename) is collected like any other argument.
     QStringList reversed;
-    for (int i = fnIndex - 1, scanned = 0; i >= 0 && scanned < kScanBound; --i, ++scanned) {
+    for (int i = fnIndex - 1, scanned = 0; i >= 0 && scanned < kScanBound; --i) {
         const QString raw = lines.at(i);
         if (codePart(raw).isEmpty())
-            continue;
+            continue; // blanks and comments do not count against the bound
+        ++scanned;
         const QString code = instructionPart(raw);
         if (code.isEmpty())
             break; // a line holding only a label
@@ -225,10 +227,11 @@ OsCallMatch osCallAt(const QStringList &lines, int lineIndex)
     QString ignored;
     if (!isWordPush(code, &ignored) && !isLongPush(code, &ignored))
         return none;
-    for (int i = lineIndex + 1, scanned = 0; i < lines.size() && scanned < kScanBound; ++i, ++scanned) {
+    for (int i = lineIndex + 1, scanned = 0; i < lines.size() && scanned < kScanBound; ++i) {
         const QString raw = lines.at(i);
         if (codePart(raw).isEmpty())
-            continue;
+            continue; // blanks and comments do not count against the bound
+        ++scanned;
         const QString below = instructionPart(raw);
         if (below.isEmpty())
             break; // a line holding only a label

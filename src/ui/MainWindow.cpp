@@ -13,6 +13,8 @@
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
 #include "editor/IncludeNav.h"
+#include "editor/OsCallRef.h"
+#include "editor/OsCallScan.h"
 #include "ui/ConsoleInput.h"
 #include "ui/SymbolsView.h"
 #include "control/RemoteControl.h"
@@ -276,13 +278,37 @@ void MainWindow::wireEditor(CodeEditor *editor)
             editBreakpointCondition(line);
     });
 
-    // The instruction reference follows the word under the cursor, but only
-    // when its dock is on show — otherwise an idle panel would churn on every
-    // keystroke.
+    // The instruction reference follows the cursor, but only when its dock is
+    // on show — otherwise an idle panel would churn on every keystroke. OS
+    // calls win over the word: cursor on a `trap #1` line (or a push feeding
+    // one) shows the call being made, not the TRAP or MOVE instruction.
     connect(editor, &CodeEditor::cursorPositionChanged, this, [this, editor] {
         if (!m_instrRef || editor != m_editor || !m_instrRef->isVisible())
             return;
         const QTextCursor cursor = editor->textCursor();
+        const int blockNumber = cursor.blockNumber();
+
+        // The scanner only needs a small window around the cursor: OS calls
+        // are a local idiom (OsCallScan bounds its scans to a few lines).
+        const QTextDocument *doc = editor->document();
+        const int base = qMax(0, blockNumber - 10);
+        const int last = qMin(doc->blockCount() - 1, blockNumber + 10);
+        QStringList window;
+        window.reserve(last - base + 1);
+        for (int i = base; i <= last; ++i)
+            window.append(doc->findBlockByNumber(i).text());
+        const OsCallMatch match = osCallAt(window, blockNumber - base);
+        if (match.call) {
+            m_instrRef->showOsCall(match.call->trap, match.call->opcode, match.args);
+            return;
+        }
+        if (match.trapContext) {
+            // A trap whose function number is not statically known: the
+            // generic TRAP entry still says what the instruction does.
+            m_instrRef->showInstruction(QStringLiteral("trap"));
+            return;
+        }
+
         const QString line = cursor.block().text();
         const int col = cursor.positionInBlock();
         int start = col;

@@ -40,7 +40,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
   find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
   match-case and whole-word options), **Ctrl+click** to open an `include` or jump to a label,
-  and a searchable **68000 instruction reference** dock that follows the word under the cursor
+  and a searchable **68000 instruction + TOS system-call reference** dock that follows
+  the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
+  GEMDOS/BIOS/XBIOS call being made and what it is being called with
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats

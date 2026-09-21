@@ -5,6 +5,7 @@
 #include "ui/InstructionRefView.h"
 
 #include "editor/InstrRef.h"
+#include "editor/OsCallRef.h"
 #include "ui/Appearance.h"
 
 #include <QLabel>
@@ -41,6 +42,22 @@ InstructionRefView::InstructionRefView(QWidget *parent)
         // The mnemonic doubles as the item's key, so a jump can find its row
         // without depending on where the table happens to list it.
         item->setData(Qt::UserRole, info.mnemonic);
+    }
+    for (const OsCallInfo &info : osCallTable()) {
+        const QString label = QStringLiteral("%1  %2 %3: %4")
+                                  .arg(info.name, osCallLayerName(info.trap))
+                                  .arg(info.opcode)
+                                  .arg(info.summary);
+        auto *item = new QListWidgetItem(label, m_list);
+        item->setToolTip(label);
+        // OS-call rows key on layer:opcode ("gemdos:9"), so a jump can find
+        // the row without depending on where the table lists it — and so the
+        // same name in two layers (Pterm/Puntaes-style coincidences) can
+        // never alias.
+        item->setData(Qt::UserRole,
+                      osCallLayerKey(info.trap) + QStringLiteral(":") + QString::number(info.opcode));
+        item->setData(Qt::UserRole + 1, info.trap);
+        item->setData(Qt::UserRole + 2, info.opcode);
     }
     layout->addWidget(m_list, 1);
 
@@ -105,6 +122,10 @@ void InstructionRefView::updateDetail(QListWidgetItem *item)
         m_detail->clear();
         return;
     }
+    if (item->data(Qt::UserRole).toString().contains(QLatin1Char(':'))) {
+        updateOsDetail(item);
+        return;
+    }
 
     // The list holds a composed label, so the entry is re-read from the
     // reference itself rather than parsed back out of the row text.
@@ -122,6 +143,30 @@ void InstructionRefView::updateDetail(QListWidgetItem *item)
     m_detail->setText(flags);
 }
 
+void InstructionRefView::updateOsDetail(QListWidgetItem *item)
+{
+    const OsCallInfo *info =
+        osCallRef(item->data(Qt::UserRole + 1).toInt(), item->data(Qt::UserRole + 2).toInt());
+    if (!info) {
+        m_detail->clear();
+        return;
+    }
+
+    QStringList lines;
+    lines << info->prototype;
+    if (!info->returns.isEmpty())
+        lines << tr("d0: %1.").arg(info->returns);
+    QString stack = tr("Stack: %1 bytes.").arg(info->stackBytes);
+    if (!info->availability.isEmpty())
+        stack += tr(" Available: %1.").arg(info->availability);
+    lines << stack;
+    // The actual arguments the cursor's call is being made with, shown only
+    // while the row they were resolved for is the selected one.
+    if (!m_callArgs.isEmpty() && item->data(Qt::UserRole).toString() == m_callArgsKey)
+        lines << tr("Calling with: %1.").arg(m_callArgs.join(QStringLiteral(", ")));
+    m_detail->setText(lines.join(QLatin1Char('\n')));
+}
+
 void InstructionRefView::applyAppearance()
 {
     // The font-size preference has changed, so the two-line reservation made
@@ -129,16 +174,8 @@ void InstructionRefView::applyAppearance()
     m_detail->setMinimumHeight(2 * fontMetrics().height());
 }
 
-void InstructionRefView::showInstruction(const QString &word)
+void InstructionRefView::selectAndScroll(QListWidgetItem *item)
 {
-    const InstructionInfo *info = instructionRef(word);
-    if (!info)
-        return; // a label, a directive or a typo: leave the panel as it is
-
-    QListWidgetItem *item = itemForMnemonic(info->mnemonic);
-    if (!item)
-        return;
-
     // A hidden row cannot be selected, so a filter that hides this entry is
     // dropped. A filter that already shows it is left alone, because it is the
     // one the user typed.
@@ -147,6 +184,41 @@ void InstructionRefView::showInstruction(const QString &word)
 
     m_list->setCurrentItem(item);
     m_list->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+}
+
+void InstructionRefView::showInstruction(const QString &word)
+{
+    m_callArgs.clear();
+    m_callArgsKey.clear();
+
+    const InstructionInfo *info = instructionRef(word);
+    if (!info)
+        return; // a label, a directive or a typo: leave the panel as it is
+
+    QListWidgetItem *item = itemForMnemonic(info->mnemonic);
+    if (item)
+        selectAndScroll(item);
+}
+
+void InstructionRefView::showOsCall(int trap, int opcode, const QStringList &args)
+{
+    const OsCallInfo *info = osCallRef(trap, opcode);
+    if (!info)
+        return;
+
+    const QString key = osCallLayerKey(trap) + QStringLiteral(":") + QString::number(opcode);
+    m_callArgs = args;
+    m_callArgsKey = key;
+
+    QListWidgetItem *item = itemForMnemonic(key);
+    if (!item)
+        return;
+    const bool wasCurrent = (m_list->currentItem() == item);
+    selectAndScroll(item);
+    // Selecting an already-current row fires no currentItemChanged, so the
+    // detail would keep the previous call's arguments: refresh it directly.
+    if (wasCurrent)
+        updateDetail(item);
 }
 
 } // namespace pist

@@ -48,6 +48,10 @@ qt_add_library(pist_core OBJECT
     src/editor/InstrRef.h
     src/editor/IncludeNav.cpp
     src/editor/IncludeNav.h
+    src/editor/OsCallRef.cpp
+    src/editor/OsCallRef.h
+    src/editor/OsCallScan.cpp
+    src/editor/OsCallScan.h
 
     src/build/BuildService.cpp
     src/build/BuildService.h
@@ -355,6 +359,19 @@ qt_add_executable(tst_image
 target_include_directories(tst_image PRIVATE src)
 target_link_libraries(tst_image PRIVATE Qt6::Test Qt6::Gui)
 add_test(NAME image COMMAND tst_image)
+
+# The OS-call reference table and the trap-sequence scanner: pure QtCore
+# code, so the suite needs no display and no emulator.
+qt_add_executable(tst_oscall
+    tests/tst_oscall.cpp
+    src/editor/OsCallRef.cpp
+    src/editor/OsCallRef.h
+    src/editor/OsCallScan.cpp
+    src/editor/OsCallScan.h
+)
+target_include_directories(tst_oscall PRIVATE src)
+target_link_libraries(tst_oscall PRIVATE Qt6::Test)
+add_test(NAME oscall COMMAND tst_oscall)
 
 # TOS ROM identification: version must come from the image header, so the
 # autostart guard cannot be skipped by an unusual filename.

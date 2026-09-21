@@ -154,6 +154,7 @@ private slots:
     void ctrlClickOpensIncludesAndJumpsToLabels();
     void debugConsoleRecallsHistoryWithArrowKeys();
     void instructionReferenceFollowsTheCursor();
+    void osCallReferenceFollowsTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
@@ -1502,6 +1503,66 @@ void TstGui::instructionReferenceFollowsTheCursor()
     editor->setTextCursor(cursor);
     QTest::qWait(50);
     QCOMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));  // a label: no-op
+}
+
+
+// The same dock resolves OS calls: cursor on a trap line (or a push feeding
+// it) shows the call being made, with the actual arguments in the detail.
+void TstGui::osCallReferenceFollowsTheCursor()
+{
+    const QString source = m_work->path() + QStringLiteral("/oscall.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmove.l\t#msg,-(a7)\n\tmove.w\t#9,-(a7)\n\ttrap\t#1\n"
+              "\taddq.l\t#6,a7\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    window.openPath(source);
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("instructionRefDock"));
+    QVERIFY(dock);
+    auto *view = dock->findChild<pist::InstructionRefView *>();
+    QVERIFY(view);
+    dock->show();
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    auto *detail = dock->findChild<QLabel *>(QStringLiteral("instructionRefDetail"));
+    QVERIFY(detail);
+
+    window.show();
+
+    // On the trap line: the call resolves, not the generic TRAP entry, and
+    // the detail names what the call is being made with.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(3).position() + 2);
+    editor->setTextCursor(cursor);
+    QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
+    QVERIFY(detail->text().contains(QStringLiteral("Cconws(const char *buf)")));
+    QVERIFY(detail->text().contains(QStringLiteral("#msg")));
+
+    // On the function-number push: the same call, even though the word under
+    // the cursor is a real instruction (MOVE).
+    cursor.setPosition(editor->document()->findBlockByNumber(2).position() + 2);
+    editor->setTextCursor(cursor);
+    QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
+
+    // Back on an ordinary instruction line, the word wins again.
+    cursor.setPosition(editor->document()->findBlockByNumber(4).position() + 2);
+    editor->setTextCursor(cursor);
+    QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));
+
+    // The argument push shares its line with the label: it still resolves the
+    // call — that is the "explain this line" case the feature exists for.
+    cursor.setPosition(editor->document()->findBlockByNumber(1).position());
+    editor->setTextCursor(cursor);
+    QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
+
+    // A directive line resolves nothing and leaves the panel alone.
+    cursor.setPosition(editor->document()->findBlockByNumber(0).position());
+    editor->setTextCursor(cursor);
+    QTest::qWait(50);
+    QCOMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
 }
 
 // Ctrl+click on an include opens the target file (resolved via the current

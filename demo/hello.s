@@ -28,7 +28,7 @@ count:
 	trap	#1
 	addq.l	#6,a7
 
-	move.w	#7,-(a7)		; Cnecin(): wait for a key so you can read it
+	move.w	#7,-(a7)		; Crawcin(): wait for a key so you can read it
 	trap	#1
 	addq.l	#2,a7
 

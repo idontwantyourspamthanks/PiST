@@ -24,6 +24,8 @@
 #include "control/RemoteControl.h"
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
+#include "ui/RegistersView.h"
+#include "emu/MachineState.h"
 #include "ui/MainWindow.h"
 #include "build/FloppyImage.h"
 #include "ui/MemoryView.h"
@@ -192,6 +194,7 @@ private slots:
     void savedLayoutBeatsTheFactorySplit();
     void statusBarShowsCaretAndBuild();
     void statusBarNamesTheStop();
+    void registerDockShowsFlagsUntilTheMachineStops();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -2574,8 +2577,51 @@ void TstGui::statusBarNamesTheStop()
                  qPrintable(caret->text()));
     }
 
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    QTRY_VERIFY_WITH_TIMEOUT(!strip->isHidden() && strip->text().contains(QLatin1String("D0")),
+                             5000);
+
     host->stop();
     QTRY_COMPARE_WITH_TIMEOUT(session->text(), QStringLiteral("Not running"), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(strip->isHidden(), 5000);
+}
+
+void TstGui::registerDockShowsFlagsUntilTheMachineStops()
+{
+    MainWindow window;
+    auto *placeholder = window.findChild<QLabel *>(QStringLiteral("registersPlaceholder"));
+    QVERIFY(placeholder);
+    QVERIFY(placeholder->text().contains(QStringLiteral("machine stops")));
+    QVERIFY(!placeholder->isHidden());
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip && strip->isHidden());
+
+    auto *view = window.findChild<RegistersView *>();
+    QVERIFY(view);
+    MachineState state;
+    state.regs.valid = true;
+    state.regs.sr = 0x2704;
+    state.regs.flagN = true;
+    state.pc = 0x00012396;
+    view->setState(state);
+
+    QVERIFY(placeholder->isHidden());
+    auto *n = window.findChild<QLabel *>(QStringLiteral("flagChipN"));
+    auto *z = window.findChild<QLabel *>(QStringLiteral("flagChipZ"));
+    QVERIFY(n && z);
+    QVERIFY(n->styleSheet().contains(QStringLiteral("#2fa04c")));
+    QVERIFY(!z->styleSheet().contains(QStringLiteral("#2fa04c")));
+    bool sawSr = false;
+    for (QTableWidget *table : view->findChildren<QTableWidget *>()) {
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const QTableWidgetItem *item = table->item(row, 1);
+            if (item && item->text() == QLatin1String("2704"))
+                sawSr = true;
+        }
+    }
+    QVERIFY2(sawSr, "the SR cell keeps the status word beside the flag chips");
+    QVERIFY(strip->isHidden());
 }
 
 // Multiple memory panes: each is its own tabbed dock with its own routing tag,

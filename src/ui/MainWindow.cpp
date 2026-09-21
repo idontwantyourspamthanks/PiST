@@ -171,6 +171,11 @@ MainWindow::MainWindow(QWidget *parent)
     appearance::markMono(m_instrStrip);
     connect(m_instrStrip, &QPushButton::clicked, this, &MainWindow::raiseInstructionRef);
     column->addWidget(m_instrStrip);
+    m_registerStrip = new QLabel(center);
+    m_registerStrip->setObjectName(QStringLiteral("registerStrip"));
+    m_registerStrip->setVisible(false);
+    appearance::markMono(m_registerStrip);
+    column->addWidget(m_registerStrip);
     setCentralWidget(center);
     connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
@@ -722,6 +727,7 @@ void MainWindow::wireBackend()
         // cached machine state and a pending remote command cannot survive
         // into whatever happens next.
         resetSessionState();
+        updateRegisterStrip();
         // A session's profile and its gutter heat belong to that session.
         if (m_profiler)
             m_profiler->clear();
@@ -788,6 +794,7 @@ void MainWindow::wireBackend()
         m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
         updateSessionChip();
+        updateRegisterStrip();
         // The embedded panel renders no frames while stopped, so tell it to show
         // its paused hint rather than look frozen.
         if (m_display)
@@ -1723,6 +1730,39 @@ void MainWindow::updateCaretChip()
         m_statusCaret->setText(tr("%1: caret %2 · PC %3").arg(name).arg(line).arg(execution));
     else
         m_statusCaret->setText(QStringLiteral("%1:%2:%3").arg(name).arg(line).arg(column));
+}
+
+void MainWindow::updateRegisterStrip()
+{
+    if (!m_registerStrip)
+        return;
+    const bool show = m_host && m_host->isRunning() && m_host->isStopped()
+                      && m_lastState.regs.valid;
+    m_registerStrip->setVisible(show);
+    if (!show)
+        return;
+    const Registers &r = m_lastState.regs;
+    auto word = [](quint32 value) {
+        return QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
+    };
+    QString data;
+    QString addr;
+    for (int i = 0; i < 8; ++i) {
+        data += QStringLiteral("D%1 %2 ").arg(i).arg(word(r.d[i]));
+        addr += QStringLiteral("A%1 %2 ").arg(i).arg(word(r.a[i]));
+    }
+    auto mark = [](bool set) { return set ? QLatin1Char('1') : QLatin1Char('-'); };
+    const QString flags = QStringLiteral("X%1 N%2 Z%3 V%4 C%5")
+                              .arg(mark(r.flagX))
+                              .arg(mark(r.flagN))
+                              .arg(mark(r.flagZ))
+                              .arg(mark(r.flagV))
+                              .arg(mark(r.flagC));
+    const QString text = data.trimmed() + QLatin1Char('\n')
+                       + addr.trimmed()
+                       + QStringLiteral("   PC %1  %2").arg(word(m_lastState.pc), flags);
+    m_registerStrip->setText(text);
+    m_registerStrip->setToolTip(text);
 }
 
 void MainWindow::followCursorReference(CodeEditor *editor)
@@ -4180,6 +4220,7 @@ void MainWindow::onStateUpdated(const MachineState &state)
         m_host->command(QStringLiteral("history 16"));
 
     locationFromPc(state.pc);
+    updateRegisterStrip();
 }
 
 bool MainWindow::canEmbedDisplay(const HatariCapabilities &caps) const

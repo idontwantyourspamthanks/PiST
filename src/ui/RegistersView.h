@@ -9,8 +9,10 @@
 #include <QHash>
 #include <QWidget>
 
+class QLabel;
 class QTableWidget;
 class QTableWidgetItem;
+class QWidget;
 
 namespace pist {
 
@@ -48,6 +50,9 @@ private:
 
     QTableWidget *m_table = nullptr;
     QTableWidget *m_flags = nullptr;
+    QWidget *m_flagRow = nullptr;
+    QLabel *m_flagChip[5] = {};
+    QLabel *m_placeholder = nullptr;
 
     /// Last shown value per cell, so invalid edit input can be reverted.
     QHash<QTableWidgetItem *, QString> m_lastValues;

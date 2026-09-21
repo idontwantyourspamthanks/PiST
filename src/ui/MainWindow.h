@@ -298,6 +298,7 @@ private:
     /// Caret chip: file:line:column. While stopped, a caret that has moved off
     /// the execution line shows both ("caret 22 · PC 18").
     void updateCaretChip();
+    void updateRegisterStrip();
 
     /// Point the instruction reference, and the one-line strip under the
     /// editor, at the word under the caret. Runs whether or not the
@@ -563,6 +564,9 @@ private:
     /// One line under the source editor: mnemonic and summary, or an OS call
     /// with its stack. Hidden on an image tab. Clicking it raises Instructions.
     QPushButton *m_instrStrip = nullptr;
+    /// Two lines of registers, shown under the editor while the machine is
+    /// stopped. The Registers dock keeps the full editable table.
+    QLabel *m_registerStrip = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
     QVector<struct SymbolEntry> m_symbols;
     QStringList m_consoleVerbs;

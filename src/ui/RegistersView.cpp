@@ -7,7 +7,9 @@
 #include "ui/Appearance.h"
 
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QHeaderView>
+#include <QLabel>
 #include <QPalette>
 #include <QSignalBlocker>
 #include <QTableWidget>
@@ -80,6 +82,36 @@ RegistersView::RegistersView(QWidget *parent)
     }
     layout->addWidget(m_flags, 1, 0, 1, 2);
 
+    m_flagRow = new QWidget(this);
+    m_flagRow->setObjectName(QStringLiteral("flagChips"));
+    auto *chips = new QHBoxLayout(m_flagRow);
+    chips->setContentsMargins(4, 2, 4, 2);
+    chips->setSpacing(4);
+    const QStringList flagNames = {QStringLiteral("X"), QStringLiteral("N"),
+                                   QStringLiteral("Z"), QStringLiteral("V"),
+                                   QStringLiteral("C")};
+    for (int i = 0; i < flagNames.size(); ++i) {
+        auto *chip = new QLabel(flagNames.at(i), m_flagRow);
+        chip->setObjectName(QStringLiteral("flagChip") + flagNames.at(i));
+        chip->setAlignment(Qt::AlignCenter);
+        chip->setMinimumWidth(22);
+        m_flagChip[i] = chip;
+        chips->addWidget(chip);
+    }
+    chips->addStretch();
+    layout->addWidget(m_flagRow, 2, 0, 1, 2);
+
+    m_placeholder = new QLabel(tr("Registers appear when the machine stops"), this);
+    m_placeholder->setObjectName(QStringLiteral("registersPlaceholder"));
+    m_placeholder->setWordWrap(true);
+    m_placeholder->setAlignment(Qt::AlignCenter);
+    layout->addWidget(m_placeholder, 3, 0, 1, 2);
+
+    // A blank table looks like a dump that failed. Nothing is known until a stop.
+    m_table->hide();
+    m_flags->hide();
+    m_flagRow->hide();
+
     m_table->resizeColumnsToContents();
     m_flags->resizeColumnsToContents();
 
@@ -128,13 +160,22 @@ void RegistersView::setState(const MachineState &state)
     };
 
     setFlag(0, QStringLiteral("%1").arg(state.pc, 8, 16, QLatin1Char('0')).toUpper());
-    setFlag(1, QStringLiteral("%1  X%2 N%3 Z%4 V%5 C%6")
-                   .arg(state.regs.sr, 4, 16, QLatin1Char('0')).toUpper()
-                   .arg(state.regs.flagX ? 1 : 0)
-                   .arg(state.regs.flagN ? 1 : 0)
-                   .arg(state.regs.flagZ ? 1 : 0)
-                   .arg(state.regs.flagV ? 1 : 0)
-                   .arg(state.regs.flagC ? 1 : 0));
+    setFlag(1, QStringLiteral("%1").arg(state.regs.sr, 4, 16, QLatin1Char('0')).toUpper());
+    const bool flags[5] = {state.regs.flagX, state.regs.flagN, state.regs.flagZ,
+                           state.regs.flagV, state.regs.flagC};
+    for (int i = 0; i < 5; ++i) {
+        QLabel *chip = m_flagChip[i];
+        if (!chip)
+            continue;
+        chip->setStyleSheet(QStringLiteral(
+            "QLabel { color: %1; background: %2; border-radius: 3px; padding: 0 4px; }")
+                                .arg(flags[i] ? QStringLiteral("#07140a") : c.muted.name(),
+                                     flags[i] ? QStringLiteral("#2fa04c") : QStringLiteral("transparent")));
+    }
+    m_placeholder->hide();
+    m_table->show();
+    m_flags->show();
+    m_flagRow->show();
     setFlag(2, QStringLiteral("%1").arg(state.regs.usp, 8, 16, QLatin1Char('0')).toUpper());
     setFlag(3, QStringLiteral("%1").arg(state.regs.isp, 8, 16, QLatin1Char('0')).toUpper());
 

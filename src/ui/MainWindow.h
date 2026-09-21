@@ -167,6 +167,10 @@ private slots:
     /// actions refuse a running machine.
     void profileStart();
     bool profileStop();
+    /// Enable the profile actions from the session/profiling state: Start and
+    /// Profile to cursor need stopped-and-not-profiling, Stop and Show needs
+    /// stopped-and-profiling. Called on stoppedChanged and every state change.
+    void syncProfileActions();
     /// The guided profile: arm a one-shot at the cursor line, start collecting
     /// and resume — the results show themselves on the stop. Composes with the
     /// user's breakpoints; an earlier stop ends the run with partial results.
@@ -518,6 +522,10 @@ private:
     QDockWidget *m_profilerDock = nullptr;
     /// A `profile save` is in flight; its commandFinished parses the file.
     bool m_profileSavePending = false;
+    /// Hatari is collecting profile counts (set by Profile Start / Profile to
+    /// cursor, cleared by Profile Stop and session end). Drives which of the
+    /// three profile actions make sense right now.
+    bool m_profilingActive = false;
     /// A "profile to cursor line" run is collecting; the next stop saves and
     /// shows, and deletes the one-shot if some other stop won the race.
     bool m_profileGuided = false;

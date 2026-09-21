@@ -65,6 +65,9 @@ enum class Icon {
     Copy,
     Cut,
     Paste,
+    ProfileStart,
+    ProfileStop,
+    ProfileToCursor,
 };
 
 /// Mouse glyph over the sprite canvas. The hotspot is the paint tip

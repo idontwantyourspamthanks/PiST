@@ -577,6 +577,9 @@ void MainWindow::createActions()
         tr("Arm a one-shot at the cursor line, collect profile counts to it, "
            "and show the results when the run stops there"));
     connect(m_actProfileToCursor, &QAction::triggered, this, &MainWindow::profileToCursor);
+    // No session at startup: everything is disabled until stoppedChanged or a
+    // state change says otherwise (QActions default to enabled).
+    syncProfileActions();
     connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
 
@@ -799,6 +802,7 @@ void MainWindow::wireBackend()
             m_registers->setEditingEnabled(stopped);
         if (m_memory)
             m_memory->setEditingEnabled(stopped);
+        syncProfileActions();
         if (stopped)
             onDebuggerStopped();
     });
@@ -1503,6 +1507,9 @@ void MainWindow::applyIcons()
     m_actStep->setIcon(appearance::icon(Icon::Step));
     m_actStepOver->setIcon(appearance::icon(Icon::StepOver));
     m_actClearBreakpoints->setIcon(appearance::icon(Icon::ClearBreakpoints));
+    m_actProfileStart->setIcon(appearance::icon(Icon::ProfileStart));
+    m_actProfileStop->setIcon(appearance::icon(Icon::ProfileStop));
+    m_actProfileToCursor->setIcon(appearance::icon(Icon::ProfileToCursor));
     if (auto *desk = findChild<QMenu *>(QStringLiteral("deskMenu")))
         desk->setIcon(appearance::atariLogoIcon());
 }
@@ -2478,6 +2485,7 @@ void MainWindow::resetSessionState()
     m_sessionArmed = false;
     m_profileGuided = false;
     m_profileGuidedAddr = 0;
+    m_profilingActive = false;
     m_breakpointsArmedThisSession = false;
     m_bases = LineMap::SectionBases();
     m_lastState = MachineState();
@@ -2959,6 +2967,8 @@ void MainWindow::profileStart()
         return;
     }
     m_host->command(QStringLiteral("profile on"));
+    m_profilingActive = true;
+    syncProfileActions();
     m_log->appendPlainText(tr("[profile] on — continue to collect, then use "
                               "Profile Stop at the next breakpoint stop"));
     m_profiler->showMessage(tr("Collecting — continue, then Profile Stop at the next stop"));
@@ -2986,6 +2996,8 @@ bool MainWindow::profileStop()
     // the session's default engine — the Disassembly pane must not silently
     // keep the external renderer for the rest of the run.
     m_host->command(QStringLiteral("setopt --disasm uae"));
+    m_profilingActive = false;
+    syncProfileActions();
     m_profiler->showMessage(tr("Saving — results appear when the save lands"));
     return true;
 }
@@ -3014,6 +3026,8 @@ void MainWindow::profileToCursor()
     }
     m_profileGuided = true;
     m_profileGuidedAddr = address;
+    m_profilingActive = true;
+    syncProfileActions();
     m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
     m_host->command(QStringLiteral("profile on"));
     const QString collecting = tr("Collecting to %1:%2 — results show on the stop")
@@ -3046,6 +3060,19 @@ void MainWindow::showProfileResults()
                                .arg(data.totalCycles)
                                .arg(data.clockHz));
     emit profileResultsReady(true);
+}
+
+void MainWindow::syncProfileActions()
+{
+    // Profiling is a mode: once collecting, Start and Profile-to-cursor make
+    // no sense until Stop; with nothing collecting, Stop has nothing to save.
+    const bool stopped = m_host && m_host->isStopped();
+    if (m_actProfileStart)
+        m_actProfileStart->setEnabled(stopped && !m_profilingActive);
+    if (m_actProfileStop)
+        m_actProfileStop->setEnabled(stopped && m_profilingActive);
+    if (m_actProfileToCursor)
+        m_actProfileToCursor->setEnabled(stopped && !m_profilingActive);
 }
 
 void MainWindow::pauseSession()

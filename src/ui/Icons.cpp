@@ -1021,6 +1021,56 @@ void paintPaste(QPainter &p, const QRectF &r, qreal w)
     p.drawRoundedRect(tab, 1, 1);
 }
 
+void paintProfileStart(QPainter &p, const QRectF &r, qreal w)
+{
+    // Record: a filled disc in the stop-red — the universal "start capturing".
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0xe0, 0x5a, 0x4a));
+    const qreal d = r.width() * 0.52;
+    p.drawEllipse(QRectF(r.center().x() - d / 2, r.center().y() - d / 2, d, d));
+    Q_UNUSED(w);
+}
+
+void paintProfileStop(QPainter &p, const QRectF &r, qreal w)
+{
+    // Stop and show: the stop square rides on a bar chart — collection ends,
+    // results appear.
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink());
+    const qreal bw = r.width() * 0.13;
+    const qreal base = r.top() + r.height() * 0.76;
+    for (int i = 0; i < 3; ++i) {
+        const qreal h = r.height() * (0.22 + 0.16 * i);
+        p.drawRoundedRect(QRectF(r.left() + r.width() * (0.16 + 0.20 * i), base - h, bw, h), 1, 1);
+    }
+    const qreal sq = r.width() * 0.34;
+    p.setBrush(QColor(0xe0, 0x5a, 0x4a));
+    p.drawRoundedRect(QRectF(r.right() - sq - r.width() * 0.10, r.top() + r.height() * 0.12, sq, sq),
+                      w, w);
+}
+
+void paintProfileToCursor(QPainter &p, const QRectF &r, qreal w)
+{
+    // Measure to a point: a crosshair with the accent dot at its centre.
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const qreal rad = r.width() * 0.26;
+    p.drawEllipse(r.center(), rad, rad);
+    const qreal arm = r.width() * 0.14;
+    p.drawLine(QPointF(r.center().x(), r.top() + r.height() * 0.10),
+               QPointF(r.center().x(), r.center().y() - rad - arm * 0.2));
+    p.drawLine(QPointF(r.center().x(), r.bottom() - r.height() * 0.10),
+               QPointF(r.center().x(), r.center().y() + rad + arm * 0.2));
+    p.drawLine(QPointF(r.left() + r.width() * 0.10, r.center().y()),
+               QPointF(r.center().x() - rad - arm * 0.2, r.center().y()));
+    p.drawLine(QPointF(r.right() - r.width() * 0.10, r.center().y()),
+               QPointF(r.center().x() + rad + arm * 0.2, r.center().y()));
+    p.setPen(Qt::NoPen);
+    p.setBrush(accent());
+    const qreal d = r.width() * 0.16;
+    p.drawEllipse(QRectF(r.center().x() - d / 2, r.center().y() - d / 2, d, d));
+}
+
 using PaintFn = void (*)(QPainter &, const QRectF &, qreal);
 
 PaintFn painterFor(Icon id)
@@ -1066,6 +1116,9 @@ PaintFn painterFor(Icon id)
     case Icon::Copy: return paintCopy;
     case Icon::Cut: return paintCut;
     case Icon::Paste: return paintPaste;
+    case Icon::ProfileStart: return paintProfileStart;
+    case Icon::ProfileStop: return paintProfileStop;
+    case Icon::ProfileToCursor: return paintProfileToCursor;
     }
     return paintOpen;
 }

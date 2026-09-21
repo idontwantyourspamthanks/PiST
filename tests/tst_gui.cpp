@@ -840,17 +840,30 @@ void TstGui::profileToCursorCollectsAndShowsResults()
     }
     const QString console = window.debugConsoleText();
     const bool heat = editor->hasLineHeat();
+
+    // The guided stop ended collection: Start and Profile-to-cursor make
+    // sense again, Stop has nothing left to save.
+    auto *startButton = window.findChild<QToolButton *>(QStringLiteral("profilerStartButton"));
+    auto *stopButton = window.findChild<QToolButton *>(QStringLiteral("profilerStopButton"));
+    const bool startEnabled = startButton && startButton->isEnabled();
+    const bool stopEnabled = stopButton && stopButton->isEnabled();
+    const bool toCursorEnabled = toCursorButton->isEnabled();
     host->stop();
 
     if (!haveRows)
         QSKIP("this Hatari build has no Capstone disassembler for profile save");
+    QVERIFY(startEnabled);
+    QVERIFY(!stopEnabled);
+    QVERIFY(toCursorEnabled);
     QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
     QVERIFY(console.contains(QLatin1String("Collecting to")));
     QVERIFY(heat);
 }
 
-// The dock's buttons are real controls, not decoration: a click in a state
-// where profiling cannot run answers in the dock's own status line.
+// The dock's buttons follow the profiling state machine: with no session
+// they are all disabled (nothing to stop, nothing to collect from), and the
+// empty state in the status line teaches the flow. The click-level refusal
+// and success feedback is covered by profileToCursorCollectsAndShowsResults.
 void TstGui::profilerButtonsExplainThemselvesInTheDock()
 {
     MainWindow window;
@@ -860,19 +873,13 @@ void TstGui::profilerButtonsExplainThemselvesInTheDock()
     QVERIFY(dock);
     auto *status = dock->findChild<QLabel *>(QStringLiteral("profilerStatus"));
     QVERIFY(status);
-    auto *start = dock->findChild<QToolButton *>(QStringLiteral("profilerStartButton"));
-    auto *toCursor = dock->findChild<QToolButton *>(QStringLiteral("profilerToCursorButton"));
-    QVERIFY(start && toCursor);
+    QVERIFY(!status->text().isEmpty()); // the empty state teaches the flow
 
-    const QString empty = status->text();
-    QVERIFY(!empty.isEmpty()); // the empty state teaches the flow
-
-    QTest::mouseClick(start, Qt::LeftButton);
-    QVERIFY(status->text() != empty);
-    QVERIFY(status->text().contains(QStringLiteral("breakpoint"), Qt::CaseInsensitive));
-
-    QTest::mouseClick(toCursor, Qt::LeftButton);
-    QVERIFY(status->text().contains(QStringLiteral("F5")));
+    for (const char *name : {"profilerStartButton", "profilerStopButton", "profilerToCursorButton"}) {
+        auto *button = dock->findChild<QToolButton *>(QString::fromLatin1(name));
+        QVERIFY2(button, name);
+        QVERIFY2(!button->isEnabled(), name); // no session: nothing to profile
+    }
 }
 
 void TstGui::clearAllRemovesWatchpoints()

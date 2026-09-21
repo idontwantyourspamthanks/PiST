@@ -13,6 +13,7 @@
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
 #include "editor/IncludeNav.h"
+#include "editor/InstrRef.h"
 #include "editor/OsCallBinding.h"
 #include "editor/OsCallRef.h"
 #include "editor/OsCallScan.h"
@@ -152,7 +153,25 @@ MainWindow::MainWindow(QWidget *parent)
     m_tabs->setDocumentMode(true);
     m_tabs->setTabsClosable(true);
     m_tabs->setMovable(true);
-    setCentralWidget(m_tabs);
+
+    // The instruction strip sits under the tabs, not in the dock: the dock is
+    // one tab among the debug group, and a mnemonic the user is reading should
+    // not depend on that tab being selected.
+    auto *center = new QWidget(this);
+    auto *column = new QVBoxLayout(center);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(0);
+    column->addWidget(m_tabs, 1);
+    m_instrStrip = new QPushButton(center);
+    m_instrStrip->setObjectName(QStringLiteral("instructionStrip"));
+    m_instrStrip->setFlat(true);
+    m_instrStrip->setFocusPolicy(Qt::NoFocus);
+    m_instrStrip->setCursor(Qt::PointingHandCursor);
+    m_instrStrip->setToolTip(tr("Open the instruction reference"));
+    appearance::markMono(m_instrStrip);
+    connect(m_instrStrip, &QPushButton::clicked, this, &MainWindow::raiseInstructionRef);
+    column->addWidget(m_instrStrip);
+    setCentralWidget(center);
     connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
 
@@ -287,43 +306,8 @@ void MainWindow::wireEditor(CodeEditor *editor)
     connect(editor, &CodeEditor::cursorPositionChanged, this, [this, editor] {
         if (editor == m_editor)
             updateCaretChip();
-        if (!m_instrRef || editor != m_editor || !m_instrRef->isVisible())
-            return;
-        const QTextCursor cursor = editor->textCursor();
-        const int blockNumber = cursor.blockNumber();
-
-        // The scanner only needs a small window around the cursor: OS calls
-        // are a local idiom (OsCallScan bounds its scans to a few lines).
-        const QTextDocument *doc = editor->document();
-        const int base = qMax(0, blockNumber - 10);
-        const int last = qMin(doc->blockCount() - 1, blockNumber + 10);
-        QStringList window;
-        window.reserve(last - base + 1);
-        for (int i = base; i <= last; ++i)
-            window.append(doc->findBlockByNumber(i).text());
-        const OsCallMatch match = osCallAt(window, blockNumber - base);
-        if (match.call) {
-            m_instrRef->showOsCall(match.call->trap, match.call->opcode, match.args);
-            return;
-        }
-        if (match.trapContext) {
-            // A trap whose function number is not statically known: the
-            // generic TRAP entry still says what the instruction does.
-            m_instrRef->showInstruction(QStringLiteral("trap"));
-            return;
-        }
-
-        const QString line = cursor.block().text();
-        const int col = cursor.positionInBlock();
-        int start = col;
-        while (start > 0
-               && (line.at(start - 1).isLetterOrNumber() || line.at(start - 1) == QLatin1Char('.')))
-            --start;
-        int end = col;
-        while (end < line.size()
-               && (line.at(end).isLetterOrNumber() || line.at(end) == QLatin1Char('.')))
-            ++end;
-        m_instrRef->showInstruction(line.mid(start, end - start));
+        if (editor == m_editor)
+            followCursorReference(editor);
     });
     connect(editor, &CodeEditor::gutterContextMenuRequested, this,
             [this, editor](int line, const QPoint &pos) {
@@ -470,6 +454,10 @@ void MainWindow::onTabChanged(int index)
         refreshBreakpointMarkers();
     updateModifiedState();
     updateCaretChip();
+    if (m_instrStrip)
+        m_instrStrip->setVisible(m_editor != nullptr);
+    if (m_editor)
+        followCursorReference(m_editor);
 }
 
 void MainWindow::onTabCloseRequested(int index)
@@ -1627,6 +1615,13 @@ void MainWindow::applyAppearance()
     setWindowIcon(appearance::windowIcon());
     applyIcons();
     appearance::applyMonoFonts(this);
+    if (m_instrStrip) {
+        m_instrStrip->setStyleSheet(QStringLiteral(
+            "QPushButton#instructionStrip {"
+            " text-align: left; padding: 1px 8px; border: none;"
+            " border-top: 1px solid palette(mid); }"));
+        m_instrStrip->setFixedHeight(m_instrStrip->fontMetrics().height() + 6);
+    }
     for (CodeEditor *editor : openEditors())
         editor->applyFontPreferences();
     for (ImageEditor *image : openImages())
@@ -1707,6 +1702,89 @@ void MainWindow::updateCaretChip()
         m_statusCaret->setText(tr("%1: caret %2 · PC %3").arg(name).arg(line).arg(execution));
     else
         m_statusCaret->setText(QStringLiteral("%1:%2:%3").arg(name).arg(line).arg(column));
+}
+
+void MainWindow::followCursorReference(CodeEditor *editor)
+{
+    if (!editor || editor != m_editor)
+        return;
+
+    const QTextCursor cursor = editor->textCursor();
+    const int blockNumber = cursor.blockNumber();
+
+    // The scanner only needs a small window around the cursor: OS calls
+    // are a local idiom (OsCallScan bounds its scans to a few lines).
+    const QTextDocument *doc = editor->document();
+    const int base = qMax(0, blockNumber - 10);
+    const int last = qMin(doc->blockCount() - 1, blockNumber + 10);
+    QStringList window;
+    window.reserve(last - base + 1);
+    for (int i = base; i <= last; ++i)
+        window.append(doc->findBlockByNumber(i).text());
+    const OsCallMatch match = osCallAt(window, blockNumber - base);
+
+    auto showStrip = [this](const QString &text) {
+        if (!m_instrStrip)
+            return;
+        m_instrStrip->setText(text);
+        m_instrStrip->setToolTip(text.isEmpty() ? tr("Open the instruction reference") : text);
+    };
+
+    if (match.call) {
+        if (m_instrRef)
+            m_instrRef->showOsCall(match.call->trap, match.call->opcode, match.args);
+        QString stack;
+        if (!match.args.isEmpty())
+            stack = match.args.join(QStringLiteral(", "));
+        if (match.call->stackBytes > 0) {
+            if (!stack.isEmpty())
+                stack += QStringLiteral(" · ");
+            stack += tr("%1 bytes").arg(match.call->stackBytes);
+        }
+        QString line = QStringLiteral("%1 — %2").arg(match.call->name, match.call->summary);
+        if (!stack.isEmpty())
+            line += tr("  Stack: %1").arg(stack);
+        showStrip(line);
+        return;
+    }
+    if (match.trapContext) {
+        // A trap whose function number is not statically known: the
+        // generic TRAP entry still says what the instruction does.
+        if (m_instrRef)
+            m_instrRef->showInstruction(QStringLiteral("trap"));
+        if (const InstructionInfo *info = instructionRef(QStringLiteral("trap")))
+            showStrip(QStringLiteral("%1 — %2").arg(info->mnemonic, info->summary));
+        else
+            showStrip(QString());
+        return;
+    }
+
+    const QString line = cursor.block().text();
+    const int col = cursor.positionInBlock();
+    int start = col;
+    while (start > 0
+           && (line.at(start - 1).isLetterOrNumber() || line.at(start - 1) == QLatin1Char('.')))
+        --start;
+    int end = col;
+    while (end < line.size()
+           && (line.at(end).isLetterOrNumber() || line.at(end) == QLatin1Char('.')))
+        ++end;
+    const QString word = line.mid(start, end - start);
+    if (m_instrRef)
+        m_instrRef->showInstruction(word);
+    if (const InstructionInfo *info = instructionRef(word))
+        showStrip(QStringLiteral("%1 — %2").arg(info->mnemonic, info->summary));
+    else
+        showStrip(QString());
+}
+
+void MainWindow::raiseInstructionRef()
+{
+    auto *dock = findChild<QDockWidget *>(QStringLiteral("instructionRefDock"));
+    if (!dock)
+        return;
+    dock->show();
+    dock->raise();
 }
 
 QString MainWindow::makeSessionDir()

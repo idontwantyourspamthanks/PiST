@@ -303,6 +303,7 @@ private slots:
     /// and the application palette.
     void appearancePreferencesApply();
     void quietColoursClearTheirBackground();
+    void instructionStripFollowsTheCaret();
     /// Documents open in tabs: pristine-tab reuse, raise-not-duplicate, the
     /// modified marker on the label, and the never-empty invariant.
     void documentTabsManageOpenFiles();
@@ -3247,6 +3248,75 @@ void TstGui::quietColoursClearTheirBackground()
     else
         settings.remove(QStringLiteral("appearance/theme"));
     pist::appearance::applyTheme();
+}
+
+// The instruction reference used to update only while its dock was the
+// selected tab. The strip under the editor is the line you can read without
+// opening that dock, and clicking it brings the dock forward.
+void TstGui::instructionStripFollowsTheCaret()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *editor = window.findChild<CodeEditor *>();
+    auto *ref = window.findChild<InstructionRefView *>();
+    auto *strip = window.findChild<QPushButton *>(QStringLiteral("instructionStrip"));
+    QVERIFY(editor && ref && strip);
+    QVERIFY(strip->isVisible());
+
+    editor->setPlainText(QStringLiteral("\tmoveq\t#1,d0\n"
+                                        "\tpea\tmsg(pc)\n"
+                                        "\tmove.w\t#9,-(sp)\n"
+                                        "\ttrap\t#1\n"
+                                        "; a comment\n"));
+
+    QTextCursor moveq = editor->document()->find(QStringLiteral("moveq"));
+    QVERIFY(!moveq.isNull());
+    editor->setTextCursor(moveq);
+    QCOMPARE(ref->currentMnemonic(), QStringLiteral("MOVEQ"));
+    QVERIFY2(strip->text().startsWith(QLatin1String("MOVEQ")), qPrintable(strip->text()));
+    QVERIFY(strip->text().contains(QLatin1String("Move quick")));
+
+    // Registers is the factory tab, so Instructions is not showing. The
+    // reference must still have followed.
+    QTabBar *debugTabs = nullptr;
+    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabText(i) == QLatin1String("Instructions"))
+                debugTabs = bar;
+        }
+    }
+    QVERIFY(debugTabs);
+    QVERIFY(debugTabs->tabText(debugTabs->currentIndex()) != QLatin1String("Instructions"));
+
+    QTextCursor trap = editor->document()->find(QStringLiteral("trap"));
+    QVERIFY(!trap.isNull());
+    editor->setTextCursor(trap);
+    QCOMPARE(ref->currentMnemonic(), QStringLiteral("gemdos:9"));
+    QVERIFY2(strip->text().contains(QLatin1String("Cconws")), qPrintable(strip->text()));
+    QVERIFY2(strip->text().contains(QLatin1String("Stack:")), qPrintable(strip->text()));
+
+    QTextCursor comment = editor->document()->find(QStringLiteral("comment"));
+    QVERIFY(!comment.isNull());
+    editor->setTextCursor(comment);
+    QVERIFY(strip->text().isEmpty());
+    QCOMPARE(ref->currentMnemonic(), QStringLiteral("gemdos:9"));
+
+    QTest::mouseClick(strip, Qt::LeftButton);
+    debugTabs = nullptr;
+    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabText(i) == QLatin1String("Instructions"))
+                debugTabs = bar;
+        }
+    }
+    QVERIFY(debugTabs);
+    QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Instructions"));
 }
 
 void TstGui::documentTabsManageOpenFiles()

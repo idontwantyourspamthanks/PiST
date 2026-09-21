@@ -28,6 +28,7 @@ class QDockWidget;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
+class QPushButton;
 class QTableWidget;
 class QTreeWidget;
 
@@ -298,6 +299,14 @@ private:
     /// the execution line shows both ("caret 22 · PC 18").
     void updateCaretChip();
 
+    /// Point the instruction reference, and the one-line strip under the
+    /// editor, at the word under the caret. Runs whether or not the
+    /// Instructions dock is the tab on top.
+    void followCursorReference(CodeEditor *editor);
+
+    /// Bring the Instructions dock forward. The strip under the editor does this.
+    void raiseInstructionRef();
+
     /// Connect every backend signal to its handler. Runs once at construction
     /// and again whenever the selected debug transport changes (a project can
     /// switch between the native and HRDB backends), so it must be safe to
@@ -546,6 +555,9 @@ private:
     class SymbolsView *m_symbolsView = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
     class InstructionRefView *m_instrRef = nullptr;
+    /// One line under the source editor: mnemonic and summary, or an OS call
+    /// with its stack. Hidden on an image tab. Clicking it raises Instructions.
+    QPushButton *m_instrStrip = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
     QVector<struct SymbolEntry> m_symbols;
     QStringList m_consoleVerbs;

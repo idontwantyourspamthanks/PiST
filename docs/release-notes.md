@@ -10,6 +10,27 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.6.3.2
+
+The rest of the agent surface, in one point release:
+
+- **Tool annotations.** Read-only tools declare `readOnlyHint`, and the ones
+  that end or rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`)
+  declare `destructiveHint` — an MCP client can now ask your confirmation
+  for exactly the right calls.
+- **MCP resources and prompts.** `pist://console`, `pist://state` and
+  `pist://document` as readable resources (`pist://state` subscribable, with
+  updates pushed on every stop/resume), and two ready-made prompts:
+  `diagnose-build` and `find-hot-loop`.
+- **The document surface, completed.** `pist_tabs` lists every open document
+  (path, modified, current) and `pist_save` saves the current one.
+- **Build failures answer with their diagnostics.** A failed `pist_build`
+  now includes the Problems pane in `structuredContent` — file, line,
+  severity, message — instead of a bare `error build failed`.
+- Also: 27 tools in total, the `symbols` verb restored to the README's
+  protocol table, and the `quit` decision recorded (it stays off the tool
+  list deliberately).
+
 ## What's new in 0.6.3.1
 
 A point release for one security-relevant fix: a connection refused by the

@@ -1351,9 +1351,7 @@ void MainWindow::createDocks()
     m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message")});
     m_problems->header()->setStretchLastSection(true);
     connect(m_problems, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *item, int) {
-        const int line = item->text(1).toInt();
-        if (line > 0 && m_editor)
-            m_editor->gotoLine(line);
+        navigateToSourceLine(item->text(0), item->text(1).toInt());
     });
 
     m_log = new QPlainTextEdit(this);
@@ -3911,15 +3909,75 @@ void MainWindow::removeBreakpoint(const QString &file, int line)
         armBreakpoints();
 }
 
+QString MainWindow::resolveNavigablePath(const QString &file) const
+{
+    if (file.isEmpty())
+        return {};
+    if (QFileInfo(file).isAbsolute() && QFileInfo::exists(file))
+        return QFileInfo(file).absoluteFilePath();
+    for (const QString &source : m_programMap.sourceFiles()) {
+        if (LineMap::sameSource(file, source) && QFileInfo::exists(source))
+            return QFileInfo(source).absoluteFilePath();
+    }
+    const QString anchor = buildSourcePath();
+    if (!anchor.isEmpty()) {
+        const QString beside = QFileInfo(anchor).absolutePath() + QLatin1Char('/')
+                             + QFileInfo(file).fileName();
+        if (QFileInfo::exists(beside))
+            return beside;
+    }
+    if (QFileInfo::exists(file))
+        return QFileInfo(file).absoluteFilePath();
+    return {};
+}
+
+bool MainWindow::navigateToSourceLine(const QString &file, int line)
+{
+    if (line <= 0)
+        return false;
+
+    // A build-level note has no source file. Stay in the editor that is open.
+    if (file.isEmpty() || file == tr("(build)")) {
+        if (!m_editor)
+            return false;
+        m_tabs->setCurrentWidget(m_editor);
+        m_editor->gotoLine(line);
+        return true;
+    }
+
+    CodeEditor *target = nullptr;
+    for (CodeEditor *editor : openEditors()) {
+        if (LineMap::sameSource(file, editor->filePath())) {
+            target = editor;
+            break;
+        }
+    }
+    if (!target) {
+        const QString path = resolveNavigablePath(file);
+        if (path.isEmpty() || !openPath(path)) {
+            statusBar()->showMessage(tr("Could not open %1").arg(file), 5000);
+            return false;
+        }
+        for (CodeEditor *editor : openEditors()) {
+            if (LineMap::sameSource(path, editor->filePath())) {
+                target = editor;
+                break;
+            }
+        }
+        if (!target) {
+            statusBar()->showMessage(tr("Could not open %1").arg(file), 5000);
+            return false;
+        }
+    }
+    m_tabs->setCurrentWidget(target);
+    target->gotoLine(line);
+    target->setFocus();
+    return true;
+}
+
 void MainWindow::goToBreakpoint(const QString &file, int line)
 {
-    // Only navigate within the file that is open; switching documents is not
-    // supported yet, so silently doing nothing is better than jumping to the
-    // wrong line in the wrong file.
-    if (!m_editor || m_editor->filePath().isEmpty()
-        || !LineMap::sameSource(file, m_editor->filePath()))
-        return;
-    m_editor->gotoLine(line);
+    navigateToSourceLine(file, line);
 }
 
 void MainWindow::stepDiagnostic(int direction)
@@ -3941,9 +3999,7 @@ void MainWindow::stepDiagnostic(int direction)
         // document only (goToBreakpoint's rule), never switch files blindly.
         const QString file = item->text(0);
         m_problems->setCurrentItem(item);
-        if (m_editor && (file.isEmpty() || file == tr("(build)")
-                         || LineMap::sameSource(file, m_editor->filePath())))
-            m_editor->gotoLine(line);
+        navigateToSourceLine(file, line);
         return;
     }
 }

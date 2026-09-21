@@ -307,6 +307,11 @@ private:
     /// Bring the Instructions dock forward. The strip under the editor does this.
     void raiseInstructionRef();
 
+    /// Open `file` (already open, or found beside the project) and move the
+    /// caret to `line`. A missing file is reported on the status bar.
+    bool navigateToSourceLine(const QString &file, int line);
+    QString resolveNavigablePath(const QString &file) const;
+
     /// Connect every backend signal to its handler. Runs once at construction
     /// and again whenever the selected debug transport changes (a project can
     /// switch between the native and HRDB backends), so it must be safe to

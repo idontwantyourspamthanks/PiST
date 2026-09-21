@@ -60,6 +60,7 @@
 #include <QTreeWidget>
 #include <QTimer>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QToolButton>
 #include <QProcess>
 #include <QTreeView>
@@ -176,6 +177,7 @@ private slots:
     void osCallReferenceFollowsTheCursor();
     void osCallBindingInsertsAtTheCursor();
     void diagnosticKeyboardFlowToursProblems();
+    void navigationOpensTheOtherFile();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -1588,6 +1590,64 @@ void TstGui::diagnosticKeyboardFlowToursProblems()
     QVERIFY(QMetaObject::invokeMethod(&window, "previousDiagnostic", Qt::DirectConnection));
     QCOMPARE(problems->currentIndex().row(), 2);  // backwards wraps too
     QCOMPARE(editorLine(), 7);
+}
+
+// A breakpoint, a problem row and F4 used to do nothing when the line lived
+// in a file that was not the current editor.
+void TstGui::navigationOpensTheOtherFile()
+{
+    const QString dir = m_work->path() + QStringLiteral("/nav");
+    QVERIFY(QDir().mkpath(dir));
+    const QString a = dir + QStringLiteral("/a.s");
+    const QString b = dir + QStringLiteral("/b.s");
+    {
+        QFile f(a);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\nstart:\tnop\n\trts\n\tend\n");
+    }
+    {
+        QFile f(b);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\n\tnop\nhelper:\tnop\n\trts\n\tend\n");
+    }
+
+    MainWindow window;
+    window.openPath(a);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "goToBreakpoint", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("b.s")), Q_ARG(int, 3)));
+    auto *current = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(current);
+    QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
+    QCOMPARE(current->textCursor().blockNumber() + 1, 3);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "goToBreakpoint", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("a.s")), Q_ARG(int, 2)));
+    current = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(current);
+    QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("a.s"));
+    QCOMPARE(current->textCursor().blockNumber() + 1, 2);
+    QCOMPARE(tabs->count(), 2);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "goToBreakpoint", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("missing.s")), Q_ARG(int, 1)));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("missing.s")));
+    current = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("a.s"));
+
+    auto *problems = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"))
+                         ->findChild<QTreeWidget *>();
+    QVERIFY(problems);
+    auto *item = new QTreeWidgetItem(problems);
+    item->setText(0, QStringLiteral("b.s"));
+    item->setText(1, QStringLiteral("4"));
+    item->setText(2, QStringLiteral("diagnostic"));
+    QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
+    current = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
+    QCOMPARE(current->textCursor().blockNumber() + 1, 4);
 }
 
 // File ▸ Open Recent lists the persisted MRU sources (skipping files that no

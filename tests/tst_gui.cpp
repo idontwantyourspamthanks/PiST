@@ -2850,13 +2850,21 @@ void TstGui::fileBrowserFloppyGroups()
     auto *ejectA = browser->findChild<QPushButton *>(QStringLiteral("diskAEject"));
     QVERIFY(diskA && diskB && exportBtn && changeA && ejectA);
 
+    auto *nameA = browser->findChild<QLabel *>(QStringLiteral("diskAName"));
+    QVERIFY(nameA);
+    QCOMPARE(nameA->text(), QStringLiteral("A: no disk"));
+    QVERIFY(diskA->isHidden());
+    auto *projectTitle = browser->findChild<QLabel *>(QStringLiteral("projectTitle"));
+    QVERIFY(projectTitle);
+    QCOMPARE(projectTitle->text(), QFileInfo(src).dir().dirName());
+    QCOMPARE(projectTitle->toolTip(), QFileInfo(src).absolutePath());
+
     QSignalSpy spy(browser, &FileBrowser::floppyImageChanged);
     browser->setFloppyImages({image, QString()});
     QCOMPARE(browser->floppyImages().at(0), image);
     QVERIFY(ejectA->isEnabled());
-    auto *nameA = browser->findChild<QLabel *>(QStringLiteral("diskAName"));
-    QVERIFY(nameA);
-    QCOMPARE(nameA->text(), QStringLiteral("boot.st"));
+    QVERIFY(!diskA->isHidden());
+    QCOMPARE(nameA->text(), QStringLiteral("A: boot.st"));
 
     std::function<bool(QAbstractItemModel *, const QModelIndex &, const QString &)> findInTree;
     findInTree = [&](QAbstractItemModel *model, const QModelIndex &parent,

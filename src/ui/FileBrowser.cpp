@@ -214,7 +214,10 @@ FileBrowser::FileBrowser(QWidget *parent)
     split->setChildrenCollapsible(false);
 
     QHBoxLayout *hdHeader = nullptr;
-    QWidget *hd = makeGroup(tr("Hard Drive"), this, &hdHeader);
+    QWidget *hd = makeGroup(tr("Project"), this, &hdHeader);
+    m_projectTitle = qobject_cast<QLabel *>(hdHeader->itemAt(0)->widget());
+    if (m_projectTitle)
+        m_projectTitle->setObjectName(QStringLiteral("projectTitle"));
     m_export = new QPushButton(tr("Export…"), hd);
     m_export->setObjectName(QStringLiteral("hardDriveExport"));
     m_export->setToolTip(tr("Write the selected hard-drive files to a new .st or .msa floppy image."));
@@ -481,6 +484,12 @@ void FileBrowser::showDirectory(const QString &path)
     else
         m_pendingCurrent = root;
     m_pathEdit->setText(root);
+    m_pathEdit->setToolTip(root);
+    if (m_projectTitle) {
+        const QString name = QFileInfo(root).fileName();
+        m_projectTitle->setText(name.isEmpty() ? root : name);
+        m_projectTitle->setToolTip(root);
+    }
 }
 
 void FileBrowser::setFloppyImages(const QStringList &images)
@@ -1357,19 +1366,26 @@ void FileBrowser::refreshFloppy(int drive)
     pane.model->clear();
     pane.eject->setEnabled(!path.isEmpty());
 
+    const QString letter = drive == 0 ? QStringLiteral("A") : QStringLiteral("B");
+    // An empty drive is one row. The listing opens when an image is inserted.
+    pane.view->setVisible(!path.isEmpty());
+    pane.eject->setVisible(!path.isEmpty());
+    if (QWidget *group = pane.view->parentWidget()) {
+        if (path.isEmpty())
+            group->setMaximumHeight(group->minimumSizeHint().height());
+        else
+            group->setMaximumHeight(QWIDGETSIZE_MAX);
+    }
+
     if (path.isEmpty()) {
-        pane.diskName->setText(tr("No disk"));
+        pane.diskName->setText(tr("%1: no disk").arg(letter));
         pane.diskName->setToolTip(QString());
         pane.diskName->setEnabled(false);
-        auto *item = new QStandardItem(tr("No disk inserted"));
-        item->setEnabled(false);
-        item->setSelectable(false);
-        pane.model->appendRow(item);
         return;
     }
 
     const QFileInfo info(path);
-    pane.diskName->setText(info.fileName());
+    pane.diskName->setText(tr("%1: %2").arg(letter, info.fileName()));
     pane.diskName->setToolTip(info.absoluteFilePath());
     pane.diskName->setEnabled(true);
 

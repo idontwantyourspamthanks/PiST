@@ -2961,6 +2961,7 @@ void MainWindow::profileStart()
     m_host->command(QStringLiteral("profile on"));
     m_log->appendPlainText(tr("[profile] on — continue to collect, then use "
                               "Profile Stop at the next breakpoint stop"));
+    m_profiler->showMessage(tr("Collecting — continue, then Profile Stop at the next stop"));
 }
 
 bool MainWindow::profileStop()
@@ -2985,6 +2986,7 @@ bool MainWindow::profileStop()
     // the session's default engine — the Disassembly pane must not silently
     // keep the external renderer for the rest of the run.
     m_host->command(QStringLiteral("setopt --disasm uae"));
+    m_profiler->showMessage(tr("Saving — results appear when the save lands"));
     return true;
 }
 
@@ -3003,18 +3005,22 @@ void MainWindow::profileToCursor()
     const int line = m_editor->textCursor().blockNumber() + 1;
     quint32 address = 0;
     if (!m_programMap.codeAddressFor(m_editor->filePath(), line, &address)) {
-        m_log->appendPlainText(tr("[profile] no code address for %1:%2")
-                                   .arg(m_editor->filePath())
-                                   .arg(line));
+        const QString hint = tr("No code on %1:%2 — put the cursor on an instruction line")
+                                 .arg(m_editor->filePath())
+                                 .arg(line);
+        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
+        m_profiler->showMessage(hint);
         return;
     }
     m_profileGuided = true;
     m_profileGuidedAddr = address;
     m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
     m_host->command(QStringLiteral("profile on"));
-    m_log->appendPlainText(tr("[profile] collecting to %1:%2 — results show on the stop")
-                               .arg(m_editor->filePath())
-                               .arg(line));
+    const QString collecting = tr("Collecting to %1:%2 — results show on the stop")
+                                   .arg(m_editor->filePath())
+                                   .arg(line);
+    m_log->appendPlainText(QStringLiteral("[profile] ") + collecting);
+    m_profiler->showMessage(collecting);
     m_host->resume();
 }
 

@@ -797,12 +797,25 @@ void TstGui::profileToCursorCollectsAndShowsResults()
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
 
-    // Cursor on the measurement's end, one gesture: arm the one-shot, profile
-    // on, continue — the stop saves and shows without another click.
+    auto *status = window.findChild<QLabel *>(QStringLiteral("profilerStatus"));
+    QVERIFY(status);
+    auto *toCursorButton = window.findChild<QToolButton *>(QStringLiteral("profilerToCursorButton"));
+    QVERIFY(toCursorButton);
+
+    // A refusal message (cursor on a line with no code) must be replaced by
+    // the success feedback, not survive into the real run.
     QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(0).position());
+    editor->setTextCursor(cursor);
+    QTest::mouseClick(toCursorButton, Qt::LeftButton);
+    QVERIFY(status->text().contains(QStringLiteral("No code")));
+
+    // Cursor on the measurement's end, one click: arm the one-shot, profile
+    // on, continue — the stop saves and shows without another click.
     cursor.setPosition(editor->document()->findBlockByNumber(5).position());
     editor->setTextCursor(cursor);
-    QVERIFY(QMetaObject::invokeMethod(&window, "profileToCursor", Qt::DirectConnection));
+    QTest::mouseClick(toCursorButton, Qt::LeftButton);
+    QVERIFY(status->text().contains(QStringLiteral("Collecting to")));
 
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 6, 30000);
 
@@ -815,22 +828,25 @@ void TstGui::profileToCursorCollectsAndShowsResults()
         || window.debugConsoleText().contains(QLatin1String("[profile] no"))
         || window.debugConsoleText().contains(QLatin1String("[profile] not")),
         15000);
-    if (tree->topLevelItemCount() == 0) {
-        host->stop();
-        QSKIP("this Hatari build has no Capstone disassembler for profile save");
-    }
 
+    // Capture every observable before stopping the session: an assertion that
+    // fails with a live session is the documented teardown hang (exit 134).
+    const bool haveRows = tree->topLevelItemCount() > 0;
     QStringList lines;
     for (int i = 0; i < tree->topLevelItemCount(); ++i) {
         QTreeWidgetItem *root = tree->topLevelItem(i);
         for (int c = 0; c < root->childCount(); ++c)
             lines << root->child(c)->text(0);
     }
-    QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
-    QVERIFY(window.debugConsoleText().contains(QLatin1String("collecting to")));
-    QVERIFY(editor->hasLineHeat());
-
+    const QString console = window.debugConsoleText();
+    const bool heat = editor->hasLineHeat();
     host->stop();
+
+    if (!haveRows)
+        QSKIP("this Hatari build has no Capstone disassembler for profile save");
+    QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
+    QVERIFY(console.contains(QLatin1String("Collecting to")));
+    QVERIFY(heat);
 }
 
 // The dock's buttons are real controls, not decoration: a click in a state

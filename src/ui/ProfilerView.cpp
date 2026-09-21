@@ -61,9 +61,6 @@ ProfilerView::ProfilerView(QWidget *parent)
     m_showAll->setToolTip(tr("Also show rows under 0.1% of the run"));
     filterRow->addWidget(m_showAll);
 
-    m_status = new QLabel(this);
-    m_status->setObjectName(QStringLiteral("profilerStatus"));
-    filterRow->addWidget(m_status);
     layout->addLayout(filterRow);
 
     m_tree = new QTreeWidget(this);
@@ -82,6 +79,12 @@ ProfilerView::ProfilerView(QWidget *parent)
     m_buttonRow = new QHBoxLayout;
     m_buttonRow->setSpacing(4);
     layout->addLayout(m_buttonRow);
+
+    // The status gets the bottom line to itself: full width, so a real
+    // sentence fits without stretching the filter row.
+    m_status = new QLabel(this);
+    m_status->setObjectName(QStringLiteral("profilerStatus"));
+    layout->addWidget(m_status);
 
     // Double-click is what every other list in the IDE uses for "go there"
     // (BreakpointPanel, StackView, MemoryView), so a hot line — or the routine
@@ -374,6 +377,15 @@ void ProfilerView::applyFilter()
     if (m_totalCount == 0) {
         status = m_unmapped ? tr("%1 addresses, none in this file").arg(m_unmapped)
                             : tr("no profiled instructions in this file");
+    } else if (m_routines.isEmpty() && m_rom.isEmpty()) {
+        // A profile landed but nothing in it belongs to this source: the tree
+        // is empty for a reason, and the user should not read it as broken.
+        status = tr("nothing in the run maps to this file");
+        if (m_unmapped)
+            status += tr(" · %1 addresses unmapped").arg(m_unmapped);
+    } else if (shownRoots == 0) {
+        status = !needle.isEmpty() ? tr("no routines match the filter")
+                                   : tr("everything is under 0.1% — Show all to see it");
     } else {
         const QLocale locale;
         status = tr("%1 instructions, %2 cycles")

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(pist
-    VERSION 0.7.0
+    VERSION 0.7.1
     DESCRIPTION "PiST - an IDE for Atari ST assembly development"
     LANGUAGES CXX)
 

@@ -210,15 +210,16 @@ unbuilt.
 
 ## 7. Panel aesthetics: tabs and movable panels
 
-**Status:** delivered. Every dock is movable, floatable and closable, docks nest and tab within an
-area, and the whole arrangement persists across runs (QSettings saveState/restoreState, round-trip
-pinned by tst_gui::dockLayoutPersistsAcrossRestart). The default arrangement groups the debug views
-(Registers/Disassembly/Stack/Hardware/Breakpoints) into one tabbed panel with the Emulator display
-prominent above it, and Output/Memory tabbed at the bottom. The View menu lists every dock for
-show/hide and has a Reset layout action. Moving a panel is discoverable: right-click any dock tab
-or title bar for a "Move to left / right / bottom / Float" menu, and drags track across the
-embedded video (the foreign SDL window is made input-transparent mid-drag). Remaining polish would
-be layout presets and a nicer first-run default size balance, not the mechanism itself.
+**Status:** delivered, apart from the factory arrangement. Every dock is movable, floatable and
+closable, docks nest and tab within an area, and the whole arrangement persists across runs
+(QSettings saveState/restoreState, round-trip pinned by tst_gui::dockLayoutPersistsAcrossRestart).
+The View menu lists every dock for show/hide, including a memory pane added later, and has a Reset
+layout action (tst_gui::viewMenuListsEveryDock). Moving a panel is discoverable: right-click any
+dock tab or title bar for a "Move to left / right / bottom / Float" menu, and drags track across
+the embedded video (the foreign SDL window is made input-transparent mid-drag). What is not done
+is the factory arrangement: the debug views share one tab group and the last one tabified
+(Profiler) is the tab on top, the emulator dock stays hidden unless embedding is on, and there
+are no layout presets or a tuned first-run size balance.
 ---
 
 ## 8. Emulator window resize correctness

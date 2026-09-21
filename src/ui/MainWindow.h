@@ -438,6 +438,13 @@ private:
     /// closable, and a stable objectName for layout persistence.
     QDockWidget *makeDock(const QString &title, const QString &objectName, QWidget *widget);
 
+    /// Put `dock`'s show/hide action on the View menu, with the other dock
+    /// toggles and above Reset layout. A no-op until that section exists, and
+    /// a no-op when the action is already there — the first memory pane is
+    /// created before the section, and the walk at the end of createDocks
+    /// lists it.
+    void addDockToViewMenu(QDockWidget *dock);
+
     /// Restore the factory dock layout (the default tab groupings), discarding
     /// the user's current arrangement. Invoked from the View menu.
     void resetToDefaultLayout();

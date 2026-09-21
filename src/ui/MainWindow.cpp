@@ -906,6 +906,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(quit);
 
     m_viewMenu = menuBar()->addMenu(tr("&View"));
+    m_viewMenu->setObjectName(QStringLiteral("viewMenu"));
     m_viewMenu->addAction(m_actEmbedDisplay);
 
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
@@ -964,6 +965,28 @@ void MainWindow::showSetupIfNeeded()
 {
     if (SetupDialog::shouldPromptAtStartup())
         showToolSetup();
+}
+
+void MainWindow::addDockToViewMenu(QDockWidget *dock)
+{
+    if (!m_viewMenu || !dock)
+        return;
+    QAction *toggle = dock->toggleViewAction();
+    if (m_viewMenu->actions().contains(toggle))
+        return;
+    // No section yet: createDocks lists every dock that already exists once
+    // the separator is in place. Inserting now would land the action above
+    // that separator, next to Embed.
+    QAction *before = nullptr;
+    for (QAction *action : m_viewMenu->actions()) {
+        if (action->objectName() == QLatin1String("viewDockSectionEnd")) {
+            before = action;
+            break;
+        }
+    }
+    if (!before)
+        return;
+    m_viewMenu->insertAction(before, toggle);
 }
 
 QDockWidget *MainWindow::makeDock(const QString &title, const QString &objectName, QWidget *widget)
@@ -1384,20 +1407,56 @@ void MainWindow::createDocks()
     // --- default arrangement captured, then the user's arrangement restored ---
     // The View menu gets one show/hide action per dock, plus a way back to the
     // default layout. Built here rather than in createMenus because the docks do
-    // not exist yet when the menus are made.
+    // not exist yet when the menus are made. The list is every dock the window
+    // owns, not a hand-written subset: a dock forgotten by that subset can be
+    // closed and never reopened (Reset layout is the only other way back, and
+    // it discards the rest of the arrangement).
     if (m_viewMenu) {
         m_viewMenu->addSeparator();
-        const QList<QDockWidget *> allDocks = {
-            m_problemsDock, consoleDock, m_memoryDock, m_displayDock,
-            debugTabs.first(), debugTabs.at(1), debugTabs.at(2), debugTabs.at(3), debugTabs.at(4),
-            qobject_cast<QDockWidget *>(m_fileBrowser->parentWidget())
+        // Toggles are inserted before this separator, so Reset layout stays last
+        // and a dock created later (another memory pane) joins the same group.
+        auto *sectionEnd = m_viewMenu->addSeparator();
+        sectionEnd->setObjectName(QStringLiteral("viewDockSectionEnd"));
+        auto *reset = m_viewMenu->addAction(tr("Reset layout"), this,
+                                            &MainWindow::resetToDefaultLayout);
+        reset->setObjectName(QStringLiteral("resetLayoutAction"));
+
+        // Preferred order is only the reading order. Anything not named here
+        // is still listed, after these, so a new dock cannot miss the menu
+        // by being left out of the list.
+        const QStringList preferred = {
+            QStringLiteral("projectFilesDock"),
+            QStringLiteral("emulatorDisplayDock"),
+            QStringLiteral("registersDock"),
+            QStringLiteral("disassemblyDock"),
+            QStringLiteral("stackDock"),
+            QStringLiteral("hardwareDock"),
+            QStringLiteral("pcHistoryDock"),
+            QStringLiteral("breakpointsDock"),
+            QStringLiteral("instructionRefDock"),
+            QStringLiteral("symbolsDock"),
+            QStringLiteral("profilerDock"),
+            QStringLiteral("problemsDock"),
+            QStringLiteral("consoleDock"),
+            QStringLiteral("memoryDock"),
         };
-        for (QDockWidget *dock : allDocks) {
-            if (dock)
-                m_viewMenu->addAction(dock->toggleViewAction());
+        const QList<QDockWidget *> found = findChildren<QDockWidget *>();
+        for (const QString &name : preferred) {
+            for (QDockWidget *dock : found) {
+                if (dock->objectName() == name)
+                    addDockToViewMenu(dock);
+            }
         }
-        m_viewMenu->addSeparator();
-        m_viewMenu->addAction(tr("Reset layout"), this, &MainWindow::resetToDefaultLayout);
+        QList<QDockWidget *> rest;
+        for (QDockWidget *dock : found) {
+            if (!preferred.contains(dock->objectName()))
+                rest.append(dock);
+        }
+        std::sort(rest.begin(), rest.end(), [](const QDockWidget *a, const QDockWidget *b) {
+            return a->objectName() < b->objectName();
+        });
+        for (QDockWidget *dock : rest)
+            addDockToViewMenu(dock);
     }
 
     // The factory arrangement, so Reset layout has something to return to.
@@ -1452,6 +1511,9 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
         tabifyDockWidget(m_memoryDock, dock);
 
     view->setEditingEnabled(m_host->isStopped());
+    // A pane opened from the "+" is a dock the user can close. It has to be
+    // on the View menu or that close is permanent until Reset layout.
+    addDockToViewMenu(dock);
     if (m_host->isStopped()) {
         if (initialAddress)
             view->goToAddress(initialAddress);

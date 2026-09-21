@@ -164,6 +164,7 @@ private slots:
     void profilerButtonsExplainThemselvesInTheDock();
     void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
+    void viewMenuListsEveryDock();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -2134,6 +2135,59 @@ void TstGui::dockLayoutPersistsAcrossRestart()
         // survived the save/restore cycle that closeEvent and the constructor use.
         QVERIFY2(!dock->isVisibleTo(&window), "hidden dock did not persist as hidden");
     }
+}
+
+// Closing a dock is only reversible from the View menu. A dock omitted from
+// that menu (the old hand-written list stopped at PC history) cannot be
+// reopened without Reset layout, which also throws away every other
+// arrangement. Every dock the window owns must be on the menu, including a
+// memory pane created later.
+void TstGui::viewMenuListsEveryDock()
+{
+    MainWindow window;
+
+    QMenu *view = nullptr;
+    for (QAction *menu : window.menuBar()->actions()) {
+        if (menu->menu() && menu->text().remove(QLatin1Char('&')) == QLatin1String("View"))
+            view = menu->menu();
+    }
+    QVERIFY2(view, "the View menu must exist");
+
+    const QList<QDockWidget *> docks = window.findChildren<QDockWidget *>();
+    QVERIFY2(docks.size() >= 13, "the window should have built its docks");
+
+    QStringList missing;
+    for (QDockWidget *dock : docks) {
+        if (!view->actions().contains(dock->toggleViewAction()))
+            missing << dock->objectName();
+    }
+    QVERIFY2(missing.isEmpty(),
+             qPrintable(QStringLiteral("View menu omits: %1").arg(missing.join(QStringLiteral(", ")))));
+
+    // The action on the menu is the dock's own toggle, so it actually shows
+    // and hides the panel. The window has to be shown first: Qt only syncs a
+    // toggle action's checked state from visibility once the dock is on
+    // screen, and triggering an unsynced action does not close it.
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *breakpoints = window.findChild<QDockWidget *>(QStringLiteral("breakpointsDock"));
+    QVERIFY(breakpoints);
+    QAction *toggle = breakpoints->toggleViewAction();
+    const bool shown = breakpoints->isVisibleTo(&window);
+    toggle->trigger();
+    QCOMPARE(breakpoints->isVisibleTo(&window), !shown);
+    toggle->trigger();
+    QCOMPARE(breakpoints->isVisibleTo(&window), shown);
+
+    QMetaObject::invokeMethod(&window, "addMemoryPane", Qt::DirectConnection);
+    auto *second = window.findChild<QDockWidget *>(QStringLiteral("memoryDock1"));
+    QVERIFY2(second, "the second memory pane must exist as memoryDock1");
+    QVERIFY2(view->actions().contains(second->toggleViewAction()),
+             "a memory pane opened later must join the View menu");
+    const bool secondShown = second->isVisibleTo(&window);
+    second->toggleViewAction()->trigger();
+    QCOMPARE(second->isVisibleTo(&window), !secondShown);
 }
 
 // Multiple memory panes: each is its own tabbed dock with its own routing tag,

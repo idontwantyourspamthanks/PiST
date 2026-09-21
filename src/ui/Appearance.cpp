@@ -394,7 +394,10 @@ Colors colors()
     Colors c;
     if (darkModeActive()) {
         c.gutter = QColor(0x16, 0x19, 0x16);
-        c.gutterText = QColor(0x6e, 0x76, 0x6e);
+        // Quiet text has to clear 4.5:1 on the surface it is painted on.
+        // Comments and gutter numerals share this ink; zero bytes stay a
+        // step dimmer and still clear the editor base.
+        c.gutterText = QColor(0x84, 0x8c, 0x82);
         c.gutterPc = QColor(0x2f, 0xa0, 0x4c);
         c.breakpoint = QColor(0xe0, 0x5a, 0x4a);
         c.error = QColor(0xe0, 0x5a, 0x4a);
@@ -406,17 +409,17 @@ Colors colors()
         c.address = QColor(0x8a, 0x96, 0x88);
         c.hex = QColor(0xe6, 0xea, 0xe4);
         c.ascii = QColor(0xb0, 0xc4, 0xa8);
-        c.zero = QColor(0x5a, 0x62, 0x5a);
+        c.zero = QColor(0x7a, 0x82, 0x78);
         c.success = QColor(0x5e, 0xd4, 0x74);
         c.warning = QColor(0xe0, 0xa0, 0x40);
-        c.muted = QColor(0x7a, 0x82, 0x7a);
+        c.muted = QColor(0x84, 0x8c, 0x82);
         c.keyword = QColor(0x8e, 0xe0, 0x9a);
         c.registerName = QColor(0xc8, 0xb4, 0x5a);
         c.number = QColor(0xe0, 0xb8, 0x4a);
         c.string = QColor(0xe8, 0x78, 0x58);
         c.directive = QColor(0x7e, 0xc0, 0xd8);
         c.label = QColor(0xe8, 0xe6, 0xd8);
-        c.comment = QColor(0x6d, 0x75, 0x6c);
+        c.comment = QColor(0x84, 0x8c, 0x82);
     } else {
         c.gutter = QColor(0xee, 0xf1, 0xec);
         c.gutterText = QColor(0x6a, 0x72, 0x6a);

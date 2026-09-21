@@ -75,6 +75,7 @@
 #include <QTextDocument>
 #include <QTreeWidget>
 
+#include <cmath>
 #include <functional>
 
 using namespace pist;
@@ -100,6 +101,23 @@ QString emulatorMissing()
 /// an assertion that returns early cannot leave test mode on for the rest of
 /// the suite, which would silently redirect every later test's tool and ROM
 /// lookups into the test-mode data root.
+/// WCAG relative luminance, so a colour change can be judged as text on a
+/// background rather than as a swatch that looks fine next to a keyword.
+double contrastRatio(const QColor &fg, const QColor &bg)
+{
+    auto channel = [](int component) {
+        const double s = component / 255.0;
+        return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+    };
+    auto luminance = [&](const QColor &c) {
+        return 0.2126 * channel(c.red()) + 0.7152 * channel(c.green())
+             + 0.0722 * channel(c.blue());
+    };
+    const double lighter = std::max(luminance(fg), luminance(bg));
+    const double darker = std::min(luminance(fg), luminance(bg));
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
 struct TestModeScope
 {
     TestModeScope() { QStandardPaths::setTestModeEnabled(true); }
@@ -284,6 +302,7 @@ private slots:
     /// Font-size, font-family and theme preferences take effect on the editor
     /// and the application palette.
     void appearancePreferencesApply();
+    void quietColoursClearTheirBackground();
     /// Documents open in tabs: pristine-tab reuse, raise-not-duplicate, the
     /// modified marker on the label, and the never-empty invariant.
     void documentTabsManageOpenFiles();
@@ -3180,6 +3199,53 @@ void TstGui::appearancePreferencesApply()
     settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("system"));
     settings.remove(QStringLiteral("appearance/fontSize"));
     settings.remove(QStringLiteral("appearance/fontFamily"));
+    pist::appearance::applyTheme();
+}
+
+// Comments, gutter numerals, zero bytes and the muted "disabled / pending"
+// state are text, so they have to clear 4.5:1 on the surface they are painted
+// on, and stay quieter than the body ink beside them.
+void TstGui::quietColoursClearTheirBackground()
+{
+    QSettings settings;
+    const QVariant previous = settings.value(QStringLiteral("appearance/theme"));
+    settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("dark"));
+    pist::appearance::applyTheme();
+    QVERIFY(pist::appearance::darkModeActive());
+
+    const appearance::Colors c = appearance::colors();
+    const QColor base = QApplication::palette().color(QPalette::Base);
+    const QColor window = QApplication::palette().color(QPalette::Window);
+    const QColor ink = QApplication::palette().color(QPalette::Text);
+
+    const struct {
+        const char *name;
+        QColor fg;
+        QColor bg;
+    } pairs[] = {
+        {"comment", c.comment, base},
+        {"gutter", c.gutterText, c.gutter},
+        {"zero", c.zero, base},
+        {"muted", c.muted, window},
+    };
+    for (const auto &pair : pairs) {
+        const double ratio = contrastRatio(pair.fg, pair.bg);
+        const double body = contrastRatio(ink, pair.bg);
+        QVERIFY2(ratio >= 4.5,
+                 qPrintable(QStringLiteral("%1 is %2:1, under 4.5")
+                                .arg(QLatin1String(pair.name))
+                                .arg(ratio, 0, 'f', 2)));
+        QVERIFY2(body > ratio + 2.0,
+                 qPrintable(QStringLiteral("%1 at %2:1 is no longer quiet next to body text at %3:1")
+                                .arg(QLatin1String(pair.name))
+                                .arg(ratio, 0, 'f', 2)
+                                .arg(body, 0, 'f', 2)));
+    }
+
+    if (previous.isValid())
+        settings.setValue(QStringLiteral("appearance/theme"), previous);
+    else
+        settings.remove(QStringLiteral("appearance/theme"));
     pist::appearance::applyTheme();
 }
 

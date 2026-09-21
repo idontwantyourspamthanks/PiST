@@ -415,10 +415,12 @@ PIST_CONTROL_PORT=9999 ./pist your-program.s
 The first line on every connection must be the session token, as `auth <token>`
 — on a shared machine, "localhost only" still means every local user. A
 listening IDE writes the port and token to a discovery file,
-`~/.local/share/PiST/PiST/control-port` (owner-read-only, as is its directory;
-same relative path on all platforms), so anything the user runs can find them
-and nobody else can. A wrong or missing token is answered `error auth required`
-and the connection is dropped. After that, send one command per line. Replies
+`PiST/PiST/control-port` under the platform's user-data directory
+(`~/.local/share` on Linux, `~/Library/Application Support` on macOS,
+`%LOCALAPPDATA%` on Windows) — owner-read-only, as is its directory, so
+anything the user runs can find them and nobody else can. A wrong or missing
+token is answered `error auth required` and the connection is dropped. After
+that, send one command per line. Replies
 are a single line (`ok` or `error <message>`) or, for queries that return text,
 a block that ends with a line containing only `.` — and a block-typed query
 returns its errors as a block too (the content begins `error `), so a reader
@@ -516,7 +518,7 @@ file:
 ```python
 import socket
 from pathlib import Path
-host, port, token = (Path.home()
+host, port, token = (Path.home()          # Linux path; see above for macOS/Windows
     / ".local/share/PiST/PiST/control-port").read_text().split()
 s = socket.create_connection((host, int(port)))
 def cmd(line, block=False):

@@ -195,11 +195,14 @@ void RemoteControl::onReadyRead(QTcpSocket *client)
             m_pendingAuth.remove(client);
             if (line == QLatin1String("auth ") + m_token) {
                 reply(client, QStringLiteral("ok"));
-            } else {
-                reply(client, QStringLiteral("error auth required"));
-                client->disconnectFromHost();
+                continue;
             }
-            continue;
+            reply(client, QStringLiteral("error auth required"));
+            client->disconnectFromHost();
+            // disconnect is asynchronous and the socket stays readable: stop
+            // here, or lines pipelined after a bad auth would execute
+            // unauthenticated below.
+            break;
         }
         queueCommand(client, line);
     }

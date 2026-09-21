@@ -36,17 +36,18 @@ quint16 controlPort(const QCommandLineParser &parser, const QCommandLineOption &
     QString text = parser.value(option);
     if (text.isEmpty())
         text = qEnvironmentVariable("PIST_CONTROL_PORT");
-    if (text.isEmpty()) {
-        QFile file(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                   + QStringLiteral("/PiST/PiST/control-port"));
-        if (file.open(QIODevice::ReadOnly)) {
-            const QStringList parts = QString::fromUtf8(file.readAll()).trimmed()
-                                          .split(QLatin1Char(' '), Qt::SkipEmptyParts);
-            if (parts.size() >= 2)
-                text = parts.at(1);
-            if (parts.size() >= 3)
-                *discoveryToken = parts.at(2);
-        }
+    // The file is read whenever it exists — its token is needed even when the
+    // port came from --port or the environment, or that connection has no
+    // auth line and the server drops it.
+    QFile file(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+               + QStringLiteral("/PiST/PiST/control-port"));
+    if (file.open(QIODevice::ReadOnly)) {
+        const QStringList parts = QString::fromUtf8(file.readAll()).trimmed()
+                                      .split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (text.isEmpty() && parts.size() >= 2)
+            text = parts.at(1);
+        if (parts.size() >= 3)
+            *discoveryToken = parts.at(2);
     }
     if (text.isEmpty()) {
         // Not fatal: the server still completes the MCP handshake, and every

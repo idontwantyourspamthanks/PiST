@@ -52,6 +52,7 @@ private slots:
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
     void wrongTokenIsRejectedAndDropped();
+    void pipelinedCommandAfterBadAuthNeverExecutes();
     void commandBeforeAuthIsRejected();
     void initTestCase();
 };
@@ -531,6 +532,36 @@ void TstRemoteControl::wrongTokenIsRejectedAndDropped()
     const QString reply = exchange(intruder, "auth not-the-token", false);
     QCOMPARE(reply.trimmed(), QStringLiteral("error auth required"));
     // And the connection is dropped: the socket does not stay usable.
+    QTRY_VERIFY(intruder.state() != QAbstractSocket::ConnectedState);
+}
+
+void TstRemoteControl::pipelinedCommandAfterBadAuthNeverExecutes()
+{
+    Session s;
+    QString error;
+    if (!s.control.listen(0, &error))
+        QFAIL(qPrintable(error));
+
+    QTcpSocket intruder;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&intruder, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    intruder.connectToHost(QHostAddress::LocalHost, s.control.boundPort());
+    timer.start(5000);
+    loop.exec();
+    QVERIFY(intruder.state() == QAbstractSocket::ConnectedState);
+
+    // One burst: the bad auth and a pipelined command. The disconnect is
+    // asynchronous, and the pipelined line must never execute — the reply
+    // stream holds the auth error and nothing else (a `state` answer would
+    // carry register text).
+    intruder.write("auth not-the-token\nstate\n");
+    QTest::qWait(1000);
+    const QString received = QString::fromUtf8(intruder.readAll());
+    QVERIFY(received.contains(QLatin1String("error auth required")));
+    QVERIFY(!received.contains(QLatin1String("pc ")));
     QTRY_VERIFY(intruder.state() != QAbstractSocket::ConnectedState);
 }
 

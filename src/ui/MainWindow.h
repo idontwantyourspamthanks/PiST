@@ -649,6 +649,7 @@ private:
     ProjectSettings m_settings;
 
     QAction *m_actOpen = nullptr;
+    QAction *m_actNewFile = nullptr;
     QAction *m_actNewImage = nullptr;
     QAction *m_actImportImage = nullptr;
     QAction *m_actExportImage = nullptr;

@@ -508,6 +508,11 @@ void MainWindow::createActions()
     m_actOpen->setShortcut(QKeySequence::Open);
     connect(m_actOpen, &QAction::triggered, this, &MainWindow::openFile);
 
+    m_actNewFile = new QAction(tr("&New File"), this);
+    m_actNewFile->setObjectName(QStringLiteral("newFileAction"));
+    m_actNewFile->setShortcut(QKeySequence::New);
+    connect(m_actNewFile, &QAction::triggered, this, [this] { addEditorTab(QString()); });
+
     m_actNewImage = new QAction(tr("New &Image…"), this);
     connect(m_actNewImage, &QAction::triggered, this, &MainWindow::newImage);
 
@@ -856,6 +861,8 @@ void MainWindow::createMenus()
     connect(about, &QAction::triggered, this, &MainWindow::showAbout);
 
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->setObjectName(QStringLiteral("fileMenu"));
+    fileMenu->addAction(m_actNewFile);
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
     fileMenu->addAction(m_actSave);
@@ -880,11 +887,13 @@ void MainWindow::createMenus()
     fileMenu->addMenu(recentMenu);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actImportImage);
-    fileMenu->addAction(m_actExportImage);
-    fileMenu->addAction(m_actExportImageSafe);
-    fileMenu->addAction(m_actExportSpriteSheet);
-    fileMenu->addAction(m_actExportBitplanes);
-    fileMenu->addAction(m_actReExportBitplanes);
+    auto *exportMenu = fileMenu->addMenu(tr("E&xport"));
+    exportMenu->setObjectName(QStringLiteral("exportMenu"));
+    exportMenu->addAction(m_actExportImage);
+    exportMenu->addAction(m_actExportImageSafe);
+    exportMenu->addAction(m_actExportSpriteSheet);
+    exportMenu->addAction(m_actExportBitplanes);
+    exportMenu->addAction(m_actReExportBitplanes);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
     fileMenu->addAction(m_actSaveProject);
@@ -1584,6 +1593,19 @@ void MainWindow::createToolBar()
     bar->addAction(m_actStepOut);
     bar->addSeparator();
     bar->addAction(m_actClearBreakpoints);
+
+    // Icon-only buttons do not show their shortcut. The status bar does,
+    // while the pointer is on the button.
+    for (QAction *action : bar->actions()) {
+        QString text = action->text();
+        text.remove(QLatin1Char('&'));
+        if (text.isEmpty())
+            continue;
+        const QString key = action->shortcut().toString(QKeySequence::NativeText);
+        if (!key.isEmpty())
+            text += QStringLiteral(" (") + key + QLatin1Char(')');
+        action->setStatusTip(text);
+    }
 }
 
 void MainWindow::applyIcons()
@@ -1599,6 +1621,7 @@ void MainWindow::applyIcons()
     m_actResume->setIcon(appearance::icon(Icon::Continue));
     m_actStep->setIcon(appearance::icon(Icon::Step));
     m_actStepOver->setIcon(appearance::icon(Icon::StepOver));
+    m_actStepOut->setIcon(appearance::icon(Icon::StepOut));
     m_actClearBreakpoints->setIcon(appearance::icon(Icon::ClearBreakpoints));
     m_actProfileStart->setIcon(appearance::icon(Icon::ProfileStart));
     m_actProfileStop->setIcon(appearance::icon(Icon::ProfileStop));

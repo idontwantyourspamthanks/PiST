@@ -35,6 +35,7 @@ enum class Icon {
     Continue,
     Step,
     StepOver,
+    StepOut,
     ClearBreakpoints,
     Brush,
     Line,

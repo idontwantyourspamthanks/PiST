@@ -50,7 +50,7 @@ SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
     : QDialog(parent)
     , m_settings(settings)
 {
-    setWindowTitle(tr("Project settings"));
+    setWindowTitle(tr("Settings"));
     buildUi();
     loadValues(settings);
     resize(620, 520);

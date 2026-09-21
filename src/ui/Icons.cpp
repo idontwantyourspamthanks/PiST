@@ -218,6 +218,22 @@ void paintStepOver(QPainter &p, const QRectF &r, qreal w)
                QPointF(box.right() - ah * 0.2, box.bottom() - ah));
 }
 
+void paintStepOut(QPainter &p, const QRectF &r, qreal w)
+{
+    // Step over hops to the right. Step out leaves the current frame upward.
+    p.setPen(stroke(ink(), w));
+    p.setBrush(Qt::NoBrush);
+    const qreal y = r.top() + r.height() * 0.78;
+    p.drawLine(QPointF(r.left() + r.width() * 0.22, y),
+               QPointF(r.right() - r.width() * 0.22, y));
+    const qreal cx = r.center().x();
+    const QPointF tip(cx, r.top() + r.height() * 0.20);
+    p.drawLine(QPointF(cx, y), tip);
+    const qreal ah = r.width() * 0.16;
+    p.drawLine(tip, QPointF(cx - ah, tip.y() + ah));
+    p.drawLine(tip, QPointF(cx + ah, tip.y() + ah));
+}
+
 void paintClearBreakpoints(QPainter &p, const QRectF &r, qreal w)
 {
     const QPointF c = r.center();
@@ -1086,6 +1102,7 @@ PaintFn painterFor(Icon id)
     case Icon::Continue: return paintContinue;
     case Icon::Step: return paintStep;
     case Icon::StepOver: return paintStepOver;
+    case Icon::StepOut: return paintStepOut;
     case Icon::ClearBreakpoints: return paintClearBreakpoints;
     case Icon::Brush: return paintBrush;
     case Icon::Line: return paintLine;

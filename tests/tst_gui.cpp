@@ -28,6 +28,7 @@
 #include "build/FloppyImage.h"
 #include "ui/MemoryView.h"
 #include "ui/SetupDialog.h"
+#include "ui/SettingsDialog.h"
 #include "ui/Appearance.h"
 #include "toolchain/Toolchain.h"
 #include "emu/HrdbBackend.h"
@@ -178,6 +179,7 @@ private slots:
     void osCallBindingInsertsAtTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void navigationOpensTheOtherFile();
+    void fileMenuAndToolbarMatchTheJobs();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -1648,6 +1650,54 @@ void TstGui::navigationOpensTheOtherFile()
     current = qobject_cast<CodeEditor *>(tabs->currentWidget());
     QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
     QCOMPARE(current->textCursor().blockNumber() + 1, 4);
+}
+
+void TstGui::fileMenuAndToolbarMatchTheJobs()
+{
+    MainWindow window;
+    auto *file = window.findChild<QMenu *>(QStringLiteral("fileMenu"));
+    QVERIFY(file);
+    QVERIFY(!file->actions().isEmpty());
+    QCOMPARE(file->actions().first()->objectName(), QStringLiteral("newFileAction"));
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    const int before = tabs->count();
+    file->actions().first()->trigger();
+    QCOMPARE(tabs->count(), before + 1);
+    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    QVERIFY(editor->filePath().isEmpty());
+
+    auto *exportMenu = window.findChild<QMenu *>(QStringLiteral("exportMenu"));
+    QVERIFY2(exportMenu, "File must gather the image exports under Export");
+    bool sawExportImage = false;
+    for (QAction *action : exportMenu->actions()) {
+        if (action->text().contains(QLatin1String("Export Image"))) {
+            sawExportImage = true;
+            QVERIFY2(!action->isEnabled(), "an export stays disabled on a source tab");
+        }
+    }
+    QVERIFY(sawExportImage);
+    for (QAction *action : file->actions())
+        QVERIFY(!action->text().contains(QLatin1String("Export Image")));
+
+    QAction *stepOut = nullptr;
+    QAction *stepOver = nullptr;
+    for (QAction *action : window.findChildren<QAction *>()) {
+        if (action->shortcut() == QKeySequence(Qt::SHIFT | Qt::Key_F11))
+            stepOut = action;
+        if (action->shortcut() == QKeySequence(Qt::Key_F11))
+            stepOver = action;
+    }
+    QVERIFY(stepOut && stepOver);
+    QVERIFY2(!stepOut->icon().isNull(), "Step Out needs a toolbar glyph");
+    QVERIFY2(stepOver->statusTip().contains(QLatin1String("F11")),
+             qPrintable(stepOver->statusTip()));
+    QVERIFY(stepOut->statusTip().contains(QLatin1String("F11")));
+
+    SettingsDialog dialog{ProjectSettings()};
+    QCOMPARE(dialog.windowTitle(), QStringLiteral("Settings"));
 }
 
 // File ▸ Open Recent lists the persisted MRU sources (skipping files that no

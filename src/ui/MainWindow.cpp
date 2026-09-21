@@ -2476,6 +2476,8 @@ void MainWindow::resetSessionState()
     // pending remote command must not answer for a session that no longer
     // exists. Both call sites (launch, session end) are idempotent resets.
     m_sessionArmed = false;
+    m_profileGuided = false;
+    m_profileGuidedAddr = 0;
     m_breakpointsArmedThisSession = false;
     m_bases = LineMap::SectionBases();
     m_lastState = MachineState();
@@ -2950,9 +2952,10 @@ void MainWindow::profileStart()
     // breakpoint must exist before this. The flow that works: set a
     // breakpoint, Profile Start here, continue, the breakpoint stops the run.
     if (!m_host->isStopped()) {
-        m_log->appendPlainText(
-            tr("[profile] stop at a pre-armed breakpoint first: arming anything "
-               "mid-run (including Pause) resets the counters"));
+        const QString hint = tr("Stop at a pre-armed breakpoint first: arming anything "
+                                "mid-run (including Pause) resets the counters");
+        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
+        m_profiler->showMessage(hint);
         return;
     }
     m_host->command(QStringLiteral("profile on"));
@@ -2963,8 +2966,10 @@ void MainWindow::profileStart()
 bool MainWindow::profileStop()
 {
     if (!m_host->isStopped() || m_currentSessionDir.isEmpty()) {
-        m_log->appendPlainText(tr("[profile] Profile Stop works from a stopped "
-                                  "machine — the save command needs the debugger"));
+        const QString hint = tr("Profile Stop works from a stopped machine — "
+                                "the save command needs the debugger");
+        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
+        m_profiler->showMessage(hint);
         return false;
     }
     // The UAE disassembler core (the default with PiST's isolated config)
@@ -2989,9 +2994,10 @@ void MainWindow::profileToCursor()
     // BEFORE `profile on`, since any arm after it would zero the counters),
     // collection on, continue — onDebuggerStopped saves and shows.
     if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty()) {
-        m_log->appendPlainText(
-            tr("[profile] profile to cursor works from a stopped machine — start a "
-               "debug session and stop at a breakpoint first"));
+        const QString hint = tr("Profile to cursor works from a stopped machine — "
+                                "start a debug session and stop at a breakpoint first");
+        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
+        m_profiler->showMessage(hint);
         return;
     }
     const int line = m_editor->textCursor().blockNumber() + 1;

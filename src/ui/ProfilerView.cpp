@@ -48,23 +48,23 @@ ProfilerView::ProfilerView(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
 
-    auto *filterRow = new QHBoxLayout;
-    filterRow->setSpacing(4);
+    m_topRow = new QHBoxLayout;
+    m_topRow->setSpacing(4);
     m_filter = new QLineEdit(this);
     m_filter->setObjectName(QStringLiteral("profilerFilter"));
     m_filter->setPlaceholderText(tr("Filter routines and lines"));
     m_filter->setClearButtonEnabled(true);
-    filterRow->addWidget(m_filter, 1);
+    m_topRow->addWidget(m_filter, 1);
 
     m_showAll = new QCheckBox(tr("Show all"), this);
     m_showAll->setObjectName(QStringLiteral("profilerShowAll"));
     m_showAll->setToolTip(tr("Also show rows under 0.1% of the run"));
-    filterRow->addWidget(m_showAll);
+    m_topRow->addWidget(m_showAll);
 
     m_status = new QLabel(this);
     m_status->setObjectName(QStringLiteral("profilerStatus"));
-    filterRow->addWidget(m_status);
-    layout->addLayout(filterRow);
+    m_topRow->addWidget(m_status);
+    layout->addLayout(m_topRow);
 
     m_tree = new QTreeWidget(this);
     m_tree->setObjectName(QStringLiteral("profilerTree"));
@@ -97,13 +97,12 @@ ProfilerView::ProfilerView(QWidget *parent)
 
 void ProfilerView::setActions(QAction *start, QAction *stop, QAction *toCursor)
 {
-    auto *row = m_filter->parentWidget()->layout();
     for (QAction *action : {start, stop, toCursor}) {
         if (!action)
             continue;
         auto *button = new QToolButton(this);
         button->setDefaultAction(action);
-        row->addWidget(button);
+        m_topRow->addWidget(button);
     }
 }
 
@@ -250,6 +249,11 @@ void ProfilerView::setProfile(const ProfileData &profile, const ProgramLineMap *
     std::sort(m_rom.begin(), m_rom.end(), byCyclesDesc);
 
     populate();
+}
+
+void ProfilerView::showMessage(const QString &message)
+{
+    m_status->setText(message);
 }
 
 QHash<int, quint64> ProfilerView::lineCounts() const

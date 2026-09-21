@@ -16,6 +16,7 @@
 
 class QAction;
 class QCheckBox;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QTreeWidget;
@@ -68,6 +69,11 @@ public slots:
     /// the heat and the tree cannot disagree about what is hot.
     QHash<int, quint64> lineCounts() const;
 
+    /// Show a transient message in the status line — the feedback for a
+    /// profile action that could not run (the console gets it too, but the
+    /// console dock may not be open).
+    void showMessage(const QString &message);
+
     /// Re-apply the theme font and row metrics after an appearance change.
     void applyAppearance();
 
@@ -100,6 +106,7 @@ private:
     void applyFilter();
     void setRow(QTreeWidgetItem *item, const QString &name, quint64 count, quint64 cycles) const;
 
+    QHBoxLayout *m_topRow = nullptr;
     QLineEdit *m_filter = nullptr;
     QCheckBox *m_showAll = nullptr;
     QTreeWidget *m_tree = nullptr;

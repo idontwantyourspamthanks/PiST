@@ -10,6 +10,31 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.7.1
+
+The OS-call reference completes its round trip, and the profiler becomes
+usable:
+
+- **Insert a call's binding from the reference dock.** Pick a GEMDOS, BIOS
+  or XBIOS call and "Insert binding into editor" (button or right-click)
+  drops its assembler binding in above the cursor — argument pushes with the
+  parameter names as placeholders, the trap, and the exact stack cleanup.
+  The odd shapes are right too: Pexec's fixed layout, Mshrink/Frename's
+  reserved word, Dbmsg's literal 5.
+- **The profiler, discoverable at last.** Its controls live in the profiler
+  dock as icon buttons (they used to hide, greyed, in the Run menu), the
+  empty dock teaches the flow, and every click — success or refusal — says
+  what happened in the dock's own status line.
+- **Profile to cursor line.** The whole ritual in one gesture: cursor where
+  measuring should end, and PiST arms a one-shot there, collects, and shows
+  the results when the run stops.
+- **Results worth reading.** Hot spots as a routines tree (nearest label,
+  hot lines underneath) in counts *and* cycles, with milliseconds and frames
+  in the status line, a noise floor for the long tail, and the operating
+  system's share as a TOS/ROM row instead of silently discarded.
+- The profile actions follow the mode: Start is disabled while collecting,
+  Stop when nothing collects, and every disabled button's tooltip says why.
+
 ## What's new in 0.7.0
 
 The instruction reference dock learned the operating system. It was always

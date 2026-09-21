@@ -168,6 +168,8 @@ private slots:
     void factoryLayoutShowsRegistersAndTheEditor();
     void windowGeometryPersistsAcrossRestart();
     void savedLayoutBeatsTheFactorySplit();
+    void statusBarShowsCaretAndBuild();
+    void statusBarNamesTheStop();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -2328,6 +2330,122 @@ void TstGui::savedLayoutBeatsTheFactorySplit()
     settings.remove(QStringLiteral("layout/geometry"));
     settings.remove(QStringLiteral("layout/width"));
     settings.remove(QStringLiteral("layout/height"));
+}
+
+// The status bar used to show the assembler file name and Hatari's capability
+// probe. The probe is a tooltip now. What stays on the bar is the session, a
+// build result that does not expire, and where the caret is.
+void TstGui::statusBarShowsCaretAndBuild()
+{
+    MainWindow window;
+    auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
+    auto *build = window.findChild<QLabel *>(QStringLiteral("statusBuild"));
+    auto *caret = window.findChild<QLabel *>(QStringLiteral("statusCaret"));
+    QVERIFY2(session && build && caret, "the status bar must carry session, build and caret chips");
+
+    QCOMPARE(session->text(), QStringLiteral("Not running"));
+    QVERIFY2(!session->text().contains(QLatin1String("control socket")),
+             qPrintable(session->text()));
+    QVERIFY2(session->toolTip().contains(QLatin1String("Hatari")),
+             qPrintable(session->toolTip()));
+
+    QCOMPARE(caret->text(), QStringLiteral("untitled:1:1"));
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    editor->setPlainText(QStringLiteral("\ttext\nstart:\tnop\n"));
+    QTextCursor cursor = editor->textCursor();
+    cursor.movePosition(QTextCursor::Start);
+    cursor.movePosition(QTextCursor::Down);
+    cursor.movePosition(QTextCursor::Right);
+    editor->setTextCursor(cursor);
+    QCOMPARE(caret->text(), QStringLiteral("untitled:2:2"));
+
+    const QString source = m_work->path() + QStringLiteral("/status.s");
+    {
+        QFile src(source);
+        QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+        src.write("\ttext\nstart:\tmoveq\t#1,d0\n\trts\n\teven\n\tend\n");
+    }
+    window.openPath(source);
+    QSignalSpy completed(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 30000);
+    QCOMPARE(completed.first().first().toBool(), true);
+    QCOMPARE(build->text(), QStringLiteral("Build ok"));
+
+    // Already-open files are not reloaded, so the failure has to be the
+    // buffer the build will save. The pristine tab is still around, and
+    // findChild would hand that one back.
+    CodeEditor *sourceEditor = nullptr;
+    for (CodeEditor *candidate : window.findChildren<CodeEditor *>()) {
+        if (candidate->filePath() == source)
+            sourceEditor = candidate;
+    }
+    QVERIFY(sourceEditor);
+    sourceEditor->setPlainText(QStringLiteral("\ttext\nthis is not assembly\n"));
+    // setPlainText loads text the way open does, and that leaves the document
+    // clean. The build only saves a buffer it believes the user changed.
+    sourceEditor->document()->setModified(true);
+    QVERIFY(sourceEditor->isModifiedSinceLoad());
+    QSignalSpy failed(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 30000);
+    QCOMPARE(failed.first().first().toBool(), false);
+    QCOMPARE(build->text(), QStringLiteral("Build failed"));
+}
+
+// A stop names the source line. The capability probe stays in the tooltip.
+void TstGui::statusBarNamesTheStop()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/statusrun.s");
+    {
+        QFile src(source);
+        QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+        src.write("\ttext\n"
+                  "start:\tmoveq\t#1,d0\n"
+                  "loop:\tbra.s\tloop\n"
+                  "\teven\n"
+                  "\tend\n");
+    }
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
+    auto *caret = window.findChild<QLabel *>(QStringLiteral("statusCaret"));
+    QVERIFY(session && caret);
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        session->text().startsWith(QStringLiteral("Stopped — statusrun.s:")), 5000);
+    QVERIFY2(session->toolTip().contains(QLatin1String("Hatari")), qPrintable(session->toolTip()));
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    const int execution = editor->currentExecutionLine();
+    QVERIFY(execution > 0);
+    QTextCursor cursor = editor->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor->setTextCursor(cursor);
+    if (editor->textCursor().blockNumber() + 1 != execution) {
+        QVERIFY2(caret->text().contains(QLatin1String("caret "))
+                     && caret->text().contains(QLatin1String("PC ")),
+                 qPrintable(caret->text()));
+    }
+
+    host->stop();
+    QTRY_COMPARE_WITH_TIMEOUT(session->text(), QStringLiteral("Not running"), 10000);
 }
 
 // Multiple memory panes: each is its own tabbed dock with its own routing tag,

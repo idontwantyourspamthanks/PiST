@@ -285,6 +285,8 @@ void MainWindow::wireEditor(CodeEditor *editor)
     // calls win over the word: cursor on a `trap #1` line (or a push feeding
     // one) shows the call being made, not the TRAP or MOVE instruction.
     connect(editor, &CodeEditor::cursorPositionChanged, this, [this, editor] {
+        if (editor == m_editor)
+            updateCaretChip();
         if (!m_instrRef || editor != m_editor || !m_instrRef->isVisible())
             return;
         const QTextCursor cursor = editor->textCursor();
@@ -467,6 +469,7 @@ void MainWindow::onTabChanged(int index)
     if (m_editor)
         refreshBreakpointMarkers();
     updateModifiedState();
+    updateCaretChip();
 }
 
 void MainWindow::onTabCloseRequested(int index)
@@ -506,7 +509,7 @@ void MainWindow::refreshToolchain()
     updateEmbedActionState();
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
-    m_statusEmulator->setText(m_caps.summary());
+    updateSessionChip();
 }
 
 MainWindow::~MainWindow() = default;
@@ -710,7 +713,7 @@ void MainWindow::wireBackend()
         }
         if (m_consoleInput)
             m_consoleInput->setEnabled(running);
-        m_statusEmulator->setText(m_caps.valid ? m_caps.summary() : tr("Not running"));
+        updateSessionChip();
         if (m_actPause)
             m_actPause->setEnabled(false);
         if (m_sessionArmed) {
@@ -791,7 +794,7 @@ void MainWindow::wireBackend()
         m_actStepOut->setEnabled(stopped);
         m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
-        m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
+        updateSessionChip();
         // The embedded panel renders no frames while stopped, so tell it to show
         // its paused hint rather than look frozen.
         if (m_display)
@@ -1648,10 +1651,62 @@ void MainWindow::applyAppearance()
 
 void MainWindow::createStatusBar()
 {
+    // Permanent widgets are laid out from the right, so the first one added
+    // is the rightmost. The session is the one a glance should land on.
+    m_statusSession = new QLabel(tr("Not running"), this);
+    m_statusSession->setObjectName(QStringLiteral("statusSession"));
+    m_statusBuild = new QLabel(this);
+    m_statusBuild->setObjectName(QStringLiteral("statusBuild"));
     m_statusToolchain = new QLabel(this);
-    m_statusEmulator = new QLabel(this);
+    m_statusToolchain->setObjectName(QStringLiteral("statusToolchain"));
+    m_statusCaret = new QLabel(this);
+    m_statusCaret->setObjectName(QStringLiteral("statusCaret"));
+    statusBar()->addPermanentWidget(m_statusSession);
+    statusBar()->addPermanentWidget(m_statusBuild);
     statusBar()->addPermanentWidget(m_statusToolchain);
-    statusBar()->addPermanentWidget(m_statusEmulator);
+    statusBar()->addPermanentWidget(m_statusCaret);
+}
+
+void MainWindow::updateSessionChip()
+{
+    if (!m_statusSession)
+        return;
+    // The capability probe used to be the label. It reads as a fault
+    // ("control socket: NO") and says nothing about the session, so it stays
+    // available as the tooltip of the chip that does.
+    m_statusSession->setToolTip(m_caps.summary());
+    if (!m_host || !m_host->isRunning()) {
+        m_statusSession->setText(tr("Not running"));
+        return;
+    }
+    if (!m_host->isStopped()) {
+        m_statusSession->setText(tr("Running"));
+        return;
+    }
+    if (m_stoppedLine > 0 && !m_stoppedFile.isEmpty())
+        m_statusSession->setText(tr("Stopped — %1:%2").arg(m_stoppedFile).arg(m_stoppedLine));
+    else
+        m_statusSession->setText(tr("Stopped"));
+}
+
+void MainWindow::updateCaretChip()
+{
+    if (!m_statusCaret)
+        return;
+    if (!m_editor) {
+        m_statusCaret->clear();
+        return;
+    }
+    const QTextCursor cursor = m_editor->textCursor();
+    const int line = cursor.blockNumber() + 1;
+    const int column = cursor.positionInBlock() + 1;
+    const QString name = m_editor->displayName();
+    const int execution = m_editor->currentExecutionLine();
+    const bool stopped = m_host && m_host->isRunning() && m_host->isStopped();
+    if (stopped && execution > 0 && execution != line)
+        m_statusCaret->setText(tr("%1: caret %2 · PC %3").arg(name).arg(line).arg(execution));
+    else
+        m_statusCaret->setText(QStringLiteral("%1:%2:%3").arg(name).arg(line).arg(column));
 }
 
 QString MainWindow::makeSessionDir()
@@ -2577,6 +2632,8 @@ void MainWindow::build()
     m_build->setCpu(m_settings.cpu);
     m_build->setExtraArgs(m_settings.extraBuildArgs);
 
+    if (m_statusBuild)
+        m_statusBuild->setText(tr("Building…"));
     m_build->build();
 }
 
@@ -2587,6 +2644,8 @@ void MainWindow::resetSessionState()
     // pending remote command must not answer for a session that no longer
     // exists. Both call sites (launch, session end) are idempotent resets.
     m_sessionArmed = false;
+    m_stoppedFile.clear();
+    m_stoppedLine = 0;
     m_profileGuided = false;
     m_profileGuidedAddr = 0;
     m_profilingActive = false;
@@ -2603,6 +2662,8 @@ void MainWindow::refuseBuild(const QString &title, const QString &reason, bool c
     // for the next successful build, and a remote-control `build` must be
     // answered now rather than after its timeout.
     m_launchAfterBuild = false;
+    if (m_statusBuild)
+        m_statusBuild->setText(tr("Build failed"));
     m_log->appendPlainText(tr("--- build refused: %1 ---").arg(reason));
     emit buildCompleted(false);
     if (critical)
@@ -2613,6 +2674,8 @@ void MainWindow::refuseBuild(const QString &title, const QString &reason, bool c
 
 void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnostics)
 {
+    if (m_statusBuild)
+        m_statusBuild->setText(success ? tr("Build ok") : tr("Build failed"));
     emit buildCompleted(success);
 
     QString error;
@@ -4025,6 +4088,10 @@ void MainWindow::locationFromPc(quint32 pc)
     if (!m_bases.isValid() || m_programMap.isEmpty()) {
         if (m_editor)
             m_editor->clearCurrentExecutionLine();
+        m_stoppedFile.clear();
+        m_stoppedLine = 0;
+        updateSessionChip();
+        updateCaretChip();
         return;
     }
 
@@ -4032,6 +4099,10 @@ void MainWindow::locationFromPc(quint32 pc)
     if (!m_programMap.lineFor(pc, &address)) {
         if (m_editor)
             m_editor->clearCurrentExecutionLine();
+        m_stoppedFile.clear();
+        m_stoppedLine = 0;
+        updateSessionChip();
+        updateCaretChip();
         return;
     }
 
@@ -4048,12 +4119,18 @@ void MainWindow::locationFromPc(quint32 pc)
         }
     if (!target && QFileInfo::exists(address.file))
         target = addEditorTab(address.file);
+
+    m_stoppedFile = QFileInfo(address.file).fileName();
+    m_stoppedLine = address.line;
+    updateSessionChip();
+
     if (!target)
         return;
 
     m_tabs->setCurrentWidget(target);
     target->setCurrentExecutionLine(address.line);
     target->gotoLine(address.line);
+    updateCaretChip();
 }
 
 } // namespace pist

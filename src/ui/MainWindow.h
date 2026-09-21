@@ -290,6 +290,14 @@ private:
     void createToolBar();
     void createStatusBar();
 
+    /// Session chip: Not running, Running, or Stopped — file:line. The Hatari
+    /// capability probe lives on the chip's tooltip.
+    void updateSessionChip();
+
+    /// Caret chip: file:line:column. While stopped, a caret that has moved off
+    /// the execution line shows both ("caret 22 · PC 18").
+    void updateCaretChip();
+
     /// Connect every backend signal to its handler. Runs once at construction
     /// and again whenever the selected debug transport changes (a project can
     /// switch between the native and HRDB backends), so it must be safe to
@@ -568,7 +576,14 @@ private:
     QHash<QString, FloppyDoc> m_floppyDocs;
 
     QLabel *m_statusToolchain = nullptr;
-    QLabel *m_statusEmulator = nullptr;
+    QLabel *m_statusSession = nullptr;
+    QLabel *m_statusBuild = nullptr;
+    QLabel *m_statusCaret = nullptr;
+
+    /// Source location of the current stop, for the session chip. Empty when
+    /// the PC has not resolved to a line.
+    QString m_stoppedFile;
+    int m_stoppedLine = 0;
 
     /// Source mapping for the whole program. Replaces a single LineMap because a
     /// linked program has one listing per module, each needing its own base.

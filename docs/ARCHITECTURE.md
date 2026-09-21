@@ -228,13 +228,22 @@ done by title.
 ### Remote control
 
 `RemoteControl` (off by default, `--control-port` / `PIST_CONTROL_PORT`) is a localhost TCP line
-protocol. One command per line; replies are `ok` / `error <msg>` or a block ending in a lone `.`
-line. Blocking commands (`build`, `run`, `cmd`) spin a nested event loop waiting on `MainWindow`
-signals so a script never polls. It reaches the IDE only through `QMetaObject::invokeMethod` on
-`MainWindow` slots (`openPath`, `build`, `run`, `step`, `toggleBreakpointAtLine`, `setRegister`,
-`setMemoryByte`, `addWatchpointAddress`, `debugCommand`, …) and read-only helpers (`screenshot`
-uses `captureWindowImage`, not `grabWindow`). There is no authentication — it is localhost-only by
-design.
+protocol gated by a per-session token: the first line on every connection must be `auth <token>`
+(generated at `listen()`), and anything else is an error and a drop — "localhost only" still
+means every local user on a shared machine. The port and token are published to a discovery file
+(`PiST/PiST/control-port` under the platform user-data directory, owner-only file and directory),
+which is what a flagless `pist-mcp` reads. One command per line after that; replies are `ok` /
+`error <msg>` or a block ending in a lone `.` line, and block-typed verbs return their errors as
+blocks too so a block wait never hangs. Blocking commands (`build`, `run`, `profile stop`, and
+the debugger round-trips behind `cmd`/`readmem`/`disasm`) spin a nested event loop waiting on
+`MainWindow` signals so a script never polls. It reaches the IDE only through
+`QMetaObject::invokeMethod` on `MainWindow` slots (`openPathQuiet`, `build`, `run`, `step`,
+`toggleBreakpointAtLine`, `toggleBreakpointAtLabel`, `setRegister`, `setMemoryByte`,
+`addWatchpointAddress`, `debugCommand`, `profileStart`, `profileStop`, …) and read-only JSON
+helpers (`documentJson`, `stateJson`, `problemsJson`, `symbolsJson`, `profilerResultsJson`;
+`screenshot` uses `captureWindowImage`, not `grabWindow`). `src/control/mcp/` bridges all of
+this to MCP: `pist-mcp` is a stdio JSON-RPC server whose tools map onto the verbs, serving the
+JSON ones as `structuredContent`, with session events pushed as MCP log notifications.
 
 ## Invariants — the rules that will bite you
 

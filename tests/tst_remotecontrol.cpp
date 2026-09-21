@@ -553,15 +553,21 @@ void TstRemoteControl::pipelinedCommandAfterBadAuthNeverExecutes()
     loop.exec();
     QVERIFY(intruder.state() == QAbstractSocket::ConnectedState);
 
-    // One burst: the bad auth and a pipelined command. The disconnect is
+    // One burst: the bad auth and a pipelined `help`. The disconnect is
     // asynchronous, and the pipelined line must never execute — the reply
-    // stream holds the auth error and nothing else (a `state` answer would
-    // carry register text).
-    intruder.write("auth not-the-token\nstate\n");
+    // stream holds the auth error and nothing else. (`help` answers without
+    // a session, which is what makes its absence meaningful: a `state` check
+    // proves nothing with no session to report.)
+    intruder.write("auth not-the-token\nhelp\n");
     QTest::qWait(1000);
-    const QString received = QString::fromUtf8(intruder.readAll());
+    QString received = QString::fromUtf8(intruder.readAll());
     QVERIFY(received.contains(QLatin1String("error auth required")));
-    QVERIFY(!received.contains(QLatin1String("pc ")));
+    QVERIFY(!received.contains(QLatin1String("open <path>")));
+
+    // The shutdown window: a line sent *after* the refusal must hit the gate
+    // again, not execute — the client stays pending until it is gone.
+    received += exchange(intruder, "help", false);
+    QVERIFY(!received.contains(QLatin1String("open <path>")));
     QTRY_VERIFY(intruder.state() != QAbstractSocket::ConnectedState);
 }
 

@@ -909,6 +909,14 @@ load-bearing dependency — which the detection order above already guarantees.
   Fixed by shifting the watermark down with each consumed line and consuming the prompt on fire,
   so later stderr noise cannot re-fire it. Same latent class as the stale-prompt race above:
   buffer offsets and pipe ordering are both unsafe to assume
+- **The remote-control socket requires a per-session token.** `auth <token>` is the first line
+  on every connection; anything else is refused and the connection dropped, and a command
+  pipelined after a bad token in one burst (or sent during the disconnect window) never
+  executes — the client stays in the pending set until it is gone. Port and token are published
+  to `PiST/PiST/control-port` under the platform user-data directory, owner-only file and
+  directory, which a flagless `pist-mcp` reads (verified live: raw connection refused, shim
+  authenticates with no flags). `listen(0)` publishes nothing, so tests no longer overwrite a
+  real IDE's file. All pinned in `tst_remotecontrol`
 
 ### Verified by CI (executed on real runners)
 

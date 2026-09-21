@@ -192,16 +192,17 @@ void RemoteControl::onReadyRead(QTcpSocket *client)
         // The first line a connection says must be the token. Anything else —
         // or the wrong token — is an error and the end of the connection.
         if (m_pendingAuth.contains(client)) {
-            m_pendingAuth.remove(client);
             if (line == QLatin1String("auth ") + m_token) {
+                m_pendingAuth.remove(client);
                 reply(client, QStringLiteral("ok"));
                 continue;
             }
             reply(client, QStringLiteral("error auth required"));
             client->disconnectFromHost();
-            // disconnect is asynchronous and the socket stays readable: stop
-            // here, or lines pipelined after a bad auth would execute
-            // unauthenticated below.
+            // disconnect is asynchronous and the socket stays readable, so
+            // stop here — and keep the client in m_pendingAuth, so any line
+            // arriving in the shutdown window hits this gate again instead of
+            // executing unauthenticated.
             break;
         }
         queueCommand(client, line);

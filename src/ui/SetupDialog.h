@@ -23,7 +23,7 @@ namespace pist {
 /// First-run setup: what PiST found, and a guided fetch for what it did not.
 ///
 /// Shown unprompted at startup when anythingMissing() holds, and reopenable
-/// from the Tools menu. Every fetch shows the URL and the pinned checksum
+/// from Project Settings. Every fetch shows the URL and the pinned checksum
 /// before anything is downloaded — a convenience, never a silent download
 /// (docs/PLAN.md §7).
 class SetupDialog : public QDialog

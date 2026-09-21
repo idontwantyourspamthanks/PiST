@@ -140,8 +140,8 @@ bool SetupDialog::shouldPromptAtStartup()
     // thing missing on the macOS and Windows release archives, so excluding
     // it would mean the prompt never fires where it is needed most. The
     // non-nagging property comes from the dismissal instead: once the user has
-    // seen the dialog it never opens unprompted again (the Tools menu entry
-    // remains), which covers the "no in-dialog remedy for Hatari" case.
+    // seen the dialog it never opens unprompted again (Project Settings still
+    // reopens it), which covers the "no in-dialog remedy for Hatari" case.
     return anythingMissing() && !QSettings().value(dismissalKey()).toBool();
 }
 

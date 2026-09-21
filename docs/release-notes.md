@@ -10,6 +10,26 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.7.2
+
+The window spends its space on the work in front of you.
+
+- **A first run is for writing.** Debug docks stay on the View menu until a session needs them. The editor takes the centre, project files sit on the left, and Problems and the console are a short strip along the bottom.
+- **Three layouts.** View → Layout offers Editing, Debugging and Sprite, and Restore my layout puts back the arrangement they replaced. The first time a session stops, and the first time an image opens, the status bar offers the matching layout. The embed checkbox still owns the emulator dock.
+- **The View menu lists every dock**, including a memory pane opened later, and Reset layout returns to that first-run arrangement.
+- **Status bar.** Session (Not running / Running / Stopped, with the source line), a build result that stays put, and the caret. Hatari's capability probe moves to the session chip's tooltip.
+- **The instruction under the caret.** A one-line strip under the editor names the mnemonic or the TOS call. Clicking it opens the reference. While stopped, flag chips and a one-line register strip sit under that; the full registers table is still there.
+- **Go to line** is Ctrl+G. Return in the editor copies the indent of the line you just left.
+- **F8 toggles a breakpoint.** The PiST keys are otherwise unchanged: F5 run, F9 continue, F10 step into, F11 step over. Settings → Appearance can switch to the common IDE scheme (F9 toggles a breakpoint, F10 steps over, F11 steps into, and F5 continues while stopped).
+- **Navigation opens the file.** A problem, a breakpoint or a symbol in another source opens that file. A disassembly row opens its source line when the program map knows it, and does nothing when it does not. A PC-history address opens the source line, or memory.
+- **Problems mark warnings.** Errors and warnings both carry a coloured square, and a warning tints the message amber.
+- **Hardware, in one line.** The video subject leads with the screen address, refresh rate and overscan Hatari's `info video` actually prints, and each chip name has a tooltip.
+- **Build has its own menu.** Build and the F4 diagnostic walk live there; Run is run, step and breakpoints. Set up tools and ROMs… is a button at the bottom of Project Settings.
+- **File → New File**, with the image exports gathered under File → Export. An empty floppy is one line ("A: no disk"), and the project pane is titled with the directory. Export to a floppy image stays on the hard-drive's context menu.
+- **Sprite editor.** Palette swatches are numbered, frames run in a filmstrip under the canvas, phases are a combo, and flip, rotate and shift live in a Transform menu.
+- **Appearance.** The dialog shows a sample line in the editor face you picked, and the splitter handles are wide enough to grab. Comments, gutter numerals and zero bytes in the dark theme clear ordinary reading contrast.
+- **Profiler icons**, redrawn so Start, Stop and To cursor read as one tool: a play mark over the sample count, the count on a baseline, and that count beside the caret.
+
 ## What's new in 0.7.1
 
 The OS-call reference completes its round trip, and the profiler becomes

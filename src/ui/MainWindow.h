@@ -72,7 +72,8 @@ public slots:
     /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
     void addMemoryPane(quint32 initialAddress = 0);
 
-    /// Open the tool/ROM setup dialog. From the Tools menu.
+    /// Open the tool/ROM setup dialog. From Project Settings, and at startup
+    /// when something is missing.
     void showToolSetup();
 
     /// GEM-style About box, from the Atari menu.

@@ -83,7 +83,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     and heat in the editor gutter
 - **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
   a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
-  to rearrange), or right-click for a "Move to" menu. The layout persists.
+  to rearrange), or right-click for a "Move to" menu. The layout persists. View → Layout applies
+  Editing, Debugging and Sprite arrangements, and can restore the one they replaced.
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
@@ -92,7 +93,7 @@ your first line of code. The Linux AppImage and the Windows archive meet that go
 
 On a machine with no assembler or ROM, the first run offers a **guided setup**: a
 checksum-pinned vasm source build and an EmuTOS download, each named with its URL and checksum
-before anything is fetched. Tools ▸ Set up tools and ROMs… reopens it.
+before anything is fetched. The button at the bottom of Project Settings reopens it.
 
 ## Target platform
 

@@ -12,11 +12,12 @@ namespace pist {
 
 namespace {
 
-// How far either scan looks. OS calls are a local idiom: the function-number
-// push sits directly above its trap with the argument pushes above that, so a
-// handful of lines covers every real sequence while keeping a distant,
-// unrelated push from being mistaken for the call's number.
-constexpr int kScanBound = 8;
+// How far either scan looks. The real guard against misattribution is the
+// sequence rules below — a scan stops at the first line that is not a push,
+// blank or comment — so this is only a sanity cap, and it must be generous
+// enough for the widest documented call: Flopfmt takes nine arguments, ten
+// consecutive push lines before its trap.
+constexpr int kScanBound = 16;
 
 /// The line with its comment removed: `;` starts a comment anywhere, `*` only
 /// in the first column (Motorola convention, same as AsmHighlighter).

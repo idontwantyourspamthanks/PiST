@@ -13,6 +13,7 @@
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
 #include "editor/IncludeNav.h"
+#include "editor/OsCallBinding.h"
 #include "editor/OsCallRef.h"
 #include "editor/OsCallScan.h"
 #include "ui/ConsoleInput.h"
@@ -1240,6 +1241,24 @@ void MainWindow::createDocks()
     addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
     for (int i = 1; i < debugTabs.size(); ++i)
         tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
+
+    // The reference dock's "insert binding" gesture drops the call's
+    // canonical binding into the current source, above the cursor's line, as
+    // one undo step. The placeholder parameter names are the user's to edit.
+    connect(m_instrRef, &InstructionRefView::osCallInsertRequested, this,
+            [this](int trap, int opcode) {
+                if (!m_editor)
+                    return; // the current tab is not a source editor
+                const OsCallInfo *info = osCallRef(trap, opcode);
+                if (!info)
+                    return;
+                QTextCursor cursor = m_editor->textCursor();
+                cursor.beginEditBlock();
+                cursor.movePosition(QTextCursor::StartOfBlock);
+                cursor.insertText(osCallBinding(*info));
+                cursor.endEditBlock();
+                m_editor->setFocus();
+            });
     connect(m_profiler, &ProfilerView::lineActivated, this, [this](int line) {
         if (m_editor)
             m_editor->gotoLine(line);

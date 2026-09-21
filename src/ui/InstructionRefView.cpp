@@ -7,10 +7,11 @@
 #include "editor/InstrRef.h"
 #include "editor/OsCallRef.h"
 #include "ui/Appearance.h"
-
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 namespace pist {
@@ -71,11 +72,42 @@ InstructionRefView::InstructionRefView(QWidget *parent)
     m_detail->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     layout->addWidget(m_detail);
 
+    m_insert = new QPushButton(tr("Insert binding into editor"), this);
+    m_insert->setObjectName(QStringLiteral("instructionRefInsert"));
+    m_insert->setEnabled(false); // enabled while an OS-call row is selected
+    layout->addWidget(m_insert);
+
     connect(m_filter, &QLineEdit::textChanged, this, &InstructionRefView::applyFilter);
     connect(m_list, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *current) { updateDetail(current); });
+            [this](QListWidgetItem *current) {
+                updateDetail(current);
+                m_insert->setEnabled(current != nullptr
+                                     && current->data(Qt::UserRole).toString().contains(QLatin1Char(':')));
+            });
+    connect(m_insert, &QPushButton::clicked, this,
+            [this] { requestInsertForItem(m_list->currentItem()); });
+
+    // The same offer on right-click, for a gesture that needs no aiming.
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_list, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QListWidgetItem *item = m_list->itemAt(pos);
+        if (!item || !item->data(Qt::UserRole).toString().contains(QLatin1Char(':')))
+            return;
+        QMenu menu(this);
+        QAction *action = menu.addAction(tr("Insert binding into editor"));
+        if (menu.exec(m_list->viewport()->mapToGlobal(pos)) == action)
+            requestInsertForItem(item);
+    });
 
     applyFilter(QString());
+}
+
+void InstructionRefView::requestInsertForItem(QListWidgetItem *item)
+{
+    if (!item || !item->data(Qt::UserRole).toString().contains(QLatin1Char(':')))
+        return; // an instruction row: there is no binding to insert
+    emit osCallInsertRequested(item->data(Qt::UserRole + 1).toInt(),
+                               item->data(Qt::UserRole + 2).toInt());
 }
 
 QString InstructionRefView::currentMnemonic() const

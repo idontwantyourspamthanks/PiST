@@ -155,6 +155,7 @@ private slots:
     void debugConsoleRecallsHistoryWithArrowKeys();
     void instructionReferenceFollowsTheCursor();
     void osCallReferenceFollowsTheCursor();
+    void osCallBindingInsertsAtTheCursor();
     void diagnosticKeyboardFlowToursProblems();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
@@ -1563,6 +1564,50 @@ void TstGui::osCallReferenceFollowsTheCursor()
     editor->setTextCursor(cursor);
     QTest::qWait(50);
     QCOMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
+}
+
+// The dock's "Insert binding" button drops the selected call's assembler
+// binding into the source, above the cursor's line.
+void TstGui::osCallBindingInsertsAtTheCursor()
+{
+    const QString source = m_work->path() + QStringLiteral("/binding.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tnop\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    window.openPath(source);
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("instructionRefDock"));
+    QVERIFY(dock);
+    auto *view = dock->findChild<pist::InstructionRefView *>();
+    QVERIFY(view);
+    auto *button = dock->findChild<QPushButton *>(QStringLiteral("instructionRefInsert"));
+    QVERIFY(button);
+    dock->show();
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    window.show();
+
+    // Place the cursor first, then pick the call: cursor-follow would
+    // otherwise replace the dock's selection with the word under the cursor.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(1).position() + 2);
+    editor->setTextCursor(cursor);
+    QVERIFY(!button->isEnabled()); // an instruction row has no binding
+
+    view->showOsCall(1, 9);
+    QTRY_VERIFY(button->isEnabled());
+    QTest::mouseClick(button, Qt::LeftButton);
+
+    QCOMPARE(editor->document()->findBlockByNumber(1).text(), QStringLiteral("\tpea\tbuf"));
+    QCOMPARE(editor->document()->findBlockByNumber(2).text(),
+             QStringLiteral("\tmove.w\t#9,-(sp)\t; GEMDOS Cconws"));
+    QCOMPARE(editor->document()->findBlockByNumber(3).text(), QStringLiteral("\ttrap\t#1"));
+    QCOMPARE(editor->document()->findBlockByNumber(4).text(), QStringLiteral("\taddq.l\t#6,sp"));
+    QCOMPARE(editor->document()->findBlockByNumber(5).text(), QStringLiteral("start:\tnop"));
+    QVERIFY(editor->document()->isModified());
 }
 
 // Ctrl+click on an include opens the target file (resolved via the current

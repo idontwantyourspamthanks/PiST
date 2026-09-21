@@ -4,6 +4,7 @@
 
 #include <QtTest>
 
+#include "editor/OsCallBinding.h"
 #include "editor/OsCallRef.h"
 #include "editor/OsCallScan.h"
 
@@ -38,6 +39,11 @@ private slots:
     void commentsAndBlanksRideInsideASequence();
     void aLabelEndsTheSequence();
     void nonOsTrapsAndDistantPushesAreIgnored();
+
+    void bindingShapeIsCanonical();
+    void bindingSpecialCasesKeepTheirDocumentedShape();
+    void everyBindingAddsUpToItsStackBytes();
+    void everyBindingScansBackToItsOwnCall();
 };
 
 void TstOsCall::tableCoversThreeLayers()
@@ -290,6 +296,93 @@ void TstOsCall::nonOsTrapsAndDistantPushesAreIgnored()
     const QStringList plain = {QStringLiteral("\tmoveq\t#0,d0")};
     const OsCallMatch plainMatch = osCallAt(plain, 0);
     QVERIFY(!plainMatch.trapContext);
+}
+
+// The byte size of one generated push line, 0 for trap/cleanup lines. Match
+// the opcode, never a substring: "#repeat" contains "pea".
+static int pushSize(const QString &line)
+{
+    const QString t = line.trimmed();
+    if (t.startsWith(QStringLiteral("pea\t")) || t.startsWith(QStringLiteral("move.l\t")))
+        return 4;
+    if (t.startsWith(QStringLiteral("move.w\t")))
+        return 2;
+    return 0;
+}
+
+void TstOsCall::bindingShapeIsCanonical()
+{
+    // The shape a user reads after inserting: argument pushes, function word
+    // with its comment, trap, cleanup.
+    QCOMPARE(osCallBinding(*osCallRef(1, 9)),
+             QStringLiteral("\tpea\tbuf\n"
+                            "\tmove.w\t#9,-(sp)\t; GEMDOS Cconws\n"
+                            "\ttrap\t#1\n"
+                            "\taddq.l\t#6,sp\n"));
+
+    // No arguments: just the function word, and addq covers the cleanup.
+    QCOMPARE(osCallBinding(*osCallRef(1, 0)),
+             QStringLiteral("\tmove.w\t#0,-(sp)\t; GEMDOS Pterm0\n"
+                            "\ttrap\t#1\n"
+                            "\taddq.l\t#2,sp\n"));
+}
+
+void TstOsCall::bindingSpecialCasesKeepTheirDocumentedShape()
+{
+    // Mshrink and Frename: the reserved zero word rides between the arguments
+    // and the function number.
+    const QString mshrink = osCallBinding(*osCallRef(1, 74));
+    QVERIFY(mshrink.contains(QStringLiteral("\tpea\tblock\n\tmove.w\t#0,-(sp)\n\tmove.w\t#74,-(sp)")));
+
+    // Pexec: the varargs prototype still gets its fixed three-long layout.
+    const QString pexec = osCallBinding(*osCallRef(1, 75));
+    QVERIFY(pexec.startsWith(QStringLiteral("\tpea\tenv\n\tpea\tcmdline\n\tpea\tname\n")));
+    QVERIFY(pexec.contains(QStringLiteral("\tlea\t16(sp),sp\n")));
+
+    // Dbmsg: the reserved word is the literal 5, not a placeholder.
+    const QString dbmsg = osCallBinding(*osCallRef(14, 11));
+    QVERIFY(dbmsg.contains(QStringLiteral("\tmove.w\t#5,-(sp)")));
+    QVERIFY(!dbmsg.contains(QStringLiteral("rsrvd")));
+}
+
+void TstOsCall::everyBindingAddsUpToItsStackBytes()
+{
+    // The pushes a binding emits must total the entry's stack layout: this
+    // catches prototype-parse size/order bugs across the whole table, not
+    // just the entries someone hand-checked.
+    for (const OsCallInfo &info : osCallTable()) {
+        const QStringList lines = osCallBinding(info).split(QLatin1Char('\n'));
+        int bytes = 0;
+        for (const QString &line : lines)
+            bytes += pushSize(line);
+        QVERIFY2(bytes == info.stackBytes,
+                 qPrintable(QStringLiteral("%1 %2: pushes total %3, table says %4")
+                                .arg(osCallLayerName(info.trap), info.name)
+                                .arg(bytes)
+                                .arg(info.stackBytes)));
+    }
+}
+
+void TstOsCall::everyBindingScansBackToItsOwnCall()
+{
+    // Round-trip: the text the generator emits must resolve through the
+    // scanner to the call it came from, with every argument push collected.
+    for (const OsCallInfo &info : osCallTable()) {
+        const QStringList lines = osCallBinding(info).split(QLatin1Char('\n'));
+        int trapIndex = -1, pushLines = 0;
+        for (int i = 0; i < lines.size(); ++i) {
+            if (lines.at(i).startsWith(QStringLiteral("\ttrap")))
+                trapIndex = i;
+            else if (pushSize(lines.at(i)) > 0)
+                ++pushLines;
+        }
+        QVERIFY2(trapIndex > 0, qPrintable(info.name));
+        const OsCallMatch match = osCallAt(lines, trapIndex);
+        QVERIFY2(match.call, qPrintable(info.name));
+        QVERIFY2(match.call->trap == info.trap && match.call->opcode == info.opcode,
+                 qPrintable(QStringLiteral("%1 resolved to %2").arg(info.name, match.call->name)));
+        QCOMPARE(match.args.size(), pushLines - 1); // minus the fn-word push
+    }
 }
 
 QTEST_MAIN(TstOsCall)

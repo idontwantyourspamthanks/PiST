@@ -10,6 +10,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
+class QPushButton;
 
 namespace pist {
 
@@ -22,7 +23,8 @@ namespace pist {
 /// *that* a word is a mnemonic, so the reference lives beside it — one click
 /// from the word under the cursor to its description. OS calls join the same
 /// list: cursor on a `trap #1` line (or the push feeding it) shows the call
-/// being made, not just the trap instruction.
+/// being made, not just the trap instruction. And a call can travel the other
+/// way too: pick one and its assembler binding is offered for insertion.
 class InstructionRefView : public QWidget
 {
     Q_OBJECT
@@ -51,16 +53,24 @@ public slots:
     /// detail when given. Unknown calls leave the panel untouched.
     void showOsCall(int trap, int opcode, const QStringList &args = QStringList());
 
+signals:
+    /// The user asked to insert the selected OS call's assembler binding into
+    /// the editor (the button or the list's context menu). MainWindow owns
+    /// the insertion; the view only knows which call was picked.
+    void osCallInsertRequested(int trap, int opcode);
+
 private:
     void applyFilter(const QString &text);
     void updateDetail(QListWidgetItem *item);
     void updateOsDetail(QListWidgetItem *item);
     QListWidgetItem *itemForMnemonic(const QString &mnemonic) const;
     void selectAndScroll(QListWidgetItem *item);
+    void requestInsertForItem(QListWidgetItem *item);
 
     QLineEdit *m_filter = nullptr;
     QListWidget *m_list = nullptr;
     QLabel *m_detail = nullptr;
+    QPushButton *m_insert = nullptr;
     // The actual arguments of the call the cursor is sitting in, and the list
     // key they belong to; set by showOsCall, cleared by showInstruction, and
     // shown only while the matching row is selected.

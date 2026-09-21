@@ -50,6 +50,8 @@ qt_add_library(pist_core OBJECT
     src/editor/IncludeNav.h
     src/editor/OsCallRef.cpp
     src/editor/OsCallRef.h
+    src/editor/OsCallBinding.cpp
+    src/editor/OsCallBinding.h
     src/editor/OsCallScan.cpp
     src/editor/OsCallScan.h
 
@@ -366,6 +368,8 @@ qt_add_executable(tst_oscall
     tests/tst_oscall.cpp
     src/editor/OsCallRef.cpp
     src/editor/OsCallRef.h
+    src/editor/OsCallBinding.cpp
+    src/editor/OsCallBinding.h
     src/editor/OsCallScan.cpp
     src/editor/OsCallScan.h
 )

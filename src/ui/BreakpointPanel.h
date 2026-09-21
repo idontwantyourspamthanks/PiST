@@ -10,6 +10,7 @@
 #include <QList>
 #include <QWidget>
 
+class QLabel;
 class QPushButton;
 class QTableWidget;
 
@@ -40,6 +41,10 @@ public:
     /// Re-apply the theme colours to the current list.
     void applyAppearance();
 
+    /// The line shown when the list is empty. The window passes the live
+    /// toggle shortcut, so Common's F9 does not leave an F8 hint behind.
+    void setEmptyHint(const QString &text);
+
 signals:
     void breakpointActivated(const QString &file, int line);
     void removeRequested(const QString &file, int line);
@@ -56,6 +61,7 @@ private:
     QList<Breakpoint> m_breakpoints;
     QList<Watchpoint> m_watchpoints;
     bool m_resolvable = false;
+    QLabel *m_empty = nullptr;
     QTableWidget *m_table = nullptr;
     QPushButton *m_clearButton = nullptr;
 };

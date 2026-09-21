@@ -547,8 +547,8 @@ private:
     /// The Problems pane's contents as structured data — file, line, message
     /// and severity, with linker offsets already resolved to source lines, so
     /// the remote `problems` verb reports what the pane shows rather than
-    /// re-deriving it (severity never reaches the widget; it is only a colour
-    /// there).
+    /// re-deriving it. The widget shows the same severity as a coloured
+    /// square on the file and a tint on the message.
     struct ProblemEntry
     {
         QString file;

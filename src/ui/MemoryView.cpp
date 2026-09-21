@@ -43,7 +43,7 @@ MemoryView::MemoryView(QWidget *parent)
     controls->addWidget(new QLabel(tr("Address:"), this));
 
     m_addressEdit = new QLineEdit(this);
-    m_addressEdit->setPlaceholderText(QStringLiteral("00012596"));
+    m_addressEdit->setPlaceholderText(tr("address"));
     m_addressEdit->setMaximumWidth(120);
     m_addressEdit->setToolTip(tr("Hexadecimal address. Accepts $ or 0x prefixes too."));
     controls->addWidget(m_addressEdit);

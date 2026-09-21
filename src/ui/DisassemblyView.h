@@ -27,6 +27,11 @@ public slots:
     /// Re-apply the theme font and the last listing's colours.
     void applyAppearance();
 
+signals:
+    /// A row was double-clicked. The host opens the source line when the
+    /// program map knows it, and leaves the row inert otherwise.
+    void addressActivated(quint32 address);
+
 private:
     QTableWidget *m_table = nullptr;
     quint32 m_pc = 0;

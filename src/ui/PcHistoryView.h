@@ -31,6 +31,14 @@ public slots:
     /// Clear the view (no session).
     void clear();
 
+signals:
+    /// A line was double-clicked. The host opens the source line when the
+    /// program map knows it, and otherwise opens that address in memory.
+    void addressActivated(quint32 address);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     QPlainTextEdit *m_text = nullptr;
 };

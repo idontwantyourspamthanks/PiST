@@ -218,13 +218,7 @@ FileBrowser::FileBrowser(QWidget *parent)
     m_projectTitle = qobject_cast<QLabel *>(hdHeader->itemAt(0)->widget());
     if (m_projectTitle)
         m_projectTitle->setObjectName(QStringLiteral("projectTitle"));
-    m_export = new QPushButton(tr("Export…"), hd);
-    m_export->setObjectName(QStringLiteral("hardDriveExport"));
-    m_export->setToolTip(tr("Write the selected hard-drive files to a new .st or .msa floppy image."));
-    compactButton(m_export);
     hdHeader->addStretch();
-    hdHeader->addWidget(m_export);
-    connect(m_export, &QPushButton::clicked, this, &FileBrowser::onExportFloppy);
 
     m_pathEdit = new QLineEdit(hd);
     m_pathEdit->setObjectName(QStringLiteral("hardDrivePath"));

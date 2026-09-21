@@ -29,6 +29,7 @@
 #include <QListView>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMenu>
 #include <QPixmap>
 #include <QPushButton>
 #include <QDialogButtonBox>
@@ -570,6 +571,17 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_actSheetSource->setEnabled(false);
 
     bar->addSeparator();
+    // Flip, rotate and shift are a menu: as icons on the bar they wrap under
+    // about 900px, and the shortcuts stay on the actions themselves.
+    auto *transformButton = new QToolButton(bar);
+    transformButton->setObjectName(QStringLiteral("imageTransform"));
+    transformButton->setText(tr("Transform"));
+    transformButton->setToolTip(tr("Flip, rotate, and shift"));
+    transformButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    transformButton->setPopupMode(QToolButton::InstantPopup);
+    auto *transformMenu = new QMenu(transformButton);
+    transformButton->setMenu(transformMenu);
+    bar->addWidget(transformButton);
     auto addTransform = [&](QAction *&action, appearance::Icon icon, const QString &name,
                             const QString &objectName, void (ImageEditor::*method)()) {
         action = new QAction(name, this);
@@ -578,7 +590,7 @@ ImageEditor::ImageEditor(QWidget *parent)
         action->setToolTip(name);
         connect(action, &QAction::triggered, this, method);
         addAction(action);
-        bar->addAction(action);
+        transformMenu->addAction(action);
     };
     addTransform(m_actShiftLeft, appearance::Icon::ShiftLeft, tr("Shift left"),
                  QStringLiteral("imageShiftLeft"), &ImageEditor::shiftLeft);
@@ -609,6 +621,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     rotate90->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     connect(rotate90, &QAction::triggered, this, &ImageEditor::rotate90);
     addAction(rotate90);
+    transformMenu->addAction(rotate90);
 
     bar->addSeparator();
     // Ctrl+Shift+E: the editor's own keys are H, V, R, Del, Esc, Ctrl+0 and the

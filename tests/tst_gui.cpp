@@ -28,7 +28,10 @@
 #include "emu/MachineState.h"
 #include "ui/MainWindow.h"
 #include "build/FloppyImage.h"
+#include "ui/DisassemblyView.h"
+#include "ui/HardwareView.h"
 #include "ui/MemoryView.h"
+#include "ui/PcHistoryView.h"
 #include "ui/SetupDialog.h"
 #include "ui/SettingsDialog.h"
 #include "ui/Appearance.h"
@@ -52,6 +55,7 @@
 #include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QMenu>
@@ -65,6 +69,7 @@
 #include <QTimer>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QToolBar>
 #include <QToolButton>
 #include <QProcess>
 #include <QTreeView>
@@ -332,6 +337,9 @@ private slots:
     /// The Search menu exists, its shortcuts land on the focused editor, and an
     /// image tab has nothing to search.
     void searchMenuFollowsTheEditor();
+    /// Problems, hardware, memory, breakpoints and the console say what they
+    /// are; a disassembly row and a PC-history line hand their address out.
+    void panelsNameTheNextStep();
 
 private:
     QString m_vasm;
@@ -2021,8 +2029,9 @@ void TstGui::dockTabMoveMenuMovesDockBetweenAreas()
 
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("memoryDock"));
     QVERIFY(dock);
-    // The memory dock starts tabbed in the bottom area, so moving it left is an
-    // observable change.
+    // A first run hides the debug docks, including Memory. The tab exists once
+    // the pane is shown, and it starts in the bottom area.
+    dock->show();
     QVERIFY(window.dockWidgetArea(dock) != Qt::LeftDockWidgetArea);
 
     int index = -1;
@@ -2132,6 +2141,7 @@ void TstGui::bottomPanelsAreMovableDocks()
     auto *memory = window.findChild<QDockWidget *>(QStringLiteral("memoryDock"));
     QVERIFY2(problems && console && memory,
              "Problems, Console and Memory must each be a real dock");
+    memory->show();
 
     // All three start tabbed together in the bottom area.
     QCOMPARE(window.dockWidgetArea(console), Qt::BottomDockWidgetArea);
@@ -2174,6 +2184,7 @@ void TstGui::dragSurfacesAdvertiseHandCursor()
     // by the dock, so the dock's cursor is what shows over it).
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("memoryDock"));
     QVERIFY(dock);
+    dock->show();
     QCOMPARE(dock->cursor().shape(), Qt::OpenHandCursor);
     // The panel body stays an arrow, so the hand doesn't leak into it.
     QVERIFY(dock->widget());
@@ -2195,13 +2206,35 @@ void TstGui::columnHeadersAreLeftAligned()
     MainWindow window;
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
+    for (const char *name : {"registersDock", "disassemblyDock", "stackDock"}) {
+        auto *dock = window.findChild<QDockWidget *>(QLatin1String(name));
+        QVERIFY(dock);
+        dock->show();
+    }
     QCoreApplication::processEvents();
 
+    // isVisibleTo is false for a tab that is not the selected one. What matters
+    // is a header the view itself has not hidden (MemoryView hides its own).
+    const auto selfHidden = [](const QWidget *w) {
+        if (!w->isHidden())
+            return false;
+        const QWidget *parent = w->parentWidget();
+        return !parent || !parent->isHidden();
+    };
     int checked = 0;
     for (QTableWidget *table : window.findChildren<QTableWidget *>()) {
         QHeaderView *h = table->horizontalHeader();
-        if (!h->isVisibleTo(&window))
-            continue;  // e.g. MemoryView hides its header
+        if (selfHidden(h))
+            continue;
+        QWidget *owner = table;
+        bool dockHidden = false;
+        while (owner) {
+            if (qobject_cast<QDockWidget *>(owner) && owner->isHidden())
+                dockHidden = true;
+            owner = owner->parentWidget();
+        }
+        if (dockHidden)
+            continue;
         QCOMPARE(h->defaultAlignment(), Qt::AlignLeft | Qt::AlignVCenter);
         ++checked;
     }
@@ -2331,10 +2364,10 @@ void TstGui::viewMenuListsEveryDock()
     QCOMPARE(second->isVisibleTo(&window), !secondShown);
 }
 
-// A first run used to leave Profiler — the last dock tabified — covering
-// Registers, and Qt's default split gave the side docks as much room as the
-// editor. The factory arrangement raises Registers, gives the editor about
-// 60% of a 1280-wide window, and keeps the bottom group short.
+// A first run is the Editing arrangement: the debug docks stay hidden, the
+// editor keeps the centre, and the bottom group stays a short strip. Showing
+// the debug group still opens with Registers on top of Profiler. Reset layout
+// returns to the hidden factory state.
 void TstGui::factoryLayoutShowsRegistersAndTheEditor()
 {
     QSettings settings;
@@ -2351,19 +2384,9 @@ void TstGui::factoryLayoutShowsRegistersAndTheEditor()
     auto *profiler = window.findChild<QDockWidget *>(QStringLiteral("profilerDock"));
     auto *problems = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"));
     QVERIFY(registers && profiler && problems);
-
-    // Tabified docks all answer isVisibleTo. The selected tab is what the
-    // user sees, and a first run used to leave that on Profiler.
-    QTabBar *debugTabs = nullptr;
-    const auto bars = window.findChildren<QTabBar *>();
-    for (QTabBar *bar : bars) {
-        for (int i = 0; i < bar->count(); ++i) {
-            if (bar->tabText(i) == QLatin1String("Profiler"))
-                debugTabs = bar;
-        }
-    }
-    QVERIFY2(debugTabs, "the debug docks must be tabbed together");
-    QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Registers"));
+    QVERIFY(registers->isHidden());
+    QVERIFY(profiler->isHidden());
+    QVERIFY(!problems->isHidden());
 
     // 60% of the window, with room for frames and the splitter handles.
     QVERIFY2(window.centralWidget()->width() * 100 >= window.width() * 55,
@@ -2377,28 +2400,26 @@ void TstGui::factoryLayoutShowsRegistersAndTheEditor()
                             .arg(problems->height())
                             .arg(window.height())));
 
-    // Reset layout returns to that factory tab, not to whatever was raised.
-    int profilerIndex = -1;
-    for (int i = 0; i < debugTabs->count(); ++i) {
-        if (debugTabs->tabText(i) == QLatin1String("Profiler"))
-            profilerIndex = i;
+    // The debug docks are still one tab group. Raising Profiler is what a
+    // first run used to do by accident; Reset must put them away again.
+    registers->show();
+    profiler->show();
+    profiler->raise();
+    QTabBar *debugTabs = nullptr;
+    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabText(i) == QLatin1String("Profiler"))
+                debugTabs = bar;
+        }
     }
-    QVERIFY(profilerIndex >= 0);
-    debugTabs->setCurrentIndex(profilerIndex);
+    QVERIFY2(debugTabs, "the debug docks must be tabbed together");
     QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Profiler"));
     auto *reset = window.findChild<QAction *>(QStringLiteral("resetLayoutAction"));
     QVERIFY2(reset, "View menu must offer Reset layout");
     reset->trigger();
-    // restoreState rebuilds the tab bar, so the pointer from before is dead.
-    debugTabs = nullptr;
-    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
-        for (int i = 0; i < bar->count(); ++i) {
-            if (bar->tabText(i) == QLatin1String("Registers"))
-                debugTabs = bar;
-        }
-    }
-    QVERIFY(debugTabs);
-    QCOMPARE(debugTabs->tabText(debugTabs->currentIndex()), QStringLiteral("Registers"));
+    QVERIFY(registers->isHidden());
+    QVERIFY(profiler->isHidden());
+    QVERIFY(!problems->isHidden());
 }
 
 void TstGui::windowGeometryPersistsAcrossRestart()
@@ -2650,7 +2671,7 @@ void TstGui::layoutPresetsHideDocksAndRestore()
     auto *emulator = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
     auto *project = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
     QVERIFY(registers && disassembly && emulator && project);
-    QVERIFY(!registers->isHidden());
+    QVERIFY(registers->isHidden());
 
     auto *editing = window.findChild<QAction *>(QStringLiteral("layoutEditing"));
     auto *debugging = window.findChild<QAction *>(QStringLiteral("layoutDebugging"));
@@ -2659,6 +2680,11 @@ void TstGui::layoutPresetsHideDocksAndRestore()
     QVERIFY(editing && debugging && sprite && restore);
     QVERIFY(!restore->isEnabled());
 
+    // The factory state is already Editing, so show the docks first. Editing
+    // then has something to hide, and Restore brings that shown state back.
+    registers->show();
+    disassembly->show();
+    QVERIFY(!registers->isHidden());
     editing->trigger();
     QVERIFY(registers->isHidden());
     QVERIFY(disassembly->isHidden());
@@ -3011,7 +3037,8 @@ void TstGui::fileBrowserFloppyGroups()
     auto *exportBtn = browser->findChild<QPushButton *>(QStringLiteral("hardDriveExport"));
     auto *changeA = browser->findChild<QPushButton *>(QStringLiteral("diskAChange"));
     auto *ejectA = browser->findChild<QPushButton *>(QStringLiteral("diskAEject"));
-    QVERIFY(diskA && diskB && exportBtn && changeA && ejectA);
+    QVERIFY(diskA && diskB && changeA && ejectA);
+    QVERIFY2(!exportBtn, "export stays on the hard-drive context menu");
 
     auto *nameA = browser->findChild<QLabel *>(QStringLiteral("diskAName"));
     QVERIFY(nameA);
@@ -3643,17 +3670,11 @@ void TstGui::instructionStripFollowsTheCaret()
     QVERIFY2(strip->text().startsWith(QLatin1String("MOVEQ")), qPrintable(strip->text()));
     QVERIFY(strip->text().contains(QLatin1String("Move quick")));
 
-    // Registers is the factory tab, so Instructions is not showing. The
+    // A first run hides the debug docks, so Instructions is not showing. The
     // reference must still have followed.
-    QTabBar *debugTabs = nullptr;
-    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
-        for (int i = 0; i < bar->count(); ++i) {
-            if (bar->tabText(i) == QLatin1String("Instructions"))
-                debugTabs = bar;
-        }
-    }
-    QVERIFY(debugTabs);
-    QVERIFY(debugTabs->tabText(debugTabs->currentIndex()) != QLatin1String("Instructions"));
+    auto *instrDock = window.findChild<QDockWidget *>(QStringLiteral("instructionRefDock"));
+    QVERIFY(instrDock);
+    QVERIFY(instrDock->isHidden());
 
     QTextCursor trap = editor->document()->find(QStringLiteral("trap"));
     QVERIFY(!trap.isNull());
@@ -3669,7 +3690,7 @@ void TstGui::instructionStripFollowsTheCaret()
     QCOMPARE(ref->currentMnemonic(), QStringLiteral("gemdos:9"));
 
     QTest::mouseClick(strip, Qt::LeftButton);
-    debugTabs = nullptr;
+    QTabBar *debugTabs = nullptr;
     for (QTabBar *bar : window.findChildren<QTabBar *>()) {
         for (int i = 0; i < bar->count(); ++i) {
             if (bar->tabText(i) == QLatin1String("Instructions"))
@@ -4728,6 +4749,187 @@ void TstGui::searchMenuFollowsTheEditor()
     // ...and come back with the editor.
     tabs->setCurrentIndex(tabs->indexOf(editor));
     QVERIFY(findAction->isEnabled());
+}
+
+void TstGui::panelsNameTheNextStep()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    bool sawAddress = false;
+    for (QLineEdit *edit : window.findChildren<QLineEdit *>()) {
+        QVERIFY(edit->placeholderText() != QLatin1String("00012596"));
+        if (edit->placeholderText() == QLatin1String("address"))
+            sawAddress = true;
+    }
+    QVERIFY2(sawAddress, "the memory address field's placeholder is 'address'");
+
+    auto *console = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(console);
+    QVERIFY(console->placeholderText().contains(QStringLiteral("Debugger command")));
+    QVERIFY(console->toolTip().contains(QStringLiteral("b breakpoint")));
+
+    auto *breakpoints = window.findChild<QDockWidget *>(QStringLiteral("breakpointsDock"));
+    QVERIFY(breakpoints);
+    breakpoints->show();
+    auto *empty = window.findChild<QLabel *>(QStringLiteral("breakpointEmpty"));
+    QVERIFY(empty);
+    QVERIFY(empty->isVisible());
+    QVERIFY(empty->text().contains(QStringLiteral("F8")));
+    QVERIFY(empty->text().contains(QStringLiteral("gutter")));
+    auto *breakpointTable = breakpoints->findChild<QTableWidget *>();
+    QVERIFY(breakpointTable && breakpointTable->isHidden());
+
+    auto *buildMenu = window.findChild<QMenu *>(QStringLiteral("buildMenu"));
+    auto *runMenu = window.findChild<QMenu *>(QStringLiteral("runMenu"));
+    QVERIFY(buildMenu && runMenu);
+    QAction *buildAction = nullptr;
+    QAction *nextDiagnostic = nullptr;
+    for (QAction *action : window.findChildren<QAction *>()) {
+        if (action->shortcut() == QKeySequence(Qt::Key_F7))
+            buildAction = action;
+        if (action->shortcut() == QKeySequence(Qt::Key_F4))
+            nextDiagnostic = action;
+    }
+    QVERIFY(buildAction && nextDiagnostic);
+    QVERIFY(buildMenu->actions().contains(buildAction));
+    QVERIFY(buildMenu->actions().contains(nextDiagnostic));
+    QVERIFY(!runMenu->actions().contains(buildAction));
+
+    const QString warnSrc = m_work->path() + QStringLiteral("/warn.s");
+    {
+        QFile src(warnSrc);
+        QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+        src.write("\ttext\n\tdc.b 1\n\tmove.w d0,d0\n\tend\n");
+    }
+    window.openPath(warnSrc);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    buildAction->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(built.count() >= 1, 20000);
+    auto *problemsDock = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"));
+    QVERIFY(problemsDock);
+    auto *problems = qobject_cast<QTreeWidget *>(problemsDock->widget());
+    QVERIFY(problems);
+    QTreeWidgetItem *warning = nullptr;
+    for (int i = 0; i < problems->topLevelItemCount(); ++i) {
+        if (problems->topLevelItem(i)->text(2).contains(QStringLiteral("auto-aligned")))
+            warning = problems->topLevelItem(i);
+    }
+    QVERIFY2(warning, "an odd move.w must land in Problems as a warning");
+    QCOMPARE(warning->foreground(2).color(), appearance::colors().warning);
+    QVERIFY(!warning->icon(0).isNull());
+    QCOMPARE(warning->text(1), QStringLiteral("3"));
+
+    for (QAction *menu : window.menuBar()->actions()) {
+        if (!menu->menu())
+            continue;
+        const QString title = menu->text().remove(QLatin1Char('&'));
+        QVERIFY(title != QLatin1String("Tools"));
+        if (title == QLatin1String("Search")) {
+            for (QAction *action : menu->menu()->actions())
+                QVERIFY(!action->text().contains(QLatin1String("Diagnostic")));
+        }
+    }
+
+    // The chrome sheet is applied for the dark and light themes. System clears
+    // it, and an earlier test in this process may have left that in place.
+    QSettings themeSettings;
+    const QVariant previousTheme = themeSettings.value(QStringLiteral("appearance/theme"));
+    themeSettings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("dark"));
+    appearance::applyTheme();
+    const QString sheet = qApp->styleSheet();
+    const int sep = sheet.indexOf(QStringLiteral("QMainWindow::separator"));
+    QVERIFY(sep >= 0);
+    const QString rule = sheet.mid(sep, 160);
+    QVERIFY(rule.contains(QStringLiteral("width: 4px")));
+    QVERIFY(rule.contains(QStringLiteral("height: 4px")));
+    if (previousTheme.isValid())
+        themeSettings.setValue(QStringLiteral("appearance/theme"), previousTheme);
+    else
+        themeSettings.remove(QStringLiteral("appearance/theme"));
+    appearance::applyTheme();
+
+    SettingsDialog dialog{ProjectSettings()};
+    auto *sample = dialog.findChild<QLabel *>(QStringLiteral("editorFontSample"));
+    QVERIFY(sample);
+    QCOMPARE(sample->text(), QStringLiteral("move.w #9,-(a7) ; Cconws"));
+    QVERIFY(!sample->font().family().isEmpty());
+    QVERIFY(dialog.findChild<QPushButton *>(QStringLiteral("setupToolsButton")));
+    QVERIFY(dialog.findChild<QLabel *>(QStringLiteral("tabWidthValue")));
+
+    ImageEditor image;
+    auto *transform = image.findChild<QToolButton *>(QStringLiteral("imageTransform"));
+    auto *shift = image.findChild<QAction *>(QStringLiteral("imageShiftLeft"));
+    auto *bar = image.findChild<QToolBar *>();
+    QVERIFY(transform && transform->menu() && shift && bar);
+    QVERIFY(transform->menu()->actions().contains(shift));
+    QVERIFY(!bar->actions().contains(shift));
+
+    HardwareView hardware;
+    auto *chips = hardware.findChild<QComboBox *>();
+    QVERIFY(chips);
+    QCOMPARE(chips->itemText(1), QStringLiteral("mfp"));
+    QVERIFY(chips->itemData(1, Qt::ToolTipRole).toString().contains(QStringLiteral("68901")));
+    hardware.setInfo(QStringLiteral(
+        "Video base : 0x00012596\n"
+        "VBL counter : 1\n"
+        "HBL line : 0\n"
+        "V-overscan : none\n"
+        "Refresh rate : 50 Hz\n"
+        "Frame skips : 0\n"));
+    auto *summary = hardware.findChild<QLabel *>(QStringLiteral("hardwareSummary"));
+    QVERIFY(summary);
+    QVERIFY(summary->text().contains(QStringLiteral("$00012596")));
+    QVERIFY(summary->text().contains(QStringLiteral("50 Hz")));
+    QVERIFY(summary->text().contains(QStringLiteral("overscan none")));
+    QVERIFY(!summary->text().contains(QStringLiteral("palette")));
+    hardware.setInfo(QStringLiteral("MFP registers follow"));
+    QVERIFY(summary->text().isEmpty());
+    QVERIFY(summary->isHidden());
+
+    DisassemblyView listing;
+    MachineState state;
+    DisasmLine line;
+    line.address = 0x12396;
+    line.instruction = QStringLiteral("rts");
+    state.disassembly.append(line);
+    state.pc = line.address;
+    listing.setState(state);
+    QSignalSpy disasmSpy(&listing, &DisassemblyView::addressActivated);
+    auto *table = listing.findChild<QTableWidget *>();
+    QVERIFY(table && table->item(0, 0));
+    // Synthetic double-clicks do not reach a table offscreen. The row-to-address
+    // mapping is the contract; Qt's gesture delivery is not.
+    emit table->cellDoubleClicked(0, 0);
+    QCOMPARE(disasmSpy.count(), 1);
+    QCOMPARE(disasmSpy.at(0).at(0).toUInt(), 0x12396u);
+
+    PcHistoryView history;
+    history.setHistory(QStringLiteral("00012396  move.w d0,d1\n"));
+    history.resize(420, 160);
+    history.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&history));
+    QSignalSpy historySpy(&history, &PcHistoryView::addressActivated);
+    auto *edit = history.findChild<QPlainTextEdit *>();
+    QVERIFY(edit);
+    const QTextCursor cursor(edit->document()->findBlockByNumber(0));
+    const QPoint at = edit->cursorRect(cursor).center();
+    QMouseEvent dbl(QEvent::MouseButtonDblClick, at, edit->viewport()->mapToGlobal(at),
+                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QApplication::sendEvent(edit->viewport(), &dbl));
+    QCOMPARE(historySpy.count(), 1);
+    QCOMPARE(historySpy.at(0).at(0).toUInt(), 0x12396u);
+
+    struct RestoreScheme {
+        ~RestoreScheme() { QSettings().remove(QStringLiteral("appearance/shortcuts")); }
+    } restoreScheme;
+    QSettings().setValue(QStringLiteral("appearance/shortcuts"), QStringLiteral("common"));
+    MainWindow commonWindow;
+    auto *commonEmpty = commonWindow.findChild<QLabel *>(QStringLiteral("breakpointEmpty"));
+    QVERIFY(commonEmpty);
+    QVERIFY(commonEmpty->text().contains(QStringLiteral("F9")));
+    QVERIFY(!commonEmpty->text().contains(QStringLiteral("F8")));
 }
 
 void TstGui::floppyRewriteOfAForeignDiskAsks()

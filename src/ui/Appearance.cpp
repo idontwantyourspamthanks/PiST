@@ -214,8 +214,8 @@ QToolButton:pressed {
 }
 QMainWindow::separator {
     background: palette(mid);
-    width: 2px;
-    height: 2px;
+    width: 4px;
+    height: 4px;
 }
 QScrollBar:vertical {
     background: palette(window);

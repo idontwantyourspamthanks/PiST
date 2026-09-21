@@ -8,6 +8,7 @@
 
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -28,6 +29,11 @@ BreakpointPanel::BreakpointPanel(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
+
+    m_empty = new QLabel(tr("Click the gutter to set a breakpoint."), this);
+    m_empty->setObjectName(QStringLiteral("breakpointEmpty"));
+    m_empty->setWordWrap(true);
+    layout->addWidget(m_empty);
 
     m_table = new QTableWidget(0, 3, this);
     m_table->setHorizontalHeaderLabels(
@@ -92,6 +98,11 @@ void BreakpointPanel::setWatchpoints(const QList<Watchpoint> &watchpoints)
     refresh();
 }
 
+void BreakpointPanel::setEmptyHint(const QString &text)
+{
+    m_empty->setText(text);
+}
+
 void BreakpointPanel::setResolvable(bool resolvable)
 {
     if (m_resolvable == resolvable)
@@ -151,7 +162,10 @@ void BreakpointPanel::refresh()
     }
 
     m_table->resizeColumnsToContents();
-    m_clearButton->setEnabled(!m_breakpoints.isEmpty() || !m_watchpoints.isEmpty());
+    const bool empty = m_breakpoints.isEmpty() && m_watchpoints.isEmpty();
+    m_empty->setVisible(empty);
+    m_table->setVisible(!empty);
+    m_clearButton->setEnabled(!empty);
 }
 
 void BreakpointPanel::applyAppearance()

@@ -219,7 +219,6 @@ private:
     QTreeView *m_view = nullptr;
     QLineEdit *m_pathEdit = nullptr;
     QLabel *m_projectTitle = nullptr;
-    QPushButton *m_export = nullptr;
     FloppyPane m_floppy[2];
     /// Whether the project root was ever chosen (showDirectory). The model's
     /// default rootPath is ".", so "no root yet" cannot be read back from it.

@@ -8,6 +8,7 @@
 #include <QWidget>
 
 class QComboBox;
+class QLabel;
 class QPlainTextEdit;
 
 namespace pist {
@@ -42,6 +43,7 @@ signals:
 
 private:
     QComboBox *m_subject = nullptr;
+    QLabel *m_summary = nullptr;
     QPlainTextEdit *m_text = nullptr;
 };
 

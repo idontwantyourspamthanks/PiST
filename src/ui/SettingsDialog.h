@@ -36,6 +36,10 @@ public:
     void accept() override;
     ProjectSettings settings() const;
 
+signals:
+    /// The tool-and-ROM setup dialog closed. The window rediscovers tools.
+    void toolsSetupClosed();
+
 private slots:
     void onMachineChanged();
     void browseRom();

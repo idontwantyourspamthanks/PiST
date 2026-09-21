@@ -205,6 +205,11 @@ unbuilt.
   and state-lossy.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
   the debugger is stopped, so a frozen frame is not mistaken for a crash.
+- **Profiler icons.** Not started, and they need a close look before any more profiler UI work.
+  Profile Start, Stop, and To Cursor (`paintProfileStart`, `paintProfileStop`,
+  `paintProfileToCursor` in `src/ui/Icons.cpp`) are the weak set in the hand-drawn toolbar: Start
+  is a bare record disc, Stop stacks a bar chart under a stop square, and To Cursor is a crosshair.
+  Redraw them in the same style as the other toolbar icons. Do not import an icon set.
 
 ---
 
@@ -216,9 +221,10 @@ closable, docks nest and tab within an area, and the whole arrangement persists 
 The View menu lists every dock for show/hide, including a memory pane added later, and has a Reset
 layout action (tst_gui::viewMenuListsEveryDock). Moving a panel is discoverable: right-click any
 dock tab or title bar for a "Move to left / right / bottom / Float" menu, and drags track across
-the embedded video (the foreign SDL window is made input-transparent mid-drag). A first run opens
-with Registers on top of the debug tab group, the editor taking the centre, and the bottom group
-a short strip (tst_gui::factoryLayoutShowsRegistersAndTheEditor). When embedding is on, the
+the embedded video (the foreign SDL window is made input-transparent mid-drag). A first run is the
+Editing arrangement: debug docks stay hidden (they remain on the View menu, and showing them
+still opens Registers on top of that tab group), the editor takes the centre, and the bottom
+group is a short strip (tst_gui::factoryLayoutShowsRegistersAndTheEditor). When embedding is on, the
 emulator dock sits above that group. Window geometry persists next to the dock state
 (tst_gui::windowGeometryPersistsAcrossRestart), and a saved arrangement is left alone
 (tst_gui::savedLayoutBeatsTheFactorySplit). View → Layout applies Editing, Debugging,

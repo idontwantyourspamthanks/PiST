@@ -6,11 +6,14 @@
 
 #include "emu/TosRom.h"
 #include "ui/Appearance.h"
+#include "ui/SetupDialog.h"
 
 
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFont>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -304,6 +307,26 @@ void SettingsDialog::buildUi()
     m_fontSize->setValue(appearance::editorPointSize());
     appearanceLayout->addRow(tr("Editor font size:"), m_fontSize);
 
+    auto *sample = new QLabel(QStringLiteral("move.w #9,-(a7) ; Cconws"), appearanceTab);
+    sample->setObjectName(QStringLiteral("editorFontSample"));
+    auto refreshSample = [this, sample] {
+        QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        const QString family = m_fontFamily->currentData().toString();
+        if (!family.isEmpty()) {
+            font = QFont(family);
+            font.setStyleHint(QFont::TypeWriter);
+            font.setFixedPitch(true);
+        }
+        const int size = m_fontSize->value();
+        if (size > 0)
+            font.setPointSize(size);
+        sample->setFont(font);
+    };
+    connect(m_fontFamily, &QComboBox::currentIndexChanged, this, refreshSample);
+    connect(m_fontSize, qOverload<int>(&QSpinBox::valueChanged), this, refreshSample);
+    refreshSample();
+    appearanceLayout->addRow(tr("Sample:"), sample);
+
     auto *tabWidth = new QLabel(QStringLiteral("8"), appearanceTab);
     tabWidth->setObjectName(QStringLiteral("tabWidthValue"));
     appearanceLayout->addRow(tr("Tab width:"), tabWidth);
@@ -324,6 +347,15 @@ void SettingsDialog::buildUi()
     tabs->addTab(appearanceTab, tr("Appearance"));
 
     layout->addWidget(tabs);
+
+    auto *setup = new QPushButton(tr("Set up tools and ROMs…"), this);
+    setup->setObjectName(QStringLiteral("setupToolsButton"));
+    connect(setup, &QPushButton::clicked, this, [this] {
+        SetupDialog dialog(this);
+        dialog.exec();
+        emit toolsSetupClosed();
+    });
+    layout->addWidget(setup);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);

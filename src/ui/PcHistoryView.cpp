@@ -6,7 +6,11 @@
 
 #include "ui/Appearance.h"
 
+#include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
+#include <QTextBlock>
+#include <QTextCursor>
 #include <QVBoxLayout>
 
 namespace pist {
@@ -20,6 +24,7 @@ PcHistoryView::PcHistoryView(QWidget *parent)
         tr("The recent program counters appear here once the machine stops.\n"
             "It tracks the execution path from the start of the session."));
     appearance::markMono(m_text);
+    m_text->viewport()->installEventFilter(this);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -34,6 +39,24 @@ void PcHistoryView::setHistory(const QString &text)
 void PcHistoryView::clear()
 {
     m_text->clear();
+}
+
+bool PcHistoryView::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_text && watched == m_text->viewport() && event->type() == QEvent::MouseButtonDblClick) {
+        const auto *mouse = static_cast<const QMouseEvent *>(event);
+        const QTextCursor cursor = m_text->cursorForPosition(mouse->pos());
+        static const QRegularExpression hex(
+            QStringLiteral(R"((?:\$|0x)?([0-9A-Fa-f]{6,8})\b)"));
+        const QRegularExpressionMatch match = hex.match(cursor.block().text());
+        if (match.hasMatch()) {
+            bool ok = false;
+            const quint32 address = match.captured(1).toUInt(&ok, 16);
+            if (ok)
+                emit addressActivated(address);
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 } // namespace pist

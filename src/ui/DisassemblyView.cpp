@@ -28,6 +28,15 @@ DisassemblyView::DisassemblyView(QWidget *parent)
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
     appearance::markMono(m_table);
+    connect(m_table, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        const QTableWidgetItem *address = m_table->item(row, 0);
+        if (!address)
+            return;
+        bool ok = false;
+        const quint32 value = address->data(Qt::UserRole).toUInt(&ok);
+        if (ok)
+            emit addressActivated(value);
+    });
 
     layout->addWidget(m_table);
 }
@@ -47,6 +56,7 @@ void DisassemblyView::setState(const MachineState &state)
             QStringLiteral("%1").arg(dl.address, 8, 16, QLatin1Char('0')).toUpper();
 
         auto *addrItem = new QTableWidgetItem(address);
+        addrItem->setData(Qt::UserRole, dl.address);
         auto *bytesItem = new QTableWidgetItem(dl.bytes);
         addrItem->setForeground(theme.address);
         bytesItem->setForeground(theme.hex);

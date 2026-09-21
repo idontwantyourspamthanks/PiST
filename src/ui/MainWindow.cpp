@@ -59,6 +59,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QIcon>
 #include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
@@ -68,6 +69,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QProcess>
@@ -117,6 +119,15 @@ bool suffixIsStillImage(const QString &suffix)
         QStringLiteral("ilbm"), QStringLiteral("png"), QStringLiteral("pim"),
     };
     return images.contains(suffix);
+}
+
+void markProblemSeverity(QTreeWidgetItem *item, bool error)
+{
+    const QColor ink = error ? appearance::colors().error : appearance::colors().warning;
+    QPixmap square(8, 8);
+    square.fill(ink);
+    item->setIcon(0, QIcon(square));
+    item->setForeground(2, ink);
 }
 
 bool suffixIsKnownBinary(const QString &suffix)
@@ -967,15 +978,16 @@ void MainWindow::createMenus()
     searchMenu->addAction(m_actFindPrevious);
     searchMenu->addSeparator();
     searchMenu->addAction(m_actReplace);
-    searchMenu->addSeparator();
-    searchMenu->addAction(m_actNextDiagnostic);
-    searchMenu->addAction(m_actPrevDiagnostic);
 
-    auto *toolsMenu = menuBar()->addMenu(tr("&Tools"));
-    toolsMenu->addAction(tr("Set up tools and ROMs…"), this, &MainWindow::showToolSetup);
+    auto *buildMenu = menuBar()->addMenu(tr("&Build"));
+    buildMenu->setObjectName(QStringLiteral("buildMenu"));
+    buildMenu->addAction(m_actBuild);
+    buildMenu->addSeparator();
+    buildMenu->addAction(m_actNextDiagnostic);
+    buildMenu->addAction(m_actPrevDiagnostic);
 
     auto *runMenu = menuBar()->addMenu(tr("&Run"));
-    runMenu->addAction(m_actBuild);
+    runMenu->setObjectName(QStringLiteral("runMenu"));
     runMenu->addAction(m_actRun);
     runMenu->addAction(m_actStop);
     runMenu->addAction(m_actPause);
@@ -1081,6 +1093,10 @@ void MainWindow::showDockMoveMenu(QDockWidget *dock, const QPoint &globalPos)
                     [this, dock] { addDockWidget(Qt::BottomDockWidgetArea, dock); });
     menu->addSeparator();
     menu->addAction(tr("Float"), this, [dock] { dock->setFloating(true); });
+    if (dock->objectName().startsWith(QLatin1String("memoryDock"))) {
+        menu->addSeparator();
+        menu->addAction(tr("Open another memory pane"), this, [this] { addMemoryPane(); });
+    }
     menu->popup(globalPos);
 }
 
@@ -1389,6 +1405,34 @@ void MainWindow::createDocks()
             m_memory->goToAddress(address);
         }
     });
+    // A disassembly row opens its source line when the program map knows it,
+    // and does nothing when the address is unmapped. PC history does the same,
+    // and falls through to the memory pane the way the stack does.
+    auto openMappedSource = [this](quint32 address) -> bool {
+        if (!m_bases.isValid() || m_programMap.isEmpty())
+            return false;
+        LineMap::Address loc;
+        if (!m_programMap.lineFor(address, &loc))
+            return false;
+        navigateToSourceLine(loc.file, loc.line);
+        return true;
+    };
+    auto openMemory = [this](quint32 address) {
+        if (!m_memory)
+            return;
+        if (m_memoryDock) {
+            m_memoryDock->show();
+            m_memoryDock->raise();
+        }
+        m_memory->goToAddress(address);
+    };
+    connect(m_disassembly, &DisassemblyView::addressActivated, this,
+            [openMappedSource](quint32 address) { openMappedSource(address); });
+    connect(m_pcHistory, &PcHistoryView::addressActivated, this,
+            [openMappedSource, openMemory](quint32 address) {
+                if (!openMappedSource(address))
+                    openMemory(address);
+            });
     connect(m_hardware, &HardwareView::subjectChanged, this,
             [this](const QString &subject) {
                 if (m_host->isRunning())
@@ -1430,6 +1474,8 @@ void MainWindow::createDocks()
     appearance::markMono(m_consoleInput);
     m_consoleInput->setPlaceholderText(
         tr("Debugger command (e.g. r, d, m $12596 20)"));
+    m_consoleInput->setToolTip(
+        tr("r registers, d disassemble, m address length, b breakpoint."));
     m_consoleInput->setEnabled(false);
     // The command verbs are always completable; symbol names join the
     // candidate list when a build's listings are parsed (rebuildProgramMap).
@@ -1539,6 +1585,28 @@ void MainWindow::createDocks()
         for (QDockWidget *dock : rest)
             addDockToViewMenu(dock);
     }
+
+    // A first run is the Editing arrangement: the source fills the window, and
+    // the debug docks stay on the View menu until a session needs them. Reset
+    // layout captures this state. The Emulator dock is not one of them — the
+    // embed checkbox still owns it.
+    for (QDockWidget *dock : findChildren<QDockWidget *>()) {
+        const QString name = dock->objectName();
+        const bool debug = name == QLatin1String("registersDock")
+            || name == QLatin1String("disassemblyDock")
+            || name == QLatin1String("stackDock")
+            || name == QLatin1String("hardwareDock")
+            || name == QLatin1String("pcHistoryDock")
+            || name == QLatin1String("breakpointsDock")
+            || name == QLatin1String("instructionRefDock")
+            || name == QLatin1String("symbolsDock")
+            || name == QLatin1String("profilerDock")
+            || name.startsWith(QLatin1String("memoryDock"));
+        if (debug)
+            dock->hide();
+    }
+    if (m_problemsDock)
+        m_problemsDock->raise();
 }
 
 void MainWindow::addMemoryPane(quint32 initialAddress)
@@ -1791,6 +1859,15 @@ void MainWindow::applyShortcutScheme()
     }
     updateRunContinueShortcut();
     refreshToolbarStatusTips();
+    if (m_breakpointPanel && m_actToggleBreakpoint) {
+        const QString key =
+            m_actToggleBreakpoint->shortcut().toString(QKeySequence::NativeText);
+        m_breakpointPanel->setEmptyHint(
+            key.isEmpty()
+                ? tr("Click the gutter to set a breakpoint.")
+                : tr("Click the gutter to set a breakpoint. %1 toggles the current line.")
+                      .arg(key));
+    }
 }
 
 void MainWindow::updateRunContinueShortcut()
@@ -2486,6 +2563,7 @@ void MainWindow::syncFileBrowserDisks()
 void MainWindow::editSettings()
 {
     SettingsDialog dialog(m_settings, this);
+    connect(&dialog, &SettingsDialog::toolsSetupClosed, this, &MainWindow::refreshToolchain);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -3057,8 +3135,7 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
         item->setText(0, shownFile);
         item->setText(1, shownLine > 0 ? QString::number(shownLine) : QString());
         item->setText(2, d.message);
-        if (d.severity == Diagnostic::Error)
-            item->setForeground(2, appearance::colors().error);
+        markProblemSeverity(item, d.severity == Diagnostic::Error);
 
         // Mark the gutter of whichever open editor shows this diagnostic's
         // file (with several documents open, errors are not all in one file).
@@ -3703,7 +3780,7 @@ void MainWindow::rebuildProgramMap()
             item->setText(0, tr("(build)"));
             item->setText(2, tr("Could not read the link map, so only the first module "
                                 "can be mapped to source: %1").arg(error));
-            item->setForeground(2, appearance::colors().error);
+            markProblemSeverity(item, true);
         }
     }
 

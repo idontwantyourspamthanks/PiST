@@ -311,6 +311,7 @@ private slots:
     /// Font-size, font-family and theme preferences take effect on the editor
     /// and the application palette.
     void appearancePreferencesApply();
+    void editorGotoIndentAndShortcutScheme();
     void quietColoursClearTheirBackground();
     void instructionStripFollowsTheCaret();
     /// Documents open in tabs: pristine-tab reuse, raise-not-duplicate, the
@@ -3481,6 +3482,86 @@ void TstGui::appearancePreferencesApply()
     settings.remove(QStringLiteral("appearance/fontSize"));
     settings.remove(QStringLiteral("appearance/fontFamily"));
     pist::appearance::applyTheme();
+}
+
+// Ctrl+G is a one-line bar, Return copies the indent it just left, and the
+// default keys stay PiST (F8 breakpoint, F9 continue, F10 step into). Common
+// is opt-in.
+void TstGui::editorGotoIndentAndShortcutScheme()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("appearance/shortcuts"));
+
+    const QString src = m_work->path() + QStringLiteral("/keys.s");
+    {
+        QFile file(src);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("nop\n\tnop\n    rts\n");
+    }
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.openPath(src);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    editor->setFocus();
+
+    QTest::keyClick(editor, Qt::Key_G, Qt::ControlModifier);
+    QVERIFY(editor->gotoBarVisible());
+    auto *edit = editor->findChild<QLineEdit *>(QStringLiteral("editorGotoLine"));
+    QVERIFY(edit);
+    edit->setText(QStringLiteral("3"));
+    QTest::keyClick(edit, Qt::Key_Return);
+    QTRY_COMPARE(editor->textCursor().blockNumber(), 2);
+    QVERIFY(!editor->gotoBarVisible());
+
+    editor->setPlainText(QStringLiteral("\tnop"));
+    QTextCursor cursor = editor->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor->setTextCursor(cursor);
+    editor->setFocus();
+    QTest::keyClick(editor, Qt::Key_Return);
+    QCOMPARE(editor->toPlainText(), QStringLiteral("\tnop\n\t"));
+
+    auto *toggle = window.findChild<QAction *>(QStringLiteral("toggleBreakpointAction"));
+    auto *step = window.findChild<QAction *>(QStringLiteral("stepAction"));
+    auto *resume = window.findChild<QAction *>(QStringLiteral("continueAction"));
+    QVERIFY(toggle && step && resume);
+    QCOMPARE(toggle->shortcut(), QKeySequence(Qt::Key_F8));
+    QCOMPARE(step->shortcut(), QKeySequence(Qt::Key_F10));
+    QCOMPARE(resume->shortcut(), QKeySequence(Qt::Key_F9));
+
+    const int line = editor->textCursor().blockNumber() + 1;
+    toggle->trigger();
+    QVERIFY(editor->breakpointLines().contains(line));
+    toggle->trigger();
+    QVERIFY(!editor->breakpointLines().contains(line));
+
+    settings.setValue(QStringLiteral("appearance/shortcuts"), QStringLiteral("common"));
+    {
+        MainWindow common;
+        QCOMPARE(common.findChild<QAction *>(QStringLiteral("stepAction"))->shortcut(),
+                 QKeySequence(Qt::Key_F11));
+        QCOMPARE(common.findChild<QAction *>(QStringLiteral("stepOverAction"))->shortcut(),
+                 QKeySequence(Qt::Key_F10));
+        QCOMPARE(common.findChild<QAction *>(QStringLiteral("toggleBreakpointAction"))->shortcut(),
+                 QKeySequence(Qt::Key_F9));
+        QCOMPARE(common.findChild<QAction *>(QStringLiteral("runAction"))->shortcut(),
+                 QKeySequence(Qt::Key_F5));
+        QCOMPARE(common.findChild<QAction *>(QStringLiteral("continueAction"))->shortcut(),
+                 QKeySequence());
+
+        SettingsDialog dialog{ProjectSettings()};
+        auto *scheme = dialog.findChild<QComboBox *>(QStringLiteral("shortcutScheme"));
+        auto *width = dialog.findChild<QLabel *>(QStringLiteral("tabWidthValue"));
+        QVERIFY(scheme && width);
+        QCOMPARE(scheme->currentData().toString(), QStringLiteral("common"));
+        QCOMPARE(width->text(), QStringLiteral("8"));
+    }
+    settings.remove(QStringLiteral("appearance/shortcuts"));
 }
 
 // Comments, gutter numerals, zero bytes and the muted "disabled / pending"

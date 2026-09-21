@@ -304,6 +304,23 @@ void SettingsDialog::buildUi()
     m_fontSize->setValue(appearance::editorPointSize());
     appearanceLayout->addRow(tr("Editor font size:"), m_fontSize);
 
+    auto *tabWidth = new QLabel(QStringLiteral("8"), appearanceTab);
+    tabWidth->setObjectName(QStringLiteral("tabWidthValue"));
+    appearanceLayout->addRow(tr("Tab width:"), tabWidth);
+
+    m_shortcutScheme = new QComboBox(appearanceTab);
+    m_shortcutScheme->setObjectName(QStringLiteral("shortcutScheme"));
+    m_shortcutScheme->addItem(tr("PiST (F10 step into, F9 continue)"), QStringLiteral("pist"));
+    m_shortcutScheme->addItem(tr("Common (F10 step over, F11 step into)"), QStringLiteral("common"));
+    m_shortcutScheme->setToolTip(
+        tr("PiST is the default: F8 toggles a breakpoint, F9 continues, F10 steps "
+           "into, F11 steps over. Common matches other IDEs and uses F5 to "
+           "continue while stopped."));
+    const int schemeIndex = m_shortcutScheme->findData(appearance::shortcutScheme());
+    if (schemeIndex >= 0)
+        m_shortcutScheme->setCurrentIndex(schemeIndex);
+    appearanceLayout->addRow(tr("Shortcut scheme:"), m_shortcutScheme);
+
     tabs->addTab(appearanceTab, tr("Appearance"));
 
     layout->addWidget(tabs);
@@ -323,6 +340,8 @@ void SettingsDialog::accept()
     QSettings().setValue(QStringLiteral("appearance/fontFamily"),
                          m_fontFamily->currentData().toString());
     QSettings().setValue(QStringLiteral("appearance/fontSize"), m_fontSize->value());
+    QSettings().setValue(QStringLiteral("appearance/shortcuts"),
+                         m_shortcutScheme->currentData().toString());
     QDialog::accept();
 }
 

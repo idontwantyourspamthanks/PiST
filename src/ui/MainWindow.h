@@ -493,6 +493,13 @@ private:
     void applyAppearance();
     void applyIcons();
 
+    /// PiST or Common debug keys. F5 is shared by Run and Continue in the
+    /// Common scheme, so only the one that should fire currently holds it.
+    void applyShortcutScheme();
+    void updateRunContinueShortcut();
+    void refreshToolbarStatusTips();
+    void toggleBreakpointAtCaret();
+
     /// The open documents. m_editor is the *current* text editor and is null
     /// when the current tab is not a text editor; m_image is the current image
     /// editor and is null otherwise.
@@ -691,6 +698,8 @@ private:
     QAction *m_actRunToCursor = nullptr;
     QAction *m_actResume = nullptr;
     QAction *m_actClearBreakpoints = nullptr;
+    QAction *m_actToggleBreakpoint = nullptr;
+    QAction *m_actGotoLine = nullptr;
     QAction *m_actPause = nullptr;
     QAction *m_actAddWatchpoint = nullptr;
 };

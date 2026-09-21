@@ -444,11 +444,13 @@ void MainWindow::onTabChanged(int index)
     }
     // Find and replace act on the text editor, so they come and go with it: an
     // image tab has nothing to search.
-    if (m_actFind) {
+        if (m_actFind) {
         m_actFind->setEnabled(m_editor != nullptr);
         m_actFindNext->setEnabled(m_editor != nullptr);
         m_actFindPrevious->setEnabled(m_editor != nullptr);
         m_actReplace->setEnabled(m_editor != nullptr);
+        if (m_actGotoLine)
+            m_actGotoLine->setEnabled(m_editor != nullptr);
     }
 
     const QString path = m_editor ? m_editor->filePath()
@@ -558,6 +560,14 @@ void MainWindow::createActions()
 
     m_actFind = new QAction(tr("&Find…"), this);
     m_actFind->setObjectName(QStringLiteral("findAction"));
+    m_actGotoLine = new QAction(tr("&Go to Line…"), this);
+    m_actGotoLine->setObjectName(QStringLiteral("gotoLineAction"));
+    m_actGotoLine->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
+    connect(m_actGotoLine, &QAction::triggered, this, [this] {
+        if (m_editor)
+            m_editor->showGotoBar();
+    });
+
     m_actFind->setShortcut(QKeySequence::Find);
     m_actFind->setEnabled(false);
 
@@ -644,6 +654,7 @@ void MainWindow::createActions()
     connect(m_actBuild, &QAction::triggered, this, &MainWindow::build);
 
     m_actRun = new QAction(tr("&Run"), this);
+    m_actRun->setObjectName(QStringLiteral("runAction"));
     m_actRun->setShortcut(QKeySequence(Qt::Key_F5));
     connect(m_actRun, &QAction::triggered, this, &MainWindow::run);
 
@@ -657,11 +668,13 @@ void MainWindow::createActions()
     connect(m_actPause, &QAction::triggered, this, &MainWindow::pauseSession);
 
     m_actStep = new QAction(tr("&Step"), this);
+    m_actStep->setObjectName(QStringLiteral("stepAction"));
     m_actStep->setShortcut(QKeySequence(Qt::Key_F10));
     m_actStep->setEnabled(false);
     connect(m_actStep, &QAction::triggered, this, &MainWindow::step);
 
     m_actStepOver = new QAction(tr("Step &Over"), this);
+    m_actStepOver->setObjectName(QStringLiteral("stepOverAction"));
     m_actStepOver->setShortcut(QKeySequence(Qt::Key_F11));
     m_actStepOver->setEnabled(false);
     connect(m_actStepOver, &QAction::triggered, this, &MainWindow::stepOver);
@@ -676,6 +689,12 @@ void MainWindow::createActions()
     m_actRunToCursor->setEnabled(false);
     connect(m_actRunToCursor, &QAction::triggered, this, &MainWindow::runToCursor);
 
+    m_actToggleBreakpoint = new QAction(tr("Toggle &Breakpoint"), this);
+    m_actToggleBreakpoint->setObjectName(QStringLiteral("toggleBreakpointAction"));
+    m_actToggleBreakpoint->setShortcut(QKeySequence(Qt::Key_F8));
+    connect(m_actToggleBreakpoint, &QAction::triggered, this,
+            &MainWindow::toggleBreakpointAtCaret);
+
     m_actClearBreakpoints = new QAction(tr("Clear &Breakpoints"), this);
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     connect(m_actClearBreakpoints, &QAction::triggered, this, &MainWindow::clearAllBreakpoints);
@@ -684,6 +703,7 @@ void MainWindow::createActions()
     connect(m_actAddWatchpoint, &QAction::triggered, this, &MainWindow::addWatchpoint);
 
     m_actResume = new QAction(tr("&Continue"), this);
+    m_actResume->setObjectName(QStringLiteral("continueAction"));
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
     m_actResume->setEnabled(false);
     connect(m_actResume, &QAction::triggered, this, &MainWindow::resume);
@@ -806,6 +826,7 @@ void MainWindow::wireBackend()
         m_actStepOut->setEnabled(stopped);
         m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
+        updateRunContinueShortcut();
         updateSessionChip();
         updateRegisterStrip();
         // The embedded panel renders no frames while stopped, so tell it to show
@@ -941,6 +962,7 @@ void MainWindow::createMenus()
 
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
     searchMenu->addAction(m_actFind);
+    searchMenu->addAction(m_actGotoLine);
     searchMenu->addAction(m_actFindNext);
     searchMenu->addAction(m_actFindPrevious);
     searchMenu->addSeparator();
@@ -967,6 +989,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actProfileStop);
     runMenu->addAction(m_actProfileToCursor);
     runMenu->addSeparator();
+    runMenu->addAction(m_actToggleBreakpoint);
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
 }
@@ -1726,6 +1749,14 @@ void MainWindow::createToolBar()
     bar->addSeparator();
     bar->addAction(m_actClearBreakpoints);
 
+    refreshToolbarStatusTips();
+}
+
+void MainWindow::refreshToolbarStatusTips()
+{
+    auto *bar = findChild<QToolBar *>(QStringLiteral("mainToolBar"));
+    if (!bar)
+        return;
     // Icon-only buttons do not show their shortcut. The status bar does,
     // while the pointer is on the button.
     for (QAction *action : bar->actions()) {
@@ -1738,6 +1769,48 @@ void MainWindow::createToolBar()
             text += QStringLiteral(" (") + key + QLatin1Char(')');
         action->setStatusTip(text);
     }
+}
+
+void MainWindow::applyShortcutScheme()
+{
+    const bool common = appearance::shortcutScheme() == QLatin1String("common");
+    m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
+    m_actStepOut->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F11));
+    m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
+    m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
+    if (common) {
+        m_actStep->setShortcut(QKeySequence(Qt::Key_F11));
+        m_actStepOver->setShortcut(QKeySequence(Qt::Key_F10));
+        m_actToggleBreakpoint->setShortcut(QKeySequence(Qt::Key_F9));
+    } else {
+        m_actStep->setShortcut(QKeySequence(Qt::Key_F10));
+        m_actStepOver->setShortcut(QKeySequence(Qt::Key_F11));
+        m_actToggleBreakpoint->setShortcut(QKeySequence(Qt::Key_F8));
+        m_actRun->setShortcut(QKeySequence(Qt::Key_F5));
+        m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
+    }
+    updateRunContinueShortcut();
+    refreshToolbarStatusTips();
+}
+
+void MainWindow::updateRunContinueShortcut()
+{
+    // Common gives F5 to whichever of Run and Continue should answer. They
+    // must not both hold it: Qt drops an ambiguous shortcut.
+    if (appearance::shortcutScheme() != QLatin1String("common"))
+        return;
+    if (!m_actRun || !m_actResume)
+        return;
+    const bool stopped = m_host && m_host->isStopped();
+    m_actRun->setShortcut(stopped ? QKeySequence() : QKeySequence(Qt::Key_F5));
+    m_actResume->setShortcut(stopped ? QKeySequence(Qt::Key_F5) : QKeySequence());
+}
+
+void MainWindow::toggleBreakpointAtCaret()
+{
+    if (!m_editor)
+        return;
+    toggleBreakpointAtLine(m_editor->textCursor().blockNumber() + 1);
 }
 
 void MainWindow::applyIcons()
@@ -1764,6 +1837,7 @@ void MainWindow::applyIcons()
 
 void MainWindow::applyAppearance()
 {
+    applyShortcutScheme();
     appearance::applyTheme();
     setWindowIcon(appearance::windowIcon());
     applyIcons();

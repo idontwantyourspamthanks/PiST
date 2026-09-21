@@ -84,6 +84,7 @@ public:
     /// has. Exposed so a test can assert what the user sees without reaching
     /// into the bar's widgets.
     bool findBarVisible() const;
+    bool gotoBarVisible() const;
     int findMatchCount() const { return m_matches.size(); }
     /// The hit the selection is currently on, 0-based, or -1.
     int findMatchIndex() const { return m_matchIndex; }
@@ -108,6 +109,10 @@ public slots:
     void showFindBar(bool withReplace = false);
     /// Hide the bar, drop the highlights and put the caret back in the text.
     void hideFindBar();
+    /// One-line "go to line" bar, the same shape as find. Enter jumps, Escape
+    /// dismisses. Not a modal.
+    void showGotoBar();
+    void hideGotoBar();
     /// Move to the next/previous hit, wrapping around the document.
     void findNext();
     void findPrevious();
@@ -129,6 +134,7 @@ private slots:
 private:
     void refreshExtraSelections();
     void buildFindBar();
+    void buildGotoBar();
     void updateViewportMargins();
     void layoutFindBar();
     /// Recompute the hits and, when `selectHit` is set, put the selection on
@@ -170,6 +176,9 @@ private:
     /// Where the search began, so as-you-type searching holds its place.
     int m_findAnchor = 0;
     int m_findBarHeight = 0;
+    QFrame *m_gotoBar = nullptr;
+    QLineEdit *m_gotoEdit = nullptr;
+    int m_gotoBarHeight = 0;
     QString m_replaceNote;
 };
 

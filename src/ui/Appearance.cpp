@@ -269,6 +269,14 @@ QString theme()
         .toString();
 }
 
+QString shortcutScheme()
+{
+    const QString scheme = QSettings().value(QStringLiteral("appearance/shortcuts"),
+                                             QStringLiteral("pist"))
+                               .toString();
+    return scheme == QLatin1String("common") ? scheme : QStringLiteral("pist");
+}
+
 int editorPointSize()
 {
     return QSettings().value(QStringLiteral("appearance/fontSize"), 0).toInt();

@@ -72,6 +72,7 @@ private:
     QComboBox *m_theme = nullptr;
     QComboBox *m_fontFamily = nullptr;
     QSpinBox *m_fontSize = nullptr;
+    QComboBox *m_shortcutScheme = nullptr;
     QLineEdit *m_hardDisk = nullptr;
     QLineEdit *m_floppyA = nullptr;
     QLineEdit *m_floppyB = nullptr;

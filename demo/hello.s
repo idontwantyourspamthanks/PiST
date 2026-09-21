@@ -4,7 +4,8 @@
 * A tiny GEMDOS program, here so you can see the whole loop on a first run:
 *
 *   F7  build        (assembles with vasm, maps errors to lines)
-*   F5  run / debug  (starts Hatari; click in the gutter to set a breakpoint)
+*   F5  run / debug  (starts Hatari)
+*   F8  toggle breakpoint  (or click the gutter),  Shift+F9 clears them
 *   F10 step,  F11 step over,  F9 continue
 *
 * Try a breakpoint on the `addq.w #1,d0` line and press F10 a few times:

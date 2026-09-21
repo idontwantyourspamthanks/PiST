@@ -9,6 +9,7 @@
 
 #include <QContextMenuEvent>
 #include <QFile>
+#include <QFrame>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -19,6 +20,7 @@
 #include <QPushButton>
 #include <QShortcut>
 #include <QTextBlock>
+#include <QTimer>
 #include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -92,6 +94,7 @@ CodeEditor::CodeEditor(QWidget *parent)
             &CodeEditor::modificationChanged);
 
     buildFindBar();
+    buildGotoBar();
 
     updateLineNumberAreaWidth(0);
 }
@@ -202,6 +205,41 @@ void CodeEditor::buildFindBar()
     });
 }
 
+void CodeEditor::buildGotoBar()
+{
+    m_gotoBar = new QFrame(this);
+    m_gotoBar->setObjectName(QStringLiteral("editorGotoBar"));
+    m_gotoBar->setFrameShape(QFrame::StyledPanel);
+    m_gotoBar->hide();
+
+    auto *row = new QHBoxLayout(m_gotoBar);
+    row->setContentsMargins(6, 4, 6, 4);
+    row->addWidget(new QLabel(tr("Go to line:"), m_gotoBar));
+    m_gotoEdit = new QLineEdit(m_gotoBar);
+    m_gotoEdit->setObjectName(QStringLiteral("editorGotoLine"));
+    m_gotoEdit->setPlaceholderText(tr("Line number"));
+    m_gotoEdit->setClearButtonEnabled(true);
+    row->addWidget(m_gotoEdit, 1);
+
+    auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), m_gotoBar);
+    escape->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(escape, &QShortcut::activated, this, &CodeEditor::hideGotoBar);
+    connect(m_gotoEdit, &QLineEdit::returnPressed, this, [this] {
+        bool ok = false;
+        const int line = m_gotoEdit->text().trimmed().toInt(&ok);
+        if (!ok || line <= 0)
+            return;
+        // After the key has finished. Moving focus inside returnPressed hands
+        // the same Return to the editor, which then inserts a line.
+        QTimer::singleShot(0, this, [this, line] {
+            gotoLine(line);
+            if (textCursor().blockNumber() == line - 1)
+                hideGotoBar();
+        });
+    });
+    m_gotoEdit->installEventFilter(this);
+}
+
 void CodeEditor::applyFontPreferences()
 {
     const QFont font = appearance::editorFont();
@@ -233,7 +271,8 @@ void CodeEditor::updateLineNumberAreaWidth(int)
 void CodeEditor::updateViewportMargins()
 {
     const int bottom = findBarVisible() ? m_findBarHeight : 0;
-    setViewportMargins(lineNumberAreaWidth(), 0, 0, bottom);
+    const int top = gotoBarVisible() ? m_gotoBarHeight : 0;
+    setViewportMargins(lineNumberAreaWidth(), top, 0, bottom);
 }
 
 void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
@@ -258,12 +297,14 @@ void CodeEditor::resizeEvent(QResizeEvent *event)
 
 void CodeEditor::layoutFindBar()
 {
-    if (!m_findBar || !findBarVisible())
-        return;
     const QRect cr = contentsRect();
     const int left = cr.left() + lineNumberAreaWidth();
-    m_findBar->setGeometry(left, cr.bottom() - m_findBarHeight + 1,
-                           qMax(0, cr.width() - lineNumberAreaWidth()), m_findBarHeight);
+    const int width = qMax(0, cr.width() - lineNumberAreaWidth());
+    if (m_findBar && findBarVisible()) {
+        m_findBar->setGeometry(left, cr.bottom() - m_findBarHeight + 1, width, m_findBarHeight);
+    }
+    if (m_gotoBar && gotoBarVisible())
+        m_gotoBar->setGeometry(left, cr.top(), width, m_gotoBarHeight);
 }
 
 void CodeEditor::onCursorPositionChanged()
@@ -477,6 +518,34 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
 bool CodeEditor::findBarVisible() const
 {
     return m_findBar && m_findBar->isVisible();
+}
+
+bool CodeEditor::gotoBarVisible() const
+{
+    return m_gotoBar && m_gotoBar->isVisible();
+}
+
+void CodeEditor::showGotoBar()
+{
+    if (!m_gotoBar)
+        return;
+    m_gotoBarHeight = m_gotoBar->sizeHint().height();
+    m_gotoBar->show();
+    updateViewportMargins();
+    layoutFindBar();
+    m_gotoEdit->setText(QString::number(textCursor().blockNumber() + 1));
+    m_gotoEdit->selectAll();
+    m_gotoEdit->setFocus();
+}
+
+void CodeEditor::hideGotoBar()
+{
+    if (!m_gotoBar || !gotoBarVisible())
+        return;
+    m_gotoBar->hide();
+    m_gotoBarHeight = 0;
+    updateViewportMargins();
+    setFocus();
 }
 
 QString CodeEditor::findNeedle() const
@@ -711,18 +780,43 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         hideFindBar();
         return;
     }
+    if (event->key() == Qt::Key_Escape && gotoBarVisible()) {
+        hideGotoBar();
+        return;
+    }
+    // A new line keeps the indent of the line being left. Tab stops stay at
+    // eight columns; this does not try to understand the opcode.
+    const bool bareReturn = (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) == 0;
+    if (bareReturn) {
+        const QTextCursor cursor = textCursor();
+        const QString line = cursor.block().text();
+        int spaces = 0;
+        while (spaces < line.size()
+               && (line.at(spaces) == QLatin1Char(' ') || line.at(spaces) == QLatin1Char('\t')))
+            ++spaces;
+        QTextCursor insert = cursor;
+        insert.insertText(QStringLiteral("\n") + line.left(spaces));
+        setTextCursor(insert);
+        return;
+    }
     QPlainTextEdit::keyPressEvent(event);
 }
 
 bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
 {
-    if ((watched == m_findEdit || watched == m_replaceEdit) && event->type() == QEvent::KeyPress) {
+    if (event->type() == QEvent::KeyPress
+        && (watched == m_findEdit || watched == m_replaceEdit || watched == m_gotoEdit)) {
         auto *key = static_cast<QKeyEvent *>(event);
         if (key->key() == Qt::Key_Escape) {
-            hideFindBar();
+            if (watched == m_gotoEdit)
+                hideGotoBar();
+            else
+                hideFindBar();
             return true;
         }
-        if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
+        if (watched != m_gotoEdit
+            && (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
             && (key->modifiers() & Qt::ShiftModifier)) {
             findPrevious();
             return true;

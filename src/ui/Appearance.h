@@ -23,6 +23,7 @@ namespace appearance {
 ///   appearance/theme       "dark" (default) | "light" | "system"
 ///   appearance/fontSize    editor point size; 0/absent = platform default + 1
 ///   appearance/fontFamily  monospace family; empty/absent = platform fixed font
+///   appearance/shortcuts   "pist" (default) | "common"
 
 enum class Icon {
     Open,
@@ -113,6 +114,11 @@ struct Colors
 };
 
 QString theme();
+
+/// "pist" (F10 steps into, F9 continues) or "common" (F10 steps over, F11
+/// steps into, F9 toggles a breakpoint, F5 continues while stopped).
+/// Anything else is read as "pist".
+QString shortcutScheme();
 int editorPointSize();
 QString editorFontFamily();
 

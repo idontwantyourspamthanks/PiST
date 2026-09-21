@@ -11,6 +11,7 @@
 #include <QString>
 #include <QWidget>
 
+class QAction;
 class QLabel;
 class QLineEdit;
 class QTableWidget;
@@ -42,6 +43,11 @@ public slots:
     /// says so rather than showing an empty table; an empty profile clears it.
     void setProfile(const ProfileData &profile, const ProgramLineMap *map,
                     const QString &sourceFile);
+
+    /// Offer the window's profile actions as buttons beside the filter. The
+    /// same QActions drive the Run menu, so enabled state and tooltips stay
+    /// in sync without a second copy.
+    void setActions(QAction *start, QAction *stop);
 
     /// Clear the view (no session, or a new run).
     void clear();

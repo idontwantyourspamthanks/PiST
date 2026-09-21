@@ -563,14 +563,13 @@ void MainWindow::createActions()
     m_actPrevDiagnostic->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F4));
 
     m_actProfileStart = new QAction(tr("Profile &Start"), this);
-    m_actProfileStart->setEnabled(false);
     m_actProfileStart->setToolTip(tr("Start collecting CPU profile counts from here "
-                                     "(arm the stopping breakpoint first)"));
+                                   "(works while stopped at a breakpoint)"));
     connect(m_actProfileStart, &QAction::triggered, this, &MainWindow::profileStart);
 
     m_actProfileStop = new QAction(tr("Profile &Stop and Show"), this);
-    m_actProfileStop->setEnabled(false);
-    m_actProfileStop->setToolTip(tr("Save the profile, then show hot lines and gutter heat"));
+    m_actProfileStop->setToolTip(tr("Save the profile, then show hot lines and gutter heat "
+                                    "(works while stopped)"));
     connect(m_actProfileStop, &QAction::triggered, this, &MainWindow::profileStop);
     connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
@@ -710,8 +709,6 @@ void MainWindow::wireBackend()
             if (m_actStepOut) m_actStepOut->setEnabled(false);
             if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
-            if (m_actProfileStart) m_actProfileStart->setEnabled(false);
-            if (m_actProfileStop) m_actProfileStop->setEnabled(false);
             m_log->appendPlainText(tr("[session] emulator is no longer running"));
         }
         // One owner for everything an ended session leaves behind — the same
@@ -784,8 +781,6 @@ void MainWindow::wireBackend()
         m_actStepOut->setEnabled(stopped);
         m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
-        m_actProfileStart->setEnabled(stopped);
-        m_actProfileStop->setEnabled(stopped);
         m_statusEmulator->setText(stopped ? tr("Stopped in debugger") : tr("Running"));
         // The embedded panel renders no frames while stopped, so tell it to show
         // its paused hint rather than look frozen.
@@ -1215,6 +1210,7 @@ void MainWindow::createDocks()
     m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
     m_displayDock->setVisible(m_embeddedDisplay);
     m_profiler = new ProfilerView(this);
+    m_profiler->setActions(m_actProfileStart, m_actProfileStop);
     addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
 
     // --- right, below the display: the debug views, tabbed together -----------
@@ -2973,6 +2969,10 @@ bool MainWindow::profileStop()
     m_host->command(QStringLiteral("setopt --disasm ext"));
     m_host->command(QStringLiteral("profile save %1/profile.txt").arg(m_currentSessionDir));
     m_host->command(QStringLiteral("profile off"));
+    // The commands run in order, so the save is complete before this restores
+    // the session's default engine — the Disassembly pane must not silently
+    // keep the external renderer for the rest of the run.
+    m_host->command(QStringLiteral("setopt --disasm uae"));
     return true;
 }
 

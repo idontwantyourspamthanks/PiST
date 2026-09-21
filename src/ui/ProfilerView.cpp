@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -69,6 +70,20 @@ ProfilerView::ProfilerView(QWidget *parent)
                     emit lineActivated(line);
             });
     connect(m_filter, &QLineEdit::textChanged, this, &ProfilerView::applyFilter);
+
+    // Until the first profile arrives, the status line is the manual: the
+    // choreography is short, but nobody should have to find it in a tooltip.
+    clear();
+}
+
+void ProfilerView::setActions(QAction *start, QAction *stop)
+{
+    auto *row = m_filter->parentWidget()->layout();
+    for (QAction *action : {start, stop}) {
+        auto *button = new QToolButton(this);
+        button->setDefaultAction(action);
+        row->addWidget(button);
+    }
 }
 
 void ProfilerView::clear()
@@ -77,7 +92,8 @@ void ProfilerView::clear()
     m_unmapped = 0;
     m_totalCount = 0;
     m_table->setRowCount(0);
-    m_status->clear();
+    m_status->setText(tr("Set a breakpoint where measuring ends, Profile Start, "
+                         "continue — the hot lines appear here."));
 }
 
 void ProfilerView::setProfile(const ProfileData &profile, const ProgramLineMap *map,

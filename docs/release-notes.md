@@ -10,6 +10,27 @@ published body.
 
 PiST — an IDE for Atari ST assembly development.
 
+## What's new in 0.8.0
+
+Git lives in the IDE. You can see what changed, commit it, switch branch, and
+look back — without leaving the file you were assembling.
+
+- **A Git panel**, tabbed with Project files. Staged, changed and untracked
+  files sit in a list; check the ones that belong in the next commit, write a
+  message, and commit. Hooks run. Pull and Push are the ordinary commands, and
+  git's own text is what you see when they fail.
+- **Switch and create branches** under the commit message. The selector
+  switches; New… asks for a name. A switch that would overwrite local edits is
+  refused — git's error, not a discard prompt.
+- **A diff of the file you pick.** Select a row and the patch appears under the
+  list: staged rows show what is already in the index, other rows the worktree,
+  untracked files as new. Deselect and the pane goes away.
+- **History.** Newest first, up to 200 commits. Select one to see its message
+  and patch in that same view.
+- **Blame in the gutter.** View → Git blame puts the author beside the line
+  numbers. A dirty line reads as uncommitted, and a click in that lane does not
+  toggle a breakpoint.
+
 ## What's new in 0.7.2
 
 The window spends its space on the work in front of you.

@@ -562,7 +562,8 @@ void TstGit::selectedRowShowsStagedUnstagedAndUntrackedDiffs()
     QVERIFY(!diff->toPlainText().contains(QStringLiteral("-nop")));
 
     files->setCurrentItem(findRow(files, QStringLiteral("Untracked"), QStringLiteral("new.s")));
-    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+untracked-line")), 10000);
+    QTRY_VERIFY2_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+untracked-line")),
+                              qPrintable(diff->toPlainText()), 10000);
     QVERIFY2(!diff->toPlainText().toLower().contains(QStringLiteral("failed")),
              qPrintable(diff->toPlainText()));
 }

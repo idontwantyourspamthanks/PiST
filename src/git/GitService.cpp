@@ -302,7 +302,11 @@ void GitService::diff(const QString &path, GitChange group)
     if (group == GitChange::Staged) {
         args << QStringLiteral("--cached") << QStringLiteral("--") << path;
     } else if (group == GitChange::Untracked) {
-        args << QStringLiteral("--no-index") << QStringLiteral("--") << QProcess::nullDevice() << path;
+        // Git's empty side is `/dev/null` on every platform, including Git for
+        // Windows. Qt's null device is `NUL` there, which `--no-index` cannot
+        // open as a file.
+        args << QStringLiteral("--no-index") << QStringLiteral("--")
+             << QStringLiteral("/dev/null") << path;
     } else {
         args << QStringLiteral("--") << path;
     }

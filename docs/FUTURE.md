@@ -396,7 +396,8 @@ worktree would be overwritten, git refuses and the panel shows that text. There 
 `--discard-changes` path.
 
 Selecting a row shows `git diff --cached` for a staged row, `git diff` for an unstaged
-row, and `git diff --no-index` against the null device for an untracked file. The text
+row, and `git diff --no-index` against `/dev/null` for an untracked file (Git for
+Windows understands that path; Qt's `NUL` device does not). The text
 is read-only. `--no-index` exits 1 when the sides differ; that patch is the result.
 
 History is a flat list, newest first, capped at 200 commits. Selecting one runs

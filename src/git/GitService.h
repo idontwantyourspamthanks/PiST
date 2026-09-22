@@ -54,7 +54,7 @@ public:
     /// `git switch -c name`, from the current HEAD, keeping local edits.
     void createBranch(const QString &name);
     /// `git diff` for one status row. Staged uses `--cached`; untracked uses
-    /// `--no-index` against the null device. A difference is exit code 1, which
+    /// `--no-index` against `/dev/null`. A difference is exit code 1, which
     /// is a result, not a failure.
     void diff(const QString &path, GitChange group);
     /// The latest commits, newest first. Not a graph.

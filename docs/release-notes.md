@@ -30,6 +30,10 @@ look back — without leaving the file you were assembling.
 - **Blame in the gutter.** View → Git blame puts the author beside the line
   numbers. A dirty line reads as uncommitted, and a click in that lane does not
   toggle a breakpoint.
+- **Sprite editor and profiler, packed.** Onion-skin sits with the frame
+  buttons, play sits above a 96-pixel preview that no longer grows when you
+  hit play, and phase placement only appears in spritesheet mode. The layers
+  list and the profiler icons no longer stretch to fill leftover space.
 
 ## What's new in 0.7.2
 

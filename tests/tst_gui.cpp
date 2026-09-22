@@ -326,6 +326,9 @@ private slots:
     /// Opening a `.pim` creates an ImageEditor tab that coexists with `.s`
     /// tabs; Build still finds the assembly source when the image is focused.
     void imageTabsOpenBesideAssembly();
+    /// Placement fields belong to spritesheet mode; onion sits with the frame
+    /// buttons; play sits above the preview; icon rows pack instead of stretching.
+    void spriteEditorChromeSitsWhereItIsUsed();
     /// New Image… requires a file name and writes the blank `.pim` before
     /// the editor opens, rather than defaulting every sprite to sprite.pim.
     void newImageDialogResolvesFileName();
@@ -925,6 +928,17 @@ void TstGui::profilerButtonsExplainThemselvesInTheDock()
         QVERIFY2(button, name);
         QVERIFY2(!button->isEnabled(), name); // no session: nothing to profile
     }
+
+    dock->show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *start = dock->findChild<QToolButton *>(QStringLiteral("profilerStartButton"));
+    auto *stop = dock->findChild<QToolButton *>(QStringLiteral("profilerStopButton"));
+    QVERIFY(start && stop);
+    QVERIFY2(start->width() <= start->sizeHint().width() + 8,
+             "profiler buttons pack instead of stretching across the dock");
+    QVERIFY(stop->x() > start->x());
+    QVERIFY2(stop->x() - (start->x() + start->width()) <= 8,
+             "profiler buttons sit next to each other");
 }
 
 void TstGui::clearAllRemovesWatchpoints()
@@ -3972,6 +3986,69 @@ void TstGui::imageTabsOpenBesideAssembly()
     QVERIFY(qobject_cast<CodeEditor *>(tabs->widget(0)));
 }
 
+void TstGui::spriteEditorChromeSitsWhereItIsUsed()
+{
+    ImageEditor editor;
+    editor.resize(900, 620);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+    auto *addFrame = editor.findChild<QToolButton *>(QStringLiteral("imageAddFrame"));
+    auto *onion = editor.findChild<QComboBox *>(QStringLiteral("imageOnion"));
+    auto *play = editor.findChild<QToolButton *>(QStringLiteral("imagePlay"));
+    auto *preview = editor.findChild<QLabel *>(QStringLiteral("imagePreview"));
+    auto *x = editor.findChild<QSpinBox *>(QStringLiteral("imagePhaseX"));
+    auto *w = editor.findChild<QSpinBox *>(QStringLiteral("imagePhaseCellW"));
+    auto *addPhase = editor.findChild<QToolButton *>(QStringLiteral("imageAddPhase"));
+    auto *picker = editor.findChild<QComboBox *>(QStringLiteral("imagePhasePicker"));
+    auto *mode = editor.findChild<QAction *>(QStringLiteral("imageSheetMode"));
+    QVERIFY(addFrame && onion && play && preview && x && w && addPhase && picker && mode);
+
+    auto *placement = editor.findChild<QWidget *>(QStringLiteral("imagePhasePlacement"));
+    QVERIFY(placement);
+    QVERIFY2(placement->isHidden(), "placed/x/y/w/h belong to spritesheet mode");
+    QVERIFY(!x->isVisible());
+    mode->setChecked(true);
+    QVERIFY(!placement->isHidden());
+    QVERIFY(x->isVisible());
+    QVERIFY(w->isVisible());
+    mode->setChecked(false);
+    QVERIFY(placement->isHidden());
+
+    const QPoint frameAt = addFrame->mapTo(&editor, QPoint());
+    const QPoint onionAt = onion->mapTo(&editor, QPoint());
+    const QPoint playAt = play->mapTo(&editor, QPoint());
+    const QPoint previewAt = preview->mapTo(&editor, QPoint());
+    const QPoint phaseAt = addPhase->mapTo(&editor, QPoint());
+    const QPoint pickerAt = picker->mapTo(&editor, QPoint());
+
+    QVERIFY2(qAbs(frameAt.y() - onionAt.y()) < 12,
+             "onion-skin sits in the frame-button row");
+    QVERIFY(playAt.y() + play->height() <= previewAt.y() + 4);
+    QVERIFY2(qAbs(playAt.x() - previewAt.x()) < 48,
+             "play and fps sit in the preview column");
+    QVERIFY2(qAbs(phaseAt.y() - pickerAt.y()) < 12,
+             "phase +/− sit after the phase selector");
+    QVERIFY(phaseAt.x() > pickerAt.x());
+    QVERIFY2(addFrame->width() <= addFrame->sizeHint().width() + 8,
+             "frame buttons pack instead of stretching across the filmstrip");
+
+    QVERIFY(!editor.findChild<QComboBox *>(QStringLiteral("imagePreviewPhase")));
+    QCOMPARE(preview->size(), QSize(96, 96));
+    play->click();
+    QTest::qWait(150);
+    QCOMPARE(preview->size(), QSize(96, 96));
+    play->click();
+
+    auto *layers = editor.findChild<QListWidget *>(QStringLiteral("imageLayers"));
+    QVERIFY(layers);
+    QVERIFY2(layers->height() <= 150,
+             "layers list must not eat leftover column height");
+    const QPoint layersAt = layers->mapTo(&editor, QPoint());
+    QVERIFY2(pickerAt.y() - (layersAt.y() + layers->height()) < 80,
+             "This phase sits under a compact layers list");
+}
+
 void TstGui::newImageDialogResolvesFileName()
 {
     QTemporaryDir tmp;
@@ -4652,15 +4729,14 @@ void TstGui::sheetPixelsSurviveReopen()
     for (int k = 0; k < 3; ++k)
         QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
 
-    // Selecting a phase retargets the animation preview.
+    QVERIFY(!image->findChild<QComboBox *>(QStringLiteral("imagePreviewPhase")));
     auto *list = image->findChild<QListWidget *>(QStringLiteral("imagePhases"));
-    QVERIFY(list);
-    auto *previewBox = image->findChild<QComboBox *>(QStringLiteral("imagePreviewPhase"));
-    QVERIFY(previewBox);
+    auto *picker = image->findChild<QComboBox *>(QStringLiteral("imagePhasePicker"));
+    QVERIFY(list && picker);
     list->setCurrentRow(0);
-    QCOMPARE(previewBox->currentData().toInt(), 0);
+    QCOMPARE(picker->currentIndex(), 0);
     list->setCurrentRow(1);
-    QCOMPARE(previewBox->currentData().toInt(), 1);
+    QCOMPARE(picker->currentIndex(), 1);
 }
 
 

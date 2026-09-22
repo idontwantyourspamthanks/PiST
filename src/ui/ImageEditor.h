@@ -168,7 +168,6 @@ private slots:
     void togglePlay(bool on);
     void previewTick();
     void fpsChanged(int fps);
-    void previewPhaseChanged(int index);
     void addLayer();
     void removeLayer();
     void moveLayerUp();
@@ -254,7 +253,6 @@ private:
     int m_strokeFrame = 0;
     int m_onionDistance = 0;
     int m_previewFrame = 0;
-    int m_previewPhase = -1;
     int m_fps = 8;
     bool m_playing = false;
     /// Internal clipboard: cube indices of the last copy/cut, `m_clipWidth` wide.
@@ -270,6 +268,7 @@ private:
     QSpinBox *m_phaseY = nullptr;
     QSpinBox *m_phaseCellW = nullptr;
     QSpinBox *m_phaseCellH = nullptr;
+    QWidget *m_phasePlacement = nullptr;
     QAction *m_actSheetMode = nullptr;
     QAction *m_actNewSheet = nullptr;
     QAction *m_actSheetSource = nullptr;
@@ -286,7 +285,6 @@ private:
     QComboBox *m_phasePicker = nullptr;
     QLabel *m_preview = nullptr;
     QComboBox *m_onion = nullptr;
-    QComboBox *m_previewPhaseBox = nullptr;
     QSpinBox *m_fpsBox = nullptr;
     QTimer *m_previewTimer = nullptr;
     QUndoStack *m_undo = nullptr;

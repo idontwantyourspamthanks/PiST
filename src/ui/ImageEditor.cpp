@@ -51,6 +51,8 @@ namespace pist {
 
 namespace {
 
+constexpr int kPreviewSize = 96;
+
 class PaintCommand : public QUndoCommand
 {
 public:
@@ -735,9 +737,6 @@ ImageEditor::ImageEditor(QWidget *parent)
                                   .arg(imageStatusColour(m_colour)));
     });
 
-    auto *right = new QVBoxLayout;
-    right->setSpacing(4);
-
     m_frames = new QListWidget(this);
     m_frames->setObjectName(QStringLiteral("imageFrames"));
     m_frames->setViewMode(QListView::IconMode);
@@ -762,7 +761,21 @@ ImageEditor::ImageEditor(QWidget *parent)
         button->setToolTip(tip);
         button->setAutoRaise(true);
         button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         return button;
+    };
+    auto makeTextButton = [this](const QString &text, const QString &tip) {
+        auto *button = new QToolButton(this);
+        button->setText(text);
+        button->setToolTip(tip);
+        button->setAutoRaise(true);
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        return button;
+    };
+    auto packIcons = [](QHBoxLayout *row) {
+        row->setSpacing(4);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->addStretch(1);
     };
     m_addFrame = makeIconButton(appearance::Icon::AddFrame, tr("Add frame"));
     m_addFrame->setObjectName(QStringLiteral("imageAddFrame"));
@@ -771,30 +784,31 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_dupFrame, &QToolButton::clicked, this, &ImageEditor::duplicateFrame);
     m_removeFrame = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete frame"));
     connect(m_removeFrame, &QToolButton::clicked, this, &ImageEditor::removeFrame);
-    m_frameUp = new QToolButton(this);
-    m_frameUp->setText(QStringLiteral("▲"));
-    m_frameUp->setToolTip(tr("Move frame up"));
-    m_frameUp->setAutoRaise(true);
+    m_frameUp = makeTextButton(QStringLiteral("▲"), tr("Move frame up"));
     connect(m_frameUp, &QToolButton::clicked, this, &ImageEditor::moveFrameUp);
-    m_frameDown = new QToolButton(this);
-    m_frameDown->setText(QStringLiteral("▼"));
-    m_frameDown->setToolTip(tr("Move frame down"));
-    m_frameDown->setAutoRaise(true);
+    m_frameDown = makeTextButton(QStringLiteral("▼"), tr("Move frame down"));
     connect(m_frameDown, &QToolButton::clicked, this, &ImageEditor::moveFrameDown);
+    m_onion = new QComboBox(this);
+    m_onion->setObjectName(QStringLiteral("imageOnion"));
+    m_onion->addItem(tr("Onion: off"), 0);
+    m_onion->addItem(tr("Onion: previous"), -1);
+    m_onion->addItem(tr("Onion: next"), 1);
+    m_onion->setToolTip(tr("Ghost a neighbouring frame over the canvas"));
+    m_onion->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    connect(m_onion, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &ImageEditor::onionChanged);
     auto *frameBtns = new QHBoxLayout;
     frameBtns->addWidget(m_addFrame);
     frameBtns->addWidget(m_dupFrame);
     frameBtns->addWidget(m_removeFrame);
     frameBtns->addWidget(m_frameUp);
     frameBtns->addWidget(m_frameDown);
+    frameBtns->addWidget(m_onion);
+    packIcons(frameBtns);
     canvasColumn->addLayout(frameBtns);
 
-    m_preview = new QLabel(this);
-    m_preview->setObjectName(QStringLiteral("imagePreview"));
-    m_preview->setMinimumSize(96, 96);
-    m_preview->setAlignment(Qt::AlignCenter);
-    m_preview->setScaledContents(false);
-    right->addWidget(m_preview);
+    auto *right = new QVBoxLayout;
+    right->setSpacing(4);
 
     auto *playRow = new QHBoxLayout;
     m_actPlay = new QAction(tr("Play"), this);
@@ -806,6 +820,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     playBtn->setObjectName(QStringLiteral("imagePlay"));
     playBtn->setDefaultAction(m_actPlay);
     playBtn->setAutoRaise(true);
+    playBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     playRow->addWidget(playBtn);
     m_fpsBox = new QSpinBox(this);
     m_fpsBox->setObjectName(QStringLiteral("imageFps"));
@@ -813,32 +828,26 @@ ImageEditor::ImageEditor(QWidget *parent)
     m_fpsBox->setValue(m_fps);
     m_fpsBox->setSuffix(QStringLiteral(" fps"));
     m_fpsBox->setMaximumWidth(88);
+    m_fpsBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     connect(m_fpsBox, qOverload<int>(&QSpinBox::valueChanged), this, &ImageEditor::fpsChanged);
     playRow->addWidget(m_fpsBox);
-    playRow->addStretch();
+    packIcons(playRow);
+    right->addLayout(playRow);
 
-    m_onion = new QComboBox(this);
-    m_onion->setObjectName(QStringLiteral("imageOnion"));
-    m_onion->addItem(tr("Onion: off"), 0);
-    m_onion->addItem(tr("Onion: previous"), -1);
-    m_onion->addItem(tr("Onion: next"), 1);
-    m_onion->setToolTip(tr("Ghost a neighbouring frame over the canvas"));
-    connect(m_onion, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            &ImageEditor::onionChanged);
-    playRow->addWidget(m_onion);
-    canvasColumn->addLayout(playRow);
-
-    m_previewPhaseBox = new QComboBox(this);
-    m_previewPhaseBox->setObjectName(QStringLiteral("imagePreviewPhase"));
-    connect(m_previewPhaseBox, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            &ImageEditor::previewPhaseChanged);
-    right->addWidget(m_previewPhaseBox);
+    m_preview = new QLabel(this);
+    m_preview->setObjectName(QStringLiteral("imagePreview"));
+    m_preview->setFixedSize(kPreviewSize, kPreviewSize);
+    m_preview->setAlignment(Qt::AlignCenter);
+    m_preview->setScaledContents(false);
+    m_preview->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    right->addWidget(m_preview);
 
     right->addWidget(new QLabel(tr("Layers"), this));
     m_layers = new QListWidget(this);
     m_layers->setObjectName(QStringLiteral("imageLayers"));
     m_layers->setMaximumWidth(160);
     m_layers->setMaximumHeight(140);
+    m_layers->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     connect(m_layers, &QListWidget::currentRowChanged, this, &ImageEditor::selectLayer);
     connect(m_layers, &QListWidget::itemChanged, this, &ImageEditor::layerVisibilityChanged);
     connect(m_layers, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
@@ -849,21 +858,16 @@ ImageEditor::ImageEditor(QWidget *parent)
     connect(m_addLayer, &QToolButton::clicked, this, &ImageEditor::addLayer);
     m_removeLayer = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete layer"));
     connect(m_removeLayer, &QToolButton::clicked, this, &ImageEditor::removeLayer);
-    m_layerUp = new QToolButton(this);
-    m_layerUp->setText(QStringLiteral("▲"));
-    m_layerUp->setToolTip(tr("Move layer up"));
-    m_layerUp->setAutoRaise(true);
+    m_layerUp = makeTextButton(QStringLiteral("▲"), tr("Move layer up"));
     connect(m_layerUp, &QToolButton::clicked, this, &ImageEditor::moveLayerUp);
-    m_layerDown = new QToolButton(this);
-    m_layerDown->setText(QStringLiteral("▼"));
-    m_layerDown->setToolTip(tr("Move layer down"));
-    m_layerDown->setAutoRaise(true);
+    m_layerDown = makeTextButton(QStringLiteral("▼"), tr("Move layer down"));
     connect(m_layerDown, &QToolButton::clicked, this, &ImageEditor::moveLayerDown);
     auto *layerBtns = new QHBoxLayout;
     layerBtns->addWidget(m_addLayer);
     layerBtns->addWidget(m_removeLayer);
     layerBtns->addWidget(m_layerUp);
     layerBtns->addWidget(m_layerDown);
+    packIcons(layerBtns);
     right->addLayout(layerBtns);
 
     // The list stays the selection model (tests and sheet-canvas clicks drive
@@ -885,30 +889,36 @@ ImageEditor::ImageEditor(QWidget *parent)
                     m_phases->setCurrentRow(row);
             });
     auto *phaseRow = new QHBoxLayout;
+    phaseRow->setSpacing(4);
+    phaseRow->setContentsMargins(0, 0, 0, 0);
     phaseRow->addWidget(new QLabel(tr("This phase"), this));
     phaseRow->addWidget(m_phasePicker, 1);
-    right->addLayout(phaseRow);
     m_addPhase = makeIconButton(appearance::Icon::AddFrame, tr("Add phase"));
     m_addPhase->setObjectName(QStringLiteral("imageAddPhase"));
     connect(m_addPhase, &QToolButton::clicked, this, &ImageEditor::addPhase);
     m_removePhase = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete phase"));
     connect(m_removePhase, &QToolButton::clicked, this, &ImageEditor::removePhase);
-    auto *phaseBtns = new QHBoxLayout;
-    phaseBtns->addWidget(m_addPhase);
-    phaseBtns->addWidget(m_removePhase);
-    right->addLayout(phaseBtns);
+    phaseRow->addWidget(m_addPhase);
+    phaseRow->addWidget(m_removePhase);
+    right->addLayout(phaseRow);
 
-    // The current phase's strip placement on a sprite sheet.
+    // Placement is a sheet concern: hide it until the composed sheet is up.
+    m_phasePlacement = new QWidget(this);
+    m_phasePlacement->setObjectName(QStringLiteral("imagePhasePlacement"));
+    m_phasePlacement->setVisible(false);
+    auto *placementLayout = new QVBoxLayout(m_phasePlacement);
+    placementLayout->setContentsMargins(0, 0, 0, 0);
+    placementLayout->setSpacing(4);
     auto *placementRow = new QHBoxLayout;
-    m_phaseSheet = new QComboBox(this);
+    m_phaseSheet = new QComboBox(m_phasePlacement);
     m_phaseSheet->setObjectName(QStringLiteral("imagePhaseSheet"));
     connect(m_phaseSheet, qOverload<int>(&QComboBox::currentIndexChanged), this,
             &ImageEditor::onPhasePlacementChanged);
-    m_phaseX = new QSpinBox(this);
+    m_phaseX = new QSpinBox(m_phasePlacement);
     m_phaseX->setObjectName(QStringLiteral("imagePhaseX"));
     m_phaseX->setPrefix(tr("x "));
     m_phaseX->setRange(-4096, 4095);
-    m_phaseY = new QSpinBox(this);
+    m_phaseY = new QSpinBox(m_phasePlacement);
     m_phaseY->setObjectName(QStringLiteral("imagePhaseY"));
     m_phaseY->setPrefix(tr("y "));
     m_phaseY->setRange(-4096, 4095);
@@ -919,13 +929,13 @@ ImageEditor::ImageEditor(QWidget *parent)
     placementRow->addWidget(m_phaseSheet);
     placementRow->addWidget(m_phaseX);
     placementRow->addWidget(m_phaseY);
-    right->addLayout(placementRow);
+    placementLayout->addLayout(placementRow);
     auto *cellRow = new QHBoxLayout;
-    m_phaseCellW = new QSpinBox(this);
+    m_phaseCellW = new QSpinBox(m_phasePlacement);
     m_phaseCellW->setObjectName(QStringLiteral("imagePhaseCellW"));
     m_phaseCellW->setPrefix(tr("w "));
     m_phaseCellW->setRange(1, kStScreenWidth);
-    m_phaseCellH = new QSpinBox(this);
+    m_phaseCellH = new QSpinBox(m_phasePlacement);
     m_phaseCellH->setObjectName(QStringLiteral("imagePhaseCellH"));
     m_phaseCellH->setPrefix(tr("h "));
     m_phaseCellH->setRange(1, kStScreenHeight);
@@ -935,7 +945,9 @@ ImageEditor::ImageEditor(QWidget *parent)
             &ImageEditor::onPhaseCellSizeChanged);
     cellRow->addWidget(m_phaseCellW);
     cellRow->addWidget(m_phaseCellH);
-    right->addLayout(cellRow);
+    placementLayout->addLayout(cellRow);
+    right->addWidget(m_phasePlacement);
+    right->addStretch(1);
     m_previewTimer = new QTimer(this);
     connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
 
@@ -1603,7 +1615,7 @@ void ImageEditor::refreshLayers()
 
 void ImageEditor::refreshPhases()
 {
-    if (!m_phases || !m_previewPhaseBox)
+    if (!m_phases)
         return;
     m_phases->blockSignals(true);
     // Re-derive the highlight from the model, like refreshFrames() does — the
@@ -1635,16 +1647,6 @@ void ImageEditor::refreshPhases()
             m_phasePicker->setCurrentIndex(selected);
         m_phasePicker->blockSignals(false);
     }
-
-    m_previewPhaseBox->blockSignals(true);
-    m_previewPhaseBox->clear();
-    for (int i = 0; i < m_doc.phases().size(); ++i)
-        m_previewPhaseBox->addItem(m_doc.phases().at(i).name, i);
-    const int phaseIndex = m_previewPhaseBox->findData(m_previewPhase);
-    m_previewPhaseBox->setCurrentIndex(phaseIndex >= 0 ? phaseIndex : 0);
-    if (phaseIndex < 0 && m_previewPhaseBox->count() > 0)
-        m_previewPhase = m_previewPhaseBox->itemData(0).toInt();
-    m_previewPhaseBox->blockSignals(false);
 }
 
 void ImageEditor::setSheetMode(bool on)
@@ -1659,6 +1661,8 @@ void ImageEditor::setSheetMode(bool on)
         button->setEnabled(!on);
     m_actNewSheet->setEnabled(on);
     m_actSheetSource->setEnabled(on);
+    if (m_phasePlacement)
+        m_phasePlacement->setVisible(on);
     if (on)
         refreshSheetView();
 }
@@ -2141,7 +2145,7 @@ void ImageEditor::refreshPreview()
             }
         }
     }
-    const QSize box = m_preview->size().expandedTo(QSize(96, 96));
+    const QSize box(kPreviewSize, kPreviewSize);
     m_preview->setPixmap(QPixmap::fromImage(
         image.scaled(box, Qt::KeepAspectRatio, Qt::FastTransformation)));
     if (m_actRotate)
@@ -2401,10 +2405,8 @@ void ImageEditor::togglePlay(bool on)
 
 void ImageEditor::previewTick()
 {
-    const int count = m_previewPhase >= 0 && m_previewPhase < m_doc.phases().size()
-        ? m_doc.phases().at(m_previewPhase).frames.size()
-        : m_doc.frameCount();
-    m_previewFrame = nextPreviewFrame(m_previewFrame, count, 0, count - 1);
+    m_previewFrame = nextPreviewFrame(m_previewFrame, m_doc.frameCount(), 0,
+                                      m_doc.frameCount() - 1);
     refreshPreview();
 }
 
@@ -2413,16 +2415,6 @@ void ImageEditor::fpsChanged(int fps)
     m_fps = qBound(1, fps, 60);
     if (m_playing)
         m_previewTimer->start(qMax(1, 1000 / m_fps));
-}
-
-void ImageEditor::previewPhaseChanged(int index)
-{
-    if (!m_previewPhaseBox || index < 0)
-        return;
-    m_previewPhase = m_previewPhaseBox->itemData(index).toInt();
-    if (m_playing)
-        m_previewFrame = 0;
-    refreshPreview();
 }
 
 void ImageEditor::addLayer()
@@ -2562,10 +2554,6 @@ void ImageEditor::removePhase()
     const ImageDocument before = m_doc;
     if (!m_doc.removePhase(row))
         return;
-    if (m_previewPhase == row)
-        m_previewPhase = 0;
-    else if (m_previewPhase > row)
-        --m_previewPhase;
     pushSnapshot(before, tr("delete phase"));
     refreshChrome();
     notifyModified();
@@ -2580,16 +2568,7 @@ void ImageEditor::selectPhase(int row)
     // The selection is a rectangle in the old phase's grid; the new phase may
     // have a different cell size, so start clean.
     clearSelection();
-    // The animation preview plays the selected phase, not whatever was
-    // previewed before.
-    if (m_previewPhase != row) {
-        m_previewPhase = row;
-        m_previewPhaseBox->blockSignals(true);
-        const int index = m_previewPhaseBox->findData(row);
-        m_previewPhaseBox->setCurrentIndex(index >= 0 ? index : 0);
-        m_previewPhaseBox->blockSignals(false);
-        refreshPreview();
-    }
+    refreshPreview();
     refreshChrome();
 }
 

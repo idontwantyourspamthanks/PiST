@@ -99,6 +99,11 @@ code. Use this table for a quick lookup:
 - **Commit messages:** `<area>: <imperative summary>` where `<area>` is a subsystem (`build`,
   `editor`, `debug`, `emu`, `ui`, `control`, `docs`), e.g. `debug: bind control socket before
   spawning Hatari`.
+- **Releases:** bump `project(VERSION)` in `CMakeLists.txt` and rewrite the "What's new" section
+  of `docs/release-notes.md` so it covers only that version. The release workflow publishes the
+  whole file as the GitHub release body, so notes from older versions must not remain; they stay
+  in git history. Keep the download and install text under the changelog. Commit
+  `release: <version>` and tag `v<version>`.
 - **Tests:** add one only where a plausible bug would fail it; assert observable behaviour, not
   implementation. Match the existing QTest style. Do not write tests so a change "has tests".
 - **Style:** follow the surrounding code. Qt parent-child ownership; `tr()` for user-facing strings;

@@ -249,6 +249,9 @@ private slots:
 
     /// Floppy images reach the emulator command line.
     void floppyImagesReachTheCommandLine();
+    /// The positional program path uses the host separator, so Hatari's
+    /// Windows build can split directory from filename.
+    void programPathUsesHostSeparators();
     void fileBrowserShowsTheProjectDirectory();
     /// Pointing the hard-drive pane at another folder moves the selection to
     /// that folder, so new files and pastes land where the user is looking.
@@ -2902,8 +2905,12 @@ void TstGui::floppyImagesReachTheCommandLine()
     const QStringList argv = config.toArgv();
     const QString joined = argv.join(QLatin1Char(' '));
 
-    QVERIFY2(joined.contains(QLatin1String("--disk-a /disks/boot.st")), qPrintable(joined));
-    QVERIFY2(joined.contains(QLatin1String("--disk-b /disks/data.st")), qPrintable(joined));
+    QVERIFY2(joined.contains(QStringLiteral("--disk-a ")
+                              + QDir::toNativeSeparators(QStringLiteral("/disks/boot.st"))),
+             qPrintable(joined));
+    QVERIFY2(joined.contains(QStringLiteral("--disk-b ")
+                              + QDir::toNativeSeparators(QStringLiteral("/disks/data.st"))),
+             qPrintable(joined));
 
     // A user might also supply only a disk for A:, which must not emit a bare
     // --disk-b with nothing after it.
@@ -2924,9 +2931,9 @@ void TstGui::floppyImagesReachTheCommandLine()
     clash.floppyImages = {QStringLiteral("/disks/magazine.st"), QString()};
     clash.bootFloppyPath = QStringLiteral("/tmp/auto.st");
     const QStringList clashArgv = clash.toArgv();
-    QVERIFY2(clashArgv.contains(QStringLiteral("/disks/magazine.st")),
+    QVERIFY2(clashArgv.contains(QDir::toNativeSeparators(QStringLiteral("/disks/magazine.st"))),
              qPrintable(clashArgv.join(QLatin1Char(' '))));
-    QVERIFY2(!clashArgv.contains(QStringLiteral("/tmp/auto.st")),
+    QVERIFY2(!clashArgv.contains(QDir::toNativeSeparators(QStringLiteral("/tmp/auto.st"))),
              qPrintable(clashArgv.join(QLatin1Char(' '))));
 
     SessionConfig spaced;
@@ -2935,7 +2942,27 @@ void TstGui::floppyImagesReachTheCommandLine()
     spaced.floppyImages = {
         QStringLiteral("/home/ryan/Code/AtariST/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st")
     };
-    QVERIFY(spaced.toArgv().contains(spaced.floppyImages.at(0)));
+    QVERIFY(spaced.toArgv().contains(QDir::toNativeSeparators(spaced.floppyImages.at(0))));
+}
+
+void TstGui::programPathUsesHostSeparators()
+{
+    // Hatari 2.6.1 Opt_HandleArgument splits the positional with
+    // strrchr(path, PATHSEP). PATHSEP is '\\' on Windows, and a Qt path has
+    // none, so the GEMDOS drive becomes the process working directory and the
+    // autostart name is the whole "C:/proj/hello.prg" string.
+    SessionConfig config;
+    config.hatariPath = QStringLiteral("hatari");
+    config.gemdosDir = QStringLiteral("C:/proj");
+    config.programPath = QStringLiteral("C:/proj/hello.prg");
+    config.tosPath = QStringLiteral("C:/roms/tos.img");
+    config.bootstrapScriptPath = QStringLiteral("C:/session/boot.prg");
+
+    const QStringList argv = config.toArgv();
+    QCOMPARE(argv.last(), QDir::toNativeSeparators(config.programPath));
+    QVERIFY(argv.contains(QDir::toNativeSeparators(config.gemdosDir)));
+    QVERIFY(argv.contains(QDir::toNativeSeparators(config.tosPath)));
+    QVERIFY(argv.contains(QDir::toNativeSeparators(config.bootstrapScriptPath)));
 }
 
 void TstGui::fileBrowserShowsTheProjectDirectory()

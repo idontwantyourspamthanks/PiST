@@ -46,7 +46,10 @@ struct SessionConfig
     /// only when the program lives elsewhere (docs/PLAN.md §5 rule 1).
     QString gemdosDir;
 
-    /// The program to assemble and run.
+    /// The program to assemble and run. `toArgv()` rewrites this (and every
+    /// other host path) with native separators: Hatari on Windows splits the
+    /// positional on `\`, and a Qt `C:/…` path makes it miss both the program
+    /// and the GEMDOS directory (docs/PLAN.md §5 rule 1).
     QString programPath;
 
     bool fastForward = true;

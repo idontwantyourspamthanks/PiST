@@ -409,6 +409,12 @@ These are the operational constraints the launch builder must encode.
    `Opt_HandleArgument` detects an Atari program, calls `INF_SetAutoStart()`, sets
    `szHardDiskDirectories[0]` to the program's directory, and sets `bBootFromHardDisk`.
    Two positionals produce `Unrecognized option`.
+   The directory split is `strrchr(path, PATHSEP)`. On Windows `PATHSEP` is `\`, and a Qt
+   path (`C:/proj/hello.prg`) contains none, so Hatari mounts the process working directory
+   and autostarts a program named with the entire Windows path — TOS cannot find it, and the
+   project directory is not the GEMDOS drive. `SessionConfig::toArgv()` therefore passes host
+   paths with native separators (a no-op elsewhere). Verified against Hatari 2.6.1
+   `src/options.c` `Opt_HandleArgument`.
 2. **`--gemdos-drive` takes a drive letter only** (`C`–`Z`, or `skip`). The host directory comes
    from the positional argument. Never pass a directory to it.
 3. **Autostart requires TOS ≥ 1.04.** Autostart is implemented via `C:\EMUDESK.INF`, and

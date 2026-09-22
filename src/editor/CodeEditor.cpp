@@ -38,6 +38,9 @@ public:
         : QWidget(editor)
         , m_editor(editor)
     {
+        setObjectName(QStringLiteral("lineNumberArea"));
+        // Blame tips follow the cursor. The number gutter has nothing to say.
+        setMouseTracking(true);
     }
 
     QSize sizeHint() const override
@@ -50,14 +53,37 @@ protected:
 
     void mousePressEvent(QMouseEvent *event) override
     {
+        // The blame lane is not the breakpoint gutter. A click there must not
+        // toggle a breakpoint on the line it happens to sit beside.
+        if (event->position().x() < m_editor->blameLaneWidth()) {
+            event->accept();
+            return;
+        }
         const int line = m_editor->lineAtY(event->position().y());
         if (line > 0)
             emit m_editor->gutterClicked(line, event->button());
-        QWidget::mousePressEvent(event);
+        event->accept();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int line = m_editor->lineAtY(event->position().y());
+        if (event->position().x() < m_editor->blameLaneWidth() && line > 0)
+            setToolTip(m_editor->blameTip(line));
+        else
+            setToolTip(QString());
+        QWidget::mouseMoveEvent(event);
     }
 
     void contextMenuEvent(QContextMenuEvent *event) override
     {
+        if (event->pos().x() < m_editor->blameLaneWidth())
+            return;
         const int line = m_editor->lineAtY(event->pos().y());
         if (line > 0)
             emit m_editor->gutterContextMenuRequested(line, event->globalPos());
@@ -85,6 +111,20 @@ CodeEditor::CodeEditor(QWidget *parent)
     applyFontPreferences();
 
     m_lineNumberArea = new LineNumberArea(this);
+
+    // Blame asks for the visible range once the scroll has settled, not on
+    // every pixel of a drag.
+    m_blameSettle = new QTimer(this);
+    m_blameSettle->setSingleShot(true);
+    m_blameSettle->setInterval(200);
+    connect(m_blameSettle, &QTimer::timeout, this, [this] {
+        if (m_blameShown)
+            emit visibleRangeSettled();
+    });
+    connect(document(), &QTextDocument::contentsChange, this, [this] {
+        if (m_blameShown)
+            m_blameSettle->start();
+    });
 
     connect(this, &QPlainTextEdit::blockCountChanged, this, &CodeEditor::updateLineNumberAreaWidth);
     connect(this, &QPlainTextEdit::updateRequest, this, &CodeEditor::updateLineNumberArea);
@@ -249,7 +289,16 @@ void CodeEditor::applyFontPreferences()
     m_highlighter->setDarkMode(appearance::darkModeActive());
     refreshExtraSelections();
     if (m_lineNumberArea)
-        m_lineNumberArea->update();
+        updateLineNumberAreaWidth(0);
+}
+
+int CodeEditor::blameLaneWidth() const
+{
+    if (!m_blameShown)
+        return 0;
+    // Wide enough for "uncommitted" at the editor's own size. Authors longer
+    // than that elide; the hover carries the rest.
+    return fontMetrics().horizontalAdvance(tr("uncommitted")) + 16;
 }
 
 int CodeEditor::lineNumberAreaWidth() const
@@ -260,12 +309,16 @@ int CodeEditor::lineNumberAreaWidth() const
         max /= 10;
         ++digits;
     }
-    return 16 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    return blameLaneWidth() + 16 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
 }
 
 void CodeEditor::updateLineNumberAreaWidth(int)
 {
     updateViewportMargins();
+    // The margin change does not always resize the gutter widget, and the
+    // blame lane appears without the window itself changing size.
+    const QRect cr = contentsRect();
+    m_lineNumberArea->setGeometry(QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
 }
 
 void CodeEditor::updateViewportMargins()
@@ -281,6 +334,9 @@ void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
         m_lineNumberArea->scroll(0, dy);
     else
         m_lineNumberArea->update(0, rect.y(), m_lineNumberArea->width(), rect.height());
+
+    if (m_blameShown && dy)
+        m_blameSettle->start();
 
     if (rect.contains(viewport()->rect()))
         updateLineNumberAreaWidth(0);
@@ -436,6 +492,56 @@ int CodeEditor::lineAtY(int y) const
     return 0;
 }
 
+void CodeEditor::visibleLineRange(int &first, int &last) const
+{
+    first = 0;
+    last = 0;
+    QTextBlock block = firstVisibleBlock();
+    if (!block.isValid())
+        return;
+    first = block.blockNumber() + 1;
+    last = first;
+    const int bottom = viewport()->height();
+    while (block.isValid()) {
+        const int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+        if (top > bottom)
+            break;
+        last = block.blockNumber() + 1;
+        block = block.next();
+    }
+}
+
+void CodeEditor::setBlameShown(bool on)
+{
+    if (m_blameShown == on)
+        return;
+    m_blameShown = on;
+    if (!on) {
+        m_blame.clear();
+        m_blameSettle->stop();
+    } else {
+        m_blameSettle->start();
+    }
+    updateLineNumberAreaWidth(0);
+    m_lineNumberArea->update();
+}
+
+void CodeEditor::setBlame(const GitBlameMap &lines)
+{
+    m_blame = lines;
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
+}
+
+QString CodeEditor::blameTip(int line) const
+{
+    const auto it = m_blame.constFind(line);
+    if (it == m_blame.constEnd() || it->uncommitted)
+        return it == m_blame.constEnd() ? QString() : tr("Uncommitted");
+    return it->hash + QLatin1Char('\n') + it->author + QStringLiteral(", ") + it->date
+        + QLatin1Char('\n') + it->summary;
+}
+
 void CodeEditor::gotoLine(int line)
 {
     if (line <= 0 || line > blockCount())
@@ -452,6 +558,17 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
     const appearance::Colors c = appearance::colors();
     painter.fillRect(event->rect(), c.gutter);
 
+    // Blame is a lane of its own. Every marker below is drawn in the number
+    // gutter, shifted right by the lane, so a breakpoint dot stays where a
+    // click toggles it. With the lane off the shift is zero.
+    const int lane = blameLaneWidth();
+    const int width = m_lineNumberArea->width();
+    const int gutter = width - lane;
+    if (lane > 0) {
+        painter.setPen(c.muted);
+        painter.drawLine(lane - 1, event->rect().top(), lane - 1, event->rect().bottom());
+    }
+
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
     int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
@@ -465,6 +582,22 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
             // Profiler heat, painted first so every existing marker — the PC
             // bar, the breakpoint dot, the error bang, the number itself —
             // stays on top of it and remains as legible as before.
+            if (lane > 0) {
+                const auto blamed = m_blame.constFind(line);
+                QString text;
+                if (blamed == m_blame.constEnd())
+                    text.clear();
+                else if (blamed->uncommitted)
+                    text = tr("uncommitted");
+                else
+                    text = blamed->author;
+                if (!text.isEmpty()) {
+                    painter.setPen(blamed->uncommitted ? c.warning : c.muted);
+                    const QString elided = fontMetrics().elidedText(text, Qt::ElideRight, lane - 10);
+                    painter.drawText(4, top, lane - 8, height, Qt::AlignLeft | Qt::AlignVCenter, elided);
+                }
+            }
+
             const auto heat = m_lineHeat.constFind(line);
             if (heat != m_lineHeat.constEnd()) {
                 const double scaled = m_lineHeatScale > 0.0
@@ -472,11 +605,11 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
                                           : 1.0;
                 QColor tint(0xd8, 0x8a, 0x30); // warm amber, in either theme
                 tint.setAlphaF(0.55 * qBound(0.0, scaled, 1.0));
-                painter.fillRect(0, top, m_lineNumberArea->width(), bottom - top, tint);
+                painter.fillRect(lane, top, gutter, bottom - top, tint);
             }
 
             if (line == m_currentExecutionLine)
-                painter.fillRect(0, top, 3, bottom - top, c.gutterPc);
+                painter.fillRect(lane, top, 3, bottom - top, c.gutterPc);
 
             if (m_breakpointLines.contains(line)) {
                 // A filled dot, drawn rather than glyph-based so it does not
@@ -492,19 +625,19 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
                 const int pt = font().pointSize();
                 if (pt > 0 && pt < 15)
                     y += (15 - pt + 1) / 2;
-                painter.drawEllipse(QRect(2, y, d, d));
+                painter.drawEllipse(QRect(lane + 2, y, d, d));
                 painter.setRenderHint(QPainter::Antialiasing, false);
             }
 
             if (m_errorLines.contains(line)) {
                 painter.setPen(c.error);
-                painter.drawText(0, top, m_lineNumberArea->width() - 6,
+                painter.drawText(lane, top, gutter - 6,
                                  height, Qt::AlignRight,
                                  QStringLiteral("!"));
             }
 
             painter.setPen(line == m_currentExecutionLine ? c.gutterPc : c.gutterText);
-            painter.drawText(0, top, m_lineNumberArea->width() - 6,
+            painter.drawText(lane, top, gutter - 6,
                              height, Qt::AlignRight, QString::number(line));
         }
 

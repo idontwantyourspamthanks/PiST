@@ -202,6 +202,7 @@ private slots:
     void statusBarNamesTheStop();
     void registerDockShowsFlagsUntilTheMachineStops();
     void layoutPresetsHideDocksAndRestore();
+    void gitDockStaysUnderProjectFiles();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -2064,10 +2065,13 @@ void TstGui::dockTitleBarMoveMenuMovesDock()
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
-    // The project-files dock sits alone in the left area, so it has a painted
-    // title bar rather than a tab.
+    // Factory layout tabs Git with Project files, and a tabbed dock has no
+    // painted title bar. Split Git off so this test still presses that bar.
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    auto *git = window.findChild<QDockWidget *>(QStringLiteral("gitDock"));
     QVERIFY(dock);
+    if (git)
+        window.addDockWidget(Qt::RightDockWidgetArea, git);
     QVERIFY(window.tabifiedDockWidgets(dock).isEmpty());
     QVERIFY(window.dockWidgetArea(dock) != Qt::BottomDockWidgetArea);
 
@@ -2760,6 +2764,89 @@ void TstGui::layoutPresetsHideDocksAndRestore()
     }
     QVERIFY2(sawColour, "the canvas status names the active colour index");
 
+    settings.remove(QStringLiteral("layout/previous"));
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+}
+
+// Git is a project pane, not a debug one: it shares Project files' tab and
+// stays underneath it, and Sprite puts it away with that pane.
+void TstGui::gitDockStaysUnderProjectFiles()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("layout/state"));
+    settings.remove(QStringLiteral("layout/geometry"));
+    settings.remove(QStringLiteral("layout/width"));
+    settings.remove(QStringLiteral("layout/height"));
+    settings.setValue(QStringLiteral("git/blame"), false);
+
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *git = window.findChild<QDockWidget *>(QStringLiteral("gitDock"));
+    auto *project = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    QVERIFY(git && project);
+    QCOMPARE(window.dockWidgetArea(git), window.dockWidgetArea(project));
+
+    auto *blame = window.findChild<QAction *>(QStringLiteral("gitBlameAction"));
+    QVERIFY(blame && blame->isCheckable());
+    QVERIFY(!blame->isChecked());
+
+    auto sharesTab = [&window] {
+        for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+            if (!bar->isVisible())
+                continue;
+            bool sawProject = false;
+            bool sawGit = false;
+            int projectAt = -1;
+            int current = bar->currentIndex();
+            for (int i = 0; i < bar->count(); ++i) {
+                if (bar->tabText(i) == QLatin1String("Project files") && bar->isTabVisible(i)) {
+                    sawProject = true;
+                    projectAt = i;
+                }
+                if (bar->tabText(i) == QLatin1String("Git") && bar->isTabVisible(i))
+                    sawGit = true;
+            }
+            if (sawProject && sawGit)
+                return projectAt == current;
+        }
+        return false;
+    };
+    QVERIFY2(sharesTab(), "Git must be tabbed under Project files");
+
+    auto *debugging = window.findChild<QAction *>(QStringLiteral("layoutDebugging"));
+    auto *sprite = window.findChild<QAction *>(QStringLiteral("layoutSprite"));
+    auto *editing = window.findChild<QAction *>(QStringLiteral("layoutEditing"));
+    QVERIFY(debugging && sprite && editing);
+
+    debugging->trigger();
+    QVERIFY2(sharesTab(), "Debugging leaves Git under Project files");
+
+    sprite->trigger();
+    QVERIFY(project->isHidden());
+    QVERIFY(git->isHidden());
+    // The tab bar drops a removed dock on the next layout pass.
+    QTest::qWait(0);
+    QStringList gitTabs;
+    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+        if (!bar->isVisible())
+            continue;
+        for (int i = 0; i < bar->count(); ++i) {
+            if (bar->tabText(i) == QLatin1String("Git") && bar->isTabVisible(i))
+                gitTabs << QStringLiteral("%1 (bar %2)").arg(bar->tabText(i)).arg(bar->isVisible());
+        }
+    }
+    QVERIFY2(gitTabs.isEmpty(), qPrintable(gitTabs.join(QStringLiteral(", "))));
+
+    editing->trigger();
+    QVERIFY2(sharesTab(), "Editing puts Git back under Project files");
+
+    settings.remove(QStringLiteral("git/blame"));
     settings.remove(QStringLiteral("layout/previous"));
     settings.remove(QStringLiteral("layout/state"));
     settings.remove(QStringLiteral("layout/geometry"));

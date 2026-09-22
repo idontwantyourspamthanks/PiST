@@ -66,6 +66,7 @@ code. Use this table for a quick lookup:
 | The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
 | `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats,Transform}.*` |
 | Project files / Disk A / Disk B | `src/ui/FileBrowser.{h,cpp}` |
+| Git status, commit, pull, push, blame | `src/git/GitService.{h,cpp}`, `src/ui/GitPanel.{h,cpp}`, blame lane in `src/editor/CodeEditor.{h,cpp}` |
 | `.st` / `.msa` floppy images | `src/build/FloppyImage.{h,cpp}` |
 | Syntax highlighting | `src/editor/AsmHighlighter.{h,cpp}` |
 | The build pipeline / diagnostics | `src/build/BuildService.{h,cpp}` |
@@ -81,7 +82,7 @@ code. Use this table for a quick lookup:
 | First-run tool/ROM setup | `src/ui/SetupDialog.{h,cpp}` + `src/toolchain/ToolFetch.{h,cpp}` |
 | The debug backends (native stdin transport, HRDB TCP) | `src/emu/{DebugBackend,EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 | X11 display embedding | `src/ui/{EmulatorDisplayWidget,EmbedX11}.{h,cpp}` |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

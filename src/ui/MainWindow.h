@@ -43,6 +43,7 @@ class RemoteControl;
 class DisassemblyView;
 class ProfilerView;
 class FileBrowser;
+class GitPanel;
 class IDebugBackend;
 class ImageEditor;
 class MemoryView;
@@ -476,6 +477,13 @@ private:
     /// lists it.
     void addDockToViewMenu(QDockWidget *dock);
 
+    /// Point the Git panel at the project directory, and show or hide the
+    /// blame lane on every open editor. Blame stays off for an untitled
+    /// buffer, an image tab, and a file that is not inside the repository.
+    void syncGitDirectory();
+    void applyGitBlame();
+    void refreshBlame();
+
     /// Restore the factory dock layout (the default tab groupings), discarding
     /// the user's current arrangement. Invoked from the View menu.
     void resetToDefaultLayout();
@@ -583,6 +591,9 @@ private:
     /// stopped. The Registers dock keeps the full editable table.
     QLabel *m_registerStrip = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
+    GitPanel *m_gitPanel = nullptr;
+    QDockWidget *m_gitDock = nullptr;
+    QAction *m_actGitBlame = nullptr;
     QVector<struct SymbolEntry> m_symbols;
     QStringList m_consoleVerbs;
     /// Where session events are published for remote-control watchers

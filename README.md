@@ -43,6 +43,14 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
   GEMDOS/BIOS/XBIOS call being made and what it is being called with
+- **Git** — a panel tabbed with Project files lists staged, changed and untracked
+  files. Check the ones to commit, write a message, and commit (hooks run). Pull
+  and Push are the plain commands. The branch selector under the message switches
+  branch; New… creates one. A switch that would overwrite local edits is refused.
+  Select a row to see its diff: staged rows are the index, other rows the worktree.
+  History lists commits, newest first; selecting one shows that commit.
+  View → Git blame adds an author lane beside
+  the line numbers; a click there does not toggle a breakpoint
 - **Sprite editor** — File → New Image… (or open a `.pim`; import Degas `.PI1`,
   NeoChrome `.NEO`, IFF, PNG) to paint on a pixel grid with the STfm/STe palettes,
   layers, onion-skin, frames with an animated preview, and export to those formats

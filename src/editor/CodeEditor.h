@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "git/GitTypes.h"
+
 #include <QHash>
 #include <QList>
 #include <QPlainTextEdit>
@@ -78,6 +80,17 @@ public:
     /// Line the gutter is hovering, for click targeting.
     int lineAtY(int y) const;
 
+    /// Inclusive 1-based range of lines currently in the viewport.
+    void visibleLineRange(int &first, int &last) const;
+
+    /// The blame lane sits to the left of the line-number gutter. It is off
+    /// until the View menu asks for it, and a click in it is not a breakpoint.
+    void setBlameShown(bool on);
+    bool blameShown() const { return m_blameShown; }
+    int blameLaneWidth() const;
+    void setBlame(const GitBlameMap &lines);
+    QString blameTip(int line) const;
+
     void gotoLine(int line);
 
     /// Whether the find bar is showing, and how many hits the current search
@@ -101,6 +114,10 @@ signals:
     /// this toggles a breakpoint or opens an editor for its condition.
     void gutterClicked(int line, Qt::MouseButton button);
     void gutterContextMenuRequested(int line, const QPoint &globalPos);
+
+    /// The viewport stopped moving, or the text changed, while blame is on.
+    /// The window blames this range and no other.
+    void visibleRangeSettled();
 
 public slots:
     /// Show the find bar over the bottom of the editor — the replace row too
@@ -150,6 +167,9 @@ private:
     QString m_filePath;
     AsmHighlighter *m_highlighter = nullptr;
     QWidget *m_lineNumberArea = nullptr;
+    bool m_blameShown = false;
+    GitBlameMap m_blame;
+    class QTimer *m_blameSettle = nullptr;
     int m_currentExecutionLine = 0;
     QList<int> m_errorLines;
     QList<int> m_breakpointLines;

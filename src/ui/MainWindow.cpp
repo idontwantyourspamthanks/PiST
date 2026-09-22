@@ -36,6 +36,7 @@
 #include "ui/EmulatorDisplayWidget.h"
 #include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
+#include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
 #include "ui/AboutDialog.h"
@@ -128,6 +129,21 @@ void markProblemSeverity(QTreeWidgetItem *item, bool error)
     square.fill(ink);
     item->setIcon(0, QIcon(square));
     item->setForeground(2, ink);
+}
+
+bool fileInsideRepo(const QString &root, const QString &file)
+{
+    if (root.isEmpty() || file.isEmpty())
+        return false;
+    const QString r = QDir(root).absolutePath();
+    const QString f = QFileInfo(file).absoluteFilePath();
+    const Qt::CaseSensitivity cs =
+#ifdef Q_OS_WIN
+        Qt::CaseInsensitive;
+#else
+        Qt::CaseSensitive;
+#endif
+    return f.compare(r, cs) == 0 || f.startsWith(r + QDir::separator(), cs);
 }
 
 bool suffixIsKnownBinary(const QString &suffix)
@@ -306,6 +322,11 @@ void MainWindow::wireEditor(CodeEditor *editor)
         updateTabTitle(editor);
         if (editor == m_editor)
             updateModifiedState();
+    });
+
+    connect(editor, &CodeEditor::visibleRangeSettled, this, [this, editor] {
+        if (editor == m_editor)
+            refreshBlame();
     });
 
     connect(editor, &CodeEditor::gutterClicked, this, [this](int line, Qt::MouseButton button) {
@@ -489,6 +510,8 @@ void MainWindow::onTabChanged(int index)
         m_instrStrip->setVisible(m_editor != nullptr);
     if (m_editor)
         followCursorReference(m_editor);
+    syncGitDirectory();
+    applyGitBlame();
 }
 
 void MainWindow::onTabCloseRequested(int index)
@@ -725,6 +748,18 @@ void MainWindow::createActions()
     m_actEmbedDisplay->setCheckable(true);
     m_actEmbedDisplay->setChecked(m_embeddedDisplay);
     connect(m_actEmbedDisplay, &QAction::toggled, this, &MainWindow::setDisplayEmbedded);
+
+    // Off unless the user has asked for it. The lane is a view choice, like
+    // the embedded display, so it lives in application settings rather than
+    // the project file.
+    m_actGitBlame = new QAction(tr("Git &blame"), this);
+    m_actGitBlame->setObjectName(QStringLiteral("gitBlameAction"));
+    m_actGitBlame->setCheckable(true);
+    m_actGitBlame->setChecked(QSettings().value(QStringLiteral("git/blame"), false).toBool());
+    connect(m_actGitBlame, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("git/blame"), on);
+        applyGitBlame();
+    });
 }
 
 void MainWindow::wireBackend()
@@ -970,6 +1005,7 @@ void MainWindow::createMenus()
     m_viewMenu = menuBar()->addMenu(tr("&View"));
     m_viewMenu->setObjectName(QStringLiteral("viewMenu"));
     m_viewMenu->addAction(m_actEmbedDisplay);
+    m_viewMenu->addAction(m_actGitBlame);
 
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
     searchMenu->addAction(m_actFind);
@@ -1306,6 +1342,32 @@ void MainWindow::createDocks()
                 }
             });
 
+    // Tabbed with Project files, and not raised: tabify would put Git on top,
+    // and a first run is the project-files picture. Not a debug dock, so the
+    // factory hide loop leaves it here. Sprite hides it with the project pane.
+    m_gitPanel = new GitPanel(this);
+    auto *projectDock = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    m_gitDock = makeDock(tr("Git"), QStringLiteral("gitDock"), m_gitPanel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_gitDock);
+    if (projectDock) {
+        tabifyDockWidget(projectDock, m_gitDock);
+        projectDock->raise();
+    }
+    connect(m_gitDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (visible && m_gitPanel)
+            m_gitPanel->refresh();
+    });
+    connect(m_gitPanel, &GitPanel::repositoryChanged, this, [this](bool, const QString &) {
+        applyGitBlame();
+    });
+    connect(m_gitPanel, &GitPanel::blameReady, this,
+            [this](const QString &file, const GitBlameMap &lines) {
+                for (CodeEditor *editor : openEditors()) {
+                    if (QFileInfo(editor->filePath()) == QFileInfo(file))
+                        editor->setBlame(lines);
+                }
+            });
+
     // --- right, top: the emulator display, which wants to be prominent --------
     // It lives in a dock shown only when the embedded-display option is on; in
     // separate-window mode it is hidden and the widget is unused.
@@ -1553,6 +1615,7 @@ void MainWindow::createDocks()
         // by being left out of the list.
         const QStringList preferred = {
             QStringLiteral("projectFilesDock"),
+            QStringLiteral("gitDock"),
             QStringLiteral("emulatorDisplayDock"),
             QStringLiteral("registersDock"),
             QStringLiteral("disassemblyDock"),
@@ -1746,8 +1809,26 @@ void MainWindow::applyLayoutPreset(const QString &preset)
             || name.startsWith(QLatin1String("memoryDock"));
     };
 
-    if (QDockWidget *project = dockNamed(QStringLiteral("projectFilesDock")))
-        project->setVisible(!sprite);
+    // Git stays in the project-files tab. Sprite puts both away; Editing and
+    // Debugging bring them back with Project files on top, so the Git tab
+    // does not become the left pane just because it was shown last.
+    QDockWidget *project = dockNamed(QStringLiteral("projectFilesDock"));
+    QDockWidget *git = dockNamed(QStringLiteral("gitDock"));
+    if (sprite) {
+        // Git first. It is the background tab; hiding the current tab last is
+        // what drops the group's tab bar, the same way Project files alone did.
+        if (git)
+            git->hide();
+        if (project)
+            project->hide();
+    } else if (project) {
+        project->show();
+        if (git) {
+            git->show();
+            tabifyDockWidget(project, git);
+            project->raise();
+        }
+    }
     if (QDockWidget *problems = dockNamed(QStringLiteral("problemsDock")))
         problems->setVisible(!sprite);
     if (QDockWidget *console = dockNamed(QStringLiteral("consoleDock")))
@@ -2651,6 +2732,47 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
         6000);
 }
 
+void MainWindow::syncGitDirectory()
+{
+    if (!m_gitPanel)
+        return;
+    QString dir;
+    if (m_fileBrowser && !m_fileBrowser->directory().isEmpty())
+        dir = m_fileBrowser->directory();
+    else if (m_editor && !m_editor->filePath().isEmpty())
+        dir = QFileInfo(m_editor->filePath()).absolutePath();
+    else if (m_image && !m_image->filePath().isEmpty())
+        dir = QFileInfo(m_image->filePath()).absolutePath();
+    m_gitPanel->setDirectory(dir);
+}
+
+void MainWindow::applyGitBlame()
+{
+    const bool want = m_actGitBlame && m_actGitBlame->isChecked();
+    const QString root = m_gitPanel ? m_gitPanel->repositoryRoot() : QString();
+    const bool inRepo = m_gitPanel && m_gitPanel->inRepository();
+    for (CodeEditor *editor : openEditors()) {
+        const bool show = want && inRepo && fileInsideRepo(root, editor->filePath());
+        editor->setBlameShown(show);
+    }
+    if (want)
+        refreshBlame();
+}
+
+void MainWindow::refreshBlame()
+{
+    if (!m_actGitBlame || !m_actGitBlame->isChecked() || !m_editor || !m_gitPanel)
+        return;
+    if (!m_gitPanel->inRepository() || !fileInsideRepo(m_gitPanel->repositoryRoot(), m_editor->filePath()))
+        return;
+    int first = 0;
+    int last = 0;
+    m_editor->visibleLineRange(first, last);
+    if (first <= 0 || last < first)
+        return;
+    m_gitPanel->blame(m_editor->filePath(), first, last, m_editor->toPlainText().toUtf8());
+}
+
 void MainWindow::saveFile()
 {
     if (m_image) {
@@ -2697,6 +2819,11 @@ void MainWindow::saveFile()
     }
     updateTabTitle(m_editor);
     updateModifiedState();
+    // The status lists the file on disk, so a save is what moves a row from
+    // Changes to clean. Blame reads the buffer, which this save just matched.
+    if (m_gitPanel)
+        m_gitPanel->refresh();
+    refreshBlame();
 }
 
 QString MainWindow::buildSourcePath() const

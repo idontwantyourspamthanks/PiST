@@ -377,3 +377,37 @@ Still not in PiST, on purpose:
 
 The `.pim` format is version 2 — phases own their frames — and v1 files are rejected outright
 (decided 2026-09: no users yet, and the two models are structurally incompatible).
+
+---
+
+## 13. Git: hunks, history graph, conflicts
+
+**Status:** the panel, the blame lane, branch create/switch, a read-only diff, and a flat
+history are in. `GitService` runs `git` as a subprocess (argument lists only, no config
+writes): `status --porcelain=v1 -z`, `commit -F -` of the checked paths, plain `pull` /
+`push`, `switch` / `switch -c`, `diff` of the selected row, `log` / `show` for history, and
+`blame -p -L` of the visible lines with the editor buffer on stdin so a dirty line reads
+as uncommitted. The dock is `gitDock`, tabbed under Project files. Blame is off until
+View → Git blame (`git/blame`).
+
+The branch selector sits under the commit message. New… asks for a name and runs
+`git switch -c`, which keeps local edits. Switching is plain `git switch`: if the
+worktree would be overwritten, git refuses and the panel shows that text. There is no
+`--discard-changes` path.
+
+Selecting a row shows `git diff --cached` for a staged row, `git diff` for an unstaged
+row, and `git diff --no-index` against the null device for an untracked file. The text
+is read-only. `--no-index` exits 1 when the sides differ; that patch is the result.
+
+History is a flat list, newest first, capped at 200 commits. Selecting one runs
+`git show` into the same view. There is no graph.
+
+Not in this pass, on purpose:
+
+- **Staging individual hunks.** The checkbox is the whole file. Hunks mean `git apply
+  --cached` of a chosen diff, which is a different selection model than the current list.
+- **History graph.** The list is the log. A graph is lane-drawing on top of it, and these
+  repos are mostly linear.
+- **Merge-conflict editor.** Conflict markers in the buffer, plus `git status` unmerged
+  paths. Do not invent a mergetool config — that would be writing git config, which this
+  IDE does not do.

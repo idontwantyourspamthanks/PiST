@@ -348,6 +348,20 @@ jobs:
         shell: bash
         run: cmake --build build --config Release --parallel
 
+      # One derivation of the version every asset name below uses. On a tag push
+      # github.ref_name is the tag itself — "v0.8.3" — and the "v" is not part of
+      # the version. Interpolating it verbatim produced assets named
+      # pist-v0.8.3-linux-amd64.deb, which a software centre truncates at the
+      # first dot and reports as a package called "pist-v0".
+      - name: Compute the release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          [ -n "$V" ] || V="dev"
+          echo "PIST_VERSION=$V" >> "$GITHUB_ENV"
+          echo "release version: $V"
+
       # Deploy the Qt runtime so the archive runs on a machine without Qt
       # installed. Without this the binary links against the Qt it was built with
       # and fails to start elsewhere — the same failure the CI install step hit
@@ -377,6 +391,13 @@ jobs:
           cp bundle/bin/vasmm68k_mot bundle/bin/vlink bundle/pist.app/Contents/MacOS/
           rm -rf bundle/bin
           find bundle -maxdepth 4 -type f | head -20
+          # The bundle presents itself as PiST rather than as the target name:
+          # CFBundleName is what Finder shows under the icon and what the menu bar
+          # shows while the app runs, and MACOSX_BUNDLE_BUNDLE_NAME sets it.
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleName' bundle/pist.app/Contents/Info.plist \
+            | grep -qx PiST \
+            || { echo "ERROR: the bundle's CFBundleName is not PiST:"; \
+                 /usr/libexec/PlistBuddy -c Print bundle/pist.app/Contents/Info.plist | head -20; exit 1; }
 
       - name: Deploy Qt runtime (Windows)
         if: matrix.deployed && runner.os == 'Windows'
@@ -419,8 +440,8 @@ jobs:
           # from what `cmake --install` produces.
           rm -rf AppDir
           DESTDIR="$PWD/AppDir" cmake --install build --prefix /usr
-          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-          cp packaging/icons/pist-256.png AppDir/usr/share/icons/hicolor/256x256/apps/pist.png
+          # The icons come through the install rules now (CMakeLists.txt) — the
+          # SVG and every raster size — so nothing is copied in here.
 
           # Bundle the tools the archive carries, beside the executable, which is
           # the first place tool discovery looks. One matrix flag drives both the
@@ -450,6 +471,9 @@ jobs:
 
 
           export QMAKE="$(command -v qmake6 || command -v qmake)"
+          # Without VERSION, appimagetool names the artifact PiST-x86_64.AppImage
+          # and stamps no version into its metadata, which is what 0.8.3 shipped.
+          export VERSION="$PIST_VERSION"
 
           # Both executables are named with -e, which is what makes linuxdeploy
           # bundle the libraries they need that are NOT universal on a desktop:
@@ -478,6 +502,13 @@ jobs:
 
           APPIMAGE=$(ls PiST-*.AppImage | head -1)
           echo "built $APPIMAGE ($(stat -c%s "$APPIMAGE") bytes)"
+          # The artifact must carry the version. appimagetool names it from
+          # $VERSION (exported above — the plugin passes that variable straight
+          # through) and stamps the same value into the metadata a launcher reads.
+          case "$APPIMAGE" in
+            *"$PIST_VERSION"*) ;;
+            *) echo "ERROR: the AppImage is not versioned: $APPIMAGE"; exit 1 ;;
+          esac
 
           # Verify what will actually be published, by running the bundled
           # emulator itself rather than only asking pist where it thinks the
@@ -585,33 +616,163 @@ jobs:
           echo "ASSET=$APPIMAGE" >> "$GITHUB_ENV"
           echo "APPIMAGE=1" >> "$GITHUB_ENV"
 
-      # Installers from the same staged tree the AppImage carries: the deb/rpm
-      # and the AppImage are byte-identical content — bundled Qt, fork, vasm,
-      # ROM, licences and notices. CPACK_INSTALL_CMAKE_PROJECTS="" suppresses
-      # the project's own install rules so the package holds the staged tree
-      # and nothing else (a naive cpack doubles the payload with both).
-      - name: Build deb and rpm installers (Linux)
+      # Installers from the same staged *content* the AppImage carries — bundled
+      # Qt, fork, vasm, ROM, licences and notices — rearranged into the layout a
+      # distro package needs. The AppDir's layout is the AppImage's, and three
+      # things about it are wrong in a package:
+      #
+      #   * linuxdeploy copies the build host's copyright file for every library
+      #     it bundles into usr/share/doc/<package>/. Inside an AppImage that is
+      #     attribution; inside a .deb those are paths dpkg knows belong to
+      #     libglib2.0-0, libpulse0, libxcb-* and forty more installed packages,
+      #     and dpkg will not take a file away from another package. `dpkg -i` on
+      #     0.8.3 aborted with "trying to overwrite
+      #     '/usr/share/doc/libglib2.0-0/copyright'" — the deb was uninstallable
+      #     on any machine that has those libraries, which is every machine. The
+      #     texts are moved under PiST's own doc directory rather than dropped:
+      #     they are the terms of binaries this package really does carry.
+      #   * the AppImage machinery at the root (AppRun, AppRun.wrapped, .DirIcon,
+      #     apprun-hooks/ and the root-level pist.desktop and pist.svg symlinks)
+      #     would be installed into /.
+      #   * the bundle's libraries sat in /usr/lib, which ldconfig scans — and
+      #     scans *before* /usr/lib/x86_64-linux-gnu, so with two copies of one
+      #     soname in the cache the /usr/lib one is listed first and is what
+      #     ld.so resolves. The package therefore made itself the system-wide
+      #     provider of libQt6Core.so.6, libglib-2.0.so.0, libdbus-1.so.3 and
+      #     forty more, for every other application on the machine.
+      #
+      # They move into the private prefix Debian policy asks for: /usr/lib/pist
+      # is not scanned (ldconfig does not recurse), the binary's $ORIGIN/../lib
+      # rpath and the qt.conf beside it resolve inside it unchanged, and the ROM
+      # travels with them instead of into the public /usr/share/emutos that a
+      # distro emutos package would also own. Only pist and pist-mcp are exposed
+      # on PATH, so the bundled hatari, vasm and vlink cannot shadow a user's
+      # own; PiST finds them beside its executable exactly as it does in the
+      # AppImage.
+      #
+      # CPACK_INSTALL_CMAKE_PROJECTS="" suppresses the project's own install
+      # rules so the package holds this tree and nothing else (a naive cpack
+      # doubles the payload with both).
+      - name: Build and install-test the deb and rpm (Linux)
         if: '!matrix.deployed'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq rpm
-          V="${{ github.ref_name }}"
-          [ -n "$V" ] || V="dev"
+          V="$PIST_VERSION"
+
+          rm -rf PkgDir
+          mkdir -p PkgDir/usr/lib/pist PkgDir/usr/lib/pist/share PkgDir/usr/bin
+          for d in bin lib plugins; do
+            if [ -e "AppDir/usr/$d" ]; then
+              cp -a "AppDir/usr/$d" "PkgDir/usr/lib/pist/$d"
+            fi
+          done
+          cp -a AppDir/usr/share/emutos PkgDir/usr/lib/pist/share/emutos
+          ln -s ../lib/pist/bin/pist PkgDir/usr/bin/pist
+          ln -s ../lib/pist/bin/pist-mcp PkgDir/usr/bin/pist-mcp
+
+          # The public part of the tree: the menu entry, the icons and the
+          # AppStream file a software centre reads the name, author and licence
+          # from. Only PiST's own doc directory is taken as-is — see above.
+          mkdir -p PkgDir/usr/share/doc/pist/licenses/distro
+          for d in applications icons metainfo; do
+            if [ -e "AppDir/usr/share/$d" ]; then
+              cp -a "AppDir/usr/share/$d" "PkgDir/usr/share/$d"
+            fi
+          done
+          cp -a AppDir/usr/share/doc/pist/. PkgDir/usr/share/doc/pist/
+          for dir in AppDir/usr/share/doc/*/; do
+            owner=$(basename "$dir")
+            if [ "$owner" = pist ]; then continue; fi
+            for f in "$dir"*; do
+              if [ -e "$f" ]; then
+                cp -a "$f" "PkgDir/usr/share/doc/pist/licenses/distro/$owner-$(basename "$f")"
+              fi
+            done
+          done
+          find PkgDir -type d -empty -delete
+
           # CMake 4's RelativePath requires an absolute directory; a relative
-          # AppDir produced empty symlink names and aborted the package.
-          stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" AppDir)
+          # stage produced empty symlink names and aborted the package.
+          stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" PkgDir)
           COMMON=(-D "CPACK_INSTALLED_DIRECTORIES=${stage};/"
                   -D "CPACK_INSTALL_CMAKE_PROJECTS=")
           cpack -G DEB "${COMMON[@]}" --config build/CPackConfig.cmake \
-            -D CPACK_PACKAGE_FILE_NAME="pist-$V-linux-amd64"
+            -D CPACK_PACKAGE_FILE_NAME="PiST-$V-linux-amd64"
           cpack -G RPM "${COMMON[@]}" --config build/CPackConfig.cmake \
-            -D CPACK_PACKAGE_FILE_NAME="pist-$V-linux-x86_64"
+            -D CPACK_PACKAGE_FILE_NAME="PiST-$V-linux-x86_64"
+
+          DEB="PiST-$V-linux-amd64.deb"
+          RPM="PiST-$V-linux-x86_64.rpm"
+
+          # What a package manager reports. Debian policy requires the lowercase
+          # package name; the product name and the author come from CPack and
+          # from the AppStream file.
+          for field in "Package pist" "Maintainer Koala Software" "Version $V"; do
+            key=${field%% *}
+            got=$(dpkg-deb -f "$DEB" "$key")
+            if [ "$got" != "${field#* }" ]; then
+              echo "ERROR: deb $key is '$got', expected '${field#* }'"
+              exit 1
+            fi
+          done
+          rpm -qp --qf '%{NAME} %{LICENSE} %{VENDOR}\n' "$RPM" 2>/dev/null \
+            | grep -qx "pist GPL-2.0-or-later Koala Software" \
+            || { echo "ERROR: unexpected rpm metadata"; rpm -qip "$RPM"; exit 1; }
+
+          # The payload, not just the control file: the licence statement, the
+          # menu entry and the metadata a software centre needs must be in there,
+          # and nothing may sit where another package's file already is.
+          listing=$(dpkg-deb -c "$DEB")
+          paths=$(echo "$listing" | awk '{print $6}')
+          # Match the path field exactly: a listing line for a symlink also
+          # carries its target, so an end-anchored grep on the whole line cannot
+          # be used for anything here.
+          for f in usr/lib/pist/bin/pist usr/share/applications/pist.desktop \
+                   usr/share/metainfo/io.github.idontwantyourspamthanks.pist.metainfo.xml \
+                   usr/share/doc/pist/copyright; do
+            echo "$paths" | grep -qx "./$f" || { echo "ERROR: the deb lacks $f"; exit 1; }
+          done
+          # The two PATH entries are symlinks, and a listing line carries the
+          # target as well as the name — assert both, because a symlink into the
+          # private prefix that does not resolve is exactly what would leave the
+          # menu entry pointing at nothing.
+          for l in "usr/bin/pist -> ../lib/pist/bin/pist" \
+                   "usr/bin/pist-mcp -> ../lib/pist/bin/pist-mcp"; do
+            echo "$listing" | grep -qF " ./$l" || { echo "ERROR: the deb lacks $l"; exit 1; }
+          done
+          if echo "$listing" | grep -oE '\./usr/share/doc/[^/]+/' | sort -u \
+               | grep -v '^\./usr/share/doc/pist/$' | grep -q .; then
+            echo "ERROR: a foreign /usr/share/doc directory is in the stage; dpkg"
+            echo "refuses to overwrite a file another package owns:"
+            echo "$listing" | grep -oE '\./usr/share/doc/[^/]+/' | sort -u | head
+            exit 1
+          fi
+          for pkg in "$DEB" "$RPM"; do
+            case "$pkg" in
+              # dpkg-deb -c marks directories, rpm -qlp does not, so the deb side
+              # filters them out and the rpm side filters the prefix by name.
+              *.deb) files=$(echo "$listing" | awk '$1 !~ /^d/ {print $6}') ;;
+              *)     files=$(rpm -qlp "$pkg" 2>/dev/null) ;;
+            esac
+            # /usr/lib/pist is the private prefix itself, and the only thing the
+            # package may own directly under /usr/lib: ldconfig scans that
+            # directory — before the multiarch one — and hands whatever it finds
+            # there to every other application on the system.
+            stray=$(echo "$files" | grep -E '^(\.?/)?usr/lib/[^/]+/?$' \
+                    | grep -vE '^(\.?/)?usr/lib/pist/?$' || true)
+            if [ -n "$stray" ]; then
+              echo "ERROR: $pkg puts this directly in /usr/lib:"
+              echo "$stray" | head
+              exit 1
+            fi
+          done
 
           # The packages must be self-contained: the packaged pist resolves
           # its bundled Qt, tools and ROM from the staged tree, not the host.
           rm -rf debx && mkdir debx
-          dpkg-deb -x "pist-$V-linux-amd64.deb" debx
+          dpkg-deb -x "$DEB" debx
           env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
             xvfb-run -a debx/usr/bin/pist --diagnose > diagnose-deb.txt 2>&1 || true
           # pist-mcp must resolve the bundled Qt too — it is not the --diagnose
@@ -620,12 +781,31 @@ jobs:
             debx/usr/bin/pist-mcp --version | grep -q pist-mcp \
             || { echo "ERROR: deb pist-mcp not self-contained"; exit 1; }
           for needle in vasmm68k_mot hatari EmuTOS; do
-            grep -q "debx/usr" diagnose-deb.txt || { echo "ERROR: deb not self-contained ($needle)"; cat diagnose-deb.txt; exit 1; }
+            grep -q "$needle" diagnose-deb.txt \
+              || { echo "ERROR: the deb does not report $needle"; cat diagnose-deb.txt; exit 1; }
           done
-          rpm -qip "pist-$V-linux-x86_64.rpm" | grep -E "^(Name|Version|License)"
+          grep -q 'debx/usr/lib/pist' diagnose-deb.txt \
+            || { echo "ERROR: the deb resolves its tools outside its own tree"; cat diagnose-deb.txt; exit 1; }
 
-          echo "ASSET_DEB=pist-$V-linux-amd64.deb" >> "$GITHUB_ENV"
-          echo "ASSET_RPM=pist-$V-linux-x86_64.rpm" >> "$GITHUB_ENV"
+          # Install it, for real, and remove it again. The runner has the very
+          # system packages whose copyright files used to collide, so this is the
+          # step that fails if a distro-owned path ever returns to the stage —
+          # the failure 0.8.3 shipped with.
+          sudo dpkg -i "$DEB"
+          for f in /usr/bin/pist /usr/lib/pist/bin/pist \
+                   /usr/share/metainfo/io.github.idontwantyourspamthanks.pist.metainfo.xml \
+                   /usr/share/applications/pist.desktop /usr/share/doc/pist/copyright; do
+            [ -e "$f" ] || { echo "ERROR: $f was not installed"; sudo dpkg -r pist; exit 1; }
+          done
+          env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
+            xvfb-run -a pist --diagnose > diagnose-installed.txt 2>&1 || true
+          grep -q '/usr/lib/pist' diagnose-installed.txt \
+            || { echo "ERROR: the installed pist does not resolve its own bundle:"
+                 cat diagnose-installed.txt; sudo dpkg -r pist; exit 1; }
+          sudo dpkg -r pist
+
+          echo "ASSET_DEB=$DEB" >> "$GITHUB_ENV"
+          echo "ASSET_RPM=$RPM" >> "$GITHUB_ENV"
 
       - name: Add documentation
         shell: bash
@@ -777,9 +957,8 @@ jobs:
             fi
           done
 
-          V="${{ github.ref_name }}"
-          [ -n "$V" ] || V="dev"
-          NAME="pist-$V-${{ matrix.name }}"
+          V="$PIST_VERSION"
+          NAME="PiST-$V-${{ matrix.name }}"
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" ./bundle/* > /dev/null
             echo "ASSET=$NAME.zip" >> "$GITHUB_ENV"
@@ -797,8 +976,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${{ github.ref_name }}"
-          [ -n "$V" ] || V="dev"
+          V="$PIST_VERSION"
           stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" bundle)
           cpack -G DragNDrop --config build/CPackConfig.cmake \
             -D "CPACK_INSTALLED_DIRECTORIES=${stage};/" \
@@ -822,8 +1000,7 @@ jobs:
           if ! command -v candle.exe >/dev/null 2>&1; then
             choco install wixtoolset --version 3.14.1 -y --no-progress
           fi
-          V="${{ github.ref_name }}"
-          [ -n "$V" ] || V="dev"
+          V="$PIST_VERSION"
           stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" bundle)
           cpack -G WIX --config build/CPackConfig.cmake \
             -D "CPACK_INSTALLED_DIRECTORIES=${stage};/" \

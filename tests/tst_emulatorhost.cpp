@@ -237,10 +237,19 @@ QString writeFakeHatariFlood(const QString &dir)
 
 /// A stand-in that models the one hazard a real Hatari cannot be asked to
 /// produce on demand: a command that times out and then *still* prints its
-/// response. The owed prompt is written to stdout, its response tail to stderr
-/// a moment later — the two pipes have no ordering, so the tail is unread when
-/// the prompt dispatches the next command unless the owed branch drains first
-/// (MIN-1). Anything else gets an immediate reply.
+/// response. The transport gave up on `slow` after 10 s with the emulator still
+/// running it, so the prompt closing it is owed — and the rest of its output can
+/// arrive *after* that prompt. Here it does, 50 ms after, on stderr while the
+/// prompt is on stdout. Unless the owed branch drains with a window wider than
+/// that gap, the tail is read while the next command is current and is appended
+/// to its response (MIN-1).
+///
+/// The gap is what gives the case its teeth, and the drain's owed window
+/// (kOwedTailDrainWaitMs) is what closes it: a tail written *before* the prompt
+/// is usually already in Qt's hands when the prompt is processed, so removing
+/// the drain then changes nothing and the case proves nothing. Keep the gap well
+/// inside that window — the ratio between the two is this assertion's margin.
+/// Anything else gets an immediate reply.
 QString writeFakeHatariLateTail(const QString &dir)
 {
     return writeScript(dir, QStringLiteral("fake-hatari-late-tail.sh"),
@@ -253,7 +262,12 @@ QString writeFakeHatariLateTail(const QString &dir)
                        // is failed, one prompt becomes owed.
                        "    sleep 11\n"
                        "    printf '\\n> '\n"
-                       "    sleep 0.01\n"
+                       // The tail of the command the transport gave up on, still
+                       // arriving after its own prompt: inside the owed drain's
+                       // window, and far enough outside the short one the
+                       // completion path uses that only the window explains this
+                       // passing.
+                       "    sleep 0.05\n"
                        "    printf 'slow-tail-line\\n' >&2\n"
                        "    continue\n"
                        "  fi\n"
@@ -1239,11 +1253,13 @@ void TstEmulatorHost::resumeKeepsQueuedProfileCommand()
     QTRY_VERIFY_WITH_TIMEOUT(sawProfileOn(), 5000);
 }
 
-// A command the transport timed out is not necessarily finished: it can still
-// print its response after the owed prompt. The prompt arrives on stdout and the
-// tail on stderr, and the two pipes have no ordering, so the owed-prompt branch
-// must drain stderr before it dispatches the next command — otherwise the
-// timed-out command's tail is appended to the *next* command's response.
+// A command the transport timed out is not necessarily finished: it is still
+// running inside the emulator, so the tail of its response can arrive *after*
+// the prompt that closes it — on stderr, while that prompt came on stdout, and
+// the two pipes have no ordering between them. The owed-prompt branch must
+// therefore drain stderr before it dispatches the next command, with a window
+// wide enough for a tail that is still on its way; otherwise the timed-out
+// command's tail is appended to the *next* command's response.
 void TstEmulatorHost::aTimedOutCommandsTailDoesNotContaminateTheNext()
 {
 #ifdef Q_OS_WIN

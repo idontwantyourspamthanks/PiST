@@ -229,7 +229,12 @@ private:
     void processStderrData();
 
     /// Read pending stderr synchronously, before deciding a response is done.
-    void drainStderr();
+    /// `firstWaitMs` is how long the first wait gives bytes that may not have
+    /// been written yet: the completion path passes `kStderrDrainWaitMs`, since
+    /// a completing command's output is already in the pipe, and the owed-prompt
+    /// path the wider `kOwedTailDrainWaitMs`, since a command the transport gave
+    /// up on is still running inside the emulator and its tail may be on its way.
+    void drainStderr(int firstWaitMs);
     void handleStdoutData(const QByteArray &data);
     void parseRegisters(const QString &response);
     void parseBasepage(const QString &response);

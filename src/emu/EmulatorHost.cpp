@@ -31,6 +31,23 @@ constexpr int kCommandTimeoutMs = 10000;
 /// completion is driven by stderr going quiet rather than by the prompt alone.
 constexpr int kSettleMs = 40;
 
+/// Wait for stderr inside a drain. A completing command's output is already
+/// written — Hatari flushes the response before it prints the prompt that closes
+/// it — so this only has to collect bytes that are in the pipe but unread, and a
+/// short wait keeps the queue moving.
+constexpr int kStderrDrainWaitMs = 20;
+
+/// The same wait, widened for the one path whose tail may not have been written
+/// yet: a command that outlived kCommandTimeoutMs is still running inside the
+/// emulator, so the rest of its output can arrive *after* the prompt we swallow
+/// for it. The drain is what keeps that tail out of the next command's response
+/// (MIN-1), and nothing is waiting on this path — the command was already
+/// reported as failed — so the window is wide enough to outlast a loaded
+/// machine's scheduling of the tail. A window the tail can miss is a coin flip:
+/// it lost on the macOS runner, where 20 ms did not cover a shell's `sleep` plus
+/// its output.
+constexpr int kOwedTailDrainWaitMs = 200;
+
 /// `  D0 00000000   D1 00000019   D2 00002304   D3 00000000`
 const QRegularExpression &dataRegRe()
 {
@@ -606,7 +623,7 @@ void EmulatorHost::processStderrData()
     }
 }
 
-void EmulatorHost::drainStderr()
+void EmulatorHost::drainStderr(int firstWaitMs)
 {
     if (!m_process)
         return;
@@ -620,18 +637,24 @@ void EmulatorHost::drainStderr()
     // points at StandardError: `bytesAvailable()` reports Qt's buffer for that
     // channel, and `waitForReadyRead` waits on that channel's pipe. On the
     // default (stdout) channel this loop inspected the stdout buffer and its wait
-    // ran its full 20 ms timeout on every completion, because nothing is ever
-    // pending on stdout at completion time (MAJ-13). For stderr it returns as
-    // soon as anything arrives, which for data already written is immediate —
-    // this is not a sleep, it is a read that can block only if there is
-    // genuinely nothing there.
+    // ran its full timeout on every completion, because nothing is ever pending
+    // on stdout at completion time (MAJ-13). For stderr it returns as soon as
+    // anything arrives, which for data already written is immediate — this is not
+    // a sleep, it is a read that can block only if there is genuinely nothing
+    // there.
+    //
+    // Only the first wait is the caller's to choose: a widened window is for a
+    // tail that may not have been written yet, and once anything has arrived what
+    // follows is bytes already in the pipe, which the short wait collects.
     int guard = 0;
-    while (guard++ < 8) {
+    while (guard < 8) {
+        const int waitMs = guard == 0 ? firstWaitMs : kStderrDrainWaitMs;
+        ++guard;
         if (m_process->bytesAvailable() > 0) {
             processStderrData();
             continue;
         }
-        if (!m_process->waitForReadyRead(20))
+        if (!m_process->waitForReadyRead(waitMs))
             break;
         processStderrData();
     }
@@ -643,7 +666,7 @@ void EmulatorHost::completeCurrent()
         return;
 
     // Take anything still queued before deciding the response is complete.
-    drainStderr();
+    drainStderr(kStderrDrainWaitMs);
 
     m_commandTimeout->stop();
     m_settleTimer->stop();
@@ -1018,10 +1041,12 @@ void EmulatorHost::onPrompt()
         // Drain the timed-out command's tail before the slot (or the queue) is
         // released. The prompt and the response travel on different pipes, so
         // the owed prompt can be readable while the command's last response
-        // lines are still unread on stderr; without this they land in the next
-        // command's response (the same contamination completeCurrent() drains
-        // against — MIN-1).
-        drainStderr();
+        // lines are still unread on stderr — or, because a command this transport
+        // gave up on is still running in the emulator, not written yet. Without
+        // this they land in the next command's response (the same contamination
+        // completeCurrent() drains against, with the wider window that a tail
+        // still on its way needs — MIN-1).
+        drainStderr(kOwedTailDrainWaitMs);
         if (!m_haveCurrent)
             dispatchNext();
         return;

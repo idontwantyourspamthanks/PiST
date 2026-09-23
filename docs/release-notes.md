@@ -50,11 +50,11 @@ release this one corrects.
 
 ### Tests, packaging and docs
 
-- **The release workflow tests before it packages.** Linux runs the full suite
-  against the emulator it is about to bundle; macOS and Windows run the unit
-  suites (a Windows emulator session never reaches the entry stop, so the
-  integration suites stay with CI's Windows leg). Tagging a commit whose CI was
-  red — or, as happened here, still running — used to publish anyway.
+- **The release workflow will not publish what CI has not passed.** Tagging a
+  commit whose CI run was red — or, as happened here, still in flight — used to
+  publish anyway. A release now blocks until the CI workflow has finished that
+  same commit successfully on all three platforms, and a tag on a commit that
+  never reached master is refused outright rather than packaged untested.
 - Three Windows-only test defects fixed. The fake `git` the discovery test plants
   recorded its working directory with a separator its own checker parses
   differently: cmd.exe needs `^|` and was writing `&`, so every invocation looked

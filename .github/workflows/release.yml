@@ -15,6 +15,8 @@ on:
 
 permissions:
   contents: write
+  # await-ci reads the CI workflow's runs for the commit being tagged.
+  actions: read
 
 env:
   VASM_URL: http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
@@ -140,11 +142,73 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Do not publish what CI has not passed.
+  #
+  # The tag and the CI run share a commit but not a trigger: CI runs on the push
+  # to master, this workflow on the tag push, so nothing ordered them. 0.8.2 was
+  # tagged while its CI run was still in flight — and that run was red, carrying
+  # a project-save bug tst_settings catches on the Qt these archives bundle. All
+  # seven assets published anyway.
+  #
+  # Waiting beats re-testing here. CI already runs the suite on all three
+  # platforms against the right emulators: upstream Hatari for the native
+  # transport and the fork for HRDB. This workflow's bundle/bin holds only the
+  # fork, whose stdin debugger is dead, so the native-transport suites cannot run
+  # against it at all (docs/PLAN.md §9) — a ctest step here would either fail or
+  # have to skip exactly the integration coverage that matters.
+  # ---------------------------------------------------------------------------
+  await-ci:
+    name: wait for CI on this commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block until the CI workflow has passed this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          # 60 attempts x 30 s = 30 minutes. CI bounds its own test step at 45,
+          # so a run still going when this gives up is a release nobody should
+          # be waiting on anyway; re-tagging resumes from a green run.
+          for attempt in $(seq 1 60); do
+            runs="$(gh run list --workflow ci.yml --commit "$sha" \
+                      --json databaseId,status,conclusion --limit 10)"
+            total="$(jq 'length' <<<"$runs")"
+            finished="$(jq '[.[] | select(.status == "completed")] | length' <<<"$runs")"
+            if [ "$total" -eq 0 ]; then
+              # A tag on a commit that never went to master: CI was never
+              # triggered, so there is nothing to wait for and nothing that
+              # vouches for the tree.
+              if [ "$attempt" -ge 4 ]; then
+                echo "No CI run exists for $sha."
+                echo "This workflow publishes only what CI has passed: push the commit"
+                echo "to master first (or retag one that was), then run this again."
+                exit 1
+              fi
+            elif [ "$finished" -eq "$total" ]; then
+              bad="$(jq -r '[.[] | select(.conclusion != "success") | .databaseId]
+                            | join(" ")' <<<"$runs")"
+              if [ -n "$bad" ]; then
+                echo "CI did not pass $sha — failing run(s): $bad"
+                echo "Nothing is published until it does."
+                exit 1
+              fi
+              echo "CI passed $sha ($total run(s)); packaging may proceed."
+              exit 0
+            fi
+            echo "CI on ${sha:0:7}: $finished/$total complete — waiting"
+            sleep 30
+          done
+          echo "CI on ${sha:0:7} did not finish inside the release window"
+          exit 1
+
+  # ---------------------------------------------------------------------------
   # Build PiST, assemble the archive, and verify it before it is published.
   # ---------------------------------------------------------------------------
   package:
     name: package (${{ matrix.name }})
-    needs: [vasm-linux-windows, vasm-macos]
+    needs: [vasm-linux-windows, vasm-macos, await-ci]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -279,40 +343,6 @@ jobs:
       - name: Build
         shell: bash
         run: cmake --build build --config Release --parallel
-
-      # Do not package what has not been tested. CI runs this same suite on the
-      # same three platforms, but it is a separate workflow with a separate
-      # trigger: a tag pushed while CI is red — or, as happened for 0.8.2, before
-      # CI had even finished — published anyway. That release shipped a
-      # project-save bug its own tst_settings caught on the Qt these archives
-      # bundle, so the gate belongs where the publishing does. Everything the
-      # suite needs is already staged: the assembler and linker in bundle/bin,
-      # the ROM in bundle/share/emutos, and the emulator that ships beside them.
-      - name: Test the build (gate before packaging)
-        shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
-          PIST_TOS_DIR: ${{ github.workspace }}/bundle/share/emutos
-          # Required only where the suite can actually run a session: Linux, with
-          # the fork that ships. macOS bundles no emulator here, and a Windows
-          # session never reaches the entry stop (see ci.yml), so on those a
-          # missing prerequisite stays a skip rather than a failure.
-          PIST_REQUIRE_EMULATOR: ${{ matrix.emulator && runner.os == 'Linux' && '1' || '' }}
-          PIST_HRDB_HATARI: ${{ matrix.emulator && format('{0}/bundle/bin/hatari{1}', github.workspace, runner.os == 'Windows' && '.exe' || '') || '' }}
-          SDL_VIDEODRIVER: dummy
-        run: |
-          set -euo pipefail
-          export PATH="$PWD/bundle/bin:$PATH"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # The unit suites only. bundle/bin also holds hatari.exe, and a
-            # Windows session never gets off the ground with it, so the
-            # integration suites are left to CI's Windows leg — which runs the
-            # same unit suites plus those four skipping cleanly.
-            ctest --test-dir build --build-config Release --output-on-failure \
-              -R '^(parsers|image|oscall|tosrom|profile|debug|link|settings|toolfetch|git|mcp)$'
-          else
-            ctest --test-dir build --build-config Release --output-on-failure
-          fi
 
       # Deploy the Qt runtime so the archive runs on a machine without Qt
       # installed. Without this the binary links against the Qt it was built with

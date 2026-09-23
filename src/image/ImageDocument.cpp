@@ -4,6 +4,8 @@
 
 #include "image/ImageDocument.h"
 
+#include "support/FileWrite.h"
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -921,17 +923,11 @@ bool ImageDocument::load(const QString &path, QString *error)
 
 bool ImageDocument::save(const QString &path, QString *error) const
 {
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString message = QStringLiteral("cannot write '%1': %2").arg(path, file.errorString());
-        m_lastError = message;
-        if (error)
-            *error = message;
-        return false;
-    }
-    const QByteArray json = toJson();
-    if (file.write(json) != json.size()) {
-        const QString message = QStringLiteral("could not write '%1': %2").arg(path, file.errorString());
+    // Through the shared rule: the `.pim` on disk is the only copy of the
+    // artwork, so a write that cannot reach it must leave that copy alone
+    // rather than a truncated one that no longer parses.
+    QString message;
+    if (!files::write(path, toJson(), &message)) {
         m_lastError = message;
         if (error)
             *error = message;

@@ -67,6 +67,15 @@ function(pist_module name)
     target_compile_definitions(${name} PUBLIC "PIST_VERSION=\"${PROJECT_VERSION}\"")
 endfunction()
 
+# support/ — the leaf utilities the whole graph may use. One rule lives here so
+# far: how a file is written so that a failed write cannot destroy what the user
+# already had. Qt6::Core, no module edges of its own, so it sits under the graph
+# the way model/ does.
+pist_module(pist_support
+    src/support/FileWrite.cpp
+    src/support/FileWrite.h
+)
+
 # model/ — the vocabulary two modules share and neither owns: the machines PiST
 # offers, their Hatari names, and which TOS versions they accept. Leaf of the
 # graph: Qt6::Core, no module edges of its own, so `project/` (which persists a
@@ -281,11 +290,12 @@ pist_module(pist_ui
 # image, build, debug, emu, model, project, toolchain and git stay widget-free:
 # they link Qt6::Core / Qt6::Gui / Qt6::Network and never Qt6::Widgets.
 target_link_libraries(pist_model PUBLIC Qt6::Core)                 # the machine vocabulary: QtCore only
-target_link_libraries(pist_image PUBLIC Qt6::Gui)                  # QImage/QColor in the codecs and the document
-target_link_libraries(pist_build PUBLIC Qt6::Core)                 # subprocess + parsed text only
+target_link_libraries(pist_support PUBLIC Qt6::Core)               # the write-once-safely rule: QtCore only
+target_link_libraries(pist_image PUBLIC Qt6::Gui pist_support)     # QImage/QColor in the codecs and the document; .pim and ST exports save through files::write
+target_link_libraries(pist_build PUBLIC Qt6::Core pist_support)    # subprocess + parsed text only; saveRaw writes the user's floppy image
 target_link_libraries(pist_debug PUBLIC Qt6::Core pist_build)      # Breakpoint.h includes build/LineMap.h + ProgramLineMap.h
 target_link_libraries(pist_emu PUBLIC Qt6::Core Qt6::Network pist_model)   # emu/TosRom.h includes model/Machine.h
-target_link_libraries(pist_project PUBLIC Qt6::Core pist_model)    # ProjectSettings.h includes model/Machine.h, and nothing else
+target_link_libraries(pist_project PUBLIC Qt6::Core pist_model pist_support)    # ProjectSettings.h includes model/Machine.h, and save() is files::write
 target_link_libraries(pist_toolchain PUBLIC Qt6::Core pist_emu)    # ToolFetch.cpp includes emu/Paths.h
 target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subprocess + porcelain only
 
@@ -298,7 +308,7 @@ target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subproc
 # Neither of those edges runs back to ui/, so CMake never has to repeat a whole
 # archive list to break a cycle (MIN-86); the only repeats left in a consumer's
 # link line are the ordinary direct-and-transitive ordering ones.
-target_link_libraries(pist_editor PUBLIC Qt6::Widgets pist_git)
+target_link_libraries(pist_editor PUBLIC Qt6::Widgets pist_git pist_support)
 target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network
     pist_image
     pist_build
@@ -309,6 +319,7 @@ target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network
     pist_git
     pist_editor
     pist_control
+    pist_support
 )
 target_link_libraries(pist_control PUBLIC Qt6::Network pist_emu)   # its verbs reuse emu/'s typed reads (MemoryDump, MachineState)
 target_link_libraries(pist_mcp PUBLIC Qt6::Core Qt6::Network)      # MCP stdio <-> remote-control socket, no Widgets

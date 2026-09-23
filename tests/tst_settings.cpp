@@ -9,6 +9,7 @@
 #include "emu/Paths.h"
 #include "project/ProjectSettings.h"
 #include "toolchain/Toolchain.h"
+#include "support/FileWrite.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -147,6 +148,12 @@ private slots:
 
     // Saving a project must never be able to destroy the copy already on disk.
     void saveFailureKeepsPreviousFile();
+
+    // The rule every save path now delegates to, pinned where the write-limit
+    // fixture already lives: the editor's source save, the sprite document, the
+    // ST exports, the floppy image and the project file all call files::write,
+    // so one proof covers the guarantee for all of them.
+    void aFailedWriteKeepsThePreviousBytes();
 
     // Toolchain resolution. A missing tool must be reported as missing rather
     // than silently falling back to a bare name, which surfaced later as an
@@ -714,6 +721,40 @@ void TstSettings::saveFailureKeepsPreviousFile()
     ProjectSettings reloaded;
     QVERIFY2(settings::load(&reloaded, path, &error), qPrintable(error));
     QCOMPARE(reloaded.defines, original.defines);
+#endif
+}
+
+void TstSettings::aFailedWriteKeepsThePreviousBytes()
+{
+#ifdef Q_OS_WIN
+    QSKIP("failing a write after the open needs POSIX RLIMIT_FSIZE");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("doc.s"));
+    const QByteArray before = QByteArrayLiteral("\tmoveq\t#1,d0\n");
+
+    QString error;
+    QVERIFY2(files::write(path, before, &error), qPrintable(error));
+
+    bool saved = true;
+    {
+        WriteLimit limit(0);
+        QVERIFY2(limit.armed(), "could not arm the write limit");
+        saved = files::write(path, QByteArrayLiteral("CLOBBERED"), &error);
+    }
+
+    QVERIFY2(!saved, "a write that cannot reach the disk must report failure");
+    QVERIFY2(!error.isEmpty(), "the failure must carry a reason");
+
+    QFile kept(path);
+    QVERIFY2(kept.open(QIODevice::ReadOnly), qPrintable(kept.errorString()));
+    QCOMPARE(kept.readAll(), before);
+
+    // And no half-written temporary beside it: a failed save does not get to
+    // litter the directory the user's work lives in.
+    QCOMPARE(QDir(dir.path()).entryList(QDir::Files | QDir::Hidden),
+             QStringList{QStringLiteral("doc.s")});
 #endif
 }
 

@@ -4,6 +4,7 @@
 
 #include "ui/MainWindow.h"
 #include "emu/HexFormat.h"
+#include "support/FileWrite.h"
 
 #include "ui/BreakpointWatchpointModel.h"
 #include "ui/DebugSessionController.h"
@@ -2801,16 +2802,14 @@ QWidget *MainWindow::openFloppyEntry(int drive, const QString &entryPath)
         QMessageBox::warning(this, tr("Open"), error);
         return nullptr;
     }
-    {
-        // Scoped so the file is closed — its bytes on disk — before the
-        // editor tab below reads it.
-        QFile out(extracted);
-        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)
-            || out.write(data) != data.size()) {
-            QMessageBox::warning(this, tr("Open"),
-                                 tr("Could not write %1").arg(extracted));
-            return nullptr;
-        }
+    // Through the shared rule, and finished — bytes on disk, temporary renamed
+    // away — before the editor tab below opens the file. An extraction replaces
+    // whatever a previous one left at that path, so a write that cannot reach
+    // the disk must leave that file alone instead of truncating it.
+    if (!files::write(extracted, data, &error)) {
+        QMessageBox::warning(this, tr("Open"),
+                             tr("Could not write %1").arg(extracted));
+        return nullptr;
     }
 
     QWidget *tab = stillImage ? static_cast<QWidget *>(addImageTab(extracted))

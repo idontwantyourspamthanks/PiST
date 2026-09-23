@@ -4,7 +4,8 @@
 
 #include "ui/BitplaneExportController.h"
 
-#include <QFile>
+#include "support/FileWrite.h"
+
 #include <QFileInfo>
 
 namespace pist {
@@ -17,10 +18,12 @@ BitplaneExportController::BitplaneExportController(const ImageDocument &doc, QOb
 
 bool BitplaneExportController::writeBytes(const QString &path, const QByteArray &bytes)
 {
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
-        || file.write(bytes) != bytes.size()) {
-        m_lastError = file.errorString();
+    // Through the shared rule: an export replaces a file the user may already
+    // have, and a write that cannot reach the disk must leave that file alone
+    // rather than a truncated one.
+    QString error;
+    if (!files::write(path, bytes, &error)) {
+        m_lastError = error;
         return false;
     }
     return true;

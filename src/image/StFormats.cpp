@@ -5,10 +5,10 @@
 #include "image/StFormats.h"
 
 #include "image/Palette.h"
+#include "support/FileWrite.h"
 
 #include <QBuffer>
 #include <QCoreApplication>
-#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QImage>
@@ -1427,18 +1427,10 @@ bool writeStImage(const QString &path, const QByteArray &bytes, QString *error)
             *error = QObject::tr("the encoder produced no data");
         return false;
     }
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        if (error)
-            *error = file.errorString();
-        return false;
-    }
-    if (file.write(bytes) != bytes.size()) {
-        if (error)
-            *error = file.errorString();
-        return false;
-    }
-    return true;
+    // An export replaces whatever was at that path, so it goes through the
+    // shared rule: a write that cannot reach the disk leaves the previous file
+    // intact instead of a truncated one.
+    return files::write(path, bytes, error);
 }
 
 ImageDocument composeSheet(const ImageDocument &doc, int sheetIndex, QString *error)

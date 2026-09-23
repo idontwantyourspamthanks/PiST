@@ -6,6 +6,7 @@
 
 #include "editor/AsmHighlighter.h"
 #include "editor/EditorTheme.h"
+#include "support/FileWrite.h"
 
 #include <QContextMenuEvent>
 #include <QDir>
@@ -1135,19 +1136,14 @@ bool CodeEditor::saveFile(const QString &path)
         return false;
     }
 
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        m_lastError = file.errorString();
-        return false;
-    }
-    const qint64 written = file.write(bytes);
-    file.close();
-    // Without this the document is marked clean even when the write was
-    // truncated, which loses the only copy of the user's work.
-    if (written != bytes.size() || file.error() != QFileDevice::NoError) {
-        m_lastError = file.errorString().isEmpty()
-            ? tr("Could not write all of %1").arg(path)
-            : file.errorString();
+    // Opening the destination with Truncate and checking the byte count
+    // afterwards reports a failed write honestly and still leaves the file
+    // empty, which loses the only copy of the user's work — so the write goes
+    // through the rule in support/FileWrite.h instead: a temporary file, an
+    // explicit flush and a device-error check, and only then the replace.
+    QString error;
+    if (!files::write(path, bytes, &error)) {
+        m_lastError = error;
         return false;
     }
 

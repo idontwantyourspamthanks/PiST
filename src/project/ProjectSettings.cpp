@@ -4,13 +4,14 @@
 
 #include "project/ProjectSettings.h"
 
+#include "support/FileWrite.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSaveFile>
 #include <QSettings>
 
 namespace pist {
@@ -208,47 +209,13 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     emu[QStringLiteral("debugBackend")] = s.debugBackend;
     root[QStringLiteral("emulator")] = emu;
 
-    // Written through a temporary file that is renamed into place on commit().
-    // Opening the destination directly with Truncate destroyed the only copy of
-    // the project the moment anything went wrong after the open — a full disk, a
-    // crash, a power cut — and the next load() then reported the remains as an
-    // invalid project file.
-    //
-    // commit() alone does not give that guarantee on the Qt the release archives
-    // ship. The payload is buffered, so write() reports success and the bytes
-    // only reach the disk on the flush commit() does internally — and Qt 6.8's
-    // commit() does not notice that flush failing: it renames the truncated
-    // temporary file over the destination and returns true, which is precisely
-    // the loss this code exists to prevent. (Qt 6.10 checks the device error
-    // there; 6.8.1, bundled in every archive, does not.) So flush explicitly and
-    // treat any device error as the failure it is: cancelWriting() makes the
-    // commit discard the temporary file instead of renaming it, which leaves the
-    // project already on disk untouched.
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        if (error)
-            *error = QStringLiteral("cannot write '%1': %2").arg(path, file.errorString());
-        return false;
-    }
-    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
-    bool onDisk = file.write(json) == json.size();
-    if (onDisk && !file.flush())
-        onDisk = false;
-    if (!onDisk || file.error() != QFileDevice::NoError) {
-        const QString reason = file.errorString();
-        file.cancelWriting();
-        // Only discards the temporary file now; the failure is already in hand.
-        file.commit();
-        if (error)
-            *error = QStringLiteral("cannot write '%1': %2").arg(path, reason);
-        return false;
-    }
-    if (!file.commit()) {
-        if (error)
-            *error = QStringLiteral("cannot write '%1': %2").arg(path, file.errorString());
-        return false;
-    }
-    return true;
+    // The write rule lives in support/FileWrite.h, and the guarantee cannot be
+    // delegated to QSaveFile alone: on Qt 6.8.1 — the Qt every release archive
+    // bundles — commit() renames a truncated temporary file over the destination
+    // and returns true when the flush inside it fails (PLAN §9). A save that
+    // cannot reach the disk must leave the project the user had, not a zero-byte
+    // file that the next load() reports as invalid.
+    return files::write(path, QJsonDocument(root).toJson(QJsonDocument::Indented), error);
 }
 
 bool load(ProjectSettings *s, const QString &path, QString *error)

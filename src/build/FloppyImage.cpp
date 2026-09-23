@@ -4,6 +4,8 @@
 
 #include "build/FloppyImage.h"
 
+#include "support/FileWrite.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -1074,16 +1076,10 @@ bool saveRaw(const QString &imagePath, const QByteArray &raw, QString *error)
         if (!encodeMsa(raw, &payload, error))
             return false;
     }
-    QFile out(imagePath);
-    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        setError(error, QObject::tr("cannot write %1: %2").arg(imagePath, out.errorString()));
-        return false;
-    }
-    if (out.write(payload) != payload.size()) {
-        setError(error, QObject::tr("short write to %1").arg(imagePath));
-        return false;
-    }
-    return true;
+    // The image is the user's own file, so this goes through the shared rule: a
+    // write that cannot reach the disk leaves the previous image intact rather
+    // than a truncated one that no longer parses as FAT12.
+    return files::write(imagePath, payload, error);
 }
 
 QVector<Entry> listRaw(const QByteArray &raw, QString *error)

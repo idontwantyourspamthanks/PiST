@@ -16,129 +16,57 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.8.2
+## What's new in 0.8.3
 
-A maintenance release, and a big one: no new features, 149 files touched —
-19,781 insertions against 5,060 deletions. A full code-quality review of the IDE
-was run to ground and every finding it produced is fixed here — the correctness
-bugs you could hit, the structure that let them happen, and the tidying that
-makes the next change cheap.
+A correction release, published shortly after 0.8.2 and superseding it: CI found
+two defects in what 0.8.2 shipped, both are fixed here, and the release workflow
+now runs the test suite before it packages anything, so a red build cannot be
+published again. 0.8.2 keeps its own page and changelog — the large maintenance
+release this one corrects.
+
+**If you downloaded 0.8.2, update:** its archives carry the first bug below.
 
 ### Fixed
 
-- **Saving a source no longer rewrites it.** The editor records the file's own
-  line-ending style and encoding on load and writes them back: a CRLF file stays
-  CRLF, a Latin-1 file stays Latin-1 (promoted to UTF-8 only if you type a
-  character Latin-1 cannot hold), and a byte-order mark survives. Loading and
-  saving an unedited file is byte-identical, so a source copied out of a floppy
-  image stops changing shape on save. A save also creates missing parent
-  directories, which is what extracting a file to a new folder needs.
-- **Git acts on the project you opened.** The repository root is discovered with
-  `git rev-parse --show-toplevel` from the project directory instead of being
-  assumed to be PiST's own working directory — the stray `index.lock` that could
-  turn up in a PiST checkout was that bug.
-- **A commit is the index, and PiST never rewrites it.** The ticked rows are
-  staged and the index is then committed with no pathspec, so a path already
-  staged but left unchecked — or a conflicted path — is refused by name (include
-  it, unstage it, or resolve it) rather than swept in or committed with its
-  conflict markers still in it.
-- **A damaged floppy image fails instead of quietly truncating.** A FAT12 cluster
-  chain that loops back on itself, links to a cluster outside the image, or ends
-  short of the size its directory entry declares is now reported. A short read
-  used to be indistinguishable from a short file, so writing the image back
-  carried the truncation into the replacement and renamed that over your own —
-  destroying the orphaned clusters a repair would need. Listing a disk stays
-  best-effort: a damaged folder is shown unexpanded rather than blanking the
-  panel.
-- **The debugger can no longer answer a command with the previous command's
-  output.** On the native transport a timed-out command leaves a prompt owed;
-  that prompt is now swallowed *and* its response tail drained before the next
-  command goes out, and a fresh session starts from clean framing state instead
-  of inheriting the last one's counters. On HRDB the queue is held while a reply
-  is owed, so a reply that never arrives cannot shift every later answer by one.
-  Both backends also point their stderr drain at the stderr channel — it was
-  inspecting the always-empty stdout buffer and burning its full 20 ms timeout on
-  every response, which was latency you could feel while stepping.
-- **Disassembly of a hex-looking mnemonic is whole again.** `dbcc`, `dbf` and
-  `abcd` were absorbed into the byte column of a disassembly line, so the pane
-  rendered the instruction without its mnemonic and step-over had no mnemonic to
-  read.
-- **Two same-named objects in a multi-file project no longer share one address.**
-  `dir1/util.o` and `dir2/util.o` were a single module to the line map, which put
-  both at one address and could arm a breakpoint in the wrong file. An ambiguous
-  base name now resolves nothing and says so in the build log, naming both paths.
-- **Find's hit counter admits its cap:** past 2000 matches it reads
-  "N of more than 2000" instead of counting on.
-- **`info video` reports only what Hatari printed** — the hardware summary no
-  longer invents a resolution or a palette the transcript never mentioned.
+- **A failed project save no longer destroys the project.** Saving writes through
+  a temporary file that is renamed into place, so a write that cannot reach the
+  disk — a full disk, a quota, an I/O error — was meant to leave the file you
+  had. In the Qt these archives bundle (6.8.1) it did not: `QSaveFile::commit()`
+  does not notice the flush inside it failing, so it renamed the empty temporary
+  file over the project and reported success. The save now flushes explicitly and
+  checks the device error before committing, and cancels the temporary file when
+  either is wrong. Qt 6.10 checks this inside `commit()`; 6.8.1, which every
+  archive ships, does not — so the bug was in the published binaries, not only in
+  a source build against an older Qt.
+- **A timed-out debugger command's tail can no longer leak into the next
+  command's response.** When the transport gives up on a command after 10 s it
+  swallows the prompt that command still owes it, and drains stderr first so the
+  dead command's last output is not attributed to whatever runs next. That drain
+  waited 20 ms — enough for a tail already sitting in the pipe, not for one a
+  slower machine had not written yet, which is how it surfaced on macOS. The
+  owed-prompt path now waits 200 ms, and nothing user-visible is held up by it:
+  the command was reported failed ten seconds earlier. The completion path every
+  step, continue and register read goes through keeps the short window.
 
-### Project files
+### Tests, packaging and docs
 
-`.pistproject` is read strictly, and every refusal names the entry at fault:
-
-- a wrong-typed entry fails the load (`'build.includePaths' must be a list of
-  strings`) instead of silently becoming an empty `-I` on the assembler command
-  line;
-- relative include paths and additional sources resolve against the project
-  file's own directory, so a project builds the same wherever PiST was started
-  from;
-- a file written by a *newer* PiST is refused rather than loaded and saved back
-  with the fields this build does not understand dropped from it;
-- saving goes through a temporary file renamed into place, so a failed write —
-  full disk, crash, power cut — leaves the project you had instead of a truncated
-  one that the next load reports as invalid.
-
-The format version is still 1: project files from earlier releases load as
-before.
-
-### Remote control
-
-The localhost protocol changed shape, so a `pist` and a `pist-mcp` from different
-releases refuse each other instead of half-working:
-
-- PiST publishes a protocol version in its discovery file, and the shim checks it
-  before dialling — a mismatch is refused naming both versions, rather than
-  connecting and then failing verb by verb once an agent tries something the
-  other half does not have;
-- a block reply carries an explicit status line (`ok`, or `error` for a failed
-  query) ahead of its body;
-- a body line that begins with `.` is sent dot-stuffed with one extra `.`, so a
-  body that legitimately contains a lone `.` cannot end the block early.
-
-The vocabulary is now one table that drives `help`, the block framing and the
-shim's tool list together, so the four places a verb used to be spelled cannot
-disagree. A script written against 0.8.1 needs the small reader update shown in
-the README's remote-control section.
-
-### Under the hood
-
-- `pist_core` is split into module libraries — model, image, build, debug, emu,
-  project, toolchain, git, editor, ui, control, mcp — with an acyclic dependency
-  graph. Modules that need to cross a boundary speak through `Host` interfaces
-  and `ControlHost` instead of reaching into a sibling.
-- The logic came out of the widgets: debug session, session launch, profiler,
-  bitplane export, sheet slicing, animation preview, the breakpoint/watchpoint
-  model and floppy transfer are units of their own (`MainWindow.cpp` 4,737 →
-  4,414 lines, `ImageEditor.cpp` 2,593 → 2,295).
-- The editor's colours are an injected theme value rather than a global, so an
-  editor can be exercised without a palette behind it.
-- A `tr()` sweep brought 102 user-facing strings into translation, and the dead
-  code found along the way went out.
-- `-Wall -Wextra` (`/W4` on MSVC) is now the build baseline and the tree is
-  warning-free; CMake presets cover asan and ubsan builds.
-- Every fix above landed with its regression test written against the failure
-  first. All 15 suites are green, and the emulator framing cases run without an
-  emulator present.
-
-### Licence
-
-- **The bundled Hatari is built without GNU Readline, and no archive ships it.**
-  Three of the files Hatari compiles into every binary grant GPL version 2 alone,
-  so the emulator PiST conveys is capped at GPLv2 and a GPLv3 library cannot join
-  it. Nothing is lost: without readline the debugger takes its `fgets` fallback
-  and writes the prompt to stderr instead of stdout, and PiST frames a command on
-  the `> ` prompt on either stream. `NOTICE` and `docs/PLAN.md` §10 carry the
-  audit of those three files and the include chains that reach them.
+- **The release workflow tests before it packages.** Linux runs the full suite
+  against the emulator it is about to bundle; macOS and Windows run the unit
+  suites (a Windows emulator session never reaches the entry stop, so the
+  integration suites stay with CI's Windows leg). Tagging a commit whose CI was
+  red — or, as happened here, still running — used to publish anyway.
+- Three Windows-only test defects fixed. The fake `git` the discovery test plants
+  recorded its working directory with a separator its own checker parses
+  differently: cmd.exe needs `^|` and was writing `&`, so every invocation looked
+  like it ran outside the project. The gutter-repaint check asserted a glyph on a
+  runner with no fonts installed at all, and now asserts the font-independent
+  breakpoint dot there, skipping the glyph check with the reason named. And a
+  Latin-1 file name in the floppy test was spelled as a raw `0xE9` byte inside
+  `QStringLiteral`, whose meaning in that position is compiler-defined; it is now
+  `QString::fromLatin1`, the same decode the product applies to the field.
+- The generated third-party notices state the GPLv2 cap on the bundled emulator
+  instead of upstream's "or later", and the install text names the AppImage a
+  release actually ships (`PiST-x86_64.AppImage`).
 
 Every archive contains PiST, the `vasmm68k_mot` assembler, the `vlink` linker,
 and an EmuTOS ROM. The Linux AppImage and the Windows archive additionally

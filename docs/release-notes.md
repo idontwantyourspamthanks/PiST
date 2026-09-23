@@ -16,65 +16,70 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.8.3
+## What's new in 0.8.4
 
-A correction release, published shortly after 0.8.2 and superseding it: CI found
-two defects in what 0.8.2 shipped, both are fixed here, and the release workflow
-now refuses to publish a commit CI has not passed, so a red build cannot reach
-the releases page again. 0.8.2 keeps its own page and changelog — the large
-maintenance release this one corrects.
+A packaging release. The IDE itself is unchanged apart from how it presents
+itself to the desktop; what changed is that the packages a release publishes are
+now correct — and the 0.8.3 deb, it turns out, could not be installed at all.
 
-**If you downloaded 0.8.2, update:** its archives carry the first bug below.
+**If you downloaded the 0.8.3 `.deb`, it was broken:** `dpkg -i` aborted with
+*trying to overwrite `/usr/share/doc/libglib2.0-0/copyright`, which is also in
+package libglib2.0-0*. Use this one. The 0.8.3 AppImage runs fine; only the
+packages were affected.
 
 ### Fixed
 
-- **A failed save no longer destroys the file you were saving.** Every path that
-  replaces a file you already had — your source, the sprite document, an ST or
-  bitplane export, a floppy image, the project — opened its destination with
-  `Truncate` and checked the byte count afterwards, which reports the failure
-  honestly and still leaves the file empty. On a full disk, a quota or an I/O
-  error, that meant losing it. All of them now go through one rule: a temporary
-  file in the same directory, an explicit flush and a device-error check, and
-  only then the replace — so whatever was already there survives, and no
-  half-written temporary is left beside it. (The files PiST generates for a
-  session — the debugger's bootstrap script, the remote-control discovery file,
-  the AUTO-folder image it boots pre-1.04 TOS with — are not user data and keep
-  their plain write.)
-  The project file had already moved to `QSaveFile` and was *still* vulnerable,
-  because Qt 6.8.1's `commit()` — the Qt every archive bundles — does not notice
-  the flush inside it failing: it renames the truncated temporary file over the
-  destination and returns true. Qt 6.10 checks the device error there, which is
-  why a development machine on a newer Qt never saw it. The rule checks the
-  flush itself now and cancels the temporary file, so it holds on both.
-- **A timed-out debugger command's tail can no longer leak into the next
-  command's response.** When the transport gives up on a command after 10 s it
-  swallows the prompt that command still owes it, and drains stderr first so the
-  dead command's last output is not attributed to whatever runs next. That drain
-  waited 20 ms — enough for a tail already sitting in the pipe, not for one a
-  slower machine had not written yet, which is how it surfaced on macOS. The
-  owed-prompt path now waits 200 ms, and nothing user-visible is held up by it:
-  the command was reported failed ten seconds earlier. The completion path every
-  step, continue and register read goes through keeps the short window.
+- **The deb installs.** It was staged straight from the AppImage's AppDir, so it
+  carried the build host's copyright file for every library the bundle links —
+  `libglib2.0-0`, `libpulse0`, `libxcb-*` and fifty more — into paths dpkg knows
+  belong to packages already installed, and dpkg will not take a file away from
+  another package. Those texts now live under
+  `/usr/share/doc/pist/licenses/distro/`, where they still travel with the
+  binaries they cover, and the AppImage plumbing that was being installed into
+  `/` (`AppRun`, `.DirIcon`, `apprun-hooks/`) stays out of the package. The
+  release workflow now installs the deb on the runner and removes it again, which
+  is the check that would have caught this.
+- **The packages no longer hand their libraries to the rest of the system.** The
+  bundle's Qt, glib, D-Bus and X libraries were installed into `/usr/lib`, which
+  `ldconfig` scans *before* the multiarch directory — so the package made itself
+  the system-wide provider of `libQt6Core.so.6` and friends, for every other
+  application on the machine. Everything now lives in the private prefix
+  `/usr/lib/pist/`, with only `pist` and `pist-mcp` linked into `/usr/bin`, so
+  the bundled Hatari, vasm and vlink cannot shadow your own either.
+- **The name, author and licence a software centre shows.** PiST shipped no
+  AppStream metadata at all, so GNOME Software and Discover reported the deb's
+  file name and "Unknown Author", with no licence anywhere. *PiST*, *Koala
+  Software* and *GPL-2.0-or-later* now come from a metainfo file, a DEP-5
+  `/usr/share/doc/pist/copyright`, and the installer licence resource — which was
+  still CMake's generic placeholder, so the MSI and self-extracting installers
+  quoted no licence either. The RPM's vendor was the literal string `unknown`.
+- **Asset and package naming.** Every artifact is now
+  `PiST-<version>-<platform>`. The tag's `v` was being interpolated verbatim,
+  which is how the deb came to be called `pist-v0.8.3-linux-amd64.deb` — and how
+  a software centre came to show it as "pist-v0". The AppImage carries its
+  version too (`PiST-0.8.4-x86_64.AppImage` rather than `PiST-x86_64.AppImage`),
+  and the icons are installed at 128, 256 and 512 px instead of leaving the
+  hicolor directories the deployer creates empty. The Debian and RPM package
+  names stay lowercase `pist`, as both require.
+- **The deb's description was mangled.** It was assembled from several quoted
+  arguments, which CMake joins into a list, so the control file carried a literal
+  `"; "` at the head of every line after the first.
+- **On Wayland the window now belongs to its menu entry.** The app states its
+  desktop-file name, which is what Wayland uses as the `app_id`; it was being
+  derived from the application name and matched nothing, so the taskbar icon did
+  not group with the launcher. It is stated only where an entry is actually
+  installed — claiming one that does not exist makes the desktop portal fail to
+  register the app ID on every start — and the entry itself now declares
+  `StartupWMClass=pist`, which is what X11 was already reporting.
+- **The macOS bundle had an empty `CFBundleIdentifier`**, and presented itself as
+  "pist" rather than "PiST" in Finder and the menu bar.
 
-### Tests, packaging and docs
+### Worth knowing
 
-- **The release workflow will not publish what CI has not passed.** Tagging a
-  commit whose CI run was red — or, as happened here, still in flight — used to
-  publish anyway. A release now blocks until the CI workflow has finished that
-  same commit successfully on all three platforms, and a tag on a commit that
-  never reached master is refused outright rather than packaged untested.
-- Three Windows-only test defects fixed. The fake `git` the discovery test plants
-  recorded its working directory with a separator its own checker parses
-  differently: cmd.exe needs `^|` and was writing `&`, so every invocation looked
-  like it ran outside the project. The gutter-repaint check asserted a glyph on a
-  runner with no fonts installed at all, and now asserts the font-independent
-  breakpoint dot there, skipping the glyph check with the reason named. And a
-  Latin-1 file name in the floppy test was spelled as a raw `0xE9` byte inside
-  `QStringLiteral`, whose meaning in that position is compiler-defined; it is now
-  `QString::fromLatin1`, the same decode the product applies to the field.
-- The generated third-party notices state the GPLv2 cap on the bundled emulator
-  instead of upstream's "or later", and the install text names the AppImage a
-  release actually ships (`PiST-x86_64.AppImage`).
+An AppImage does not add itself to your application menu, and cannot: that
+integration is done by AppImageLauncher or `appimaged`. If you want a menu entry,
+install the `.deb` or the `.rpm` — that is what they are for, and both now carry
+the entry, the icons and the metadata a software centre reads.
 
 Every archive contains PiST, the `vasmm68k_mot` assembler, the `vlink` linker,
 and an EmuTOS ROM. The Linux AppImage and the Windows archive additionally
@@ -108,17 +113,29 @@ that, so a distribution package is often not recent enough. See
 
 Nothing else to install: assemble, run and debug straight away.
 
-`PiST-x86_64.AppImage` is self-contained — Qt, the assembler, the
-linker, the emulator and the ROM are all inside it:
+The AppImage — `PiST-<version>-x86_64.AppImage` — is self-contained: Qt, the
+assembler, the linker, the emulator and the ROM are all inside it. The shell
+glob below is deliberate: these notes are published verbatim as the release
+body, and a literal file name here drifted from the artifact a release actually
+shipped once already.
 
 ```sh
-chmod +x PiST-x86_64.AppImage
-./PiST-x86_64.AppImage your-program.s
+chmod +x PiST-*-x86_64.AppImage
+./PiST-*-x86_64.AppImage your-program.s
 ```
 
 `.deb` and `.rpm` packages carry the same content for those who prefer the
-package manager. Everything is built on Ubuntu 22.04, so it needs glibc 2.35 or
-newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, and anything more recent).
+package manager. They are also the route that integrates with the desktop: a
+menu entry, the icons and the AppStream metadata a software centre reads the
+name, author and licence from. Everything they bundle lives in a private
+`/usr/lib/pist/`, with only `pist` and `pist-mcp` linked into `/usr/bin`, so
+none of it can be picked up by other applications — and the bundled Hatari,
+vasm and vlink cannot shadow a user's own. An AppImage does not add itself to
+the application menu and cannot; that integration is AppImageLauncher's or
+`appimaged`'s job, or install a package.
+
+Everything is built on Ubuntu 22.04, so it needs glibc 2.35 or newer (Ubuntu
+22.04+, Debian 12+, Fedora 36+, and anything more recent).
 
 ### Windows and macOS
 

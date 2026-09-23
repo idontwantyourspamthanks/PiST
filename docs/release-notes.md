@@ -172,12 +172,12 @@ that, so a distribution package is often not recent enough. See
 
 Nothing else to install: assemble, run and debug straight away.
 
-`pist-*-linux-x86_64.AppImage` is self-contained — Qt, the assembler, the
+`PiST-x86_64.AppImage` is self-contained — Qt, the assembler, the
 linker, the emulator and the ROM are all inside it:
 
 ```sh
-chmod +x pist-*-linux-x86_64.AppImage
-./pist-*-linux-x86_64.AppImage your-program.s
+chmod +x PiST-x86_64.AppImage
+./PiST-x86_64.AppImage your-program.s
 ```
 
 `.deb` and `.rpm` packages carry the same content for those who prefer the

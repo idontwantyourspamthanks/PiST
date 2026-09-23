@@ -249,8 +249,8 @@ one built with MSYS2 ucrt64 — so on those platforms a fresh download runs and 
 with nothing else installed:
 
 ```sh
-chmod +x pist-*-linux-x86_64.AppImage
-./pist-*-linux-x86_64.AppImage your-program.s
+chmod +x PiST-x86_64.AppImage
+./PiST-x86_64.AppImage your-program.s
 ```
 
 The macOS archive does not bundle the emulator (the fork links Homebrew SDL2, and

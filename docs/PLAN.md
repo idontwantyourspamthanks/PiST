@@ -911,6 +911,24 @@ load-bearing dependency — which the detection order above already guarantees.
   `OpenProcess`/`GetExitCodeProcess` on Windows; the Windows body is inside `#ifdef Q_OS_WIN`, so it
   is compiled and warning-checked by the Windows CI leg, not executed on this Linux machine. Its
   job is the safe direction: a live pid makes the prune skip a session directory.
+- **`QSaveFile::commit()` on Qt 6.8.1 renames a truncated file over the destination when the flush
+  inside it fails.** The payload is buffered, so `write()` reports success and the failure only
+  surfaces at the flush `commit()` performs; 6.8.1 checks its own `writeError` there, which that
+  flush path never sets, so it renames and returns true. Qt 6.10 checks the device error and returns
+  false. Reproduced side by side under `RLIMIT_FSIZE=0`: 6.8.1 leaves the destination empty and
+  reports success, 6.10 leaves it intact and reports failure. Consequence for the archives, which
+  bundle 6.8.1: `settings::save` cannot delegate the guarantee to `commit()` — it flushes explicitly,
+  checks `QFileDevice::error()`, and `cancelWriting()`s when either is wrong. Pinned by
+  `TstSettings::saveFailureKeepsPreviousFile`, which fails on 6.8.1 without that check and passes on
+  both. A development machine on a newer Qt is green either way, which is how 0.8.2 shipped it.
+- **An owed prompt's tail can still be on its way, so the drain that swallows it needs a wider
+  window than the completion path's.** `drainStderr()` waits 20 ms where a completing command has
+  already flushed everything; a command the transport abandoned at its 10 s timeout is still running
+  inside the emulator, and 20 ms lost that race on the macOS runner
+  (`aTimedOutCommandsTailDoesNotContaminateTheNext` failed in CI while passing on Linux). The
+  owed-prompt path now waits 200 ms — bounded, and off the critical path, since the command was
+  reported failed ten seconds earlier. Narrowing it back makes the test fail deterministically, which
+  is the margin the fake's 50 ms gap is written against.
 
 - **HRDB (fork `tattlemuss/hatari` hrdb-main, built unmodified, driven live):**
   the listener is unconditional on TCP 56001; on connect it sends

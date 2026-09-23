@@ -1,0 +1,215 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: PiST
+Upstream-Contact: https://github.com/idontwantyourspamthanks/PiST
+Source: https://github.com/idontwantyourspamthanks/PiST
+
+Files: *
+Copyright: Koala Software
+License: GPL-2+
+Comment:
+ PiST is free software; you can redistribute it and/or modify it under the
+ terms of the GNU General Public License as published by the Free Software
+ Foundation, either version 2 of the License, or (at your option) any later
+ version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+ PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ .
+ The complete text travels with this package, in share/doc/pist/LICENSE and
+ share/doc/pist/licenses/GPL-2.0.txt, whether or not the system provides its
+ own copy.
+ .
+ A binary distribution also carries third-party components, which the stanzas
+ below carve out. Which ones are actually inside any given package is derived at
+ release time rather than declared: packaging/collect-notices.py writes the
+ manifest share/doc/pist/THIRD-PARTY.txt from the artifact's real contents, and
+ every licence text into share/doc/pist/licenses/. The file patterns here are
+ written to match whichever layout the package uses — the Linux .deb and .rpm
+ keep the bundle in the private prefix /usr/lib/pist, the AppImage and the plain
+ archives use usr/ or bin/ beside the executable, and the macOS bundle uses
+ pist.app/Contents/. share/doc/pist/NOTICE is the authoritative prose account.
+
+# ---------------------------------------------------------------------------
+# Not free software. These two are the reason this file exists: they are
+# redistributed unmodified, for non-commercial use only, and are never part of
+# the GPL-2+ grant above.
+# ---------------------------------------------------------------------------
+
+Files: */vasmm68k_mot */vasmm68k_mot.exe
+Copyright: 2002-2026 Volker Barthelmann
+License: vasm
+Comment:
+ Its terms permit redistribution without modification and use for
+ non-commercial purposes; commercial use requires the author's written consent,
+ except for the M68k/AmigaOS case. The binary is built by the release workflow
+ from the author's unmodified, checksum-pinned source tarball, is never patched,
+ and is never committed to the PiST repository, which stays entirely free
+ software. Complete terms: share/doc/pist/licenses/vasm-LICENCE.txt. Source:
+ http://sun.hasenbraten.de/vasm/
+
+Files: */vlink */vlink.exe
+Copyright: 1995-2025 Frank Wille
+License: vlink
+Comment:
+ The same terms and the same commitments as vasm above. Complete terms:
+ share/doc/pist/licenses/vlink-LICENCE.txt. Source:
+ http://sun.hasenbraten.de/vlink/
+
+# ---------------------------------------------------------------------------
+# Free software, but under its own terms rather than PiST's.
+# ---------------------------------------------------------------------------
+
+Files: */hatari */hatari.exe
+Copyright: the Hatari authors
+License: GPL-2
+Comment:
+ Conveyed under version 2 alone rather than upstream's "version 2 or later":
+ three of the files Hatari compiles into every binary (src/cpu/uae/attributes.h,
+ types.h and vm.h) grant version 2 alone, and a licence is not upgraded by
+ majority vote. That is also why the GPL version 3 GNU Readline is not linked
+ into it and travels in no package. What is bundled is the hrdb-main fork —
+ upstream 2.6.1 plus the remote-debug listener PiST's HRDB transport uses —
+ built unmodified from a checksum-pinned commit tarball. See
+ share/doc/pist/NOTICE and docs/PLAN.md §10.
+
+Files: */etos1024k.img
+Copyright: the EmuTOS authors
+License: GPL-2
+Comment:
+ EmuTOS 1.4, the 1024k emulator image: a free TOS replacement, so a fresh
+ install runs. Original Atari TOS images are copyrighted and are never
+ distributed; supply your own in Project Settings if you need one.
+
+Files: */libQt6* */Qt*.framework/* */libq*.so
+Copyright: The Qt Company Ltd and other contributors
+License: LGPL-3
+Comment:
+ Used under the LGPL version 3 and linked dynamically, which keeps the relink
+ obligation satisfiable: replacing the Qt libraries still runs PiST. The LGPLv3
+ incorporates the GPLv3 by reference, so both texts travel
+ (share/doc/pist/licenses/LGPL-3.0.txt and GPL-3.0.txt). The pattern covers the
+ Qt plugins a bundle carries as well as the libraries. Source:
+ https://download.qt.io/
+
+Files: */libSDL2*
+Copyright: Sam Lantinga and the SDL contributors
+License: Expat
+
+Files: */libpng*
+Copyright: The PNG Reference Library Authors
+License: libpng
+
+Files: */libz.* */libz-* zlib.dll
+Copyright: 1995-2024 Jean-loup Gailly and Mark Adler
+License: Zlib
+
+Files: */libcapstone*
+Copyright: 2013-2014 COSEINC
+License: BSD-3-clause
+Comment:
+ Present only when the build host's Hatari links it; the generated manifest is
+ what says whether this copy does.
+
+# ---------------------------------------------------------------------------
+# The system libraries a self-contained bundle carries, and the licence texts.
+# ---------------------------------------------------------------------------
+
+Files: */lib/*.so.* */bin/*.dll
+Copyright: the respective projects
+License: bundled-library
+Comment:
+ Libraries a bundle picks up because Qt and SDL2 link them — the X, audio, TLS
+ and glib stack. They are unmodified copies of what the build host provided, and
+ none of them is part of PiST. The components named by a stanza above (Qt, SDL2,
+ libpng, zlib, Capstone) are more specific and take precedence for their own
+ files; this one is the catch-all for the rest.
+
+Files: */licenses/distro/*
+Copyright: the respective projects
+License: bundled-library
+Comment:
+ The build host's own copyright file for each of the libraries above, as
+ linuxdeploy copied it. In the .deb and .rpm they live here rather than in
+ /usr/share/doc/<package>/, where dpkg knows them to belong to another package
+ and refuses to let this one take them.
+
+Files: */licenses/* packaging/notices/*
+Copyright: the respective projects named in each text
+License: verbatim
+
+License: GPL-2+
+ This package is free software; you can redistribute it and/or modify it under
+ the terms of the GNU General Public License as published by the Free Software
+ Foundation; either version 2 of the License, or (at your option) any later
+ version.
+ .
+ On Debian systems the complete text of version 2 is normally in
+ /usr/share/common-licenses/GPL-2; this package carries its own copy in
+ share/doc/pist/LICENSE and share/doc/pist/licenses/GPL-2.0.txt regardless.
+
+License: GPL-2
+ This program is free software; you can redistribute it and/or modify it under
+ the terms of the GNU General Public License as published by the Free Software
+ Foundation; version 2 only.
+ .
+ The complete text is in share/doc/pist/licenses/GPL-2.0.txt.
+
+License: LGPL-3
+ This library is free software; you can redistribute it and/or modify it under
+ the terms of the GNU Lesser General Public License as published by the Free
+ Software Foundation; version 3.
+ .
+ The complete text is in share/doc/pist/licenses/LGPL-3.0.txt, together with the
+ GNU General Public License version 3 it incorporates by reference
+ (share/doc/pist/licenses/GPL-3.0.txt).
+
+License: Expat
+ This software is provided 'as-is', without any express or implied warranty. In
+ no event will the authors be held liable for any damages arising from the use
+ of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose, including
+ commercial application, and to alter it and redistribute it freely, subject to
+ the restrictions in share/doc/pist/licenses/SDL2-LICENSE.txt.
+
+License: libpng
+ The PNG Reference Library is supplied "AS IS", and is free for any purpose,
+ commercial or otherwise, subject to the restrictions and the acknowledgment
+ described in share/doc/pist/licenses/libpng.txt.
+
+License: Zlib
+ This software is provided 'as-is', without any express or implied warranty. In
+ no event will the authors be held liable for any damages arising from the use
+ of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose, to alter
+ it and to redistribute it freely, subject to the restrictions in
+ share/doc/pist/licenses/zlib.txt.
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the conditions in
+ share/doc/pist/licenses/BSD-3-Clause-Capstone.txt are met.
+
+License: vasm
+ Redistribution without modification and use for non-commercial purposes are
+ permitted; commercial use requires the author's written consent, except for the
+ M68k/AmigaOS case. The complete terms are in
+ share/doc/pist/licenses/vasm-LICENCE.txt.
+
+License: vlink
+ Redistribution without modification and use for non-commercial purposes are
+ permitted; commercial use requires the author's written consent, except for the
+ M68k/AmigaOS case. The complete terms are in
+ share/doc/pist/licenses/vlink-LICENCE.txt.
+
+License: bundled-library
+ Not part of PiST: an unmodified copy of a system library, or of the licence
+ text that came with it, carried so that a self-contained package runs on a
+ machine without it. The terms of each are stated in the copyright file that
+ travels with it — share/doc/pist/licenses/distro/<package>-copyright in the
+ Linux packages — and every component the release process knows it bundled is
+ listed with its licence in share/doc/pist/THIRD-PARTY.txt.
+
+License: verbatim
+ Verbatim copies of another project's licence text, redistributed unchanged.
+ Each file states its own terms.

@@ -178,3 +178,13 @@ binaries present and the libraries the bundled Hatari links. The set is
 derived, not declared: whether Hatari links Capstone depends on the build
 host, so Capstone's BSD-3-Clause text ships exactly when Capstone does, and a
 component that appears without its text fails the release build.
+
+The Linux `.deb` and `.rpm` carry one more set. They are staged from the AppDir
+the AppImage is built from, and linuxdeploy copies the *build host's* copyright
+file for every library it bundles — the X, audio, TLS and glib stack the bundled
+Qt and SDL2 pull in. Those paths cannot stay where linuxdeploy put them: in a
+`.deb` they belong to installed distro packages, and dpkg refuses to take a file
+away from another package. The texts are therefore moved to
+share/doc/pist/licenses/distro/<package>-copyright in the installers, so the
+attribution still travels with the binaries it covers. The AppImage keeps them
+at usr/share/doc/<package>/copyright, where nothing owns them.

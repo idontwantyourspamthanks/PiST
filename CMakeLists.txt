@@ -378,7 +378,21 @@ if(APPLE)
     # operates on, carries the icon and Info.plist, and is what a user drags to
     # Applications. Without this the release packaging step failed with
     # "Could not find app bundle".
-    set_target_properties(pist PROPERTIES MACOSX_BUNDLE TRUE)
+    #
+    # BUNDLE_NAME is CFBundleName: what Finder shows under the icon and what the
+    # menu bar shows while the app runs. Unset, both read the target name,
+    # "pist". The bundle *directory* stays pist.app — that path is what the
+    # packaging steps, the dmg assertions and the archive checks name.
+    #
+    # GUI_IDENTIFIER is CFBundleIdentifier, and the project never set it: the
+    # template writes whatever the property holds, so pist.app shipped with an
+    # empty bundle identifier. It is the same reverse-DNS name the AppStream
+    # component uses.
+    set_target_properties(pist PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "PiST"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.idontwantyourspamthanks.pist"
+        MACOSX_BUNDLE_COPYRIGHT "Copyright (c) Koala Software. GPL-2.0-or-later, see LICENSE.")
 endif()
 
 install(TARGETS pist
@@ -390,8 +404,10 @@ install(TARGETS pist-mcp
 
 # Licence and third-party notices. The LGPL (Qt) and BSD obligations require
 # these to travel with a binary distribution, and the NOTICE is also how a user
-# learns which external programs they still need to supply.
-install(FILES LICENSE NOTICE README.md
+# learns which external programs they still need to supply. `copyright` is the
+# DEP-5 statement Debian policy wants at /usr/share/doc/<pkg>/copyright; without
+# it the deb states its licence nowhere a package manager looks.
+install(FILES LICENSE NOTICE README.md packaging/copyright
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 if(UNIX AND NOT APPLE)
@@ -402,6 +418,22 @@ if(UNIX AND NOT APPLE)
     install(FILES packaging/pist.svg
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
         RENAME pist.svg)
+    # Raster sizes beside the SVG, all named pist.png for Icon=pist. Without
+    # these the hicolor tree a package carries is either SVG-only or — in the
+    # AppImage, whose deployer creates the size directories itself — empty
+    # directories at 16, 32, 64 and 128.
+    foreach(pist_icon_size 128 256 512)
+        install(FILES packaging/icons/pist-${pist_icon_size}.png
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/${pist_icon_size}x${pist_icon_size}/apps
+            RENAME pist.png)
+    endforeach()
+    # AppStream metadata: the name, developer and licence a software centre
+    # reports for the installed package. Without it GNOME Software and Discover
+    # fall back to the deb's file name and "Unknown Author". The file name is the
+    # component id, and <launchable> inside it is what joins the component to
+    # pist.desktop.
+    install(FILES packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo)
 endif()
 
 # Relocatable package layout: a staged tree keeps its bundled Qt beside the
@@ -421,31 +453,52 @@ endif()
 # macOS, WIX on Windows); CPACK_INSTALLED_DIRECTORIES overrides the tree and
 # must be an absolute path (CMake 4 RelativePath).
 # ---------------------------------------------------------------------------
-set(CPACK_PACKAGE_NAME "pist")
-set(CPACK_PACKAGE_VENDOR "PiST")
+# The product is PiST and the author is Koala Software. These are the names an
+# installer shows: CPACK_PACKAGE_NAME is the MSI product name and the NSIS/STGZ
+# install directory, CPACK_PACKAGE_VENDOR the MSI Manufacturer (WIX.template.in)
+# and the RPM Vendor. The distro package names are lowercased separately below,
+# because Debian policy requires it and CPackDeb lowercases whatever it is given
+# anyway (CPackRPM does not).
+set(CPACK_PACKAGE_NAME "PiST")
+set(CPACK_PACKAGE_VENDOR "Koala Software")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "An IDE for Atari ST assembly development")
 set(CPACK_PACKAGE_CONTACT "https://github.com/idontwantyourspamthanks/PiST")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/idontwantyourspamthanks/PiST")
+# The licence the installers quote. Left at CMake's default this is
+# CPack.GenericLicense.txt — a placeholder that tells an MSI or self-extracting
+# installer user nothing at all about GPL-2.0-or-later.
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+
+# One description for both binary package formats, so the deb and the rpm cannot
+# drift apart. It must be a single multi-line string: several quoted arguments
+# make a CMake *list*, and the semicolons that join a list reached the control
+# file as literal "; " at the head of every continuation line. CPackDeb strips
+# and re-indents each line itself, so no leading spaces here.
+set(PIST_PACKAGE_DESCRIPTION "IDE for Atari ST 68000 assembly development: editor, vasm integration,
+and debugging under the bundled Hatari emulator (breakpoints, stepping,
+registers, memory, disassembly, watchpoints).
+Self-contained: Qt runtime, Hatari (hrdb-main fork), vasm and EmuTOS
+are included. Licence: GPL-2.0-or-later; the bundled assembler and linker are
+not free software and are redistributed unmodified for non-commercial use
+(see /usr/share/doc/pist/copyright).")
 
 # Debian metadata. No computed shared-library dependencies: the package is
 # self-contained by design (bundled Qt, emulator, assembler, ROM), and a
 # distro Qt may be older than the 6.5 floor — a libqt6 dependency would be
 # wrong here.
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "PiST contributors")
+set(CPACK_DEBIAN_PACKAGE_NAME "pist")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Koala Software")
 set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
-set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
-    "IDE for Atari ST 68000 assembly development: editor, vasm integration,\n"
-    " and debugging under the bundled Hatari emulator (breakpoints, stepping,\n"
-    " registers, memory, disassembly, watchpoints).\n"
-    " Self-contained: Qt runtime, Hatari (hrdb-main fork), vasm and EmuTOS\n"
-    " are included.")
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "${PIST_PACKAGE_DESCRIPTION}")
 
 # RPM metadata. No auto-computed requires: same self-contained rationale.
+set(CPACK_RPM_PACKAGE_NAME "pist")
 set(CPACK_RPM_PACKAGE_LICENSE "GPL-2.0-or-later")
 set(CPACK_RPM_PACKAGE_GROUP "Development/Tools")
 set(CPACK_RPM_PACKAGE_AUTOREQPROV OFF)
+set(CPACK_RPM_PACKAGE_DESCRIPTION "${PIST_PACKAGE_DESCRIPTION}")
 
 # A stable upgrade GUID is what lets one PiST MSI replace the previous one
 # rather than installing side by side. Do not change it between releases.

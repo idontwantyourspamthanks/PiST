@@ -738,6 +738,114 @@ Remaining assessments:
   byte-identical to what was packaged. A bundle that ships a binary it does not
   use is the failure this exists to catch, and it has already caught two real
   packaging defects.
+- **Installers keep the bundle in a private prefix.** The deb and the rpm are
+  staged from the AppDir the AppImage is built from, and three things in that
+  tree are wrong in a distro package. All three shipped in 0.8.3, whose deb no
+  user could install:
+  - linuxdeploy copies the *build host's* copyright file for every library it
+    bundles into `usr/share/doc/<package>/`. Inside an AppImage that is
+    attribution; inside a `.deb` those are paths dpkg knows belong to
+    `libglib2.0-0`, `libpulse0`, `libxcb-*` and forty more installed packages,
+    and dpkg will not take a file away from another package — `dpkg -i` aborted
+    with *trying to overwrite `/usr/share/doc/libglib2.0-0/copyright`*. The
+    texts move to `usr/share/doc/pist/licenses/distro/` rather than being
+    dropped: they are the terms of binaries the package really carries.
+  - the bundle's libraries sat in `/usr/lib`, which ldconfig scans — and scans
+    **before** `/usr/lib/x86_64-linux-gnu`: with two copies of one soname in the
+    cache the `/usr/lib` one is listed first, and that is what `ld.so` resolves
+    (measured here, not assumed). The package therefore installed itself as the
+    system-wide provider of `libQt6Core.so.6`, `libglib-2.0.so.0`,
+    `libdbus-1.so.3` and forty more, for every other application on the machine.
+  - the AppImage machinery at the root (`AppRun`, `AppRun.wrapped`, `.DirIcon`,
+    `apprun-hooks/` and the root-level `pist.desktop`/`pist.svg` symlinks) would
+    be installed into `/`.
+
+  So the installers stage `/usr/lib/pist/` — Debian's private-library
+  convention, and a directory ldconfig does not recurse into — holding `bin/`,
+  `lib/`, `plugins/` and the ROM, with only `pist` and `pist-mcp` symlinked into
+  `/usr/bin` so the bundled Hatari, vasm and vlink cannot shadow a user's own.
+  The desktop entry, icons, AppStream metadata and docs stay in their public
+  places. The subtree moves *rigidly*, which is what keeps it working: the
+  binary's `$ORIGIN/../lib` rpath and the `qt.conf` linuxdeploy wrote beside it
+  (`Prefix = ../`, `Plugins = plugins`) both resolve inside the prefix unchanged,
+  and `bundledDataSearchPaths()` finds the ROM two levels up. Verified by running
+  the 0.8.3 artifact from the new layout under xvfb — assembler, linker, hrdb
+  emulator and EmuTOS all resolved inside it — and by the negative control: a
+  `Prefix` one level deeper aborts with *Could not find the Qt platform plugin
+  "xcb"*, which is also why the release workflow runs the packaged binary under
+  xvfb rather than offscreen (the offscreen plugin is not bundled).
+- **What a package manager reports.** `CPACK_PACKAGE_NAME` is the *product* name
+  — PiST, which is what the MSI product name, the NSIS/STGZ install directory
+  and the dmg volume show — and `CPACK_PACKAGE_VENDOR` the author, Koala
+  Software, which is the MSI Manufacturer and the RPM Vendor. The distro package
+  names stay lowercase `pist` (`CPACK_DEBIAN_PACKAGE_NAME`,
+  `CPACK_RPM_PACKAGE_NAME`): Debian policy requires it, CPackDeb lowercases
+  whatever it is given anyway, and CPackRPM does not. Asset file names carry the
+  version without the tag's `v` (`PiST-0.8.3-linux-amd64.deb`), because
+  interpolating `github.ref_name` verbatim produced `pist-v0.8.3-…`, which a
+  software centre truncates at the first dot and reports as a package called
+  "pist-v0".
+- **The macOS bundle identifier was empty.** `MacOSXBundleInfo.plist.in` writes
+  `CFBundleIdentifier` from `MACOSX_BUNDLE_GUI_IDENTIFIER`, a property the
+  project never set, so `pist.app` shipped with `<string></string>` there. It is
+  now the same reverse-DNS name the AppStream component uses, and
+  `MACOSX_BUNDLE_BUNDLE_NAME` supplies `CFBundleName` — what Finder shows under
+  the icon and what the menu bar shows while the app runs, which was the target
+  name, "pist". The bundle *directory* stays `pist.app`, because that path is
+  what the packaging steps, the dmg assertions and the archive checks name; the
+  macOS deploy step now asserts the plist rather than trusting the property.
+- **The name, author and licence a software centre shows come from AppStream**,
+  not from the control file:
+  `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, installed to
+  `/usr/share/metainfo/`. The component id is a reverse-DNS name while the menu
+  entry stays `pist.desktop`, and `<launchable type="desktop-id">` is what joins
+  the two. A flat `pist` id also works — it merges by identity — but appstreamcli
+  then warns `cid-desktopapp-is-not-rdns` and *fails* validation, a trap for
+  whoever adds a CI gate later; the launchable link has been supported since
+  AppStream 0.10, well past the 0.15/0.16 on Ubuntu 22.04. The file name must
+  equal the id. The developer is stated twice, `<developer>` for AppStream 1.0
+  and `<developer_name>` for the 0.15/0.16 on Ubuntu 22.04, which cannot read
+  the new tag, so the deprecation notice appstreamcli prints about the second
+  one is intended and is the only thing left in a clean validation.
+
+  The licence is stated three ways: `project_license` in the metadata, a DEP-5
+  `copyright` at `/usr/share/doc/pist/copyright` (`packaging/copyright`), and
+  `CPACK_RESOURCE_FILE_LICENSE` pointed at the repository's `LICENSE` instead of
+  CMake's `CPack.GenericLicense.txt` placeholder. That file's `Files:` patterns
+  are layout-agnostic (`*/vasmm68k_mot`, `*/libQt6*`, …) because one file ships
+  in packages with three different layouts: a pattern naming `usr/bin/vasmm68k_mot`
+  stopped matching the moment the installers moved to the private prefix, which
+  would have left the non-free assembler and linker claimed by the GPL-2+
+  catch-all — the exact carve-out the file exists to make.
+
+  The deb's description is a single multi-line string: several quoted arguments
+  to `set()` make a CMake *list*, and the semicolons that join a list reached the
+  0.8.3 control file as a literal "; " at the head of every continuation line.
+- **An AppImage does not add itself to the application menu, and cannot.** That
+  is by design: integration is done by AppImageLauncher or `appimaged`, or by
+  installing the deb/rpm, which put the desktop entry, the icons and the
+  metadata in their public places. What the AppImage carries for those tools is
+  the embedded `pist.desktop`, its icon and — since `VERSION` is now exported to
+  `appimagetool` — a version stamp and a versioned file name.
+- **The window's desktop identity.** `setDesktopFileName()` is called before the
+  application object exists, which is when Qt reads it: the name becomes the
+  Wayland `app_id` and the D-Bus activation name. Under X11 nothing changes —
+  measured with `xprop` on the 0.8.3 binary, WM_CLASS is already
+  `"pist", "PiST"`, because Qt derives res_name from the executable name rather
+  than from `setApplicationName("PiST")`. `StartupWMClass=pist` in the entry
+  therefore states what was already true. On Wayland the app_id came from the
+  application name and matched nothing, so the taskbar icon did not group with
+  the menu entry — the part of "does not show up right on the desktop" that was
+  ours to fix, as distinct from the AppImage not registering itself.
+
+  It is set *conditionally*, on `QStandardPaths::locate(ApplicationsLocation, …)`
+  finding `pist.desktop` or AppImageLauncher's `appimagekit_pist.desktop`. An
+  unconditional call was measured to make the desktop portal fail to register the
+  app ID on every build-tree and unintegrated-AppImage start
+  (`qt.qpa.services: … Could not register app ID: App info not found for
+  'pist.desktop'`) — a warning printed for a name nothing on that system can
+  resolve, on the two run paths that are not an installed package. Where an entry
+  is installed the registration succeeds and the app_id is the entry's.
 
 Open: macOS only — that archive still documents where to get the emulator, and
 PiST reports it clearly when absent. Installers ship: deb and RPM from the

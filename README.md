@@ -242,16 +242,24 @@ are available — and `tst_hrdb` unless `$PIST_HRDB_HATARI` names the hrdb-main 
 ### Installing
 
 Download an archive or installer from [Releases](../../releases) — a Linux AppImage plus
-deb and RPM packages, a macOS dmg and tarball, and a Windows MSI and zip. All of them
-carry PiST, the `vasmm68k_mot` assembler and an EmuTOS ROM; the Linux AppImage and the
-Windows archive also carry **Hatari (the hrdb-main fork, 2.6.1-based)** — the Windows
-one built with MSYS2 ucrt64 — so on those platforms a fresh download runs and debugs
-with nothing else installed:
+deb and RPM packages, a macOS dmg and tarball, and a Windows MSI and zip, every asset
+named `PiST-<version>-<platform>`. All of them carry PiST, the `vasmm68k_mot` assembler
+and an EmuTOS ROM; the Linux AppImage and the Windows archive also carry **Hatari (the
+hrdb-main fork, 2.6.1-based)** — the Windows one built with MSYS2 ucrt64 — so on those
+platforms a fresh download runs and debugs with nothing else installed:
 
 ```sh
-chmod +x PiST-x86_64.AppImage
-./PiST-x86_64.AppImage your-program.s
+chmod +x PiST-*-x86_64.AppImage
+./PiST-*-x86_64.AppImage your-program.s
 ```
+
+On Linux the **deb or RPM is the route that integrates with the desktop**: it installs a
+menu entry, the icons and the metadata a software centre reads for the name, author and
+licence, and keeps everything it bundles — Qt, the emulator, the assembler, the ROM — in a
+private `/usr/lib/pist/`, so none of it can be picked up by other applications; only
+`pist` and `pist-mcp` are linked into `/usr/bin`. An AppImage does not add itself to the
+application menu and cannot: that integration is AppImageLauncher's or `appimaged`'s job,
+or install a package.
 
 The macOS archive does not bundle the emulator (the fork links Homebrew SDL2, and
 rewiring those dylibs into the `.app` is unbuilt work), so install **Hatari** yourself

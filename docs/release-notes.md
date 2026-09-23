@@ -20,9 +20,9 @@ PiST — an IDE for Atari ST assembly development.
 
 A correction release, published shortly after 0.8.2 and superseding it: CI found
 two defects in what 0.8.2 shipped, both are fixed here, and the release workflow
-now runs the test suite before it packages anything, so a red build cannot be
-published again. 0.8.2 keeps its own page and changelog — the large maintenance
-release this one corrects.
+now refuses to publish a commit CI has not passed, so a red build cannot reach
+the releases page again. 0.8.2 keeps its own page and changelog — the large
+maintenance release this one corrects.
 
 **If you downloaded 0.8.2, update:** its archives carry the first bug below.
 

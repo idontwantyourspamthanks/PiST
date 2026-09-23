@@ -384,8 +384,12 @@ jobs:
 
           # Both executables are named with -e, which is what makes linuxdeploy
           # bundle the libraries they need that are NOT universal on a desktop:
-          # with only `pist` named, the bundled Hatari arrived without SDL2,
-          # libreadline or libpng and could not start.
+          # with only `pist` named, the bundled Hatari arrived without SDL2 or
+          # libpng and could not start. libreadline belonged to that list when
+          # the failure was found; the emulator has since been built without it
+          # (a licence constraint — see the dependency step and NOTICE), so the
+          # assertion below names SDL2 and libpng only, and a readline in the
+          # bundle would be a defect rather than a missing dependency.
           #
           # X11, Wayland, libdrm, libgbm and libasound are deliberately NOT
           # bundled, and that is linuxdeploy's own choice rather than an

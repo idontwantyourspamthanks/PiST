@@ -751,19 +751,21 @@ jobs:
           fi
           for pkg in "$DEB" "$RPM"; do
             case "$pkg" in
-              # dpkg-deb -c marks directories, rpm -qlp does not, so the deb side
-              # filters them out and the rpm side filters the prefix by name.
-              *.deb) files=$(echo "$listing" | awk '$1 !~ /^d/ {print $6}') ;;
+              *.deb) files=$(dpkg-deb -c "$pkg" | awk '{print $6}') ;;
               *)     files=$(rpm -qlp "$pkg" 2>/dev/null) ;;
             esac
-            # /usr/lib/pist is the private prefix itself, and the only thing the
-            # package may own directly under /usr/lib: ldconfig scans that
-            # directory — before the multiarch one — and hands whatever it finds
-            # there to every other application on the system.
-            stray=$(echo "$files" | grep -E '^(\.?/)?usr/lib/[^/]+/?$' \
-                    | grep -vE '^(\.?/)?usr/lib/pist/?$' || true)
+            # A *shared object* directly in /usr/lib is the hazard: ldconfig scans
+            # that directory — before the multiarch one — and caches every soname
+            # it finds there, so every other application on the system would
+            # resolve the bundle's Qt, glib or D-Bus instead of the distro's. The
+            # check is limited to shared objects because the directories a package
+            # legitimately owns there are not cached: /usr/lib/pist is the private
+            # prefix itself, and rpmbuild adds /usr/lib/.build-id for its debuginfo
+            # links (which is what tripped an earlier, broader form of this check).
+            stray=$(echo "$files" | grep -E '^\.?/usr/lib/[^/]+\.so(\.[^/]*)?$' || true)
             if [ -n "$stray" ]; then
-              echo "ERROR: $pkg puts this directly in /usr/lib:"
+              echo "ERROR: $pkg puts a library directly in /usr/lib, where ldconfig"
+              echo "would hand it to every other application on the system:"
               echo "$stray" | head
               exit 1
             fi
@@ -983,13 +985,32 @@ jobs:
             -D "CPACK_INSTALL_CMAKE_PROJECTS=" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-macos-arm64"
           # Assert the installer carries what the archive has.
+          #
+          # The attach is retried, at an absolute mountpoint: CPack's DragNDrop
+          # generator attaches the image itself to write its .DS_Store and
+          # detaches it again, and the device can still be busy a moment later.
+          # The 0.8.4 macOS leg died here with "hdiutil: attach canceled" on a dmg
+          # CPack had just reported as generated. A genuinely broken image fails
+          # all five attempts, so the retry cannot mask one.
           rm -rf dmgx && mkdir dmgx
-          hdiutil attach -nobrowse -mountpoint dmgx "PiST-$V-macos-arm64.dmg" > /dev/null
+          mnt="$PWD/dmgx"
+          for attempt in 1 2 3 4 5; do
+            if hdiutil attach -nobrowse -mountpoint "$mnt" \
+                 "PiST-$V-macos-arm64.dmg" > /dev/null; then
+              break
+            fi
+            echo "hdiutil attach failed (attempt $attempt of 5)"
+            if [ "$attempt" -eq 5 ]; then
+              echo "ERROR: could not attach the dmg"
+              exit 1
+            fi
+            sleep 15
+          done
           for f in pist.app/Contents/MacOS/pist share/emutos/etos1024k.img \
                    share/doc/pist/NOTICE share/doc/pist/licenses/vasm-LICENCE.txt; do
-            [ -e "dmgx/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R dmgx | head -20; hdiutil detach dmgx; exit 1; }
+            [ -e "$mnt/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R "$mnt" | head -20; hdiutil detach "$mnt"; exit 1; }
           done
-          hdiutil detach dmgx > /dev/null
+          hdiutil detach "$mnt" > /dev/null
           echo "ASSET_DMG=PiST-$V-macos-arm64.dmg" >> "$GITHUB_ENV"
 
       - name: Build MSI installer (Windows)

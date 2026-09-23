@@ -223,17 +223,24 @@ def main():
     found_libs = set()
     if hatari:
         # The bundled emulator may be the hrdb-main fork rather than upstream.
-        # The licence is the same (GPL v2 or later), but the source offer must
-        # name what was actually built — the pinned fork commit, not the
-        # upstream tarball. Detected by the same content probe PiST uses: the
-        # fork's listener banner string, which upstream never contains.
+        # The licence is the same, but the source offer must name what was
+        # actually built — the pinned fork commit, not the upstream tarball.
+        # Detected by the same content probe PiST uses: the fork's listener
+        # banner string, which upstream never contains.
+        #
+        # "GPL v2", not "or later": Hatari is mostly licensed v2-or-later, but
+        # three of the files it compiles into every binary grant version 2
+        # alone, so the combined work this project conveys is capped at v2 —
+        # which is also why no readline travels with it (NOTICE, PLAN §10).
         if b"Remote Debug Listening on port" in hatari.read_bytes():
             components.append(("Hatari (hrdb-main fork: upstream 2.6.1 + remote-debug "
-                               "listener)", "GPL v2 or later", ["GPL-2.0.txt"],
+                               "listener)", "GPL v2 as conveyed (upstream v2 or later)",
+                               ["GPL-2.0.txt"],
                                "source: https://github.com/tattlemuss/hatari — pinned "
                                "commit 21aa4cb76783eb1b141b917fa1976c9c01331d66"))
         else:
-            components.append(("Hatari 2.6.1", "GPL v2 or later", ["GPL-2.0.txt"],
+            components.append(("Hatari 2.6.1", "GPL v2 as conveyed (upstream v2 or later)",
+                               ["GPL-2.0.txt"],
                                "source: https://www.hatari-emu.org/ (pinned tarball)"))
         if args.platform != "windows":
             found_libs.update(linked_libraries(hatari, args.platform))

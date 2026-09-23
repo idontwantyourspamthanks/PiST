@@ -172,7 +172,11 @@ jobs:
           # so a run still going when this gives up is a release nobody should
           # be waiting on anyway; re-tagging resumes from a green run.
           for attempt in $(seq 1 60); do
-            runs="$(gh run list --workflow ci.yml --commit "$sha" \
+            # --repo is spelled out because this job has no checkout: with an
+            # empty workspace gh has no git remote to infer the repository from,
+            # and the runner exports GITHUB_REPOSITORY but not GH_REPO.
+            runs="$(gh run list --repo "${{ github.repository }}" \
+                      --workflow ci.yml --commit "$sha" \
                       --json databaseId,status,conclusion --limit 10)"
             total="$(jq 'length' <<<"$runs")"
             finished="$(jq '[.[] | select(.status == "completed")] | length' <<<"$runs")"

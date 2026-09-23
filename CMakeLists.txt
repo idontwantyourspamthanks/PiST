@@ -468,7 +468,24 @@ set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/idontwantyourspamthanks/PiST"
 # The licence the installers quote. Left at CMake's default this is
 # CPack.GenericLicense.txt — a placeholder that tells an MSI or self-extracting
 # installer user nothing at all about GPL-2.0-or-later.
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+#
+# It must be a path whose extension CPack understands. CPackWIX turns the file
+# into RTF by extension and accepts .txt or .rtf; the repository's LICENSE has
+# no extension at all, which failed the Windows leg with "unsupported WiX
+# License file extension ''". The copy is generated into the build tree, so
+# there is still exactly one licence text to maintain.
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
+    ${CMAKE_CURRENT_BINARY_DIR}/license.txt COPYONLY)
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_BINARY_DIR}/license.txt")
+# Pointing that resource at anything other than CMake's placeholder makes CPack
+# enable a dmg Software License Agreement by default: CPack.cmake sets
+# CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE unless CMP0133 is NEW. A dmg with an
+# SLA cannot be attached without somebody clicking Agree, so `hdiutil attach`
+# fails with "attach canceled" on a headless runner and the macOS leg can neither
+# verify nor publish it. Off keeps the dmg as 0.8.3 shipped it; the licence still
+# travels inside the bundle (LICENSE, NOTICE and the generated THIRD-PARTY.txt),
+# which the dmg step asserts.
+set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE OFF)
 
 # One description for both binary package formats, so the deb and the rpm cannot
 # drift apart. It must be a single multi-line string: several quoted arguments

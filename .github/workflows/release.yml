@@ -986,31 +986,20 @@ jobs:
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-macos-arm64"
           # Assert the installer carries what the archive has.
           #
-          # The attach is retried, at an absolute mountpoint: CPack's DragNDrop
-          # generator attaches the image itself to write its .DS_Store and
-          # detaches it again, and the device can still be busy a moment later.
-          # The 0.8.4 macOS leg died here with "hdiutil: attach canceled" on a dmg
-          # CPack had just reported as generated. A genuinely broken image fails
-          # all five attempts, so the retry cannot mask one.
+          # This attach is also what catches a dmg CPack gave a Software Licence
+          # Agreement: an SLA cannot be accepted headlessly, and hdiutil answers
+          # "attach canceled" — which is how the first 0.8.4 attempt died, all
+          # five of a retry loop's attempts alike. The retry was the wrong
+          # response to a deterministic failure and is gone; the cause is
+          # CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE, off in CMakeLists.txt with
+          # the reasoning written out there.
           rm -rf dmgx && mkdir dmgx
-          mnt="$PWD/dmgx"
-          for attempt in 1 2 3 4 5; do
-            if hdiutil attach -nobrowse -mountpoint "$mnt" \
-                 "PiST-$V-macos-arm64.dmg" > /dev/null; then
-              break
-            fi
-            echo "hdiutil attach failed (attempt $attempt of 5)"
-            if [ "$attempt" -eq 5 ]; then
-              echo "ERROR: could not attach the dmg"
-              exit 1
-            fi
-            sleep 15
-          done
+          hdiutil attach -nobrowse -mountpoint dmgx "PiST-$V-macos-arm64.dmg" > /dev/null
           for f in pist.app/Contents/MacOS/pist share/emutos/etos1024k.img \
                    share/doc/pist/NOTICE share/doc/pist/licenses/vasm-LICENCE.txt; do
-            [ -e "$mnt/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R "$mnt" | head -20; hdiutil detach "$mnt"; exit 1; }
+            [ -e "dmgx/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R dmgx | head -20; hdiutil detach dmgx; exit 1; }
           done
-          hdiutil detach "$mnt" > /dev/null
+          hdiutil detach dmgx > /dev/null
           echo "ASSET_DMG=PiST-$V-macos-arm64.dmg" >> "$GITHUB_ENV"
 
       - name: Build MSI installer (Windows)

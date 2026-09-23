@@ -223,9 +223,10 @@ jobs:
           # one emulator, and PiST's content probe selects HRDB automatically
           # for it. The fork is upstream 2.6.1 plus the remote-debug listener,
           # so emulation is identical to what CI tests against upstream; the
-          # native backend remains for user-supplied stock Hatari. GPL-2.0-or-
-          # later like upstream, with the source offer naming the pinned fork
-          # commit (NOTICE).
+          # native backend remains for user-supplied stock Hatari. Conveyed as
+          # GPLv2: three of the files it compiles in grant version 2 alone, so
+          # the source offer names the pinned fork commit and no GPLv3 library
+          # joins it (NOTICE, docs/PLAN.md §10).
           variant: hrdb
           destination: ${{ github.workspace }}/bundle/bin
 
@@ -278,6 +279,40 @@ jobs:
       - name: Build
         shell: bash
         run: cmake --build build --config Release --parallel
+
+      # Do not package what has not been tested. CI runs this same suite on the
+      # same three platforms, but it is a separate workflow with a separate
+      # trigger: a tag pushed while CI is red — or, as happened for 0.8.2, before
+      # CI had even finished — published anyway. That release shipped a
+      # project-save bug its own tst_settings caught on the Qt these archives
+      # bundle, so the gate belongs where the publishing does. Everything the
+      # suite needs is already staged: the assembler and linker in bundle/bin,
+      # the ROM in bundle/share/emutos, and the emulator that ships beside them.
+      - name: Test the build (gate before packaging)
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PIST_TOS_DIR: ${{ github.workspace }}/bundle/share/emutos
+          # Required only where the suite can actually run a session: Linux, with
+          # the fork that ships. macOS bundles no emulator here, and a Windows
+          # session never reaches the entry stop (see ci.yml), so on those a
+          # missing prerequisite stays a skip rather than a failure.
+          PIST_REQUIRE_EMULATOR: ${{ matrix.emulator && runner.os == 'Linux' && '1' || '' }}
+          PIST_HRDB_HATARI: ${{ matrix.emulator && format('{0}/bundle/bin/hatari{1}', github.workspace, runner.os == 'Windows' && '.exe' || '') || '' }}
+          SDL_VIDEODRIVER: dummy
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bundle/bin:$PATH"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # The unit suites only. bundle/bin also holds hatari.exe, and a
+            # Windows session never gets off the ground with it, so the
+            # integration suites are left to CI's Windows leg — which runs the
+            # same unit suites plus those four skipping cleanly.
+            ctest --test-dir build --build-config Release --output-on-failure \
+              -R '^(parsers|image|oscall|tosrom|profile|debug|link|settings|toolfetch|git|mcp)$'
+          else
+            ctest --test-dir build --build-config Release --output-on-failure
+          fi
 
       # Deploy the Qt runtime so the archive runs on a machine without Qt
       # installed. Without this the binary links against the Qt it was built with

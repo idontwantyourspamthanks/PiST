@@ -1310,7 +1310,17 @@ void TstParsers::floppyUpdateKeepsForeignNamesByteIdentical()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY2(entryNamed(before, QStringLiteral("lower.txt"), false),
              "a lower-case field must list as it reads");
-    QVERIFY2(entryNamed(before, QStringLiteral("caf\xE9.txt"), false),
+    // The cafe expectation is spelled QString::fromLatin1, not
+    // QStringLiteral: QStringLiteral pastes its narrow text after `u""`
+    // (qstring.h's QT_UNICODE_LITERAL), which hands the UTF-16 meaning of
+    // escaped byte 0xE9 to the compiler's mixed-literal interpretation —
+    // MSVC's reading of it is not U+00E9, which is exactly why this line
+    // failed on the Windows leg while GCC and clang passed. fromLatin1 maps
+    // byte 0xE9 to U+00E9 on every compiler, the same decode the listing
+    // itself applies to the field (FloppyImage's latin1Field/display83 go
+    // through QString::fromLatin1). The name83 expectations need no such
+    // care: those are raw bytes, identical on every compiler.
+    QVERIFY2(entryNamed(before, QString::fromLatin1("caf\xE9.txt"), false),
              "a Latin-1 field must list as one accented character");
     QVERIFY2(entryNamed(before, QStringLiteral("PADDED.TXT"), false),
              "NUL padding must be padding, not name characters");
@@ -1333,7 +1343,7 @@ void TstParsers::floppyUpdateKeepsForeignNamesByteIdentical()
     };
     QCOMPARE(name11Of(QStringLiteral("LOWER.TXT")), QByteArray());   // never re-emitted upper-cased
     QCOMPARE(name11Of(QStringLiteral("lower.txt")), name83("lower", "txt"));
-    QCOMPARE(name11Of(QStringLiteral("caf\xE9.txt")), name83("caf\xE9", "txt"));
+    QCOMPARE(name11Of(QString::fromLatin1("caf\xE9.txt")), name83("caf\xE9", "txt"));
     QCOMPARE(name11Of(QStringLiteral("PADDED.TXT")), name83("PADDED", "TXT", '\0'));
     QCOMPARE(name11Of(QStringLiteral("sub")), name83("sub"));
     QCOMPARE(name11Of(QStringLiteral("sub/keep.txt")), name83("keep", "txt"));

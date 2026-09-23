@@ -3907,8 +3907,15 @@ void TstGui::gitDiscoveryFollowsTheOpenedProject()
     const QString log = bin + QStringLiteral("/invocations.log");
 #ifdef Q_OS_WIN
     const QString git = bin + QStringLiteral("/git.bat");
-    QVERIFY(writeFile(git, QByteArrayLiteral("@echo off\r\necho %CD% ^& %* >> \"")
-                               + QFile::encodeName(log) + QByteArrayLiteral("\"\r\n")));
+    // cmd.exe's recording of the same `<cwd>|<args>` line the shell fake
+    // writes: `^|` survives `echo` as a literal pipe — an unescaped `|` would
+    // split the command — and the redirection sits in front of `echo` so cmd
+    // cannot echo a space before the arguments. What cmd appends is CRLF: the
+    // CR trails the args, outside the field the checker splits on (the CI log
+    // shows it as a trailing `?`), so field 0 stays exactly the working
+    // directory for QFileInfo::canonicalFilePath() to resolve.
+    QVERIFY(writeFile(git, QByteArrayLiteral("@echo off\r\n>>\"") + QFile::encodeName(log)
+                               + QByteArrayLiteral("\" echo %CD%^|%*\r\n")));
 #else
     const QString git = bin + QStringLiteral("/git");
     // `pwd -P`, not $PWD: the shell variable is inherited from the parent and
@@ -7361,7 +7368,6 @@ void TstGui::settingErrorLinesRepaintsTheGutter()
     QCoreApplication::processEvents();
     QVERIFY2(counter.paints > 0, "marking an error line must repaint the gutter");
     const QImage marked = gutter->grab().toImage();
-    QVERIFY2(marked != plain, "the error marker must be visible in the gutter");
 
     // The control step: a breakpoint mark goes through the same path, so a
     // harness that stopped delivering paints fails here.
@@ -7369,6 +7375,13 @@ void TstGui::settingErrorLinesRepaintsTheGutter()
     editor.setBreakpointLines({2});
     QCoreApplication::processEvents();
     QVERIFY2(counter.paints > 0, "marking a breakpoint must repaint the gutter");
+    // These two grabs differ only by the breakpoint dot, and that dot is
+    // painted as geometry — the breakpoint branch of
+    // CodeEditor::lineNumberAreaPaintEvent draws it, not a glyph, exactly so
+    // it does not depend on a font — so the check holds even where drawText
+    // puts down no pixels at all.
+    QVERIFY2(gutter->grab().toImage() != marked,
+             "the breakpoint mark must be visible in the gutter");
 
     counter.paints = 0;
     editor.setErrorLines({});
@@ -7376,6 +7389,19 @@ void TstGui::settingErrorLinesRepaintsTheGutter()
     QCoreApplication::processEvents();
     QVERIFY2(counter.paints > 0, "clearing the markers must repaint the gutter");
     QCOMPARE(gutter->grab().toImage(), plain);
+
+    // Checked last, so a platform without fonts still runs everything above.
+    // The error mark is the glyph "!" (drawText in
+    // CodeEditor::lineNumberAreaPaintEvent), and Qt ships no fonts: the
+    // offscreen platform on Windows loads none — the QFontDatabase warning
+    // this suite prints ("Cannot find font directory .../lib/fonts") is its
+    // way of saying so — so drawText paints nothing and `marked` cannot
+    // differ from `plain` for any reason this test controls. Where fonts do
+    // exist this must still fail if the marker stops being drawn.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no font is available to draw the error marker's '!' glyph "
+              "(Qt ships no fonts and the offscreen platform loads none)");
+    QVERIFY2(marked != plain, "the error marker must be visible in the gutter");
 }
 
 void TstGui::hardwareViewDropsTheTranscriptOfTheSubjectItLeft()

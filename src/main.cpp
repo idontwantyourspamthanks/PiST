@@ -15,6 +15,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QTextStream>
+#include <QStandardPaths>
 
 #ifdef Q_OS_WIN
 #  include <cstdio>
@@ -125,6 +126,29 @@ int main(int argc, char *argv[])
         && !qEnvironmentVariableIsEmpty("DISPLAY"))
         qputenv("QT_QPA_PLATFORM", "xcb");
 #endif
+
+    // The desktop entry's name is the window's identity on the desktop: Qt reads
+    // it before the application object exists, and it becomes the Wayland app_id
+    // and the D-Bus activation name. Left unset, Wayland derives it from the
+    // application name — "PiST" — which matches no entry, so the taskbar shows a
+    // generic icon and refuses to group the window under the launcher. X11 is
+    // unaffected either way: its WM_CLASS res_name already resolves to "pist"
+    // from the executable name (measured with xprop), which is what the entry's
+    // StartupWMClass states.
+    //
+    // Set only when an entry is actually installed. Claiming "pist.desktop" on a
+    // run that has none — a build tree, or an AppImage nobody has integrated —
+    // makes the desktop portal fail to register the app ID, printing a warning on
+    // every start for no benefit. The second name is the entry AppImageLauncher
+    // generates for an integrated AppImage.
+    for (const QString &entry : {QStringLiteral("pist.desktop"),
+                                 QStringLiteral("appimagekit_pist.desktop")}) {
+        if (!QStandardPaths::locate(QStandardPaths::ApplicationsLocation,
+                                    entry).isEmpty()) {
+            QApplication::setDesktopFileName(entry);
+            break;
+        }
+    }
 
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("PiST"));

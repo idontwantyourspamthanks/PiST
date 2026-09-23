@@ -212,15 +212,37 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     // Opening the destination directly with Truncate destroyed the only copy of
     // the project the moment anything went wrong after the open — a full disk, a
     // crash, a power cut — and the next load() then reported the remains as an
-    // invalid project file. QSaveFile reports a failed write, or a failed
-    // rename, and leaves the file that was already there untouched.
+    // invalid project file.
+    //
+    // commit() alone does not give that guarantee on the Qt the release archives
+    // ship. The payload is buffered, so write() reports success and the bytes
+    // only reach the disk on the flush commit() does internally — and Qt 6.8's
+    // commit() does not notice that flush failing: it renames the truncated
+    // temporary file over the destination and returns true, which is precisely
+    // the loss this code exists to prevent. (Qt 6.10 checks the device error
+    // there; 6.8.1, bundled in every archive, does not.) So flush explicitly and
+    // treat any device error as the failure it is: cancelWriting() makes the
+    // commit discard the temporary file instead of renaming it, which leaves the
+    // project already on disk untouched.
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
         if (error)
             *error = QStringLiteral("cannot write '%1': %2").arg(path, file.errorString());
         return false;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    bool onDisk = file.write(json) == json.size();
+    if (onDisk && !file.flush())
+        onDisk = false;
+    if (!onDisk || file.error() != QFileDevice::NoError) {
+        const QString reason = file.errorString();
+        file.cancelWriting();
+        // Only discards the temporary file now; the failure is already in hand.
+        file.commit();
+        if (error)
+            *error = QStringLiteral("cannot write '%1': %2").arg(path, reason);
+        return false;
+    }
     if (!file.commit()) {
         if (error)
             *error = QStringLiteral("cannot write '%1': %2").arg(path, file.errorString());

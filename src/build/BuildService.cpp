@@ -4,9 +4,12 @@
 
 #include "build/BuildService.h"
 
+#include "build/ProcessUtil.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QProcess>
 #include <QRegularExpression>
 
@@ -126,11 +129,7 @@ void BuildService::cancel()
 {
     if (!m_process)
         return;
-    m_process->disconnect(this);
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(2000);
-    }
+    killAndRelease(m_process, this);
     m_process->deleteLater();
     m_process = nullptr;
 }
@@ -169,24 +168,29 @@ void BuildService::build()
     if (!m_outputFile.isEmpty())
         QFile::remove(m_outputFile);
 
-    planSteps();
+    QString planError;
+    planSteps(&planError);
 
-    if (m_steps.isEmpty()) {
-        QList<Diagnostic> diags;
-        Diagnostic d;
-        d.severity = Diagnostic::Error;
-        d.message = usesLinker()
-                        ? tr("More than one source needs a linker, and none is configured.")
-                        : tr("Nothing to build.");
-        diags.append(d);
-        emit finished(false, diags);
+    if (!m_steps.isEmpty()) {
+        runNextStep();
         return;
     }
 
-    runNextStep();
+    QList<Diagnostic> diags;
+    Diagnostic d;
+    d.severity = Diagnostic::Error;
+    // A plan that knows why it cannot proceed says so; an empty plan is the two
+    // cases this guard has always covered.
+    d.message = !planError.isEmpty()
+                    ? planError
+                    : (usesLinker()
+                           ? tr("More than one source needs a linker, and none is configured.")
+                           : tr("Nothing to build."));
+    diags.append(d);
+    emit finished(false, diags);
 }
 
-void BuildService::planSteps()
+bool BuildService::planSteps(QString *error)
 {
     const QString base = m_outputFile;
 
@@ -210,10 +214,17 @@ void BuildService::planSteps()
         step.arguments << QStringLiteral("-o") << m_outputFile;
         step.arguments << m_extraArgs;
         step.arguments << m_sourceFile;
-        step.description = tr("Assembling %1").arg(QFileInfo(m_sourceFile).fileName());
         m_steps.append(step);
-        return;
+        return true;
     }
+
+    // More than one source needs a linker, and this one is not configured: plan
+    // nothing, so build()'s own guard reports exactly that, rather than a link
+    // step whose empty program QProcess can only answer with "Could not run ''.
+    // Is it installed?" — which is what the caller used to see instead (finding
+    // MIN-36).
+    if (m_linkerPath.isEmpty())
+        return true;
 
     // Separate compilation. Each module is assembled to an object with its own
     // listing, because a listing's offsets are relative to the module and the
@@ -221,14 +232,40 @@ void BuildService::planSteps()
     QStringList sources{m_sourceFile};
     sources += m_additionalSources;
 
+    // Resolve every module's paths before any step is built. Two sources whose
+    // names differ only in their suffix (`a.s` and `a.asm`) derive the same
+    // `a.o`/`a.lst`: the second assembly overwrote the first's object and the
+    // linker received the same path twice, so one module was linked twice, the
+    // other was missing, and nothing said so (finding MIN-40). Refuse the plan
+    // instead, naming both sources.
     QStringList objects;
+    QStringList listings;
+    QHash<QString, QString> owners;   // resolved object path -> the source that claims it
     for (const QString &source : sources) {
         const QFileInfo info(source);
         const QString object = info.absolutePath() + QLatin1Char('/')
                              + info.completeBaseName() + QStringLiteral(".o");
         const QString listing = info.absolutePath() + QLatin1Char('/')
                               + info.completeBaseName() + QStringLiteral(".lst");
+        // The collision is on the resolved path, not on the spelling: `a.s` and
+        // `./a.s` name one module, whose object is the same file.
+        const QString key = QDir::cleanPath(QFileInfo(object).absoluteFilePath());
+        const auto claimed = owners.constFind(key);
+        if (claimed != owners.constEnd()) {
+            *error = tr("%1 and %2 both assemble to %3, so one module would overwrite the other. "
+                        "Rename one of them.")
+                         .arg(claimed.value(), source, object);
+            return false;
+        }
+        owners.insert(key, source);
         objects.append(object);
+        listings.append(listing);
+    }
+
+    for (int i = 0; i < sources.size(); ++i) {
+        const QString &source = sources.at(i);
+        const QString &object = objects.at(i);
+        const QString &listing = listings.at(i);
         m_objectFiles.append(object);
         m_listingFiles.append(listing);
 
@@ -245,7 +282,6 @@ void BuildService::planSteps()
         step.arguments << QStringLiteral("-o") << object;
         step.arguments << m_extraArgs;
         step.arguments << source;
-        step.description = tr("Assembling %1").arg(info.fileName());
         m_steps.append(step);
     }
 
@@ -257,8 +293,8 @@ void BuildService::planSteps()
         link.arguments << (QStringLiteral("-M") + m_linkMapFile);
     link.arguments << QStringLiteral("-o") << base;
     link.arguments << objects;
-    link.description = tr("Linking %1 modules").arg(objects.size());
     m_steps.append(link);
+    return true;
 }
 
 void BuildService::runNextStep()
@@ -268,7 +304,7 @@ void BuildService::runNextStep()
         return;
     }
 
-    const Step step = m_steps.at(m_nextStep);
+    const Step &step = m_steps.at(m_nextStep);
 
     // A failed module stops the chain: linking whatever assembled would report
     // the same problem a second time, from the linker, with less useful wording.
@@ -276,8 +312,6 @@ void BuildService::runNextStep()
         finishBuild(false);
         return;
     }
-
-    emit stepStarted(step.description);
 
     m_stderrBuffer.clear();
     m_stdoutBuffer.clear();
@@ -305,23 +339,20 @@ void BuildService::runNextStep()
         }
     });
 
-    connect(m_process, &QProcess::errorOccurred, this, [this, step](QProcess::ProcessError error) {
-        if (error != QProcess::FailedToStart)
-            return;
-
+    const QString program = step.program;
+    connectFailedToStart(m_process, this, [this, program] {
         // Qt emits `finished` only when a child dies, so a process that never
         // started would otherwise complete nothing at all: the caller would wait
         // forever, a pending Run would stay armed, and the QProcess would leak.
         Diagnostic d;
         d.severity = Diagnostic::Error;
-        d.message = tr("Could not run '%1'. Is it installed?").arg(step.program);
+        d.message = tr("Could not run '%1'. Is it installed?").arg(program);
         m_diagnostics.append(d);
         m_sawFailure = true;
 
-        if (m_process) {
-            m_process->deleteLater();
-            m_process = nullptr;
-        }
+        killAndRelease(m_process, this);
+        m_process->deleteLater();
+        m_process = nullptr;
         ++m_nextStep;
         runNextStep();
     });

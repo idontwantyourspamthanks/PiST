@@ -42,6 +42,13 @@ struct Entry {
     /// bytes without re-resolving its name — FAT allows duplicate 8.3 names, and
     /// a name lookup returns the first match for all of them (finding B9).
     quint16 cluster = 0;
+    /// The entry's raw 11-byte 8.3 name field, exactly as its directory holds
+    /// it. `path` is the sanitised display form: a real disk's field may be
+    /// lower-case, carry Latin-1 accents (TOS's own `café.txt`) or be padded
+    /// with NULs by a third-party imaging tool, none of which survives a
+    /// round-trip through `path`. `updateImage` carries this field forward so an
+    /// entry it did not touch is re-emitted byte for byte.
+    QByteArray name11;
 };
 
 /// One host file or folder to place on a floppy. `destPath` is relative to the
@@ -50,6 +57,13 @@ struct Item {
     QString destPath;
     QByteArray data;
     bool isDirectory = false;
+    /// The raw 11-byte 8.3 name for the item's *last* `destPath` component.
+    /// Callers carrying an existing entry forward (`updateImage`) set it, and
+    /// each component of the path above it that a carried directory owns is
+    /// taken from that directory's own `name11`; an empty field — a host file
+    /// entering the disk — derives every component from `destPath` with
+    /// `name11FromHost`.
+    QByteArray name11;
 };
 
 /// Decode a `.st` (raw) or `.msa` (Magic Shadow Archiver) image to a flat
@@ -74,8 +88,19 @@ QVector<Entry> listImage(const QString &imagePath, QString *error);
 /// `.msa` file starts with its own header), and `imageSize` the decoded size.
 bool looksLikeCanonical720k(const QByteArray &firstSector, qint64 imageSize);
 
+/// Normalise an image-relative entry path to the spelling `listRaw` reports:
+/// native separators become `/`, and leading and trailing slashes are dropped.
+/// An empty result addresses the image root. Every path handed to this module
+/// — from a tree row, a clipboard payload or a drag's mime data — goes through
+/// here first, so a caller cannot address an entry in a spelling the writer's
+/// own comparisons do not match.
+QString normalizeEntryPath(const QString &path);
+
 /// Read one file's content out of a decoded image. `entryPath` is the
-/// `/`-separated path `listRaw` reports (`AUTO/PROG.PRG`).
+/// `/`-separated path `listRaw` reports (`AUTO/PROG.PRG`). A damaged image —
+/// a cluster chain that loops, leaves the image, or cannot yield the entry's
+/// declared size — fails with `error` set rather than yielding a truncated
+/// file.
 bool readFileRaw(const QByteArray &raw, const QString &entryPath,
                  QByteArray *data, QString *error);
 
@@ -85,7 +110,10 @@ bool readFileRaw(const QByteArray &raw, const QString &entryPath,
 /// exists on the disk is given a numbered name rather than failing the write.
 /// The new contents are staged to a sibling temporary file, so a failure never
 /// truncates the original, and the staged image only replaces the original
-/// once complete. The container format follows the suffix (`.st`, `.img`,
+/// once complete. A damaged original — a cluster chain that loops, leaves the
+/// image, or cannot yield a file's declared size — is refused with `error` set
+/// before anything is staged, so the recoverable clusters it still holds are
+/// never overwritten. The container format follows the suffix (`.st`, `.img`,
 /// `.msa`); `.dim` and `.ipf` cannot be written back and are refused. The
 /// FAT12 layout is always rebuilt with the canonical 720 KiB geometry.
 bool updateImage(const QString &imagePath, const QVector<Item> &additions,

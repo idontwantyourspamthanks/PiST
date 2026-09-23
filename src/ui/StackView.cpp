@@ -4,6 +4,7 @@
 
 #include "ui/StackView.h"
 
+#include "emu/HexFormat.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
 
@@ -44,15 +45,14 @@ void StackView::clear()
     m_table->setRowCount(0);
 }
 
-void StackView::setStackDump(quint32 sp, const QString &response,
+void StackView::setStackDump(quint32 sp, const QList<MemoryRow> &rows,
                              quint32 textBase, quint32 textEnd)
 {
     m_sp = sp;
-    m_lastResponse = response;
+    m_lastRows = rows;
     m_lastTextBase = textBase;
     m_lastTextEnd = textEnd;
     m_haveDump = true;
-    const QList<MemoryRow> rows = parseMemoryDump(response);
     if (rows.isEmpty()) {
         clear();
         return;
@@ -88,9 +88,9 @@ void StackView::setStackDump(quint32 sp, const QString &response,
             note = tr("pointer?");
 
         auto *addrItem = new QTableWidgetItem(
-            i == 0 ? QStringLiteral("SP→ %1").arg(address, 8, 16, QLatin1Char('0'))
-                   : QStringLiteral("    %1").arg(address, 8, 16, QLatin1Char('0')));
-        auto *valueItem = new QTableWidgetItem(QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')));
+            i == 0 ? tr("SP→ %1").arg(hex::hex32(address))
+                   : QStringLiteral("    %1").arg(hex::hex32(address)));
+        auto *valueItem = new QTableWidgetItem(hex::hex32(value));
         auto *noteItem = new QTableWidgetItem(note);
         addrItem->setForeground(i == 0 ? theme.gutterPc : theme.address);
         if (!note.isEmpty())
@@ -114,7 +114,7 @@ void StackView::applyAppearance()
     appearance::markMono(m_table);
     m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
     if (m_haveDump)
-        setStackDump(m_sp, m_lastResponse, m_lastTextBase, m_lastTextEnd);
+        setStackDump(m_sp, m_lastRows, m_lastTextBase, m_lastTextEnd);
 }
 
 void StackView::onCellDoubleClicked(int row, int column)

@@ -61,44 +61,95 @@ public:
     void refresh() override;
 
     void consoleCommand(const QString &command) override;
-    void command(const QString &command, quint32 dumpAddress = 0,
-                 bool stackDump = false, int dumpTag = 0) override;
+    void command(const QString &commandText) override;
 
     void clearBreakpoints() override;
     void armBreakpoint(const QString &condition) override;
+    void breakAtAddressOnce(quint32 address) override;
 
     void requestMemoryDump(quint32 address, int length, int tag = 0) override;
     void requestStackDump(quint32 address, int length) override;
     void dumpRegisters() override;
 
+    void loadSymbols() override;
+    void infoSubject(const QString &subject) override;
+    void readBasepage() override;
+    void setDisasmEngine(DisasmEngine engine) override;
+    void profileOn() override;
+    void profileOff() override;
+    void profileSave(const QString &path) override;
+    void writeRegister(const QString &name, quint32 value) override;
+    void writeMemoryByte(quint32 address, quint8 value) override;
+    void readDisassembly() override;
+    void readDisassemblyAt(quint32 address) override;
+    void readHistory(int count) override;
+
 private:
     struct Pending
     {
-        QString text;      ///< the command as the caller phrased it
+        QString text;      ///< the request as the caller phrased it, for the log
         QString wire;      ///< what goes over the socket
+        /// What this request's response *is*, set by the typed intent that
+        /// queued it, None for a free-text command. completeCurrent switches on
+        /// it instead of the text prefixes that read a `db` (dspbreak) as a
+        /// disassembly and untagged text as a pane dump (MAJ-12).
+        ResponseKind kind = ResponseKind::None;
         quint32 memBytes = 0;   ///< for `mem`: requested length (payload is padded)
-        /// Set by consoleCommand(); only these get their ack logged.
-        bool consoleOrigin = false;
+        /// A free-text command (the user's console, the remote `cmd` verb):
+        /// someone is waiting on its answer, so its deferral is announced (the
+        /// sender hears why nothing is coming, instead of the silent hold the
+        /// old per-text fallback did).
+        bool freeText = false;
+        /// Set once the deferral above has been reported, so a command held
+        /// over many dispatch attempts is announced exactly once.
+        bool deferAnnounced = false;
         quint32 dumpAddress = 0;
         bool stackDump = false;
         int dumpTag = 0;
+        /// Set by infoSubject(): the subject the report was asked about, which
+        /// names it on hardwareInfoReady() when it comes back. Empty means this request
+        /// is not an info report.
+        QString infoSubject;
+        /// Set by profileSave(): the file to name on profileSaveFinished().
+        QString profilePath;
+        /// Set by readDisassemblyAt(): report the text it read on
+        /// disassemblyReady(), for the caller that asked about that address.
+        bool reportDisassembly = false;
+        quint32 disassemblyAddress = 0;
+        /// Set by readHistory(): report the text on historyReady().
+        bool reportHistory = false;
         /// The response is the process's stderr tail since dispatch (console
         /// passthroughs), drained when the socket OK arrives.
         bool captureStderr = false;
-        /// State reads are only meaningful against a stopped machine — HRDB
-        /// services the socket while running, so these must be deferred to
-        /// the next stop or a snapshot can capture a mid-run PC.
+        /// The command runs from the fork's remote break loop, so it cannot be
+        /// dispatched against a running machine: the queue holds it until the
+        /// next stop. Stated per request, never inferred from the command text
+        /// (the fallback that used to do the inferring changed a running
+        /// floppy insert's semantics — see setFloppyImage).
         bool needsStop = false;
+        /// Whether this request must survive a resume(): the caller queued it
+        /// in the same stack frame as the continue (see survivesResume).
+        bool keepOnResume = false;
         /// State-snapshot batch membership, same contract as the native
         /// backend: stateUpdated fires once, when the batch's last completes.
         bool batchMember = false;
         bool batchEnd = false;
     };
-    /// Translate a debugger command text into a Pending ready for enqueue.
-    /// Returns false (and emits errorOccurred) when the command cannot be
-    /// translated; the caller must not enqueue in that case. Shared between
-    /// command() and consoleCommand() so a change to one form applies to both.
-    bool translateCommand(const QString &text, Pending *out);
+
+    /// The Pending for a request the fork's `console` handler runs: `wireBody`
+    /// is the debugger command passed to it, the response is the process's
+    /// stderr tail (the fork flushes before its OK), and it needs the remote
+    /// break loop — a debugger command cannot run against a moving machine.
+    static Pending consoleRequest(const QString &text, const QString &wireBody,
+                                  ResponseKind kind = ResponseKind::None,
+                                  bool keepOnResume = false);
+
+    /// The Pending for a *free-text* command — the user's console, the remote
+    /// `cmd` verb, and nothing else. The text is passed to the fork's console
+    /// unchanged: PiST rewrites nothing, so a command means here what it means
+    /// in the debugger (the table that used to rewrite `r`/`s`/`c`/`b`/`w b`
+    /// by prefix is gone with the callers that needed it — CRIT-6, MAJ-12).
+    static Pending freeTextRequest(const QString &text);
 
     void enqueue(Pending pending);
     void dispatchNext();
@@ -117,10 +168,10 @@ private:
     QString readStderrTail();
 
     /// uudecode the fork's `mem` payload (4 chars per 3 bytes, 32-based,
-    /// zero-padded at the tail) and render it as upstream `m` text, so the
-    /// views parse it unchanged. memBytes caps the decode: the payload can
-    /// hold up to 2 padding bytes beyond the request.
-    static QString formatMemoryDump(quint32 address, quint32 memBytes, const QByteArray &uu);
+    /// zero-padded at the tail) into the rows both backends publish. memBytes
+    /// caps the decode: the payload can hold up to 2 padding bytes beyond the
+    /// request.
+    static QList<MemoryRow> memoryRows(quint32 address, quint32 memBytes, const QByteArray &uu);
 
     QProcess *m_process = nullptr;
     QTcpSocket *m_socket = nullptr;

@@ -36,8 +36,6 @@ struct Diagnostic
     QString section;
     quint32 sectionOffset = 0;
     bool hasObjectOffset = false;
-
-    bool hasLocation() const { return line > 0 && !file.isEmpty(); }
 };
 
 } // namespace pist

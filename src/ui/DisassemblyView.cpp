@@ -4,6 +4,7 @@
 
 #include "ui/DisassemblyView.h"
 
+#include "emu/HexFormat.h"
 #include "ui/Appearance.h"
 
 #include <QHeaderView>
@@ -20,7 +21,7 @@ DisassemblyView::DisassemblyView(QWidget *parent)
 
     m_table = new QTableWidget(0, 3, this);
     m_table->setHorizontalHeaderLabels(
-        {QStringLiteral("Address"), QStringLiteral("Bytes"), QStringLiteral("Instruction")});
+        {tr("Address"), tr("Bytes"), tr("Instruction")});
     m_table->verticalHeader()->setVisible(false);
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -52,8 +53,7 @@ void DisassemblyView::setState(const MachineState &state)
 
     for (int i = 0; i < lines.size(); ++i) {
         const DisasmLine &dl = lines.at(i);
-        const QString address =
-            QStringLiteral("%1").arg(dl.address, 8, 16, QLatin1Char('0')).toUpper();
+        const QString address = hex::hex32(dl.address);
 
         auto *addrItem = new QTableWidgetItem(address);
         addrItem->setData(Qt::UserRole, dl.address);

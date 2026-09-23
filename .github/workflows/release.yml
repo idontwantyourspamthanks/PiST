@@ -209,7 +209,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb libsdl2-2.0-0 libreadline8 libpng16-16
+          sudo apt-get install -y -qq xvfb libsdl2-2.0-0 libpng16-16
 
       # Same action the test job uses, so the emulator that ships is one the
       # test suites ran against. On Windows this is the MSYS2 ucrt64 build and
@@ -435,8 +435,11 @@ jobs:
 
           # The libraries linuxdeploy must be bundling, because a desktop without
           # them exists. SDL2 in particular is not universally installed, whereas
-          # the excluded X11/ALSA set effectively is.
-          for lib in libSDL2-2.0 libreadline libpng; do
+          # the excluded X11/ALSA set effectively is. readline is deliberately
+          # NOT bundled: the conveyed Hatari is GPLv2-capped (three GPL-2.0-only
+          # files — see NOTICE and PLAN §10), so the GPLv3 library cannot join
+          # it, and the build pins that with CMAKE_DISABLE_FIND_PACKAGE_Readline.
+          for lib in libSDL2-2.0 libpng; do
             if ! find verify-appimage/squashfs-root/usr/lib -name "$lib*" | grep -q .; then
               echo "ERROR: $lib was not bundled; the emulator needs it"
               exit 1

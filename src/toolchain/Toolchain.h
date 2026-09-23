@@ -20,6 +20,13 @@ struct ToolInfo
     QString version;  ///< first version-looking token from `--version`, if cheap
     QString name;     ///< human-facing name, e.g. "vasmm68k_mot"
 
+    /// Why an explicit path from settings did not resolve. Empty in every other
+    /// case: "nothing was found" needs no explanation, but a path the user typed
+    /// that does not run is their mistake to correct, and the callers that show
+    /// it must be able to tell the two apart instead of printing the bare
+    /// program name as if discovery had found it.
+    QString reason;
+
     bool found() const { return !path.isEmpty(); }
 };
 

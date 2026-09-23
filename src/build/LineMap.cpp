@@ -4,6 +4,7 @@
 
 #include "build/LineMap.h"
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -63,7 +64,7 @@ bool LineMap::parseListing(const QString &path, QString *error)
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (error)
-            *error = QStringLiteral("cannot read listing '%1': %2").arg(path, file.errorString());
+            *error = QObject::tr("cannot read listing '%1': %2").arg(path, file.errorString());
         return false;
     }
 
@@ -123,7 +124,7 @@ bool LineMap::parseListing(const QString &path, QString *error)
         // here let an empty map masquerade as a good one, so breakpoints silently
         // never resolved (finding B11).
         if (error)
-            *error = QStringLiteral("listing '%1' produced no mapped source lines").arg(path);
+            *error = QObject::tr("listing '%1' produced no mapped source lines").arg(path);
         return false;
     }
     return true;

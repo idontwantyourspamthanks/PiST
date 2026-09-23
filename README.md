@@ -39,14 +39,19 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
   find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
-  match-case and whole-word options), **Ctrl+click** to open an `include` or jump to a label,
+  match-case and whole-word options, and a hit counter that admits its cap — past 2000 it reads
+  "N of more than 2000" rather than counting on), **Ctrl+click** to open an `include` or jump to a label,
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
   GEMDOS/BIOS/XBIOS call being made and what it is being called with
 - **Git** — a panel tabbed with Project files lists staged, changed and untracked
-  files. Check the ones to commit, write a message, and commit (hooks run). Pull
-  and Push are the plain commands. The branch selector under the message switches
-  branch; New… creates one. A switch that would overwrite local edits is refused.
+  files. Check the ones to commit, write a message, and commit (hooks run). The
+  commit takes the **index**: the ticked rows are staged and the index is then
+  committed with no pathspec, so a path already staged but left unchecked — or a
+  conflicted path — is refused by name (include it, unstage it, or resolve it)
+  rather than swept in or committed with its markers; PiST never rewrites your
+  index. Pull and Push are the plain commands. The branch selector under the
+  message switches branch; New… creates one. A switch that would overwrite local edits is refused.
   Select a row to see its diff: staged rows are the index, other rows the worktree.
   History lists commits, newest first; selecting one shows that commit.
   View → Git blame adds an author lane beside
@@ -182,12 +187,12 @@ test caught it. `docs/PLAN.md` §3.3 and §5 record them in full, along with the
 **An alternative transport exists.** `IDebugBackend` abstracts the debug channel, with two
 implementations: the native one above, and `HrdbBackend`, which speaks the typed TCP protocol of
 the [hrdb-main fork of Hatari](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus a
-remote-debug listener). The bundled emulator **is** that fork — the Linux AppImage ships it as
-`hatari`, and PiST detects it by binary content and selects HRDB automatically. A stock Hatari
-you install yourself lands on the native transport; Project Settings → Debug transport can force
-either. HRDB works on Windows, carries live section bases in its register reply, and can pause a
-*running* program — the things the native transport cannot do where Hatari's control socket is
-absent.
+remote-debug listener). The bundled emulator **is** that fork — the Linux AppImage and the Windows
+archive ship it as `hatari`, and PiST detects it by binary content and selects HRDB automatically.
+A stock Hatari you install yourself lands on the native transport; Project Settings → Debug
+transport can force either. HRDB works on Windows, carries live section bases in its register reply,
+and can pause a *running* program — the things the native transport cannot do where Hatari's
+control socket is absent.
 
 ### Where the code lives
 
@@ -196,10 +201,12 @@ absent.
 | `src/main.cpp` | Entry point: platform pinning, `--diagnose`, `--control-port`, the single `MainWindow` |
 | `src/ui/` | `MainWindow` (the shell) and every debug panel; X11 display embedding (`EmbedX11`, `EmulatorDisplayWidget`) |
 | `src/editor/` | `CodeEditor` (gutter, execution line, error markers) and `AsmHighlighter` (m68k Motorola syntax) |
-| `src/build/` | `BuildService` (drives vasm/vlink), `Diagnostic`, and the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` |
-| `src/emu/` | `IDebugBackend` (the transport contract) with `EmulatorHost` (stock Hatari, stdin/prompt framing) and `HrdbBackend` (hrdb-main fork, TCP 56001); `HatariTextParse`, `SessionConfig`, `HatariProbe`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
+| `src/build/` | `BuildService` (drives vasm/vlink), `Diagnostic`, the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (`.st`/`.msa` plus the AUTO-folder writer) |
+| `src/image/` | The sprite document and ST graphics: `ImageDocument` (v2 `.pim`), `Palette`, `Tools`, `Transform`, `StFormats` (PI1/NEO/IFF/MBK/PNG codecs, the `.dat`/scroller exporters) |
+| `src/git/` | `GitService` (drives `git`, argument lists only) and `GitParse` (porcelain); the panel is `src/ui/GitPanel` |
+| `src/emu/` | `IDebugBackend` (the transport contract) with `EmulatorHost` (stock Hatari, stdin/prompt framing) and `HrdbBackend` (hrdb-main fork, TCP 56001); `EmbedSocket` (the control socket), `MachineState`, `HatariTextParse`, `SessionConfig`, `HatariProbe`, `ProfileData`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
 | `src/debug/` | `Breakpoint` (file:line model + arming plan) and `Watchpoint` |
-| `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE |
+| `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE — and `mcp/`, the `pist-mcp` shim that exposes it as MCP tools |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari |
 | `src/ui/SetupDialog.cpp` | First-run setup: checksum-pinned vasm source build and EmuTOS download |
@@ -213,6 +220,7 @@ Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets and Network), a C++17 com
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+```
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
@@ -227,25 +235,28 @@ Run the tests:
 ctest --test-dir build --output-on-failure
 ```
 
-There are two suites: parser tests (always run) and emulator integration tests, which skip
-themselves unless Hatari, `vasmm68k_mot` and a TOS ROM are available.
+There are two kinds of suite: the unit tests (always run, no emulator or display needed) and the
+emulator/GUI integration tests, which skip themselves unless Hatari, `vasmm68k_mot` and a TOS ROM
+are available — and `tst_hrdb` unless `$PIST_HRDB_HATARI` names the hrdb-main fork binary.
 
 ### Installing
 
-Download an archive from [Releases](../../releases). The macOS and Windows archives
-contain PiST, the `vasmm68k_mot` assembler, and an EmuTOS ROM; the Linux AppImage
-carries those plus **Hatari (the hrdb-main fork, 2.6.1-based)**, so a fresh download runs and debugs with
-nothing else installed:
+Download an archive or installer from [Releases](../../releases) — a Linux AppImage plus
+deb and RPM packages, a macOS dmg and tarball, and a Windows MSI and zip. All of them
+carry PiST, the `vasmm68k_mot` assembler and an EmuTOS ROM; the Linux AppImage and the
+Windows archive also carry **Hatari (the hrdb-main fork, 2.6.1-based)** — the Windows
+one built with MSYS2 ucrt64 — so on those platforms a fresh download runs and debugs
+with nothing else installed:
 
 ```sh
 chmod +x pist-*-linux-x86_64.AppImage
 ./pist-*-linux-x86_64.AppImage your-program.s
 ```
 
-On macOS and Windows you still need **Hatari** for the emulator: it is not bundled
-there — there is no MSYS2 Hatari package for Windows — so install it yourself, or
-point PiST at one in Project Settings. Everything else is included, so the IDE
-assembles out of the box once Hatari is present.
+The macOS archive does not bundle the emulator (the fork links Homebrew SDL2, and
+rewiring those dylibs into the `.app` is unbuilt work), so install **Hatari** yourself
+there — `brew install hatari` carries 2.6.1 — or point PiST at one in Project Settings.
+Everything else is included, so the IDE assembles out of the box once Hatari is present.
 
 To install from source instead:
 
@@ -258,8 +269,12 @@ and third-party notices — but not vasm or Hatari, so see below.
 
 To develop the IDE you will also want, at runtime:
 
-- **`vasmm68k_mot`** — see [Assembler](#assembler)
-- **Hatari** — see [Emulator](#emulator)
+- **`vasmm68k_mot`** — put it on `PATH` or set an explicit path in Project Settings; the release
+  archives bundle it, and a source build needs your own (see [NOTICE](NOTICE) for its licence
+  terms)
+- **Hatari** — 2.6.1 is what the IDE is verified against; the Linux and Windows archives bundle a
+  compatible fork, and a source build needs it on `PATH` or set in Project Settings (see
+  [Platform support](#platform-support))
 - **A TOS ROM, version 1.04 or later** — see [TOS ROMs](#tos-roms)
 
 Both tools are discovered in this order, so no configuration is needed in the
@@ -389,7 +404,7 @@ remembered. Where reparenting is not possible (Wayland without XWayland, and for
 now macOS and Windows), the option is unavailable and the emulator always runs as
 a separate window, which remains the default everywhere.
 
-
+## TOS ROMs
 
 `PiST` does **not** ship original Atari TOS ROMs: they remain copyrighted, so you must supply your
 own. [EmuTOS](https://emutos.sourceforge.net/) is a free, GPL-licensed alternative that works well.
@@ -406,7 +421,9 @@ older TOS versions, so the run-and-debug workflow depends on it. `PiST` reads th
 the ROM image's header — the same field Hatari itself reads — and tells you if the image you have is
 too old. If the version cannot be determined, it asks before running, because a too-old ROM
 otherwise fails *silently*: the emulator boots, the program never starts, and debugging never
-attaches.
+attaches. (A run started over the remote-control socket has nobody to answer that question, so it
+takes the AUTO-folder floppy path — which works on every TOS version — and says so in the console.)
+A ROM that is *known* too old never asks: it boots via the AUTO-folder floppy, on either path.
 
 ## Remote control (driving the IDE from a script or an AI agent)
 
@@ -435,9 +452,12 @@ anything the user runs can find them and nobody else can. A wrong or missing
 token is answered `error auth required` and the connection is dropped. After
 that, send one command per line. Replies
 are a single line (`ok` or `error <message>`) or, for queries that return text,
-a block that ends with a line containing only `.` — and a block-typed query
-returns its errors as a block too (the content begins `error `), so a reader
-waiting for the terminator always unblocks:
+a block: a status line (`ok`, or `error` for a failed query) followed by the
+body and a closing line containing only `.`. A body line that *begins* with `.`
+is sent with one extra leading `.`, and the reader strips one to recover it, so a
+body that legitimately contains a lone `.` cannot end the block early. A failed
+block-typed query is an `error` block too, so a reader waiting for the
+terminator always unblocks:
 
 ```
 open <path>        open a source file
@@ -553,12 +573,16 @@ def cmd(line, block=False):
     out = b""
     while not out.endswith(b"\n.\n"):
         out += s.recv(4096)
-    return out.decode()
+    lines = out.decode().splitlines()
+    if lines[0] != "ok":                  # a failed block-typed query is an `error` block
+        raise RuntimeError("\n".join(lines[1:-1]))
+    body = [ln[1:] if ln.startswith("..") else ln for ln in lines[1:-1]]  # un-stuff
+    return "\n".join(body)
 
 print(cmd(f"auth {token}"))              # ok — every connection opens this way
 print(cmd("run"))                        # ok, once the session is up
 cmd("screenshot /tmp/pist.png")          # save the window (including the embedded display)
-print(cmd("state", block=True))          # registers
+print(cmd("state", block=True))          # registers: the status line is dropped, the body un-stuffed
 ```
 
 The token makes "localhost only" safe on a shared machine; still do not forward
@@ -573,12 +597,12 @@ what is actually on screen.
 
 Bundled or invoked third-party components keep their own licences. In particular `vasm` is *not*
 free software (it permits unmodified, non-commercial redistribution, which is why the IDE never
-patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage is the
-[hrdb-main fork](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus the remote-debug
-listener PiST's HRDB transport uses), GPL-2.0-or-later, redistributed unmodified from a
-checksum-pinned commit tarball, and the GNU Readline (GPL-3.0-or-later) that build links travels
-with it. See [docs/PLAN.md](docs/PLAN.md) §7 for the full breakdown and the obligations that
-follow.
+patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage and the
+Windows archive is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus
+the remote-debug listener PiST's HRDB transport uses), GPL-2.0-or-later, redistributed unmodified
+from a checksum-pinned commit tarball, and the GNU Readline (GPL-3.0-or-later) the Linux build
+links travels with it. See [docs/PLAN.md](docs/PLAN.md) §7 for the full breakdown and the
+obligations that follow.
 
 ## Known limitations
 

@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "asan",
+      "displayName": "AddressSanitizer",
+      "description": "Debug build with AddressSanitizer (GCC/Clang). Configure with `cmake --preset asan`, build `build-asan/`. Replaces the unreproducible local build-asan directories MIN-48 named.",
+      "generator": "Ninja",
+      "binaryDir": "build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address"
+      }
+    },
+    {
+      "name": "ubsan",
+      "displayName": "UndefinedBehaviorSanitizer",
+      "description": "Debug build with UndefinedBehaviorSanitizer (GCC/Clang). Configure with `cmake --preset ubsan`, build `build-ubsan/`.",
+      "generator": "Ninja",
+      "binaryDir": "build-ubsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=undefined"
+      }
+    }
+  ]
+}

@@ -19,9 +19,10 @@ namespace pist {
 /// each wants the same answer without owning an editor. They are also the part
 /// of navigation that can be reasoned about (and tested) without a window.
 ///
-/// The token rules follow the editor's syntax highlighter, AsmHighlighter:
-/// Motorola syntax has `;` starting a comment anywhere, `*` only in the first
-/// column, and labels are identifiers that start a line.
+/// The token rules are AsmLex's, so a token found here is a token the syntax
+/// highlighter paints: Motorola syntax has `;` starting a comment anywhere but
+/// inside a quoted string, `*` only in the first column, and a label is an
+/// identifier at the start of the code field, indented or not.
 
 /// The file name an `include` directive names, or empty when the line is not an
 /// include.
@@ -53,18 +54,18 @@ QString resolveInclude(const QString &name, const QString &currentFileDir,
 /// The 1-based line defining label `word`, or 0 when no line does.
 ///
 /// Recognises a symbol defined at the start of the code field: `foo:`, `foo:`
-/// with an instruction after it, and the assignments the assembler treats as
-/// definitions — `foo equ 5`, `foo set 5` and `foo = 5`. The comparison is
-/// case-insensitive, because assembly symbols are. Text after a `;` and a line
-/// beginning with `*` are comments, so a symbol mentioned in a comment is not a
-/// definition.
+/// with an instruction after it — indented or not — and the assignments the
+/// assembler treats as definitions: `foo equ 5`, `foo set 5` and `foo = 5`. The
+/// comparison is case-insensitive, because assembly symbols are. Text after a
+/// `;` and a line beginning with `*` are comments, so a symbol mentioned in a
+/// comment is not a definition; a `;` inside a quoted string is not a comment.
 int labelLine(const QString &documentText, const QString &word);
 
 /// The symbol or file-name token under `column` (0-based) of `lineText`, or
 /// empty when there is none.
 ///
-/// A token is a run of letters, digits, `_`, `.` and `$` — the same alphabet the
-/// highlighter's label pattern uses — which covers an operand (`d0`), a symbol
+/// A token is a run of letters, digits, `_`, `.` and `$` — the ASCII alphabet
+/// asmlex::isWordChar() defines — which covers an operand (`d0`), a symbol
 /// reference (`kMaxX` in `kMaxX+1`) and the file name inside an include's quotes
 /// (`lib.s` in `include "lib.s"`). When the character under `column` is one of
 /// those, its whole token is returned. Otherwise punctuation and whitespace

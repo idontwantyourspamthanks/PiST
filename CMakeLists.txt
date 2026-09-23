@@ -9,6 +9,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# The warning baseline (MIN-48): every compiler's everyday set, on the code from
+# its first build rather than bolted on later. Measured clean across all targets
+# before enabling (the one nodiscard hit in tst_gui is fixed), and CI inherits
+# these from the configure, so the baseline lives in exactly one place.
+if(MSVC)
+    add_compile_options(/W4)
+else()
+    add_compile_options(-Wall -Wextra)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
@@ -32,52 +42,84 @@ endif()
 
 qt_standard_project_setup()
 
-# Compiled once and linked into the app and the GUI tests. tst_gui and
-# tst_remotecontrol used to list these files again, so macOS CI compiled
-# MainWindow.cpp (and the sprite editor) three times and sat at ~55% on
-# whichever huge translation unit make had drawn next.
-qt_add_library(pist_core OBJECT
-    src/editor/AsmHighlighter.cpp
-    src/editor/AsmHighlighter.h
-    src/editor/CodeEditor.cpp
-    src/ui/Appearance.cpp
-    src/ui/Appearance.h
-    src/ui/Icons.cpp
-    src/editor/CodeEditor.h
-    src/editor/InstrRef.cpp
-    src/editor/InstrRef.h
-    src/editor/IncludeNav.cpp
-    src/editor/IncludeNav.h
-    src/editor/OsCallRef.cpp
-    src/editor/OsCallRef.h
-    src/editor/OsCallBinding.cpp
-    src/editor/OsCallBinding.h
-    src/editor/OsCallScan.cpp
-    src/editor/OsCallScan.h
+# ---------------------------------------------------------------------------
+# Module libraries
+# ---------------------------------------------------------------------------
+# One library per module of the map in docs/ARCHITECTURE.md, so the layering is
+# a build-graph fact rather than a convention. The map's build rule — image,
+# build, debug, emu, project, toolchain and git are widget-free — is enforced by
+# the linker now: none of those links Qt6::Widgets, so a stray <QWidget> include
+# or symbol fails the build instead of merely offending a reviewer.
+#
+# STATIC, not OBJECT: a consumer pulls in only the objects it needs, and the
+# test targets link the module libraries instead of re-listing their sources.
+# Under the old single pist_core OBJECT library the whole of MainWindow.cpp was
+# linked into tst_git, and src/emu/Paths.cpp was compiled eight times.
+#
+# Every edge in the graph below is an include in the sources.
+# ---------------------------------------------------------------------------
+function(pist_module name)
+    qt_add_library(${name} STATIC ${ARGN})
+    # Consumers get the source root and PIST_VERSION exactly as they did from
+    # the old single pist_core.
+    target_include_directories(${name} PUBLIC src)
+    # Quoted so the preprocessor sees a string, not a floating-point token.
+    target_compile_definitions(${name} PUBLIC "PIST_VERSION=\"${PROJECT_VERSION}\"")
+endfunction()
 
+# model/ — the vocabulary two modules share and neither owns: the machines PiST
+# offers, their Hatari names, and which TOS versions they accept. Leaf of the
+# graph: Qt6::Core, no module edges of its own, so `project/` (which persists a
+# machine name) does not have to reach into `emu/` for it (MIN-56).
+pist_module(pist_model
+    src/model/Machine.cpp
+    src/model/Machine.h
+)
+
+# image/ — sprite document, ST graphics, paint tools, and the PI1/NEO/MBF/PNG codecs.
+pist_module(pist_image
+    src/image/Palette.cpp
+    src/image/Palette.h
+    src/image/ImageDocument.cpp
+    src/image/ImageDocument.h
+    src/image/Tools.cpp
+    src/image/Tools.h
+    src/image/StFormats.cpp
+    src/image/StFormats.h
+    src/image/Transform.cpp
+    src/image/Transform.h
+)
+
+# build/ — vasm/vlink orchestration, the line maps, the symbol table, the FAT12 writer.
+pist_module(pist_build
     src/build/BuildService.cpp
     src/build/BuildService.h
     src/build/Diagnostic.h
-    src/emu/ProfileData.cpp
-    src/emu/ProfileData.h
     src/build/SymbolTable.cpp
     src/build/SymbolTable.h
     src/build/FloppyImage.cpp
     src/build/FloppyImage.h
-
-    src/control/RemoteControl.cpp
-    src/control/RemoteControl.h
-
-    src/debug/Breakpoint.cpp
-    src/debug/Breakpoint.h
-    src/debug/Watchpoint.h
+    src/build/FloppyTransfer.cpp
+    src/build/FloppyTransfer.h
     src/build/LineMap.cpp
     src/build/LineMap.h
     src/build/LinkMap.cpp
     src/build/LinkMap.h
     src/build/ProgramLineMap.cpp
     src/build/ProgramLineMap.h
+)
 
+# debug/ — the file:line breakpoint model and the watchpoints.
+pist_module(pist_debug
+    src/debug/Breakpoint.cpp
+    src/debug/Breakpoint.h
+    src/debug/Watchpoint.h
+)
+
+# emu/ — the two debug backends, the session argv, ROM/model/memory/paths helpers.
+pist_module(pist_emu
+    src/emu/ProfileData.cpp
+    src/emu/ProfileData.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
     src/emu/DebugBackend.h
@@ -96,41 +138,95 @@ qt_add_library(pist_core OBJECT
     src/emu/Paths.h
     src/emu/SessionConfig.cpp
     src/emu/SessionConfig.h
+    src/emu/TosRom.cpp
+    src/emu/TosRom.h
+)
+
+# project/ — the per-project .pistproject file.
+pist_module(pist_project
     src/project/ProjectSettings.cpp
     src/project/ProjectSettings.h
+)
+
+# toolchain/ — tool discovery and the checksum-pinned fetch.
+pist_module(pist_toolchain
     src/toolchain/Toolchain.cpp
     src/toolchain/Toolchain.h
     src/toolchain/ToolFetch.cpp
     src/toolchain/ToolFetch.h
-    src/emu/Machine.cpp
-    src/emu/Machine.h
-    src/emu/TosRom.cpp
-    src/emu/TosRom.h
+)
 
+# git/ — the git subprocess driver and its porcelain parser.
+pist_module(pist_git
     src/git/GitParse.cpp
     src/git/GitTypes.h
     src/git/GitService.cpp
     src/git/GitService.h
+)
 
-    src/image/Palette.cpp
-    src/image/Palette.h
-    src/image/ImageDocument.cpp
-    src/image/ImageDocument.h
-    src/image/Tools.cpp
-    src/image/Tools.h
-    src/image/StFormats.cpp
-    src/image/StFormats.h
-    src/image/Transform.cpp
-    src/image/Transform.h
+# editor/ — the text editor, the highlighter, and the reference tables.
+pist_module(pist_editor
+    src/editor/AsmHighlighter.cpp
+    src/editor/AsmHighlighter.h
+    src/editor/CodeEditor.cpp
+    src/editor/CodeEditor.h
+    src/editor/EditorTheme.h
+    src/editor/InstrRef.cpp
+    src/editor/InstrRef.h
+    src/editor/IncludeNav.cpp
+    src/editor/IncludeNav.h
+    src/editor/OsCallRef.cpp
+    src/editor/OsCallRef.h
+    src/editor/OsCallBinding.cpp
+    src/editor/OsCallBinding.h
+    src/editor/OsCallScan.cpp
+    src/editor/OsCallScan.h
+    src/editor/AsmLex.h
+)
 
+# control/ — the remote-control TCP protocol (RemoteControl drives the IDE through ControlHost).
+pist_module(pist_control
+    src/control/RemoteControl.cpp
+    src/control/RemoteControl.h
+)
+
+# control/mcp — the pist-mcp stdio shim. Its own library: the shim talks MCP on
+# stdio and the remote-control socket over TCP, so it must stay a QtCore/QtNetwork
+# console binary — no Widgets, no IDE — while pist-mcp and tst_mcp share one
+# compilation of it.
+pist_module(pist_mcp
+    src/control/mcp/ControlClient.cpp
+    src/control/mcp/ControlClient.h
+    src/control/mcp/McpServer.cpp
+    src/control/mcp/McpServer.h
+)
+
+# ui/ — MainWindow, every dock panel, the sprite editor, appearance and icons.
+pist_module(pist_ui
+    src/ui/Appearance.cpp
+    src/ui/Appearance.h
+    src/ui/Icons.cpp
+    src/ui/UiText.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
+    src/ui/DebugSessionController.cpp
+    src/ui/DebugSessionController.h
+    src/ui/SessionLauncher.cpp
+    src/ui/SessionLauncher.h
+    src/ui/BreakpointWatchpointModel.cpp
+    src/ui/BreakpointWatchpointModel.h
+    src/ui/ProfilerController.cpp
+    src/ui/ProfilerController.h
+    src/ui/RemoteStateAdapter.cpp
+    src/ui/RemoteStateAdapter.h
     src/ui/RegistersView.cpp
     src/ui/RegistersView.h
     src/ui/BreakpointPanel.cpp
     src/ui/BreakpointPanel.h
     src/ui/BitplaneExportDialog.cpp
     src/ui/BitplaneExportDialog.h
+    src/ui/BitplaneExportController.cpp
+    src/ui/BitplaneExportController.h
     src/ui/DisassemblyView.cpp
     src/ui/DisassemblyView.h
     src/ui/EmulatorDisplayWidget.cpp
@@ -165,6 +261,10 @@ qt_add_library(pist_core OBJECT
     src/ui/SheetCanvas.cpp
     src/ui/ImageCanvas.h
     src/ui/SheetCanvas.h
+    src/ui/SheetSlicing.cpp
+    src/ui/SheetSlicing.h
+    src/ui/AnimationPreviewWidget.cpp
+    src/ui/AnimationPreviewWidget.h
     src/ui/ImageEditor.cpp
     src/ui/ImageEditor.h
     src/ui/PalettePickerDialog.cpp
@@ -174,28 +274,64 @@ qt_add_library(pist_core OBJECT
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
 )
-target_include_directories(pist_core PUBLIC src)
-target_link_libraries(pist_core PUBLIC
-    Qt6::Widgets
-    Qt6::Network
+
+# ---------------------------------------------------------------------------
+# The module graph — one edge per include in the sources
+# ---------------------------------------------------------------------------
+# image, build, debug, emu, model, project, toolchain and git stay widget-free:
+# they link Qt6::Core / Qt6::Gui / Qt6::Network and never Qt6::Widgets.
+target_link_libraries(pist_model PUBLIC Qt6::Core)                 # the machine vocabulary: QtCore only
+target_link_libraries(pist_image PUBLIC Qt6::Gui)                  # QImage/QColor in the codecs and the document
+target_link_libraries(pist_build PUBLIC Qt6::Core)                 # subprocess + parsed text only
+target_link_libraries(pist_debug PUBLIC Qt6::Core pist_build)      # Breakpoint.h includes build/LineMap.h + ProgramLineMap.h
+target_link_libraries(pist_emu PUBLIC Qt6::Core Qt6::Network pist_model)   # emu/TosRom.h includes model/Machine.h
+target_link_libraries(pist_project PUBLIC Qt6::Core pist_model)    # ProjectSettings.h includes model/Machine.h, and nothing else
+target_link_libraries(pist_toolchain PUBLIC Qt6::Core pist_emu)    # ToolFetch.cpp includes emu/Paths.h
+target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subprocess + porcelain only
+
+# The graph is acyclic, and every edge is an include in the sources. ui/ is the
+# only module that reaches both ways by nature — it builds the editors and owns
+# the appearance — so the edges it would form with editor/ and control/ point
+# one way only: ui/MainWindow.cpp includes editor/CodeEditor.h and
+# control/RemoteControl.h, while editor/CodeEditor.cpp takes its colours as an
+# EditorTheme value and src/control/ talks to the IDE through ControlHost.
+# Neither of those edges runs back to ui/, so CMake never has to repeat a whole
+# archive list to break a cycle (MIN-86); the only repeats left in a consumer's
+# link line are the ordinary direct-and-transitive ordering ones.
+target_link_libraries(pist_editor PUBLIC Qt6::Widgets pist_git)
+target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network
+    pist_image
+    pist_build
+    pist_debug
+    pist_emu
+    pist_project
+    pist_toolchain
+    pist_git
+    pist_editor
+    pist_control
 )
-# Quoted so the preprocessor sees a string, not a floating-point token.
-target_compile_definitions(pist_core PUBLIC "PIST_VERSION=\"${PROJECT_VERSION}\"")
+target_link_libraries(pist_control PUBLIC Qt6::Network pist_emu)   # its verbs reuse emu/'s typed reads (MemoryDump, MachineState)
+target_link_libraries(pist_mcp PUBLIC Qt6::Core Qt6::Network)      # MCP stdio <-> remote-control socket, no Widgets
 
 if(X11_FOUND)
-    target_compile_definitions(pist_core PUBLIC PIST_HAVE_X11)
-    target_link_libraries(pist_core PUBLIC X11::X11)
+    # Only the UI touches X11 (src/ui/EmbedX11.cpp). The define and the
+    # libraries ride on pist_ui, so the app and the GUI tests keep the compile
+    # line they had when this was one library.
+    target_compile_definitions(pist_ui PUBLIC PIST_HAVE_X11)
+    target_link_libraries(pist_ui PUBLIC X11::X11)
     # X Shape (libXext) makes the embedded video input-transparent mid-drag.
     if(TARGET X11::Xext)
-        target_compile_definitions(pist_core PUBLIC PIST_HAVE_XEXT)
-        target_link_libraries(pist_core PUBLIC X11::Xext)
+        target_compile_definitions(pist_ui PUBLIC PIST_HAVE_XEXT)
+        target_link_libraries(pist_ui PUBLIC X11::Xext)
     endif()
 endif()
 
 qt_add_executable(pist
     src/main.cpp
 )
-target_link_libraries(pist PRIVATE pist_core)
+# main.cpp itself uses the control listener, the emulator probe/paths/ROM
+# helpers and the toolchain lookup on top of the UI.
+target_link_libraries(pist PRIVATE pist_ui pist_control pist_emu pist_toolchain)
 
 # The MCP stdio shim: lets Claude/Cursor-class agents discover a running PiST
 # as a native tool, bridging MCP JSON-RPC (stdio) to the RemoteControl TCP
@@ -203,14 +339,8 @@ target_link_libraries(pist PRIVATE pist_core)
 # stdout and silently break the transport.
 qt_add_executable(pist-mcp
     src/control/mcp/main.cpp
-    src/control/mcp/McpServer.cpp
-    src/control/mcp/McpServer.h
-    src/control/mcp/ControlClient.cpp
-    src/control/mcp/ControlClient.h
 )
-target_include_directories(pist-mcp PRIVATE src)
-target_link_libraries(pist-mcp PRIVATE Qt6::Core Qt6::Network)
-target_compile_definitions(pist-mcp PRIVATE "PIST_VERSION=\"${PROJECT_VERSION}\"")
+target_link_libraries(pist-mcp PRIVATE pist_mcp)
 set_target_properties(pist-mcp PROPERTIES WIN32_EXECUTABLE FALSE)
 
 # ---------------------------------------------------------------------------
@@ -327,26 +457,14 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 # native Windows path would embed escapes like \a and \P in the literal.
 file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" PIST_SOURCE_DIR_CMAKE)
 
+# Each test links the module libraries it exercises instead of re-listing
+# their sources: the modules own those compilations now (src/emu/Paths.cpp
+# used to appear in seven of the fifteen target lists).
+
 qt_add_executable(tst_parsers
     tests/tst_parsers.cpp
-    src/build/LineMap.cpp
-    src/build/LineMap.h
-    src/build/LinkMap.cpp
-    src/build/LinkMap.h
-    src/build/ProgramLineMap.cpp
-    src/build/ProgramLineMap.h
-    src/build/BuildService.cpp
-    src/build/FloppyImage.cpp
-    src/build/FloppyImage.h
-    src/build/BuildService.h
-    src/build/Diagnostic.h
-
-    src/debug/Breakpoint.cpp
-    src/debug/Breakpoint.h
-    src/debug/Watchpoint.h
 )
-target_include_directories(tst_parsers PRIVATE src)
-target_link_libraries(tst_parsers PRIVATE Qt6::Test)
+target_link_libraries(tst_parsers PRIVATE pist_build pist_debug Qt6::Test)
 target_compile_definitions(tst_parsers PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
 add_test(NAME parsers COMMAND tst_parsers)
 
@@ -354,92 +472,39 @@ add_test(NAME parsers COMMAND tst_parsers)
 # Always runs; no emulator or display required.
 qt_add_executable(tst_image
     tests/tst_image.cpp
-    src/image/Palette.cpp
-    src/image/Palette.h
-    src/image/ImageDocument.cpp
-    src/image/ImageDocument.h
-    src/image/Tools.cpp
-    src/image/Tools.h
-    src/image/StFormats.cpp
-    src/image/StFormats.h
-    src/image/Transform.cpp
-    src/image/Transform.h
 )
-target_include_directories(tst_image PRIVATE src)
-target_link_libraries(tst_image PRIVATE Qt6::Test Qt6::Gui)
+target_link_libraries(tst_image PRIVATE pist_image Qt6::Test)
 add_test(NAME image COMMAND tst_image)
 
 # The OS-call reference table and the trap-sequence scanner: pure QtCore
 # code, so the suite needs no display and no emulator.
 qt_add_executable(tst_oscall
     tests/tst_oscall.cpp
-    src/editor/OsCallRef.cpp
-    src/editor/OsCallRef.h
-    src/editor/OsCallBinding.cpp
-    src/editor/OsCallBinding.h
-    src/editor/OsCallScan.cpp
-    src/editor/OsCallScan.h
 )
-target_include_directories(tst_oscall PRIVATE src)
-target_link_libraries(tst_oscall PRIVATE Qt6::Test)
+target_link_libraries(tst_oscall PRIVATE pist_editor Qt6::Test)
 add_test(NAME oscall COMMAND tst_oscall)
 
 # TOS ROM identification: version must come from the image header, so the
 # autostart guard cannot be skipped by an unusual filename.
 qt_add_executable(tst_tosrom
     tests/tst_tosrom.cpp
-    src/project/ProjectSettings.cpp
-    src/project/ProjectSettings.h
-    src/toolchain/Toolchain.cpp
-    src/toolchain/Toolchain.h
-    src/emu/Machine.cpp
-    src/emu/Machine.h
-    src/emu/TosRom.cpp
-    src/emu/TosRom.h
-    src/emu/Paths.cpp
-    src/emu/Paths.h
 )
-target_include_directories(tst_tosrom PRIVATE src)
-target_link_libraries(tst_tosrom PRIVATE Qt6::Test)
+target_link_libraries(tst_tosrom PRIVATE pist_project pist_toolchain pist_emu Qt6::Test)
 add_test(NAME tosrom COMMAND tst_tosrom)
 
 # The profile save parser: header fields and the memory-area lines that feed
 # the profiler's TOS/ROM row. Pure QtCore; no display or emulator required.
 qt_add_executable(tst_profile
     tests/tst_profile.cpp
-    src/emu/ProfileData.cpp
-    src/emu/ProfileData.h
 )
-target_include_directories(tst_profile PRIVATE src)
-target_link_libraries(tst_profile PRIVATE Qt6::Test)
+target_link_libraries(tst_profile PRIVATE pist_emu pist_build Qt6::Test)
 add_test(NAME profile COMMAND tst_profile)
 
 # Breakpoint resolution and memory-dump parsing: pure functions, no emulator.
 qt_add_executable(tst_debug
     tests/tst_debug.cpp
-    src/build/LinkMap.cpp
-    src/build/LinkMap.h
-    src/build/ProgramLineMap.cpp
-    src/build/ProgramLineMap.h
-    src/project/ProjectSettings.cpp
-    src/project/ProjectSettings.h
-    src/emu/Paths.cpp
-    src/emu/Paths.h
-    src/emu/Machine.cpp
-    src/emu/Machine.h
-    src/emu/TosRom.cpp
-    src/emu/TosRom.h
-    src/debug/Breakpoint.cpp
-    src/debug/Breakpoint.h
-    src/debug/Watchpoint.h
-    src/build/LineMap.cpp
-    src/build/LineMap.h
-    src/build/Diagnostic.h
-    src/emu/MemoryDump.cpp
-    src/emu/MemoryDump.h
 )
-target_include_directories(tst_debug PRIVATE src)
-target_link_libraries(tst_debug PRIVATE Qt6::Test)
+target_link_libraries(tst_debug PRIVATE pist_build pist_debug pist_project pist_emu Qt6::Test)
 add_test(NAME debug COMMAND tst_debug)
 
 # Multi-module source mapping through a linker's map file. The end-to-end case
@@ -447,34 +512,15 @@ add_test(NAME debug COMMAND tst_debug)
 # without vlink still exercises the parsing and the address arithmetic.
 qt_add_executable(tst_link
     tests/tst_link.cpp
-    src/build/LinkMap.cpp
-    src/build/LinkMap.h
-    src/build/ProgramLineMap.cpp
-    src/build/ProgramLineMap.h
-    src/build/LineMap.cpp
-    src/build/LineMap.h
-    src/build/Diagnostic.h
 )
-target_include_directories(tst_link PRIVATE src)
-target_link_libraries(tst_link PRIVATE Qt6::Test)
+target_link_libraries(tst_link PRIVATE pist_build Qt6::Test)
 add_test(NAME link COMMAND tst_link)
 
 # Project settings persistence.
 qt_add_executable(tst_settings
     tests/tst_settings.cpp
-    src/toolchain/Toolchain.cpp
-    src/toolchain/Toolchain.h
-    src/project/ProjectSettings.cpp
-    src/project/ProjectSettings.h
-    src/emu/Machine.cpp
-    src/emu/Machine.h
-    src/emu/TosRom.cpp
-    src/emu/TosRom.h
-    src/emu/Paths.cpp
-    src/emu/Paths.h
 )
-target_include_directories(tst_settings PRIVATE src)
-target_link_libraries(tst_settings PRIVATE Qt6::Test)
+target_link_libraries(tst_settings PRIVATE pist_project pist_toolchain pist_emu Qt6::Test)
 add_test(NAME settings COMMAND tst_settings)
 
 # First-run fetch/install: checksum verification, archive extraction, and the
@@ -483,15 +529,8 @@ add_test(NAME settings COMMAND tst_settings)
 # make/tar.
 qt_add_executable(tst_toolfetch
     tests/tst_toolfetch.cpp
-    src/toolchain/ToolFetch.cpp
-    src/toolchain/ToolFetch.h
-    src/toolchain/Toolchain.cpp
-    src/toolchain/Toolchain.h
-    src/emu/Paths.cpp
-    src/emu/Paths.h
 )
-target_include_directories(tst_toolfetch PRIVATE src)
-target_link_libraries(tst_toolfetch PRIVATE Qt6::Test)
+target_link_libraries(tst_toolfetch PRIVATE pist_toolchain pist_emu Qt6::Test)
 # The pin guard reads the workflows' copies of the fetch pins.
 target_compile_definitions(tst_toolfetch PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
 add_test(NAME toolfetch COMMAND tst_toolfetch)
@@ -502,7 +541,7 @@ add_test(NAME toolfetch COMMAND tst_toolfetch)
 qt_add_executable(tst_git
     tests/tst_git.cpp
 )
-target_link_libraries(tst_git PRIVATE pist_core Qt6::Test)
+target_link_libraries(tst_git PRIVATE pist_git pist_editor pist_ui Qt6::Test)
 add_test(NAME git COMMAND tst_git)
 
 # GUI-level: constructs MainWindow and verifies the line map against a real
@@ -510,7 +549,7 @@ add_test(NAME git COMMAND tst_git)
 qt_add_executable(tst_gui
     tests/tst_gui.cpp
 )
-target_link_libraries(tst_gui PRIVATE pist_core Qt6::Test)
+target_link_libraries(tst_gui PRIVATE pist_ui Qt6::Test)
 
 # The diagnose test runs the application binary, so it must exist first — without
 # this it would skip silently in a parallel build, and a skipped test reads as a
@@ -525,7 +564,7 @@ set_tests_properties(gui PROPERTIES TIMEOUT 900)
 qt_add_executable(tst_remotecontrol
     tests/tst_remotecontrol.cpp
 )
-target_link_libraries(tst_remotecontrol PRIVATE pist_core Qt6::Test)
+target_link_libraries(tst_remotecontrol PRIVATE pist_control pist_ui Qt6::Test)
 add_dependencies(tst_remotecontrol pist)
 add_test(NAME remotecontrol COMMAND tst_remotecontrol)
 set_tests_properties(remotecontrol PROPERTIES TIMEOUT 120)
@@ -536,59 +575,16 @@ set_tests_properties(remotecontrol PROPERTIES TIMEOUT 120)
 # regression would hang or mis-frame an agent. Needs no display or emulator.
 qt_add_executable(tst_mcp
     tests/tst_mcp.cpp
-    src/control/mcp/McpServer.cpp
-    src/control/mcp/McpServer.h
-    src/control/mcp/ControlClient.cpp
-    src/control/mcp/ControlClient.h
 )
-target_include_directories(tst_mcp PRIVATE src)
-target_link_libraries(tst_mcp PRIVATE Qt6::Network Qt6::Test)
-target_compile_definitions(tst_mcp PRIVATE "PIST_VERSION=\"${PROJECT_VERSION}\"")
+target_link_libraries(tst_mcp PRIVATE pist_mcp Qt6::Test)
 add_test(NAME mcp COMMAND tst_mcp)
 set_tests_properties(mcp PROPERTIES TIMEOUT 120)
 
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
-    src/build/LineMap.cpp
-    src/build/LineMap.h
-    src/build/LinkMap.cpp
-    src/build/LinkMap.h
-    src/build/ProgramLineMap.cpp
-    src/build/ProgramLineMap.h
-    src/build/Diagnostic.h
-    src/debug/Breakpoint.cpp
-    src/debug/Breakpoint.h
-    src/debug/Watchpoint.h
-    src/emu/EmulatorHost.cpp
-    src/emu/EmulatorHost.h
-    src/emu/HrdbBackend.cpp
-    src/emu/HrdbBackend.h
-    src/emu/DebugBackend.h
-    src/emu/EmbedSocket.cpp
-    src/emu/EmbedSocket.h
-    src/emu/HatariTextParse.cpp
-    src/emu/HatariTextParse.h
-    src/emu/HatariProbe.cpp
-    src/emu/HatariProbe.h
-    src/emu/Paths.cpp
-    src/emu/Paths.h
-    src/emu/SessionConfig.cpp
-    src/emu/SessionConfig.h
-    src/project/ProjectSettings.cpp
-    src/project/ProjectSettings.h
-    src/toolchain/Toolchain.cpp
-    src/toolchain/Toolchain.h
-    src/emu/Machine.cpp
-    src/emu/Machine.h
-    src/emu/TosRom.cpp
-    src/emu/TosRom.h
-    src/emu/MachineState.h
-    src/emu/MemoryDump.cpp
-    src/emu/MemoryDump.h
 )
-target_include_directories(tst_emulatorhost PRIVATE src)
-target_link_libraries(tst_emulatorhost PRIVATE Qt6::Test Qt6::Network)
+target_link_libraries(tst_emulatorhost PRIVATE pist_emu pist_build pist_debug pist_project pist_toolchain Qt6::Test)
 add_test(NAME emulatorhost COMMAND tst_emulatorhost)
 set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 
@@ -597,40 +593,19 @@ set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 # bundled emulator in the Linux AppImage); developer machines skip without it.
 qt_add_executable(tst_hrdb
     tests/tst_hrdb.cpp
-    src/emu/DebugBackend.h
-    src/emu/EmbedSocket.cpp
-    src/emu/EmbedSocket.h
-    src/emu/HrdbBackend.cpp
-    src/emu/HrdbBackend.h
-    src/emu/EmulatorHost.cpp
-    src/emu/EmulatorHost.h
-    src/emu/HatariTextParse.cpp
-    src/emu/HatariTextParse.h
-    src/emu/HatariProbe.cpp
-    src/emu/HatariProbe.h
-    src/emu/Paths.cpp
-    src/emu/Paths.h
-    src/emu/SessionConfig.cpp
-    src/emu/SessionConfig.h
-    src/project/ProjectSettings.cpp
-    src/project/ProjectSettings.h
-    src/emu/Machine.cpp
-    src/emu/Machine.h
-    src/emu/TosRom.cpp
-    src/emu/TosRom.h
-    src/emu/MachineState.h
-    src/emu/MemoryDump.cpp
-    src/emu/MemoryDump.h
 )
-target_include_directories(tst_hrdb PRIVATE src)
-target_link_libraries(tst_hrdb PRIVATE Qt6::Test Qt6::Network)
+target_link_libraries(tst_hrdb PRIVATE pist_emu pist_project Qt6::Test)
 add_test(NAME hrdb COMMAND tst_hrdb)
 set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 
 # Test binaries must be console applications on Windows. qt_add_executable marks
 # them GUI-subsystem, which detaches stdout — the test runs, fails, and reports
 # nothing at all, making a red run on Windows undiagnosable.
-foreach(test_target IN ITEMS tst_parsers tst_image tst_tosrom tst_debug tst_settings tst_git tst_gui tst_emulatorhost tst_link tst_remotecontrol tst_toolfetch tst_hrdb tst_mcp)
+# Test binaries must be console applications on Windows. The list must name
+# every test target - it had drifted once (tst_oscall and tst_profile missing),
+# which on Windows left those two GUI-subsystem with a detached stdout: the
+# test runs, fails, and reports nothing at all (MIN-62).
+foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_link tst_settings tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

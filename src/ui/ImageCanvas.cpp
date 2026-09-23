@@ -25,8 +25,18 @@ ImageCanvas::ImageCanvas(QWidget *parent)
 void ImageCanvas::setDocument(ImageDocument *document)
 {
     m_doc = document;
-    rebuildImage();
+    // Not rebuilt here: paintEvent owns the rebuild, and doing it in both
+    // places was the same 320x200 ARGB32 image built twice per event.
+    m_imageDirty = true;
     updateGeometry();
+    update();
+}
+
+void ImageCanvas::invalidateImage()
+{
+    if (m_imageDirty)
+        return;
+    m_imageDirty = true;
     update();
 }
 
@@ -150,21 +160,10 @@ QImage ImageCanvas::movePatch() const
 {
     if (!m_doc || !hasSelection())
         return QImage();
-    QImage patch(m_selection.width(), m_selection.height(), QImage::Format_ARGB32);
-    patch.fill(Qt::transparent);
-    const QVector<int> &layer = m_doc->activeLayerPixels();
-    for (int y = 0; y < m_selection.height(); ++y) {
-        for (int x = 0; x < m_selection.width(); ++x) {
-            const int cube = layer.value((m_selection.y() + y) * m_doc->width()
-                                             + m_selection.x() + x,
-                                         kTransparent);
-            if (cube < 0)
-                continue;
-            const Rgb rgb = cubeRgb(m_doc->paletteKind(), cube);
-            patch.setPixel(x, y, qRgb(rgb.r, rgb.g, rgb.b));
-        }
-    }
-    return patch;
+    // The patch is the selection drawn as the canvas draws it: empty cells
+    // transparent, so the grid shows through the moving block.
+    return indicesToImage(m_doc->activeLayerPixels(), m_doc->width(), m_doc->height(),
+                          m_doc->paletteKind(), EmptyStyle::Transparent, m_selection);
 }
 
 void ImageCanvas::drawMarchingAnts(QPainter &p, const QRect &cells) const
@@ -187,41 +186,40 @@ void ImageCanvas::drawMarchingAnts(QPainter &p, const QRect &cells) const
 
 void ImageCanvas::rebuildImage()
 {
+    m_imageDirty = false;
     if (!m_doc) {
         m_logical = QImage();
         return;
     }
-    m_logical = QImage(m_doc->width(), m_doc->height(), QImage::Format_ARGB32);
-    const QVector<int> &pixels = m_doc->pixels();
-    for (int y = 0; y < m_doc->height(); ++y) {
-        auto *line = reinterpret_cast<QRgb *>(m_logical.scanLine(y));
-        for (int x = 0; x < m_doc->width(); ++x) {
-            const int cube = pixels.at(y * m_doc->width() + x);
-            if (cube < 0) {
-                const bool checker = ((x + y) & 1) == 0;
-                line[x] = checker ? qRgb(40, 40, 40) : qRgb(70, 70, 70);
-            } else {
-                const Rgb rgb = cubeRgb(m_doc->paletteKind(), cube);
-                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
-            }
-        }
-    }
+    m_logical = indicesToImage(m_doc->pixels(), m_doc->width(), m_doc->height(),
+                               m_doc->paletteKind(), EmptyStyle::Checkerboard);
 }
 
 void ImageCanvas::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.fillRect(rect(), appearance::colors().gutter);
-    if (!m_doc || m_logical.isNull())
+    if (!m_doc)
         return;
 
-    rebuildImage();
+    // One rebuild per paint, and only when the pixels actually changed: a
+    // repaint for an expose, a scroll or a tool change reuses m_logical.
+    if (m_imageDirty)
+        rebuildImage();
+    if (m_logical.isNull())
+        return;
+    // The drag overlays below are painted on top of the frame, never into the
+    // cache: the cached image is the document's pixels, or the next repaint
+    // would show the last overlay baked in. (Rebuilding on every paint used to
+    // hide that; the copy is far cheaper than the rebuild it replaces.)
+    const bool overlaid = (m_moving && hasSelection()) || !m_preview.isEmpty();
+    QImage frame = overlaid ? m_logical.copy() : m_logical;
     // While a move drag is live the source area reads as cut out already.
     if (m_moving && hasSelection()) {
         for (int y = m_selection.top(); y <= m_selection.bottom(); ++y) {
             for (int x = m_selection.left(); x <= m_selection.right(); ++x) {
                 const bool checker = ((x + y) & 1) == 0;
-                m_logical.setPixel(x, y, checker ? qRgb(40, 40, 40) : qRgb(70, 70, 70));
+                frame.setPixel(x, y, checker ? qRgb(40, 40, 40) : qRgb(70, 70, 70));
             }
         }
     }
@@ -234,13 +232,13 @@ void ImageCanvas::paintEvent(QPaintEvent *)
                 continue;
             const int x = index % m_doc->width();
             const int y = index / m_doc->width();
-            m_logical.setPixel(x, y, preview);
+            frame.setPixel(x, y, preview);
         }
     }
 
     p.setRenderHint(QPainter::SmoothPixmapTransform, false);
     const QRect dest(0, 0, m_doc->width() * m_cellSize, m_doc->height() * m_cellSize);
-    p.drawImage(dest, m_logical);
+    p.drawImage(dest, frame);
 
     if (m_moving && !m_movePatch.isNull()) {
         const QRectF drop(m_selection.translated(m_moveDelta));
@@ -250,18 +248,8 @@ void ImageCanvas::paintEvent(QPaintEvent *)
     }
 
     if (!m_onion.isEmpty() && m_onionOpacity > 0 && m_onion.size() >= m_doc->pixelCount()) {
-        QImage ghost(m_doc->width(), m_doc->height(), QImage::Format_ARGB32);
-        ghost.fill(qRgba(0, 0, 0, 0));
-        for (int y = 0; y < m_doc->height(); ++y) {
-            auto *line = reinterpret_cast<QRgb *>(ghost.scanLine(y));
-            for (int x = 0; x < m_doc->width(); ++x) {
-                const int cube = m_onion.at(y * m_doc->width() + x);
-                if (cube < 0)
-                    continue;
-                const Rgb rgb = cubeRgb(m_doc->paletteKind(), cube);
-                line[x] = qRgba(rgb.r, rgb.g, rgb.b, 255);
-            }
-        }
+        const QImage ghost = indicesToImage(m_onion, m_doc->width(), m_doc->height(),
+                                            m_doc->paletteKind(), EmptyStyle::Transparent);
         p.setOpacity(m_onionOpacity);
         p.drawImage(dest, ghost);
         p.setOpacity(1.0);

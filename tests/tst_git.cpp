@@ -7,16 +7,20 @@
 
 #include "editor/CodeEditor.h"
 #include "git/GitTypes.h"
+#include "ui/Appearance.h"
 #include "ui/GitPanel.h"
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
@@ -74,6 +78,74 @@ QTreeWidgetItem *findRow(QTreeWidget *tree, const QString &group, const QString 
     return nullptr;
 }
 
+/// The committed blob for `path` at HEAD, or an empty string when it is not in
+/// the commit. The blob's bytes are returned as they are, newline included.
+QString committedFile(const QString &dir, const QString &path)
+{
+    QString out;
+    if (!runGit(dir, {QStringLiteral("show"), QStringLiteral("HEAD:") + path}, &out))
+        return {};
+    return out;
+}
+
+/// `git status --porcelain`, empty when the command fails.
+QString porcelain(const QString &dir)
+{
+    QString out;
+    runGit(dir, {QStringLiteral("status"), QStringLiteral("--porcelain")}, &out);
+    return out;
+}
+
+/// The git services the suite has started and not yet settled, for the teardown
+/// check in cleanupTestCase.
+QList<GitService *> &liveServices()
+{
+    static QList<GitService *> services;
+    return services;
+}
+
+/// Drive a panel's git service to idle when the test scope ends.
+///
+/// The panels are stack objects inside the tests, so a suite-level
+/// cleanupTestCase cannot reach them once the test has returned; this guard is
+/// what makes each test's teardown deterministic instead. Without it the
+/// service destructor SIGKILLs a git child that may be mid-write — which is how
+/// a killed git leaves a `.git/index.lock` in its scratch repository — and the
+/// suite has no way to tell whether the child finished or was abandoned.
+///
+/// Every case runs in a QTemporaryDir scratch repository, so this can never
+/// touch PiST's own `.git` (MIN-80): the point is that a run leaves no
+/// abandoned child behind, and the lock goes with the write git is given the
+/// chance to finish.
+class IdleOnExit
+{
+public:
+    explicit IdleOnExit(GitPanel &panel) : m_service(panel.findChild<GitService *>())
+    {
+        if (m_service)
+            liveServices().append(m_service);
+    }
+
+    ~IdleOnExit()
+    {
+        if (!m_service)
+            return;
+        QElapsedTimer timer;
+        timer.start();
+        // Bounded: a task that genuinely never settles must not hang the suite,
+        // and the answer to "did it settle" is the teardown check below.
+        while (m_service->busy() && timer.elapsed() < 5000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+        liveServices().removeAll(m_service);
+    }
+
+    IdleOnExit(const IdleOnExit &) = delete;
+    IdleOnExit &operator=(const IdleOnExit &) = delete;
+
+private:
+    GitService *m_service;
+};
+
 } // namespace
 
 class TstGit : public QObject
@@ -89,12 +161,26 @@ private slots:
         qputenv("GIT_COMMITTER_EMAIL", "ada@example.com");
     }
 
+    /// The suite-level half of MIN-80's teardown: every test-scoped panel is
+    /// driven idle and destroyed by its own IdleOnExit as the test returns, so
+    /// a service still registered here means a panel escaped its scope with a
+    /// git child alive — the abandoned child a killed-at-teardown git leaves,
+    /// and the state the suite previously had no way to notice.
+    void cleanupTestCase()
+    {
+        QVERIFY2(liveServices().isEmpty(),
+                 "a test's git service outlived the test that created it");
+    }
+
     void porcelainParsesBranchRenamesAndSpaces();
+    void unmergedPorcelainRecordsAreOneConflictedRow();
     void logPorcelainKeepsSubjectsAndAnEmptyDecoration();
     void blamePorcelainMarksAZeroHashUncommitted();
 
     void panelCommitsOnlyTheCheckedFile();
-    void uncheckedStagedFileDoesNotRideAlong();
+    void committingTheStagedHalfLeavesTheUnstagedEditsAlone();
+    void stagedOutsideTheSelectionBlocksTheCommit();
+    void conflictedMergeIsOneRowAndIsNeverCommitted();
     void blameNamesTheAuthorAndADirtyLine();
     void pullWithoutUpstreamShowsGitsError();
     void pushReachesALocalBareRemote();
@@ -133,6 +219,25 @@ void TstGit::porcelainParsesBranchRenamesAndSpaces()
     QCOMPARE(status.entries.at(3).from, QStringLiteral("old name.s"));
     QCOMPARE(status.entries.at(4).group, GitChange::Unstaged);
     QCOMPARE(status.entries.at(4).path, QStringLiteral("new.s"));
+}
+
+void TstGit::unmergedPorcelainRecordsAreOneConflictedRow()
+{
+    // All seven unmerged index/worktree pairs from git-status(1). Each is a
+    // conflict, so each is one flagged row — not a staged half plus an
+    // unstaged half, which is what a plain modified path looks like.
+    QByteArray raw = QByteArray("## main") + '\0';
+    const char *codes[] = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"};
+    for (const char *code : codes)
+        raw += QByteArray(code) + " f" + code + ".s" + '\0';
+
+    const GitStatus status = parsePorcelain(raw);
+    QVERIFY(status.ok);
+    QCOMPARE(status.entries.size(), 7);
+    for (int i = 0; i < status.entries.size(); ++i) {
+        QVERIFY2(status.entries.at(i).conflicted, codes[i]);
+        QCOMPARE(status.entries.at(i).path, QStringLiteral("f%1.s").arg(QLatin1String(codes[i])));
+    }
 }
 
 void TstGit::logPorcelainKeepsSubjectsAndAnEmptyDecoration()
@@ -209,6 +314,7 @@ void TstGit::panelCommitsOnlyTheCheckedFile()
     QVERIFY(writeFile(dir.filePath(QStringLiteral("b.s")), "nop\n"));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
     QVERIFY(files);
@@ -250,7 +356,63 @@ void TstGit::panelCommitsOnlyTheCheckedFile()
     QVERIFY(!status.contains(QStringLiteral("a.s")));
 }
 
-void TstGit::uncheckedStagedFileDoesNotRideAlong()
+void TstGit::committingTheStagedHalfLeavesTheUnstagedEditsAlone()
+{
+    if (!haveGit())
+        QSKIP("git is not on PATH");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(runGit(dir.path(), {QStringLiteral("init"), QStringLiteral("-q")}));
+    // An added-then-modified file: the index holds one version, the worktree
+    // another. That pair is the two rows the checkbox model describes.
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "staged\n"));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("add"), QStringLiteral("a.s")}));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "worktree\n"));
+    QVERIFY2(porcelain(dir.path()).contains(QStringLiteral("AM a.s")),
+             qPrintable(porcelain(dir.path())));
+
+    GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
+    panel.setDirectory(dir.path());
+    auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
+    auto *message = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitMessage"));
+    auto *commit = panel.findChild<QPushButton *>(QStringLiteral("gitCommit"));
+    auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
+    QVERIFY(files && message && commit && output);
+    QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
+    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
+    QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s"))->checkState(0),
+             Qt::Checked);
+    QCOMPARE(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s"))->checkState(0),
+             Qt::Unchecked);
+
+    // The staged half is already checked. Committing it must take the index
+    // version, not the worktree edits that were never staged.
+    message->setPlainText(QStringLiteral("staged half"));
+    QTRY_VERIFY(commit->isEnabled());
+    commit->click();
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit finished")),
+                             10000);
+    QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("staged\n"));
+    QVERIFY2(porcelain(dir.path()).contains(QStringLiteral("a.s")), qPrintable(porcelain(dir.path())));
+
+    // The unstaged half is still there. Wait for the panel to take in the
+    // post-commit status (the staged row is gone) before ticking it, then
+    // stage and commit the rest of the worktree.
+    QTRY_VERIFY(!findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
+    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
+    findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s"))->setCheckState(0, Qt::Checked);
+    message->setPlainText(QStringLiteral("worktree half"));
+    QTRY_VERIFY(commit->isEnabled());
+    commit->click();
+    QTRY_VERIFY2_WITH_TIMEOUT(porcelain(dir.path()).trimmed().isEmpty(),
+                              qPrintable(porcelain(dir.path()) + QLatin1String(" | ")
+                                         + output->toPlainText()), 10000);
+    QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("worktree\n"));
+}
+
+void TstGit::stagedOutsideTheSelectionBlocksTheCommit()
 {
     if (!haveGit())
         QSKIP("git is not on PATH");
@@ -262,38 +424,109 @@ void TstGit::uncheckedStagedFileDoesNotRideAlong()
     QVERIFY(writeFile(dir.filePath(QStringLiteral("b.s")), "nop\n"));
     QVERIFY(runGit(dir.path(), {QStringLiteral("add"), QStringLiteral("a.s"), QStringLiteral("b.s")}));
     QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("base")}));
-    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "moveq #1,d0\n"));
-    QVERIFY(writeFile(dir.filePath(QStringLiteral("b.s")), "moveq #2,d0\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "one\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("b.s")), "two\n"));
     QVERIFY(runGit(dir.path(), {QStringLiteral("add"), QStringLiteral("a.s"), QStringLiteral("b.s")}));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
+    auto *message = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitMessage"));
+    auto *commit = panel.findChild<QPushButton *>(QStringLiteral("gitCommit"));
+    auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
+    QVERIFY(files && message && commit && output);
     QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
     QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s")));
-    QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s"))->checkState(0), Qt::Checked);
-    QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->checkState(0), Qt::Checked);
+    QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s"))->checkState(0),
+             Qt::Checked);
+    QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->checkState(0),
+             Qt::Checked);
 
+    // b.s stays staged but leaves the selection. It must not be silently
+    // unstaged to make the commit go through, and it must not ride along.
     findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->setCheckState(0, Qt::Unchecked);
-    auto *message = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitMessage"));
     message->setPlainText(QStringLiteral("just a"));
-    panel.findChild<QPushButton *>(QStringLiteral("gitCommit"))->click();
+    QTRY_VERIFY(commit->isEnabled());
+    commit->click();
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit failed")),
+                             10000);
+    QVERIFY2(output->toPlainText().contains(QStringLiteral("b.s")),
+             qPrintable(output->toPlainText()));
 
-    auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("finished")), 10000);
+    // Nothing was committed, and the index is untouched: both files are still
+    // staged exactly as they were.
+    QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("nop\n"));
+    QString status = porcelain(dir.path());
+    QVERIFY2(status.contains(QStringLiteral("M  a.s")), qPrintable(status));
+    QVERIFY2(status.contains(QStringLiteral("M  b.s")), qPrintable(status));
 
-    QString names;
-    QVERIFY(runGit(dir.path(),
-                   {QStringLiteral("show"), QStringLiteral("--name-only"), QStringLiteral("--pretty=format:"),
-                    QStringLiteral("HEAD")},
-                   &names));
-    QVERIFY(names.contains(QStringLiteral("a.s")));
-    QVERIFY(!names.contains(QStringLiteral("b.s")));
+    // Checking everything staged is what the index model asks for, and it
+    // commits normally.
+    findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->setCheckState(0, Qt::Checked);
+    message->setPlainText(QStringLiteral("both"));
+    QTRY_VERIFY(commit->isEnabled());
+    commit->click();
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit finished")),
+                             10000);
+    QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("one\n"));
+    QCOMPARE(committedFile(dir.path(), QStringLiteral("b.s")), QStringLiteral("two\n"));
+    QVERIFY(porcelain(dir.path()).trimmed().isEmpty());
+}
 
-    QString status;
-    QVERIFY(runGit(dir.path(), {QStringLiteral("status"), QStringLiteral("--porcelain")}, &status));
-    QVERIFY2(status.contains(QStringLiteral("b.s")), qPrintable(status));
-    QVERIFY(!status.contains(QStringLiteral("a.s")));
+void TstGit::conflictedMergeIsOneRowAndIsNeverCommitted()
+{
+    if (!haveGit())
+        QSKIP("git is not on PATH");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(runGit(dir.path(), {QStringLiteral("init"), QStringLiteral("-q")}));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "base\n"));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("add"), QStringLiteral("a.s")}));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("base")}));
+    QString original;
+    QVERIFY(runGit(dir.path(), {QStringLiteral("branch"), QStringLiteral("--show-current")}, &original));
+    original = original.trimmed();
+    QVERIFY(!original.isEmpty());
+    QVERIFY(runGit(dir.path(), {QStringLiteral("switch"), QStringLiteral("-q"), QStringLiteral("-c"),
+                                QStringLiteral("feature")}));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "feature\n"));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("add"), QStringLiteral("a.s")}));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("feature")}));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("switch"), QStringLiteral("-q"), original}));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "other\n"));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("add"), QStringLiteral("a.s")}));
+    QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("other")}));
+    QVERIFY(!runGit(dir.path(), {QStringLiteral("merge"), QStringLiteral("feature")}));
+
+    GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
+    panel.setDirectory(dir.path());
+    auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
+    QVERIFY(files);
+    // One row, in its own group — not a staged half and an unstaged half.
+    QTRY_VERIFY(findRow(files, QStringLiteral("Conflicts"), QStringLiteral("a.s")));
+    QVERIFY(!findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
+    QVERIFY(!findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
+    QTreeWidgetItem *row = findRow(files, QStringLiteral("Conflicts"), QStringLiteral("a.s"));
+    QVERIFY(!(row->flags() & Qt::ItemIsUserCheckable));
+
+    // Defence in depth: a caller that hands the path in anyway is refused, so
+    // the conflict markers can never be recorded as a resolution.
+    auto *service = panel.findChild<GitService *>();
+    QVERIFY(service);
+    QSignalSpy finished(service, &GitService::operationFinished);
+    service->commit({QStringLiteral("a.s")}, {}, {QStringLiteral("a.s")},
+                    QStringLiteral("resolve it"));
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() >= 1, 10000);
+    QCOMPARE(finished.at(0).at(0).toString(), QStringLiteral("commit"));
+    QCOMPARE(finished.at(0).at(1).toBool(), false);
+    const QString why = finished.at(0).at(2).toString();
+    QVERIFY2(why.contains(QStringLiteral("conflict"), Qt::CaseInsensitive), qPrintable(why));
+
+    QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("other\n"));
+    QVERIFY2(porcelain(dir.path()).contains(QStringLiteral("UU a.s")), qPrintable(porcelain(dir.path())));
 }
 
 void TstGit::blameNamesTheAuthorAndADirtyLine()
@@ -310,6 +543,7 @@ void TstGit::blameNamesTheAuthorAndADirtyLine()
     QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("first")}));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     QTRY_VERIFY(panel.inRepository());
 
@@ -335,6 +569,7 @@ void TstGit::pullWithoutUpstreamShowsGitsError()
     QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("base")}));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *pull = panel.findChild<QPushButton *>(QStringLiteral("gitPull"));
     QTRY_VERIFY(pull->isEnabled());
@@ -365,6 +600,7 @@ void TstGit::pushReachesALocalBareRemote()
 
     QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "rts\n"));
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
     QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
@@ -388,7 +624,9 @@ void TstGit::pushReachesALocalBareRemote()
 
 void TstGit::blameLaneDoesNotToggleBreakpoints()
 {
-    CodeEditor editor;
+    // The editor is themed by its caller; this test cares only about the
+    // gutter's geometry, so it hands the editor the application's own theme.
+    CodeEditor editor(appearance::editorTheme());
     editor.setPlainText(QStringLiteral("    move.w d0,d1\n"));
     const int plain = editor.lineNumberAreaWidth();
     editor.setBlameShown(true);
@@ -405,23 +643,33 @@ void TstGit::blameLaneDoesNotToggleBreakpoints()
     editor.setBlame(lines);
 
     editor.resize(700, 300);
-    editor.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&editor));
 
     auto *gutter = editor.findChild<QWidget *>(QStringLiteral("lineNumberArea"));
     QVERIFY(gutter);
     const int lane = editor.blameLaneWidth();
 
+    // The gutter's own handlers are the contract, so the press and the hover go
+    // to the widget directly. Qt's cursor-driven delivery for QTest::mouseClick
+    // decides which window a global position lands on, which depends on the
+    // platform plugin and the window manager: this test was measured red under
+    // xcb with a display attached and green under the offscreen plugin, for an
+    // environment reason rather than a behaviour one (MIN-87).
+    const auto sendMouse = [gutter](QEvent::Type type, const QPointF &at, Qt::MouseButton button) {
+        QMouseEvent event(type, at, gutter->mapToGlobal(at), button,
+                          type == QEvent::MouseMove ? Qt::NoButton : button, Qt::NoModifier);
+        QApplication::sendEvent(gutter, &event);
+    };
+
     QSignalSpy clicks(&editor, &CodeEditor::gutterClicked);
-    QTest::mouseClick(gutter, Qt::LeftButton, Qt::NoModifier, QPoint(lane / 2, 8));
+    sendMouse(QEvent::MouseButtonPress, QPointF(lane / 2, 8), Qt::LeftButton);
     QCOMPARE(clicks.count(), 0);
 
-    QTest::mouseMove(gutter, QPoint(4, 8));
+    sendMouse(QEvent::MouseMove, QPointF(4, 8), Qt::NoButton);
     QVERIFY(gutter->toolTip().contains(QStringLiteral("Ada Lovelace")));
     QVERIFY(gutter->toolTip().contains(info.hash));
     QVERIFY(gutter->toolTip().contains(QStringLiteral("first line")));
 
-    QTest::mouseClick(gutter, Qt::LeftButton, Qt::NoModifier, QPoint(lane + 4, 8));
+    sendMouse(QEvent::MouseButtonPress, QPointF(lane + 4, 8), Qt::LeftButton);
     QCOMPARE(clicks.count(), 1);
     QCOMPARE(clicks.at(0).at(0).toInt(), 1);
 
@@ -447,6 +695,7 @@ void TstGit::branchSelectorCreatesAndSwitches()
     QVERIFY(!original.isEmpty());
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *combo = panel.findChild<QComboBox *>(QStringLiteral("gitBranches"));
     auto *add = panel.findChild<QPushButton *>(QStringLiteral("gitNewBranch"));
@@ -508,6 +757,7 @@ void TstGit::switchRefusesToOverwriteLocalEdits()
     QVERIFY(writeFile(dir.filePath(QStringLiteral("a.s")), "dirty\n"));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *combo = panel.findChild<QComboBox *>(QStringLiteral("gitBranches"));
     QVERIFY(combo);
@@ -541,6 +791,7 @@ void TstGit::selectedRowShowsStagedUnstagedAndUntrackedDiffs()
     QVERIFY(writeFile(dir.filePath(QStringLiteral("new.s")), "untracked-line\n"));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
     auto *diff = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitDiff"));
@@ -584,6 +835,7 @@ void TstGit::historyListsCommitsNewestFirstAndShowsTheOneYouPick()
     QVERIFY(runGit(dir.path(), {QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("second subject")}));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *history = panel.findChild<QPushButton *>(QStringLiteral("gitHistory"));
     auto *log = panel.findChild<QListWidget *>(QStringLiteral("gitLog"));
@@ -619,6 +871,7 @@ void TstGit::emptyHistorySaysThereAreNoCommits()
     QVERIFY(runGit(dir.path(), {QStringLiteral("init"), QStringLiteral("-q")}));
 
     GitPanel panel;
+    const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *history = panel.findChild<QPushButton *>(QStringLiteral("gitHistory"));
     QTRY_VERIFY(history->isEnabled());
@@ -631,6 +884,17 @@ void TstGit::emptyHistorySaysThereAreNoCommits()
 
 int main(int argc, char *argv[])
 {
+    // Headless with no QT_QPA_PLATFORM, QApplication aborts hard (qFatal) before
+    // a single test can skip — which loses the whole binary, not one test. CI
+    // sets the variable; a container or a bare shell does not, so default to the
+    // offscreen plugin when there is no display to connect to. An explicit
+    // setting always wins.
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")
+        && qEnvironmentVariableIsEmpty("DISPLAY")
+        && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+
     QApplication app(argc, argv);
     TstGit test;
     return QTest::qExec(&test, argc, argv);

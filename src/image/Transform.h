@@ -63,9 +63,6 @@ QVector<int> rotate90Cw(const QVector<int> &data, int width, int height, int *ou
 /// angles are pixel-exact; other angles resample without blending colours.
 QVector<int> rotateIndexed(const QVector<int> &data, int size, double angleDeg);
 
-/// `count - 1` clockwise copies at 360/count° steps (the 0° original is skipped).
-QVector<QVector<int>> generateRotationFrames(const QVector<int> &data, int size, int count);
-
 /// The single neighbouring frame `distance` away from `current`. Negative
 /// distance is behind, positive is ahead, 0 turns onion off.
 QVector<OnionGhost> neighbourFrames(int current, int count, int distance = -1);

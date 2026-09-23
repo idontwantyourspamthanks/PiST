@@ -187,9 +187,10 @@ links Capstone, and the MinGW runtime DLLs a Windows emulator carries.
 pause hint are in; only step-back is not, and the analysis below records why it is not merely
 unbuilt.
 
-- **Register and memory editing.** Delivered. Registers and memory are editable while stopped
-  (`r d0 <val>`, `memwrite`), gated on the stop state, and the views refresh after a write because
-  Hatari prints nothing on success.
+- **Register and memory editing.** Delivered. Registers and memory are editable while stopped — the
+  typed backend intents `writeRegister` (`r <reg>=$<val>` on both backends) and `writeMemoryByte`
+  (`w b $<addr> $<val>`; HRDB's wire form is `memset`) — gated on the stop state, and the views
+  refresh after a write because Hatari prints nothing on success.
 - **Multiple memory panes.** Delivered. `MainWindow::addMemoryPane()` adds panes, each routed by an
   integer tag so concurrent dumps reach the right pane rather than sharing one `memoryDumpReady`.
 - **PC history and step-back.** The PC-history view is delivered (Hatari's `history` command,
@@ -273,8 +274,9 @@ behaviour without rebuilding.
 
 Most of the machinery is here, which is why this is a *glue* feature rather than new plumbing:
 
-- Memory and register writes while stopped already work (`MainWindow::setMemoryByte` → `memwrite`,
-  `setRegister` → `r <reg> <val>`), gated on the stop state, and the views refresh after a write.
+- Memory and register writes while stopped already work (`MainWindow::setMemoryByte` →
+  `IDebugBackend::writeMemoryByte`, `setRegister` → `writeRegister` — typed intents each backend
+  spells on its own wire), gated on the stop state, and the views refresh after a write.
 - The trigger already exists: `EmulatorHost::stoppedChanged(true)` fires on every stop, and
   breakpoints/watchpoints are already resolved to addresses by `planBreakpoints()`.
 - The remote-control socket already exposes `setmem`, `setreg`, `cmd` and `state`, so an *external*

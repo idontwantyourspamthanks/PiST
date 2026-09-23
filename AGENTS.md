@@ -19,9 +19,10 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 ```
 
 - Parser/unit tests always run. Integration tests (`tst_gui`, `tst_remotecontrol`,
-  `tst_emulatorhost`) run **offscreen** and `QSKIP` unless Hatari, `vasmm68k_mot` and a TOS ROM are
-  present — set `PIST_TOS_DIR=<dir>` and put the tools on `PATH`; `PIST_REQUIRE_EMULATOR=1` makes a
-  skip fail (CI uses this).
+  `tst_emulatorhost`, `tst_hrdb`) run **offscreen** and `QSKIP` unless Hatari, `vasmm68k_mot` and a
+  TOS ROM are present — set `PIST_TOS_DIR=<dir>` and put the tools on `PATH`; `PIST_REQUIRE_EMULATOR=1`
+  makes a skip fail (CI uses this). `tst_hrdb` additionally needs `$PIST_HRDB_HATARI` naming the
+  hrdb-main fork binary, which CI builds and supplies.
 - Keep `QT_QPA_PLATFORM=offscreen` on every test run, including local ones. Tests can open modal
   dialogs; on a desktop session those are real windows that hang the run until someone clicks them
   away. Running a test binary directly without the variable is how that happens.
@@ -80,9 +81,10 @@ code. Use this table for a quick lookup:
 | Project file (`.pistproject`) | `src/project/ProjectSettings.{h,cpp}` |
 | vasm/vlink/Hatari discovery | `src/toolchain/Toolchain.{h,cpp}` |
 | First-run tool/ROM setup | `src/ui/SetupDialog.{h,cpp}` + `src/toolchain/ToolFetch.{h,cpp}` |
-| The debug backends (native stdin transport, HRDB TCP) | `src/emu/{DebugBackend,EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
+| The debug backends (native stdin transport, HRDB TCP) | `src/emu/DebugBackend.h` (the contract), `src/emu/{EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 | X11 display embedding | `src/ui/{EmulatorDisplayWidget,EmbedX11}.{h,cpp}` |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| The MCP shim (`pist-mcp`, a shipped binary) | `src/control/mcp/` |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_mcp`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

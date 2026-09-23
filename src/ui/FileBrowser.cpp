@@ -28,6 +28,7 @@
 #include <QSplitter>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStorageInfo>
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -38,11 +39,23 @@ namespace pist {
 
 namespace {
 
-const char kFloppyFilter[] = "Disk images (*.st *.msa *.img *.dim *.ipf);;All files (*)";
-
 // Carries a drag out of a floppy pane: the source image path, then one
 // image-relative entry path per line.
 const QString kFloppyMime = QStringLiteral("application/x-pist-floppy-entries");
+
+/// Whether `source` and `targetDir` sit on different mounted volumes, i.e.
+/// whether QFile::rename cannot be a plain rename(2). Measured on Qt 6.10.2:
+/// a *directory* rename across volumes fails (so the caller's fallback ran
+/// anyway), while a *file* rename performs Qt's own copy+delete internally —
+/// a path whose symlink and permission semantics would be Qt's, not the
+/// fallback's (MIN-76). Comparing roots rather than device ids makes an
+/// unrecognised volume report "different" and take the safe path.
+bool crossesFilesystem(const QString &source, const QString &targetDir)
+{
+    const QStorageInfo from(QFileInfo(source).absolutePath());
+    const QStorageInfo to(QFileInfo(targetDir).absolutePath());
+    return from.rootPath() != to.rootPath();
+}
 
 QMimeData *floppyDragMime(const QString &imagePath, const QStringList &entries)
 {
@@ -67,36 +80,23 @@ bool floppyDragPayload(const QMimeData *mime, QString *imagePath, QStringList *e
     return !imagePath->isEmpty() && !entries->isEmpty();
 }
 
-QString normalizedEntryPath(const QString &path)
-{
-    QString clean = QDir::fromNativeSeparators(path.trimmed());
-    while (clean.startsWith(QLatin1Char('/')))
-        clean.remove(0, 1);
-    while (clean.endsWith(QLatin1Char('/')))
-        clean.chop(1);
-    return clean;
-}
-
-/// A free path in `dir` for `name`, so a paste never silently overwrites.
-QString uniqueHostDestination(const QString &dir, const QString &name)
-{
-    const QFileInfo info(QDir(dir).absoluteFilePath(name));
-    if (!info.exists())
-        return info.absoluteFilePath();
-    const QString suffix = info.suffix().isEmpty()
-        ? QString()
-        : QLatin1Char('.') + info.suffix();
-    for (int n = 2;; ++n) {
-        const QString candidate = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
-            + QStringLiteral(" (%1)").arg(n) + suffix;
-        if (!QFileInfo::exists(candidate))
-            return candidate;
-    }
-}
-
+/// Copy `source` (file, directory, or symbolic link) to `target`.
+///
+/// A symbolic link is materialised as the regular file it resolves to; a link
+/// to a directory and a dangling link have no file content to reproduce, so
+/// they fail the copy instead of being skipped. Skipping is what made the
+/// cross-filesystem move a data-loss path: the copy reported success without
+/// the link, and the caller then deleted the source tree — link included.
 bool copyHostRecursively(const QString &source, const QString &target)
 {
     const QFileInfo info(source);
+    if (info.isSymLink()) {
+        const QFileInfo resolved(info.canonicalFilePath());
+        if (!resolved.isFile())
+            return false;
+        QFile::remove(target);
+        return QFile::copy(resolved.absoluteFilePath(), target);
+    }
     if (info.isDir()) {
         if (!QDir().mkpath(target))
             return false;
@@ -104,14 +104,14 @@ bool copyHostRecursively(const QString &source, const QString &target)
         const QFileInfoList entries = dir.entryInfoList(
             QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
         for (const QFileInfo &entry : entries) {
-            if (entry.isSymLink())
-                continue;
             if (!copyHostRecursively(entry.absoluteFilePath(),
                                      QDir(target).absoluteFilePath(entry.fileName())))
                 return false;
         }
         return true;
     }
+    if (!info.isFile())
+        return false;
     QFile::remove(target);
     return QFile::copy(source, target);
 }
@@ -201,6 +201,13 @@ void compactButton(QPushButton *button)
 }
 
 } // namespace
+
+QString floppyImageFilter()
+{
+    // The literal lives inside tr() so lupdate extracts it — the old
+    // `tr(kFloppyFilter)` passed a runtime const char[] and was invisible.
+    return FileBrowser::tr("Disk images (*.st *.msa *.img *.dim *.ipf);;All files (*)");
+}
 
 FileBrowser::FileBrowser(QWidget *parent)
     : QWidget(parent)
@@ -613,13 +620,14 @@ bool FileBrowser::deletePath(const QString &path)
     if (!info.exists())
         return false;
 
-    // Report before deleting, so the receiver can act on the path while the
-    // model still considers it valid.
-    emit pathDeleted(info.absoluteFilePath());
-
-    if (info.isDir())
-        return QDir(path).removeRecursively();
-    return QFile::remove(path);
+    // Remove first: pathDeleted says the path is gone, so reporting it for a
+    // removal that failed closes or disowns an open document whose file is
+    // still on disk. The receiver acts on the path, not on the model entry.
+    const bool removed = info.isDir() ? QDir(path).removeRecursively()
+                                      : QFile::remove(path);
+    if (removed)
+        emit pathDeleted(info.absoluteFilePath());
+    return removed;
 }
 
 bool FileBrowser::renamePath(const QString &path, const QString &newName)
@@ -669,7 +677,7 @@ void FileBrowser::copyFloppyEntries(int drive, const QStringList &entryPaths, bo
     QStringList clean;
     if (drive >= 0 && drive <= 1 && !m_floppyPath[drive].isEmpty()) {
         for (const QString &path : entryPaths) {
-            const QString entry = normalizedEntryPath(path);
+            const QString entry = floppy::normalizeEntryPath(path);
             if (!entry.isEmpty())
                 clean.append(entry);
         }
@@ -681,12 +689,38 @@ void FileBrowser::copyFloppyEntries(int drive, const QStringList &entryPaths, bo
     m_clipboard.mode = cut ? Clipboard::Cut : Clipboard::Copy;
     m_clipboard.fromFloppy = true;
     m_clipboard.drive = drive;
+    m_clipboard.imagePath = m_floppyPath[drive];
     m_clipboard.paths = clean;
+}
+
+bool FileBrowser::clipboardUsable()
+{
+    if (m_clipboard.mode == Clipboard::None)
+        return false;
+    bool usable = false;
+    if (m_clipboard.fromFloppy) {
+        // Same drive, same image: an entry path copied off the disk that was
+        // mounted then means nothing once that disk is ejected or another one
+        // is inserted in its place.
+        usable = m_clipboard.drive >= 0 && m_clipboard.drive <= 1
+            && m_floppyPath[m_clipboard.drive] == m_clipboard.imagePath
+            && !m_clipboard.imagePath.isEmpty();
+    } else {
+        for (const QString &path : m_clipboard.paths) {
+            if (QFileInfo::exists(path)) {
+                usable = true;
+                break;
+            }
+        }
+    }
+    if (!usable)
+        m_clipboard = Clipboard{};
+    return usable;
 }
 
 bool FileBrowser::pasteIntoDirectory(const QString &dir)
 {
-    if (m_clipboard.mode == Clipboard::None || !QFileInfo(dir).isDir())
+    if (!clipboardUsable() || !QFileInfo(dir).isDir())
         return false;
     bool ok = false;
     if (m_clipboard.fromFloppy)
@@ -701,16 +735,17 @@ bool FileBrowser::pasteIntoDirectory(const QString &dir)
 
 bool FileBrowser::pasteIntoFloppy(int drive, const QString &dirInImage)
 {
-    if (m_clipboard.mode == Clipboard::None || drive < 0 || drive > 1
+    if (!clipboardUsable() || drive < 0 || drive > 1
         || m_floppyPath[drive].isEmpty())
         return false;
-    const QString dir = normalizedEntryPath(dirInImage);
+    // The controller normalises the destination directory itself: one rule
+    // for how an entry path is spelled, wherever it came from.
     bool ok = false;
     if (m_clipboard.fromFloppy)
-        ok = copyFloppyToFloppy(m_clipboard.drive, m_clipboard.paths, drive, dir,
+        ok = copyFloppyToFloppy(m_clipboard.drive, m_clipboard.paths, drive, dirInImage,
                                 m_clipboard.mode == Clipboard::Cut);
     else
-        ok = addHostPathsToFloppy(drive, dir, m_clipboard.paths,
+        ok = addHostPathsToFloppy(drive, dirInImage, m_clipboard.paths,
                                   m_clipboard.mode == Clipboard::Cut);
     if (ok && m_clipboard.mode == Clipboard::Cut)
         m_clipboard = Clipboard{};
@@ -765,17 +800,29 @@ bool FileBrowser::transferHostPaths(const QStringList &paths, const QString &tar
             return false;
         }
         if (QFileInfo::exists(target))
-            target = uniqueHostDestination(targetDir, info.fileName());
+            target = floppy::Transfer::uniqueHostDestination(targetDir, info.fileName());
 
         bool done = false;
         if (move) {
-            if (QFile::rename(source, target)) {
+            // Only a move within one volume is a rename(2). Across volumes the
+            // copy+delete fallback below runs explicitly, so a nested symlink
+            // is materialised by copyHostRecursively on every Qt and every
+            // filesystem instead of by whatever QFile::rename does internally.
+            const bool sameVolume = !crossesFilesystem(source, targetDir);
+            if (sameVolume && QFile::rename(source, target)) {
                 emit pathRenamed(source, target);
                 done = true;
             } else if (copyHostRecursively(source, target)) {
-                // Renaming across filesystems fails; copy and delete instead.
-                deletePath(source);
-                done = true;
+                // The source goes only after a copy that reproduced every
+                // entry, and the removal is not reported as pathDeleted: the
+                // document must follow the file to its new home with
+                // pathRenamed, not be closed as if the file had vanished.
+                const bool removed = info.isDir() ? QDir(source).removeRecursively()
+                                                  : QFile::remove(source);
+                if (removed) {
+                    emit pathRenamed(source, target);
+                    done = true;
+                }
             }
         } else {
             done = copyHostRecursively(source, target);
@@ -792,6 +839,18 @@ bool FileBrowser::transferHostPaths(const QStringList &paths, const QString &tar
         return false;
     }
     return true;
+}
+
+QString FileBrowser::FloppyHost::mountedImage(int drive) const
+{
+    if (drive < 0 || drive > 1)
+        return {};
+    return m_browser->m_floppyPath[drive];
+}
+
+bool FileBrowser::FloppyHost::confirmRewrite(const QString &imagePath)
+{
+    return m_browser->confirmFloppyRewrite(imagePath);
 }
 
 bool FileBrowser::confirmFloppyRewrite(const QString &imagePath)
@@ -820,48 +879,13 @@ bool FileBrowser::confirmFloppyRewrite(const QString &imagePath)
 bool FileBrowser::addHostPathsToFloppy(int drive, const QString &dirInImage,
                                        const QStringList &hostPaths, bool removeSources)
 {
-    if (drive < 0 || drive > 1 || hostPaths.isEmpty() || m_floppyPath[drive].isEmpty())
+    const floppy::Transfer::Result result = m_transfer.hostToImage(drive, dirInImage, hostPaths);
+    finishTransfer(result);
+    if (!result.ok())
         return false;
-    const QString image = m_floppyPath[drive];
-
-    QVector<floppy::Item> additions;
-    QString error;
-    for (const QString &path : hostPaths) {
-        const QFileInfo info(path);
-        if (!info.exists())
-            continue;
-        // Collect relative to the file's parent, so the entry keeps its own
-        // name at the top of the copied set.
-        QVector<floppy::Item> collected;
-        if (!floppy::collectHostItems(info.absolutePath(), {info.absoluteFilePath()},
-                                      &collected, &error)) {
-            QMessageBox::warning(this, tr("Copy"),
-                                 tr("Could not read %1:\n%2").arg(info.fileName(), error));
-            return false;
-        }
-        for (floppy::Item &item : collected) {
-            item.destPath = dirInImage.isEmpty()
-                ? item.destPath
-                : dirInImage + QLatin1Char('/') + item.destPath;
-        }
-        additions += collected;
-    }
-    if (additions.isEmpty())
-        return false;
-
-    if (!confirmFloppyRewrite(image))
-        return false;
-    // The confirmation runs an event loop, so the slot can be resynced while
-    // it is up: write to the disk that was asked about, or not at all.
-    if (m_floppyPath[drive] != image)
-        return false;
-    if (!floppy::updateImage(image, additions, {}, &error)) {
-        QMessageBox::warning(this, tr("Copy"),
-                             tr("Could not add the files to %1:\n%2")
-                                 .arg(QFileInfo(image).fileName(), error));
-        return false;
-    }
-    refreshFloppy(drive);
+    // The move's host half: the additions are on the disk, so the sources go —
+    // through deletePath, so that the rest of the application hears the path is
+    // really gone (an open document closes rather than editing a ghost).
     if (removeSources) {
         for (const QString &path : hostPaths) {
             if (QFileInfo::exists(path))
@@ -874,216 +898,80 @@ bool FileBrowser::addHostPathsToFloppy(int drive, const QString &dirInImage,
 bool FileBrowser::extractFloppyEntries(int drive, const QStringList &entryPaths,
                                        const QString &targetDir, bool removeSource)
 {
-    if (drive < 0 || drive > 1 || entryPaths.isEmpty() || !QFileInfo(targetDir).isDir())
-        return false;
-    const QString image = m_floppyPath[drive];
-    if (image.isEmpty())
-        return false;
-    // A move rewrites the image; a plain copy-out does not.
-    if (removeSource && !confirmFloppyRewrite(image))
-        return false;
-    if (removeSource && m_floppyPath[drive] != image)
-        return false;   // resynced while the confirmation was up
-
-    QString error;
-    QByteArray raw;
-    if (!floppy::loadRaw(image, &raw, &error)) {
-        QMessageBox::warning(this, tr("Copy"),
-                             tr("Could not read %1:\n%2")
-                                 .arg(QFileInfo(image).fileName(), error));
-        return false;
-    }
-    QString listError;
-    const QVector<floppy::Entry> entries = floppy::listRaw(raw, &listError);
-    if (!listError.isEmpty()) {
-        QMessageBox::warning(this, tr("Copy"),
-                             tr("Could not read %1:\n%2")
-                                 .arg(QFileInfo(image).fileName(), listError));
-        return false;
-    }
-
-    QStringList failures;
-    QStringList removals;
-    for (const QString &chosen : entryPaths) {
-        const QString entry = normalizedEntryPath(chosen);
-        const QString base = entry.section(QLatin1Char('/'), -1);
-        const QString target = uniqueHostDestination(targetDir, base);
-        bool found = false;
-        bool ok = true;
-        for (const floppy::Entry &e : entries) {
-            const bool top = e.path.compare(entry, Qt::CaseInsensitive) == 0;
-            const bool under = !top
-                && e.path.startsWith(entry + QLatin1Char('/'), Qt::CaseInsensitive);
-            if (!top && !under)
-                continue;
-            found = true;
-            if (removeSource)
-                removals.append(e.path);
-            const QString destination = top
-                ? target
-                : QDir(target).absoluteFilePath(e.path.mid(entry.size() + 1));
-            // Defence in depth against crafted images: an extraction must
-            // land inside the folder the user chose. The listing sanitises
-            // entry names, so this can only fire on something that slipped
-            // through anyway — refuse it loudly rather than write outside.
-            if (!QDir::cleanPath(destination)
-                     .startsWith(QDir::cleanPath(targetDir) + QLatin1Char('/'))) {
-                ok = false;
-                error = tr("%1 escapes the destination folder.").arg(e.path);
-                break;
-            }
-            bool written = false;
-            if (e.isDirectory) {
-                written = QDir().mkpath(destination);
-            } else {
-                QByteArray data;
-                if (floppy::readFileRaw(raw, e.path, &data, &error)) {
-                    QFile out(destination);
-                    written = out.open(QIODevice::WriteOnly)
-                        && out.write(data) == data.size();
-                }
-            }
-            if (!written) {
-                ok = false;
-                break;
-            }
-        }
-        if (!found)
-            error = tr("%1 is not on the disk.").arg(base);
-        if (!found || !ok)
-            failures.append(base);
-    }
-
-    if (!failures.isEmpty()) {
-        QMessageBox::warning(this, tr("Copy"),
-                             tr("Could not copy %1 from %2:\n%3")
-                                 .arg(failures.join(tr(", ")), QFileInfo(image).fileName(),
-                                      error));
-        return false;
-    }
-
-    if (removeSource && !removals.isEmpty()) {
-        if (!floppy::updateImage(image, {}, removals, &error)) {
-            QMessageBox::warning(this, tr("Move"),
-                                 tr("The files were copied, but could not be removed from "
-                                    "%1:\n%2").arg(QFileInfo(image).fileName(), error));
-            refreshFloppy(drive);
-            return false;
-        }
-        refreshFloppy(drive);
-    }
-    return true;
+    const floppy::Transfer::Result result =
+        m_transfer.imageToHost(drive, entryPaths, targetDir, removeSource);
+    finishTransfer(result);
+    return result.ok();
 }
 
 bool FileBrowser::copyFloppyToFloppy(int sourceDrive, const QStringList &entryPaths,
                                      int targetDrive, const QString &dirInImage,
                                      bool removeSource)
 {
-    if (sourceDrive < 0 || sourceDrive > 1 || targetDrive < 0 || targetDrive > 1
-        || entryPaths.isEmpty())
-        return false;
-    const QString sourceImage = m_floppyPath[sourceDrive];
-    const QString targetImage = m_floppyPath[targetDrive];
-    if (sourceImage.isEmpty() || targetImage.isEmpty())
-        return false;
-    const QString dir = normalizedEntryPath(dirInImage);
-    const bool sameImage = QFileInfo(sourceImage).absoluteFilePath()
-        == QFileInfo(targetImage).absoluteFilePath();
-    // Every write below rebuilds an image: the target always, and the source
-    // too when this is a move between two different disks.
-    if (!confirmFloppyRewrite(targetImage))
-        return false;
-    if (!sameImage && removeSource && !confirmFloppyRewrite(sourceImage))
-        return false;
-    if (m_floppyPath[targetDrive] != targetImage
-        || m_floppyPath[sourceDrive] != sourceImage)
-        return false;   // resynced while a confirmation was up
+    const floppy::Transfer::Result result =
+        m_transfer.imageToImage(sourceDrive, entryPaths, targetDrive, dirInImage, removeSource);
+    finishTransfer(result);
+    return result.ok();
+}
 
-    for (const QString &chosen : entryPaths) {
-        const QString entry = normalizedEntryPath(chosen);
-        if (sameImage
-            && (dir == entry || dir.startsWith(entry + QLatin1Char('/')))) {
-            QMessageBox::warning(this, tr("Paste"),
-                                 tr("Cannot put %1 inside itself.").arg(entry));
-            return false;
-        }
-    }
+void FileBrowser::finishTransfer(const floppy::Transfer::Result &result)
+{
+    reportTransferFailure(result);
+    for (int drive : result.refresh)
+        refreshFloppy(drive);
+}
 
-    QString error;
-    QByteArray raw;
-    if (!floppy::loadRaw(sourceImage, &raw, &error)) {
+void FileBrowser::reportTransferFailure(const floppy::Transfer::Result &result)
+{
+    // The disk or file the message names, as the controller reported it.
+    const QString subject = QFileInfo(result.subject).fileName();
+    switch (result.outcome) {
+    case floppy::Transfer::Completed:
+    case floppy::Transfer::Declined:
+    case floppy::Transfer::Resynced:
+    case floppy::Transfer::Invalid:
+        return;   // nothing failed, or nothing was asked: no message
+    case floppy::Transfer::Unreadable:
         QMessageBox::warning(this, tr("Copy"),
-                             tr("Could not read %1:\n%2")
-                                 .arg(QFileInfo(sourceImage).fileName(), error));
-        return false;
-    }
-    const QVector<floppy::Entry> entries = floppy::listRaw(raw, &error);
-    if (!error.isEmpty()) {
+                             tr("Could not read %1:\n%2").arg(subject, result.error));
+        return;
+    case floppy::Transfer::CopyFailed: {
+        // The controller reports the cause of a copy-out failure rather than a
+        // sentence, so the two it can name are phrased here.
+        QString reason = result.error;
+        if (result.cause == floppy::Transfer::EntryMissing)
+            reason = tr("%1 is not on the disk.").arg(result.entry);
+        else if (result.cause == floppy::Transfer::EntryEscapes)
+            reason = tr("%1 escapes the destination folder.").arg(result.entry);
         QMessageBox::warning(this, tr("Copy"),
-                             tr("Could not read %1:\n%2")
-                                 .arg(QFileInfo(sourceImage).fileName(), error));
-        return false;
+                             tr("Could not copy %1 from %2:\n%3")
+                                 .arg(result.names.join(tr(", ")), subject, reason));
+        return;
     }
-
-    QVector<floppy::Item> additions;
-    QStringList removals;
-    for (const QString &chosen : entryPaths) {
-        const QString entry = normalizedEntryPath(chosen);
-        for (const floppy::Entry &e : entries) {
-            const bool top = e.path.compare(entry, Qt::CaseInsensitive) == 0;
-            const bool under = !top
-                && e.path.startsWith(entry + QLatin1Char('/'), Qt::CaseInsensitive);
-            if (!top && !under)
-                continue;
-            if (removeSource)
-                removals.append(e.path);
-            floppy::Item item;
-            item.destPath = dir.isEmpty() ? e.path : dir + QLatin1Char('/') + e.path;
-            item.isDirectory = e.isDirectory;
-            if (!e.isDirectory && !floppy::readFileRaw(raw, e.path, &item.data, &error)) {
-                QMessageBox::warning(this, tr("Copy"),
-                                     tr("Could not read %1:\n%2")
-                                         .arg(QFileInfo(sourceImage).fileName(), error));
-                return false;
-            }
-            additions.append(item);
-        }
-    }
-    if (additions.isEmpty()) {
+    case floppy::Transfer::AddFailed:
+        QMessageBox::warning(this, tr("Copy"),
+                             tr("Could not add the files to %1:\n%2")
+                                 .arg(subject, result.error));
+        return;
+    case floppy::Transfer::WriteFailed:
+        QMessageBox::warning(this, tr("Copy"),
+                             tr("Could not write %1:\n%2").arg(subject, result.error));
+        return;
+    case floppy::Transfer::SourceRemovalFailed:
+        QMessageBox::warning(this, tr("Move"),
+                             tr("The files were copied, but could not be removed from "
+                                "%1:\n%2").arg(subject, result.error));
+        return;
+    case floppy::Transfer::DestinationInsideSource:
+        // The subject is an entry path inside the image, not a host file: it is
+        // the path the user is looking at, so it is shown whole.
+        QMessageBox::warning(this, tr("Paste"),
+                             tr("Cannot put %1 inside itself.").arg(result.subject));
+        return;
+    case floppy::Transfer::NothingToCopy:
         QMessageBox::warning(this, tr("Copy"), tr("Nothing to copy was found on the disk."));
-        return false;
+        return;
     }
-
-    if (sameImage) {
-        if (!floppy::updateImage(targetImage, additions, removals, &error)) {
-            QMessageBox::warning(this, tr("Copy"),
-                                 tr("Could not write %1:\n%2")
-                                     .arg(QFileInfo(targetImage).fileName(), error));
-            return false;
-        }
-    } else {
-        if (!floppy::updateImage(targetImage, additions, {}, &error)) {
-            QMessageBox::warning(this, tr("Copy"),
-                                 tr("Could not write %1:\n%2")
-                                     .arg(QFileInfo(targetImage).fileName(), error));
-            return false;
-        }
-        if (removeSource && !removals.isEmpty()) {
-            if (!floppy::updateImage(sourceImage, {}, removals, &error)) {
-                QMessageBox::warning(this, tr("Move"),
-                                     tr("The files were copied, but could not be removed "
-                                        "from %1:\n%2")
-                                         .arg(QFileInfo(sourceImage).fileName(), error));
-                refreshFloppy(sourceDrive);
-                refreshFloppy(targetDrive);
-                return false;
-            }
-        }
-    }
-    refreshFloppy(targetDrive);
-    if (removeSource && !sameImage)
-        refreshFloppy(sourceDrive);
-    return true;
 }
 
 void FileBrowser::dropOnHardDrive(const QPoint &pos, const QMimeData *mime,
@@ -1176,7 +1064,7 @@ void FileBrowser::onFloppyContextMenu(const QPoint &pos)
     pasteAction->setShortcut(QKeySequence::Paste);
     copyAction->setEnabled(hasDisk && !selected.isEmpty());
     cutAction->setEnabled(hasDisk && !selected.isEmpty());
-    pasteAction->setEnabled(hasDisk && m_clipboard.mode != Clipboard::None);
+    pasteAction->setEnabled(hasDisk && clipboardUsable());
 
     QAction *chosen = menu.exec(pane.view->viewport()->mapToGlobal(pos));
     if (chosen == copyAction)
@@ -1213,7 +1101,7 @@ void FileBrowser::onContextMenu(const QPoint &pos)
     remove->setEnabled(index.isValid());
     copyAction->setEnabled(index.isValid());
     cutAction->setEnabled(index.isValid());
-    pasteAction->setEnabled(m_clipboard.mode != Clipboard::None
+    pasteAction->setEnabled(clipboardUsable()
                             && QFileInfo(contextDirectory()).isDir());
 
     QAction *chosen = menu.exec(m_view->viewport()->mapToGlobal(pos));
@@ -1310,7 +1198,7 @@ void FileBrowser::onChangeFloppy()
     const QString title = drive == 0 ? tr("Select a floppy image for drive A:")
                                      : tr("Select a floppy image for drive B:");
     const QString path = QFileDialog::getOpenFileName(this, title, start,
-                                                      tr(kFloppyFilter));
+                                                      floppyImageFilter());
     if (path.isEmpty())
         return;
     m_floppyPath[drive] = path;

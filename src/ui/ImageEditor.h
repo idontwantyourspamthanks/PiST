@@ -7,10 +7,9 @@
 #include "image/ImageDocument.h"
 #include "image/StFormats.h"
 #include "image/Tools.h"
+#include "ui/SheetSlicing.h"
 
-#include <QHash>
 #include <QBitArray>
-#include <QImage>
 
 #include <QWidget>
 
@@ -26,12 +25,15 @@ class QPushButton;
 class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
-class QTimer;
+class QToolBar;
 class QToolButton;
 class QUndoStack;
+class QVBoxLayout;
 
 namespace pist {
 
+class AnimationPreviewWidget;
+class BitplaneExportController;
 class ImageCanvas;
 class SheetCanvas;
 
@@ -59,23 +61,25 @@ public:
     bool exportScrollDemoFile(const QString &path, int phase, const BitplaneDataOptions &options,
                               const QString &dataFile);
 
-    /// Remember that the export `exportBitplaneFile()` just wrote also came
-    /// with this scroller, so `reExportBitplaneData()` writes it too. The
-    /// export flow calls this once the scroller is out; `exportBitplaneFile()`
-    /// clears it, so a new export replaces the pair rather than reusing it.
-    /// Ignored when no bitplane export has succeeded yet.
+    /// The re-export recipe lives in `m_bitplaneExport`; these few forward to it
+    /// so the shell keeps one call shape for the editor. Remember that the
+    /// export `exportBitplaneFile()` just wrote also came with this scroller, so
+    /// `reExportBitplaneData()` writes it too. The export flow calls this once
+    /// the scroller is out; `exportBitplaneFile()` clears it, so a new export
+    /// replaces the pair rather than reusing it. Ignored when no bitplane export
+    /// has succeeded yet.
     void setBitplaneExportScroller(const QString &scroller);
 
     /// Whether a bitplane export has succeeded in this session, so there is a
     /// recipe to repeat.
-    bool canReExportBitplane() const { return !m_bitplaneRecipe.path.isEmpty(); }
+    bool canReExportBitplane() const;
     /// The `.dat` the remembered export wrote; empty before the first one.
-    QString lastBitplaneExportPath() const { return m_bitplaneRecipe.path; }
+    QString lastBitplaneExportPath() const;
     /// The phase the remembered export used, and the blocks it wrote, so the
     /// shell can print the same block map for a re-export as for the explicit
     /// one.
-    int lastBitplaneExportPhase() const { return m_bitplaneRecipe.phase; }
-    BitplaneDataOptions lastBitplaneExportOptions() const { return m_bitplaneRecipe.options; }
+    int lastBitplaneExportPhase() const;
+    BitplaneDataOptions lastBitplaneExportOptions() const;
     /// Write the remembered bitplane export again — the same phase, blocks and
     /// `.dat`, and the scroller beside it when that export wrote one — with no
     /// dialog and no overwrite prompt, encoding the document's current pixels.
@@ -88,6 +92,11 @@ public:
     /// this action to a menu keeps one shortcut and one enabled state, where a
     /// second action would make Ctrl+Shift+E ambiguous.
     QAction *reExportAction() const { return m_actReExport; }
+    /// The re-export seam itself. The recipe, its file writes and its
+    /// announcements live in the controller, so a shell that wants the export
+    /// internals can drive it directly instead of reaching through the
+    /// forwarding accessors above.
+    BitplaneExportController *bitplaneExport() const { return m_bitplaneExport; }
     /// The sheet the current phase is placed on (0 when unplaced); -1 when
     /// the document has no sheets at all.
     int currentSheetIndex() const;
@@ -165,9 +174,6 @@ private slots:
     void shiftUp();
     void shiftDown();
     void onionChanged();
-    void togglePlay(bool on);
-    void previewTick();
-    void fpsChanged(int fps);
     void addLayer();
     void removeLayer();
     void moveLayerUp();
@@ -180,29 +186,29 @@ private slots:
     void selectPhase(int row);
     void renamePhase();
 
-    /// Repeat the last bitplane export, reporting through the status label
-    /// the way an explicit export does.
+    /// Repeat the last bitplane export. The controller announces the result
+    /// through `bitplaneReExported`, which the editor reports on the status
+    /// label the way an explicit export does.
     void reExportBitplane();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-    /// The bitplane export a re-export repeats, as `.pim` does not record it
-    /// and the project does not either: export stays explicit, and this is per
-    /// document, per session. `path` empty means no export has happened.
-    struct BitplaneExportRecipe {
-        QString path;
-        int phase = 0;
-        BitplaneDataOptions options;
-        /// The scroller written beside `path`, empty when that export wrote
-        /// none or the user declined to overwrite one already there.
-        QString scroller;
-    };
+    /// Build the editor's toolbar: the tool and action bar the constructor hangs
+    /// above the editing body. Returns the bar for the caller to lay out.
+    QToolBar *buildToolbar();
+    /// Build the editing body the toolbar sits above (swatch column, grid canvas
+    /// and its sheet-mode stack, filmstrip, layer/phase/preview column) and hang
+    /// it off `layout`.
+    void buildEditorBody(QVBoxLayout *layout);
 
-    bool writeBytes(const QString &path, const QByteArray &bytes);
-    bool exportBitplaneBytes(const QString &path, int phase, const BitplaneDataOptions &options,
-                             const QString &scroller);
+    /// Encode `doc`'s `frame` in the format `path` names and write it; the one
+    /// tail `exportFile()` and `exportSheetFile()` share, so the two agree on
+    /// which formats exist and on refusing an encoder that produced nothing
+    /// (which used to truncate the target to zero bytes).
+    bool writeEncodedFile(const QString &path, const ImageDocument &doc,
+                          StImageFormat format, int frame);
     /// Drop the remembered export — the document it described is gone. Leaves
     /// the action disabled.
     void forgetBitplaneExport();
@@ -217,6 +223,10 @@ private:
     void refreshPreview();
     void refreshCanvas();
     void refreshSheetView();
+    /// Whether the composed sheet view is the visible mode. Grid-mode edits
+    /// skip the sheet refresh: it is hidden, and its geometry pass plus its
+    /// per-cell compose are pure cost there.
+    bool sheetModeActive() const;
     void refreshPhasePlacement();
     void refreshChrome();
     void updateOverspill();
@@ -226,6 +236,14 @@ private:
     void notifyModified();
     void updateStatus();
     void pushSnapshot(const ImageDocument &before, const QString &text);
+    /// Take the freshly assigned `m_doc` as the edited document: drop the
+    /// state that belonged to the old one (undo history, bitplane-export memo,
+    /// playback, the canvas selection) and rebind what mirrors the new one.
+    /// Shared by newDocument, replaceDocument and loadFile.
+    void adoptDocument();
+    /// Re-derive the editor state that mirrors the document (the current
+    /// colour, the imported-sheet pixel cache) after undo/redo assigned it.
+    void resyncFromRestoredDocument();
     void applyLayerBuffer(const QVector<int> &before, const QString &text);
     /// Replace the active layer's buffer as one undoable command; no-op when
     /// the buffers are equal. Returns whether anything changed.
@@ -252,9 +270,6 @@ private:
     int m_strokeLayer = 0;
     int m_strokeFrame = 0;
     int m_onionDistance = 0;
-    int m_previewFrame = 0;
-    int m_fps = 8;
-    bool m_playing = false;
     /// Internal clipboard: cube indices of the last copy/cut, `m_clipWidth` wide.
     QVector<int> m_clip;
     int m_clipWidth = 0;
@@ -272,9 +287,8 @@ private:
     QAction *m_actSheetMode = nullptr;
     QAction *m_actNewSheet = nullptr;
     QAction *m_actSheetSource = nullptr;
-    /// Imported sheet pixels (for slicing) and their display form, per sheet.
-    QHash<int, ImportedSheet> m_importedSheets;
-    QHash<int, QImage> m_sheetUnderlays;
+    /// Imported sheet pixels and the slice/re-slice cuts made from them.
+    SheetSlicing m_sheetSlicing;
     QButtonGroup *m_tools = nullptr;
     QButtonGroup *m_swatches = nullptr;
     QWidget *m_swatchBar = nullptr;
@@ -283,10 +297,9 @@ private:
     QListWidget *m_layers = nullptr;
     QListWidget *m_phases = nullptr;
     QComboBox *m_phasePicker = nullptr;
-    QLabel *m_preview = nullptr;
+    /// The animation player: preview box, fps box and the play/pause action.
+    AnimationPreviewWidget *m_previewWidget = nullptr;
     QComboBox *m_onion = nullptr;
-    QSpinBox *m_fpsBox = nullptr;
-    QTimer *m_previewTimer = nullptr;
     QUndoStack *m_undo = nullptr;
     QLabel *m_status = nullptr;
     QAction *m_actUndo = nullptr;
@@ -304,13 +317,13 @@ private:
     QAction *m_actFlipH = nullptr;
     QAction *m_actFlipV = nullptr;
     QAction *m_actRotate = nullptr;
-    QAction *m_actPlay = nullptr;
     QAction *m_actShiftLeft = nullptr;
     QAction *m_actShiftRight = nullptr;
     QAction *m_actShiftUp = nullptr;
     QAction *m_actShiftDown = nullptr;
     QAction *m_actReExport = nullptr;
-    BitplaneExportRecipe m_bitplaneRecipe;
+    /// The bitplane re-export recipe and the file writes that repeat it.
+    BitplaneExportController *m_bitplaneExport = nullptr;
     QToolButton *m_addFrame = nullptr;
     QToolButton *m_dupFrame = nullptr;
     QToolButton *m_removeFrame = nullptr;

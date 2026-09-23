@@ -46,8 +46,6 @@ private slots:
     void browseHardDisk();
     void browseAssembler();
     void browseEmulator();
-    void browseFloppyA();
-    void browseFloppyB();
     void addSource();
     void removeSource();
     void addIncludePath();
@@ -60,6 +58,8 @@ private:
     void loadValues(const ProjectSettings &settings);
     void refreshRomList();
     void updateCompatibilityNote();
+    /// The floppy rows differ only in their target field and dialog title.
+    void browseFloppy(QLineEdit *field, const QString &title);
 
     QLineEdit *m_assemblerPath = nullptr;
     QLineEdit *m_emulatorPath = nullptr;

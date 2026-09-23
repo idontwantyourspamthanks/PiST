@@ -4,6 +4,8 @@
 
 #include <QtTest>
 
+#include "editor/AsmLex.h"
+#include "editor/IncludeNav.h"
 #include "editor/OsCallBinding.h"
 #include "editor/OsCallRef.h"
 #include "editor/OsCallScan.h"
@@ -37,6 +39,7 @@ private slots:
     void pushLineResolvesThroughTheTrapBelow();
     void argumentPushesAreCollectedInSourceOrder();
     void commentsAndBlanksRideInsideASequence();
+    void aQuotedSemicolonStaysInTheOperand();
     void aLabelEndsTheSequence();
     void nonOsTrapsAndDistantPushesAreIgnored();
 
@@ -44,32 +47,64 @@ private slots:
     void bindingSpecialCasesKeepTheirDocumentedShape();
     void everyBindingAddsUpToItsStackBytes();
     void everyBindingScansBackToItsOwnCall();
+    void declaredStackLayoutMatchesTheData();
+    void aRenamedReservedArgumentStillPushesItsValue();
+
+    void commentsAndQuotesFollowVasm();
+    void labelsMayBeIndentedAndAreAscii();
+    void navigationFindsLabelDefinitions();
+    void navigationParsesIncludeTargets();
+    void navigationResolvesTheWordAtTheCursor();
 };
 
 void TstOsCall::tableCoversThreeLayers()
 {
-    int gemdos = 0, bios = 0, xbios = 0;
+    // The table is the reference's listing order, so a layer is one run of rows
+    // — GEMDOS, then XBIOS, then BIOS — and every row belongs to exactly one of
+    // the three layers. That is the shape the panel depends on (it lists the
+    // table in order, so an interleaved layer reads as a manual with its pages
+    // shuffled). The exact sizes (53/46/12, 111 in total) used to be pinned
+    // here and were pure maintenance tax — a new call forced a test edit —
+    // while a truncated or duplicated table is what opcodesAreUniquePerLayer
+    // and the lookups below actually catch (NIT-14).
+    QStringList layers;
     for (const OsCallInfo &info : osCallTable()) {
         switch (info.trap) {
-        case 1: ++gemdos; break;
-        case 13: ++bios; break;
-        case 14: ++xbios; break;
-        default: QFAIL("entry with a trap number that is not an OS layer");
+        case 1:
+        case 13:
+        case 14:
+            break;
+        default:
+            QFAIL("entry with a trap number that is not an OS layer");
         }
+        const QString layer = osCallLayerKey(info.trap);
+        if (layers.isEmpty() || layers.last() != layer)
+            layers << layer;
     }
-    QCOMPARE(gemdos, 53);
-    QCOMPARE(xbios, 46);
-    QCOMPARE(bios, 12);
-    QCOMPARE(osCallTable().size(), 111);
+    // Three runs, in the documented order: any other list means a layer is
+    // missing, empty, or picked up again after another one.
+    QCOMPARE(layers, QStringList({QStringLiteral("gemdos"), QStringLiteral("xbios"),
+                                  QStringLiteral("bios")}));
 }
 
 void TstOsCall::opcodesAreUniquePerLayer()
 {
     QSet<QString> seen;
+    QSet<QString> named;
     for (const OsCallInfo &info : osCallTable()) {
         const QString key = QStringLiteral("%1:%2").arg(info.trap).arg(info.opcode);
         QVERIFY2(!seen.contains(key), qPrintable(QStringLiteral("duplicate %1 (%2)").arg(key, info.name)));
         seen.insert(key);
+        // Both look-ups are keyed on exactly these two pairs, so a repeated name
+        // in one layer would leave one of the rows unreachable through
+        // osCallRefByName: the table would still list it and the lookup would
+        // answer with its twin, silently. (Same hazard as the opcode above.)
+        const QString nameKey = QStringLiteral("%1:%2").arg(info.trap).arg(info.name.toLower());
+        QVERIFY2(!named.contains(nameKey), qPrintable(QStringLiteral("duplicate name %1").arg(nameKey)));
+        named.insert(nameKey);
+        // ...and every row the table lists is the one each lookup answers with.
+        QCOMPARE(osCallRef(info.trap, info.opcode), &info);
+        QCOMPARE(osCallRefByName(info.trap, info.name), &info);
         // Every entry names itself and its layer, so a row or a detail can
         // never render empty.
         QVERIFY(!info.name.isEmpty());
@@ -264,6 +299,21 @@ void TstOsCall::commentsAndBlanksRideInsideASequence()
     QCOMPARE(match.args, QStringList{QStringLiteral("super_fn")});
 }
 
+void TstOsCall::aQuotedSemicolonStaysInTheOperand()
+{
+    // The scanner reads its lines through AsmLex, so a `;` inside a quoted
+    // operand is part of the operand rather than the start of a comment: the
+    // push is recognised, and the panel shows the text the source wrote. A
+    // character constant is the way a `;` reaches an argument.
+    const QStringList lines = {QStringLiteral("\tmove.w\t#';',-(a7)"),
+                               QStringLiteral("\tmove.w\t#2,-(a7)"),
+                               QStringLiteral("\ttrap\t#1")};
+    const OsCallMatch match = osCallAt(lines, 2);
+    QVERIFY(match.call);
+    QCOMPARE(match.call->name, QStringLiteral("Cconout"));
+    QCOMPARE(match.args, QStringList{QStringLiteral("#';'")});
+}
+
 void TstOsCall::aLabelEndsTheSequence()
 {
     // A label between the push and the trap means the push is not this trap's
@@ -383,6 +433,183 @@ void TstOsCall::everyBindingScansBackToItsOwnCall()
                  qPrintable(QStringLiteral("%1 resolved to %2").arg(info.name, match.call->name)));
         QCOMPARE(match.args.size(), pushLines - 1); // minus the fn-word push
     }
+}
+
+// The byte size of one prototype parameter, read from its declaration alone: a
+// pointer or a 32-bit type is a long, anything else a word. Written out here
+// rather than shared with the generator on purpose — the test's job is that the
+// table, the prototype and the generator all say the same number.
+static int prototypeBytes(const QString &prototype)
+{
+    const int open = prototype.indexOf(QLatin1Char('('));
+    const int close = prototype.lastIndexOf(QLatin1Char(')'));
+    const QString inside = prototype.mid(open + 1, close - open - 1).trimmed();
+    if (inside.isEmpty() || inside == QLatin1String("void"))
+        return 0;
+
+    int bytes = 0;
+    const QStringList parts = inside.split(QLatin1Char(','));
+    for (const QString &raw : parts) {
+        const QString part = raw.trimmed();
+        if (part == QLatin1String("..."))
+            continue; // Pexec's varargs: the entry's fixed block covers them
+        const bool isLong = part.contains(QLatin1Char('*'))
+                            || part.contains(QStringLiteral("32_t"))
+                            || part.contains(QLatin1String("long"), Qt::CaseInsensitive);
+        bytes += isLong ? 4 : 2;
+    }
+    return bytes;
+}
+
+void TstOsCall::declaredStackLayoutMatchesTheData()
+{
+    // What the caller pops is a function of the entry: the function word, the
+    // prototype's arguments, the reserved words the binding adds and Pexec's
+    // fixed block. It used to be a second hand-written number that nothing kept
+    // in step with the first; now the listed value, the derivation the binding
+    // generates its cleanup from, and the prototype must agree entry by entry.
+    for (const OsCallInfo &info : osCallTable()) {
+        const int derived = 2 + prototypeBytes(info.prototype) + 2 * info.reservedWords
+                            + (info.fixedArgBlock ? 3 * 4 : 0);
+        const QString what = QStringLiteral("%1 %2").arg(osCallLayerName(info.trap), info.name);
+        QVERIFY2(info.stackBytes == derived,
+                 qPrintable(QStringLiteral("%1: listed %2 bytes, its prototype and layout say %3")
+                                .arg(what)
+                                .arg(info.stackBytes)
+                                .arg(derived)));
+        QVERIFY2(osCallStackBytes(info) == derived,
+                 qPrintable(QStringLiteral("%1: the binding derives %2 bytes, its prototype and "
+                                           "layout say %3")
+                                .arg(what)
+                                .arg(osCallStackBytes(info))
+                                .arg(derived)));
+    }
+}
+
+void TstOsCall::aRenamedReservedArgumentStillPushesItsValue()
+{
+    // Dbmsg's reserved word is fixed by the call, and the entry says which
+    // argument that is: renaming the parameter cannot turn the literal 5 into a
+    // placeholder the caller would have to fill in.
+    OsCallInfo renamed = *osCallRef(14, 11);
+    renamed.prototype =
+        QStringLiteral("void Dbmsg(int16_t unused, int16_t msg_num, int32_t msg_arg)");
+    const QString binding = osCallBinding(renamed);
+    QVERIFY(binding.contains(QStringLiteral("\tmove.w\t#5,-(sp)")));
+    QVERIFY(!binding.contains(QStringLiteral("unused")));
+    QCOMPARE(osCallStackBytes(renamed), 10);
+}
+
+// --- AsmLex: the token rules the highlighter, the scanner and navigation share
+
+void TstOsCall::commentsAndQuotesFollowVasm()
+{
+    // `;` starts a comment anywhere on the line.
+    QCOMPARE(asmlex::commentStart(QStringLiteral("\tmove.w\t#9,-(sp)\t; Cconws")), 17);
+    QCOMPARE(asmlex::codePart(QStringLiteral("\tmove.w\t#9,-(sp)\t; Cconws")),
+             QStringLiteral("move.w\t#9,-(sp)"));
+
+    // …but not inside a string: both quote styles are strings in Motorola
+    // syntax, and a `;` in one is only a character. The code after the closing
+    // quote still counts.
+    QCOMPARE(asmlex::commentStart(QStringLiteral("\tdc.b\t';',0")), -1);
+    QCOMPARE(asmlex::commentStart(QStringLiteral("\tdc.b\t\";\",0")), -1);
+    QCOMPARE(asmlex::codePart(QStringLiteral("\tdc.b\t';'  ; done")), QStringLiteral("dc.b\t';'"));
+    // An escaped quote does not close the string, so the `;` behind it is still
+    // inside it.
+    QCOMPARE(asmlex::commentStart(QStringLiteral("\tdc.b\t'it\\'s ; here'")), -1);
+    // An unterminated quote swallows the rest of the line: no comment opens.
+    QCOMPARE(asmlex::commentStart(QStringLiteral("\tdc.b\t'hi ; there")), -1);
+
+    // `*` in the first column makes the whole line a comment; anywhere else it
+    // is an operand, and indenting it does not make it a comment.
+    QCOMPARE(asmlex::commentStart(QStringLiteral("* hello.s")), 0);
+    QVERIFY(asmlex::codePart(QStringLiteral("* hello.s")).isEmpty());
+    QCOMPARE(asmlex::codePart(QStringLiteral("\tmove.w\t#2*3,-(sp)")),
+             QStringLiteral("move.w\t#2*3,-(sp)"));
+}
+
+void TstOsCall::labelsMayBeIndentedAndAreAscii()
+{
+    // vasm reads the first field as a label wherever it starts, so an indented
+    // definition is one — the demos indent their local labels.
+    QString symbol;
+    QVERIFY(asmlex::isLabelDefinition(QStringLiteral("count:"), &symbol));
+    QCOMPARE(symbol, QStringLiteral("count"));
+    QVERIFY(asmlex::isLabelDefinition(QStringLiteral("\tcount:"), &symbol));
+    QCOMPARE(symbol, QStringLiteral("count"));
+    QVERIFY(asmlex::isLabelDefinition(QStringLiteral("  start:\tmoveq\t#0,d0"), &symbol));
+    QCOMPARE(symbol, QStringLiteral("start"));
+
+    // The instruction sharing the label's line is what the scanner reads, and a
+    // line holding only a label has none — which is how a call sequence ends.
+    QCOMPARE(asmlex::instructionPart(QStringLiteral("\tstart:\tmove.w\t#9,-(sp)")),
+             QStringLiteral("move.w\t#9,-(sp)"));
+    QVERIFY(asmlex::instructionPart(QStringLiteral("\tdone:")).isEmpty());
+
+    // Not definitions: a reference, a directive's operand, and a name mentioned
+    // in a comment or inside a string.
+    QVERIFY(!asmlex::isLabelDefinition(QStringLiteral("\tbsr count"), &symbol));
+    QVERIFY(!asmlex::isLabelDefinition(QStringLiteral("\tmoveq\t#0,d0\t; count:"), &symbol));
+    QVERIFY(!asmlex::isLabelDefinition(QStringLiteral("\tdc.b\t'count:'"), &symbol));
+
+    // The alphabet is ASCII, and `_`, `.` and `$` are part of it; a Unicode
+    // letter is not a name, and a leading digit is a number rather than a label.
+    QVERIFY(asmlex::isLabelDefinition(QStringLiteral("\t.data_1$:"), &symbol));
+    QCOMPARE(symbol, QStringLiteral(".data_1$"));
+    QVERIFY(!asmlex::isWordChar(QChar(0x00E9))); // é
+    QVERIFY2(!asmlex::isLabelDefinition(QStringLiteral("caf") + QChar(0x00E9) + QLatin1Char(':'),
+                                        &symbol),
+             "a Unicode letter is not part of a name");
+    QVERIFY(!asmlex::isWordStart(QLatin1Char('1')));
+    QVERIFY(!asmlex::isLabelDefinition(QStringLiteral("1up:"), &symbol));
+}
+
+// IncludeNav is QtCore-only and now reads its lines through AsmLex, so its
+// first suite coverage lives here beside the scanner's: the definition,
+// include-target and word-at-cursor rules Ctrl+click depends on. (Ported from
+// the throwaway /tmp harness that pinned the MAJ-30 rewrite's behaviour
+// byte-for-byte; see the code-quality report's MAJ-30 row.)
+void TstOsCall::navigationFindsLabelDefinitions()
+{
+    // A definition is a name and a colon at the start of the code field,
+    // indented or not (vasm's rule — the demos indent their local labels), and
+    // the assignment forms are definitions too.
+    const QString doc = QStringLiteral("* comment\n"
+                                      "start:\n"
+                                      "\tmoveq\t#0,d0\n"
+                                      "count:\taddq.w\t#1,d0\n"
+                                      "\tkMaxX equ 40\n"
+                                      "\trows set 25\n"
+                                      "\twidth = 320\n"
+                                      "\t; start: mentioned in a comment\n"
+                                      "\tbsr count\n");
+    QCOMPARE(labelLine(doc, QStringLiteral("START")), 2);  // case-insensitively
+    QCOMPARE(labelLine(doc, QStringLiteral("count")), 4);  // shared with an instruction
+    QCOMPARE(labelLine(doc, QStringLiteral("kMaxX")), 5);  // `equ`
+    QCOMPARE(labelLine(doc, QStringLiteral("rows")), 6);   // `set`
+    QCOMPARE(labelLine(doc, QStringLiteral("width")), 7);  // `=`
+    QCOMPARE(labelLine(doc, QStringLiteral("bsr")), 0);    // a reference is not a definition
+    QCOMPARE(labelLine(doc, QStringLiteral("nope")), 0);   // an unknown symbol is nowhere
+    QCOMPARE(labelLine(QStringLiteral("\tstart:\tnop\n"), QStringLiteral("start")), 1);
+}
+
+void TstOsCall::navigationParsesIncludeTargets()
+{
+    QCOMPARE(includeTargetAt(QStringLiteral("\tinclude\t'lib.s'")), QStringLiteral("lib.s"));
+    QCOMPARE(includeTargetAt(QStringLiteral("Include \"lib.s\"")), QStringLiteral("lib.s"));
+    QVERIFY(includeTargetAt(QStringLiteral("\t; include 'lib.s'")).isEmpty());
+    QVERIFY(includeTargetAt(QStringLiteral("\t* include 'lib.s'")).isEmpty());
+}
+
+void TstOsCall::navigationResolvesTheWordAtTheCursor()
+{
+    const QString line = QStringLiteral("\tmove.w\t#kMaxX+1,d4\t; note");
+    QCOMPARE(wordAtCursor(line, line.indexOf(QLatin1Char('#'))), QStringLiteral("kMaxX"));
+    QCOMPARE(wordAtCursor(line, line.indexOf(QLatin1Char('+')) + 1), QStringLiteral("1"));
+    QCOMPARE(wordAtCursor(line, line.indexOf(QLatin1Char(','))), QStringLiteral("1"));
+    QCOMPARE(wordAtCursor(line, line.indexOf(QLatin1String("kMaxX")) + 2), QStringLiteral("kMaxX"));
+    QCOMPARE(wordAtCursor(QStringLiteral("\tmove.w\t#kMaxX"), 999), QStringLiteral("kMaxX"));
 }
 
 QTEST_MAIN(TstOsCall)

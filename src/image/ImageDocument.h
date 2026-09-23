@@ -73,6 +73,13 @@ public:
     static constexpr int kMaxFramesPerPhase = 4096;
     static constexpr int kMaxLayersPerFrame = 256;
 
+    /// How far off a sheet a phase's strip may sit. The placement is added to
+    /// every frame's own offset when a sheet is composed or a strip is sliced, so
+    /// it has to be bounded for that arithmetic not to overflow — and the bound is
+    /// what the editor's placement panel offers (±4096), so no value the user can
+    /// enter is clamped away on save/load.
+    static constexpr int kMaxPlacement = 4096;
+
     ImageDocument();
 
     /// Blank document of one phase with `width`×`height` cells and one
@@ -155,7 +162,8 @@ public:
     bool setPhaseCellSize(int phaseIndex, int width, int height, QString *error = nullptr);
     bool removePhase(int index);
     bool renamePhase(int index, const QString &name);
-    /// Place a phase's strip on a sheet; `sheet` -1 marks it unplaced.
+    /// Place a phase's strip on a sheet; `sheet` -1 marks it unplaced. x/y are
+    /// clamped to ±kMaxPlacement, like the loaded value.
     bool setPhasePlacement(int index, int sheet, int x, int y);
     /// Register a sheet target; returns its index.
     int addSheet(const QString &path, int width, int height);
@@ -179,6 +187,8 @@ public:
 
     void setActive(const QVector<int> &indices);
     bool toggleActive(int cubeIndex);
+    /// Cube index the sprite-safe export may reserve; clamped into the current
+    /// cube, so it always names a colour that can be written to a file.
     void setBackground(int cubeIndex);
     void setPaletteKind(PaletteKind kind);
 
@@ -214,6 +224,12 @@ private:
     void remesh(ImageFrame &frame) const;
     void remeshCurrent();
     void clampActiveLayer();
+    /// Keep `background` inside the current cube: it names the colour word a
+    /// sprite-safe export may reserve, and an index outside the cube can never be
+    /// one, so a reserved slot taken from it would be dropped by clampActive and
+    /// the sprite would land on register 0 after all. Every entry point that can
+    /// set or move it comes through here.
+    void clampBackground();
     int resolvedLayer(int layer) const;
     ImageLayer *layerAt(int layer);
     const ImageLayer *layerAt(int layer) const;

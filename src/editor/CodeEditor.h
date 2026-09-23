@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "editor/EditorTheme.h"
 #include "git/GitTypes.h"
 
 #include <QHash>
@@ -27,7 +28,10 @@ class CodeEditor : public QPlainTextEdit
     Q_OBJECT
 
 public:
-    explicit CodeEditor(QWidget *parent = nullptr);
+    /// The theme is a parameter, not a lookup: the editor paints what it is
+    /// handed, so a caller cannot build one that silently shows colours nobody
+    /// chose (MIN-86 keeps `src/editor/` out of `src/ui/`).
+    CodeEditor(const EditorTheme &theme, QWidget *parent = nullptr);
 
     bool loadFile(const QString &path);
     bool saveFile(const QString &path);
@@ -40,9 +44,11 @@ public:
     /// or its modified state: the file was renamed on disk underneath us.
     void setFilePath(const QString &path) { m_filePath = path; }
 
-    /// (Re)apply the application font-size preference and theme-driven syntax
-    /// colours. Called by the constructor and whenever the preferences change.
-    void applyFontPreferences();
+    /// (Re)apply a theme: the monospace font and its tab stop, the syntax
+    /// colours, and the colours the extra selections and the gutter paint with.
+    /// Called by the constructor and by the window whenever the appearance
+    /// preferences change.
+    void setTheme(const EditorTheme &theme);
     bool isModifiedSinceLoad() const;
 
     /// File name only, for the window title.
@@ -86,7 +92,6 @@ public:
     /// The blame lane sits to the left of the line-number gutter. It is off
     /// until the View menu asks for it, and a click in it is not a breakpoint.
     void setBlameShown(bool on);
-    bool blameShown() const { return m_blameShown; }
     int blameLaneWidth() const;
     void setBlame(const GitBlameMap &lines);
     QString blameTip(int line) const;
@@ -138,6 +143,7 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void scrollContentsBy(int dx, int dy) override;
 
 private slots:
     void updateLineNumberAreaWidth(int newBlockCount);
@@ -158,13 +164,37 @@ private:
     /// the first one at or after `anchor` (wrapping to the start).
     void refreshMatches(int anchor, bool selectHit);
     void selectMatch(int index);
-    /// The hit the selection is on when it is one of ours, else -1.
-    int currentMatchFromSelection() const;
-    int matchIndexAtOrAfter(int position) const;
+    /// The hits of the current needle, in document order, up to `limit` of them;
+    /// `limit` <= 0 keeps every one. `capped`, when given, is set only if the
+    /// walk stopped at the limit with another hit still to come.
+    QList<QTextCursor> collectMatches(int limit, bool *capped) const;
+    /// The hits a replace acts on: the live list, or a fresh uncapped scan when
+    /// that list stopped at the cap (a replace must not silently skip the hits
+    /// past it).
+    QList<QTextCursor> replacementHits() const;
+    /// The position of the current hit for the status label: "3 of 12", or
+    /// "3 of more than 2000" when the count stopped at the cap.
+    QString matchStatusText() const;
     bool isWholeWord(const QTextCursor &hit) const;
     QString findNeedle() const;
 
     QString m_filePath;
+    /// How loadFile decoded the file's bytes. saveFile writes the same
+    /// encoding back, so an unedited file round-trips byte for byte; a Latin-1
+    /// source is not silently rewritten as UTF-8, nor a UTF-8 one as Latin-1.
+    enum class SourceEncoding { Utf8, Latin1 };
+    SourceEncoding m_sourceEncoding = SourceEncoding::Utf8;
+    /// How the file's lines ended when it was read. Qt's document stores '\n'
+    /// whatever the file held, so the style has to be remembered here to be
+    /// written back: Atari ST sources are frequently CRLF (edited on Windows or
+    /// by an Atari tool of the era), and without this an unedited save rewrites
+    /// every line ending — including, for a source edited out of a floppy
+    /// image, the copy saved back into the image.
+    enum class LineEnding { Lf, CrLf };
+    LineEnding m_lineEnding = LineEnding::Lf;
+    /// What the widget paints with: the font, and the colours behind the extra
+    /// selections and the gutter. Set by setTheme().
+    EditorTheme m_theme;
     AsmHighlighter *m_highlighter = nullptr;
     QWidget *m_lineNumberArea = nullptr;
     bool m_blameShown = false;
@@ -193,6 +223,9 @@ private:
     QLabel *m_findStatus = nullptr;
     QList<QTextCursor> m_matches;
     int m_matchIndex = -1;
+    /// The hit list stopped at the scan cap, so its size is a floor and not the
+    /// document's total.
+    bool m_matchesCapped = false;
     /// Where the search began, so as-you-type searching holds its place.
     int m_findAnchor = 0;
     int m_findBarHeight = 0;

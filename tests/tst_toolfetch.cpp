@@ -35,9 +35,12 @@ private slots:
     void romDirIsSearched();
     void checksumMismatchRefusesInstall();
     void installToolBinaryIsFoundByDiscovery();
+    void installToolBinaryFailsWithoutRemovingExisting();
     void vasmTarballBuildsAndInstalls();
 
     void zipMemberExtractsFromNestedDirectory();
+    void failedExtractionLeavesNoFile();
+    void failedTarExtractionLeavesNoFile();
 
 private:
     QTemporaryDir m_work;
@@ -199,6 +202,45 @@ void TstToolFetch::installToolBinaryIsFoundByDiscovery()
     QCOMPARE(QDir::cleanPath(info.path), QDir::cleanPath(installed));
 }
 
+void TstToolFetch::installToolBinaryFailsWithoutRemovingExisting()
+{
+    // The platform decides what an executable is called; the name only has to
+    // match between the working install and the source that cannot be copied,
+    // so that both address the same destination.
+#ifdef Q_OS_WIN
+    const QString name = QStringLiteral("vasmm68k_mot.exe");
+#else
+    const QString name = QStringLiteral("vasmm68k_mot");
+#endif
+    const QByteArray content = "#!/bin/sh\necho 'vasm 9.9z working install'\n";
+    const QString src = m_work.path() + QLatin1Char('/') + name;
+    {
+        QFile f(src);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(content);
+    }
+
+    QString error;
+    const QString installed = toolchain::installToolBinary(src, &error);
+    QVERIFY2(!installed.isEmpty(), qPrintable(error));
+
+    // A replacement whose source is gone (the same shape as a full disk or a
+    // copy that fails part way) must be refused without taking the working
+    // binary with it — the toolchain that worked before must still work.
+    const QString missing = m_work.path() + QStringLiteral("/vanished/") + name;
+    QVERIFY(!QFileInfo::exists(missing));
+    QString failure;
+    const QString refused = toolchain::installToolBinary(missing, &failure);
+    QVERIFY(refused.isEmpty());
+    QVERIFY(!failure.isEmpty());
+
+    QFile survivor(installed);
+    QVERIFY2(survivor.open(QIODevice::ReadOnly), qPrintable(installed));
+    QCOMPARE(survivor.readAll(), content);
+    QVERIFY(QFileInfo(installed).isExecutable());
+    QVERIFY(!QFileInfo::exists(installed + QStringLiteral(".part")));
+}
+
 void TstToolFetch::vasmTarballBuildsAndInstalls()
 {
 #ifdef Q_OS_WIN
@@ -322,6 +364,127 @@ void TstToolFetch::zipMemberExtractsFromNestedDirectory()
     QFile extracted(dest);
     QVERIFY(extracted.open(QIODevice::ReadOnly));
     QCOMPARE(extracted.readAll(), QByteArray(1024, '\x60'));
+}
+
+void TstToolFetch::failedExtractionLeavesNoFile()
+{
+#ifdef Q_OS_WIN
+    QSKIP("symlink staging needs privileges on Windows");
+#endif
+    if (QStandardPaths::findExecutable(QStringLiteral("unzip")).isEmpty())
+        QSKIP("needs unzip");
+    if (QStandardPaths::findExecutable(QStringLiteral("python3")).isEmpty())
+        QSKIP("needs python3 to build the fixture");
+
+    // The shape of a truncated download: the member's deflate data is corrupt,
+    // but the archive's directory (which listing reads) is intact — so the
+    // member is found and extraction is attempted, and then fails.
+    const QString zipPath = m_work.path() + QStringLiteral("/corrupt.zip");
+    QProcess py;
+    py.start(QStringLiteral("python3"),
+             {QStringLiteral("-c"),
+              QStringLiteral("import sys, struct, zipfile\n"
+                             "z = zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED)\n"
+                             "z.writestr('emutos-1.4/etos1024k.img', bytes(range(256)) * 64)\n"
+                             "z.close()\n"
+                             "d = bytearray(open(sys.argv[1], 'rb').read())\n"
+                             "i = d.find(b'PK\\x03\\x04')\n"
+                             "csize = struct.unpack('<I', d[i + 18:i + 22])[0]\n"
+                             "nlen = struct.unpack('<H', d[i + 26:i + 28])[0]\n"
+                             "elen = struct.unpack('<H', d[i + 28:i + 30])[0]\n"
+                             "pos = i + 30 + nlen + elen + csize - 6\n"
+                             "for k in range(6):\n"
+                             "    d[pos + k] ^= 0x5A\n"
+                             "open(sys.argv[1], 'wb').write(d)\n"),
+              zipPath});
+    QVERIFY(py.waitForFinished());
+    QCOMPARE(py.exitCode(), 0);
+
+    const QString outDir = m_work.path() + QStringLiteral("/corrupt-out");
+    QVERIFY(QDir().mkpath(outDir));
+    const QString dest = outDir + QStringLiteral("/etos1024k.img");
+    const QString romDest = paths::suggestedRomDir() + QStringLiteral("/etos1024k.img");
+    const QString sha = toolchain::sha256OfFile(zipPath);
+    QVERIFY(!sha.isEmpty());
+
+    // Force the unzip branch: a PATH holding only unzip, so neither python3 nor
+    // tar is available and the streaming stdout path is the one under test.
+    const QString staging = m_work.path() + QStringLiteral("/corrupt-only-unzip");
+    QVERIFY(QDir().mkpath(staging));
+    QVERIFY(QFile::link(QStandardPaths::findExecutable(QStringLiteral("unzip")),
+                        staging + QStringLiteral("/unzip")));
+    const QByteArray savedPath = qgetenv("PATH");
+    qputenv("PATH", staging.toUtf8());
+
+    QString error;
+    const bool ok = toolchain::extractZipMember(zipPath, QStringLiteral("etos1024k.img"),
+                                                dest, &error);
+    // And the user-facing path it feeds: the ROM directory the setup dialog and
+    // ROM discovery both look at must not gain the failed extraction either.
+    QString installError;
+    const QString installed = toolchain::installEmuTosFromZip(zipPath, sha, &installError);
+
+    qputenv("PATH", savedPath);
+
+    QVERIFY2(!ok, "a corrupt member must not extract");
+    QVERIFY(error.contains(QStringLiteral("unzip")));
+    QVERIFY(installed.isEmpty());
+    QVERIFY(installError.contains(QStringLiteral("unzip")));
+
+    // The failed attempt must leave nothing behind: a 0-byte file where the ROM
+    // belongs is handed to Hatari as a ROM and hides the setup dialog's retry.
+    QVERIFY(!QFileInfo::exists(dest));
+    QVERIFY(!QFileInfo::exists(dest + QStringLiteral(".part")));
+    QVERIFY(QDir(outDir).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty());
+    QVERIFY(!QFileInfo::exists(romDest));
+    QVERIFY(!QFileInfo::exists(romDest + QStringLiteral(".part")));
+}
+
+void TstToolFetch::failedTarExtractionLeavesNoFile()
+{
+#ifdef Q_OS_WIN
+    QSKIP("a shell-script fixture is not findable by Windows discovery");
+#endif
+    const QString zipPath = m_work.path() + QStringLiteral("/unreadable.zip");
+    {
+        QFile f(zipPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("PK\x03\x04 not really a zip");
+    }
+    const QString outDir = m_work.path() + QStringLiteral("/tar-out");
+    QVERIFY(QDir().mkpath(outDir));
+    const QString dest = outDir + QStringLiteral("/etos1024k.img");
+
+    // Only bsdtar reads a zip through `tar` (a GNU tar cannot even list one), so
+    // the fixture stands in for it: it lists the member and then fails while
+    // writing it out, which is the branch whose leftovers this guards.
+    const QString staging = m_work.path() + QStringLiteral("/only-tar");
+    QVERIFY(QDir().mkpath(staging));
+    {
+        QFile tool(staging + QStringLiteral("/tar"));
+        QVERIFY(tool.open(QIODevice::WriteOnly));
+        tool.write("#!/bin/sh\n"
+                   "case \"$1\" in\n"
+                   "-tf) printf 'emutos-1.4/etos1024k.img\\n' ;;\n"
+                   "*) printf 'truncated member' ; exit 1 ;;\n"
+                   "esac\n");
+    }
+    QVERIFY(QFile::setPermissions(staging + QStringLiteral("/tar"),
+                                  QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+
+    const QByteArray savedPath = qgetenv("PATH");
+    qputenv("PATH", staging.toUtf8());
+    QString error;
+    const bool ok = toolchain::extractZipMember(zipPath, QStringLiteral("etos1024k.img"),
+                                                dest, &error);
+    qputenv("PATH", savedPath);
+
+    QVERIFY2(!ok, "a failed tar extraction must not report success");
+    QVERIFY(error.contains(QStringLiteral("tar")));
+    QVERIFY(!QFileInfo::exists(dest));
+    QVERIFY(!QFileInfo::exists(dest + QStringLiteral(".part")));
+    QVERIFY(QDir(outDir).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty());
 }
 
 int main(int argc, char **argv)

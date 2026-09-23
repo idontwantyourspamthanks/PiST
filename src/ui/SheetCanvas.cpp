@@ -176,18 +176,8 @@ void SheetCanvas::paintEvent(QPaintEvent *)
             // calls per repaint. FastTransformation keeps the nearest-neighbour
             // blocky look (each cell -> an m_scale square) and a transparent cell
             // leaves the underlay/background showing, exactly as the skip did.
-            QImage img(phase.cellW, phase.cellH, QImage::Format_ARGB32);
-            img.fill(Qt::transparent);
-            for (int row = 0; row < phase.cellH; ++row) {
-                auto *line = reinterpret_cast<QRgb *>(img.scanLine(row));
-                for (int col = 0; col < phase.cellW; ++col) {
-                    const int value = composite.value(row * phase.cellW + col, -1);
-                    if (value < 0)
-                        continue;
-                    const Rgb rgb = cubeRgb(m_doc->paletteKind(), value);
-                    line[col] = qRgb(rgb.r, rgb.g, rgb.b);
-                }
-            }
+            const QImage img = indicesToImage(composite, phase.cellW, phase.cellH,
+                                              m_doc->paletteKind(), EmptyStyle::Transparent);
             p.drawImage(QRect(ox, stripPx.y(), phase.cellW * m_scale, phase.cellH * m_scale), img);
         }
 

@@ -222,16 +222,6 @@ QVector<int> rotateIndexed(const QVector<int> &data, int size, double angleDeg)
     return out;
 }
 
-QVector<QVector<int>> generateRotationFrames(const QVector<int> &data, int size, int count)
-{
-    QVector<QVector<int>> frames;
-    if (size <= 0 || count < 2)
-        return frames;
-    for (int i = 1; i < count; ++i)
-        frames.append(rotateIndexed(data, size, 360.0 / count * i));
-    return frames;
-}
-
 QVector<OnionGhost> neighbourFrames(int current, int count, int distance)
 {
     if (distance == 0)

@@ -4,35 +4,25 @@
 
 #include "editor/AsmHighlighter.h"
 
-#include "ui/Appearance.h"
+#include "editor/AsmLex.h"
+#include "editor/InstrRef.h"
 
-#include <QLatin1StringView>
+#include <QStringList>
 
 namespace pist {
 
 namespace {
 
-/// Every m68k mnemonic vasm's mot module accepts, plus the common aliases.
-/// Kept as a plain list so the highlighter stays data-driven and cheap to extend.
-const char *const kMnemonics[] = {
-    // Data movement
-    "move", "movea", "movem", "movep", "moveq", "lea", "pea", "link", "unlk", "exg",
-    // Integer arithmetic
-    "add", "adda", "addi", "addq", "addx", "sub", "suba", "subi", "subq", "subx",
-    "cmp", "cmpa", "cmpi", "cmpm", "mulu", "muls", "divu", "divs", "neg", "negx",
-    "ext", "extb", "clr", "tst", "abcd", "sbcd", "nbcd",
-    // Logic and shifts
-    "and", "andi", "or", "ori", "eor", "eori", "not", "lsl", "lsr", "asl", "asr",
-    "rol", "ror", "roxl", "roxr", "btst", "bset", "bclr", "bchg", "swap",
-    // Program control
-    "bra", "bsr", "bcc", "bcs", "beq", "bge", "bgt", "bhi", "ble", "bls", "blt",
-    "bmi", "bne", "bpl", "bvc", "bvs", "jmp", "jsr", "rts", "rtr", "rte", "nop",
-    "dbra", "dbf", "dbeq", "dbne", "trap", "trapv", "chk", "illegal", "reset",
-    "stop", "scc", "seq", "sne", "st", "sf", "sge", "sgt", "shi", "sle", "sls",
-    "slt", "smi", "spl", "svc", "svs",
-    // Bit / BCD / system
-    "tas", "bkpt", "rtd", "callm", "rtm",
-    // FPU
+/// Mnemonics vasm's mot module accepts that the 68000 reference does not list:
+/// the 68020+ system instructions and the FPU. The reference is a 68000
+/// reference on purpose (InstrRef says why), so the highlighter unions the two
+/// instead of keeping a second hand-written copy of the 68000 set — that copy
+/// had already drifted by nineteen entries, and the `blo.s` in demo/hello.s
+/// went uncoloured.
+const char *const kExtraMnemonics[] = {
+    // 68020+.
+    "bkpt", "rtd", "callm", "rtm", "extb",
+    // FPU.
     "fmove", "fadd", "fsub", "fmul", "fdiv", "fsqrt", "fabs", "fneg", "fint",
     "fintrz", "fcmp", "ftst", "fsin", "fcos", "ftan", "fatan", "fgetexp",
     "fgetman", "fscale", "fmod", "frem", "fsgldiv", "fsglmul", "fmovecr",
@@ -40,20 +30,41 @@ const char *const kMnemonics[] = {
     nullptr
 };
 
+/// The mnemonic family as one alternation of whole words: `\b(?:move|…)\b`.
+/// Built once from the reference — so adding a mnemonic to InstrRef is enough —
+/// and compiled once per theme and scanned once per line, where a pattern per
+/// mnemonic cost one compile each per theme and one scan each per line. `\b` at
+/// both ends keeps a size suffix (`move.w`, `blo.s`) inside the match and stops
+/// a shorter alternative (`add`) matching inside a longer mnemonic (`adda`).
+const QString &mnemonicPattern()
+{
+    static const QString pattern = [] {
+        QStringList words;
+        const QList<InstructionInfo> &table = instructionTable();
+        words.reserve(table.size() + 40); // the extras below
+        for (const InstructionInfo &info : table)
+            words.append(info.mnemonic.toLower());
+        for (int i = 0; kExtraMnemonics[i]; ++i)
+            words.append(QString::fromLatin1(kExtraMnemonics[i]));
+        return QStringLiteral("\\b(?:%1)\\b").arg(words.join(QLatin1Char('|')));
+    }();
+    return pattern;
+}
+
 } // namespace
 
-AsmHighlighter::AsmHighlighter(QTextDocument *document)
+AsmHighlighter::AsmHighlighter(QTextDocument *document, const EditorTheme &theme)
     : QSyntaxHighlighter(document)
+    , m_theme(theme)
 {
-    m_dark = appearance::darkModeActive();
     buildRules();
 }
 
-void AsmHighlighter::setDarkMode(bool dark)
+void AsmHighlighter::setTheme(const EditorTheme &theme)
 {
-    if (m_dark == dark)
+    if (m_theme == theme)
         return;
-    m_dark = dark;
+    m_theme = theme;
     m_rules.clear();
     buildRules();
     rehighlight();
@@ -61,14 +72,13 @@ void AsmHighlighter::setDarkMode(bool dark)
 
 void AsmHighlighter::buildRules()
 {
-    const appearance::Colors c = appearance::colors();
-    const QColor keywordColor = c.keyword;
-    const QColor registerColor = c.registerName;
-    const QColor numberColor = c.number;
-    const QColor stringColor = c.string;
-    const QColor directiveColor = c.directive;
-    const QColor labelColor = c.label;
-    const QColor commentColor = c.comment;
+    const QColor keywordColor = m_theme.keyword;
+    const QColor registerColor = m_theme.registerName;
+    const QColor numberColor = m_theme.number;
+    const QColor stringColor = m_theme.string;
+    const QColor directiveColor = m_theme.directive;
+    const QColor labelColor = m_theme.label;
+    const QColor commentColor = m_theme.comment;
 
     QTextCharFormat keyword;
     keyword.setForeground(keywordColor);
@@ -94,13 +104,14 @@ void AsmHighlighter::buildRules()
     comment.setFontItalic(true);
     m_commentFormat = comment;
 
-    // Mnemonics are matched as whole words, case-insensitively, and only when
-    // they appear in an operand/opcode position (start of the code field).
-    for (int i = 0; kMnemonics[i]; ++i) {
+    // Mnemonics are matched as whole words, case-insensitively, anywhere in the
+    // line's code field — one rule for the whole family. The string rule is
+    // applied after it, so a quoted string's contents are repainted over any
+    // mnemonic, register or number colour a rule finds inside the quotes.
+    {
         Rule r;
-        r.pattern = QRegularExpression(
-            QStringLiteral("\\b%1\\b").arg(QString::fromLatin1(kMnemonics[i])),
-            QRegularExpression::CaseInsensitiveOption);
+        r.pattern = QRegularExpression(mnemonicPattern(),
+                                       QRegularExpression::CaseInsensitiveOption);
         r.format = keyword;
         m_rules.append(r);
     }
@@ -123,10 +134,15 @@ void AsmHighlighter::buildRules()
         m_rules.append(r);
     }
 
-    // Strings.
+    // Strings, in both of Motorola syntax's quote styles: `'…'` is a string
+    // exactly as `"…"` is (vasm's mot module treats them alike), and every
+    // string in the shipped demos is single-quoted.
     {
         Rule r;
-        r.pattern = QRegularExpression(QStringLiteral("\"[^\"\\\\]*(\\\\.[^\"\\\\]*)*\""));
+        r.pattern = QRegularExpression(QStringLiteral(
+            "\"[^\"\\\\]*(\\\\.[^\"\\\\]*)*\"" // "…"
+            "|"
+            "'[^'\\\\]*(\\\\.[^'\\\\]*)*'")); // '…'
         r.format = string;
         m_rules.append(r);
     }
@@ -143,25 +159,16 @@ void AsmHighlighter::buildRules()
         r.format = m_directiveFormat;
         m_rules.append(r);
     }
-
-    // Labels: an identifier followed by a colon, or starting in column 0.
-    m_labelPattern = QRegularExpression(QStringLiteral("^([A-Za-z_.][A-Za-z0-9_.$]*):"));
-
-    // Motorola syntax: `*` in the first column is a whole-line comment.
-    m_wholeLineComment = QRegularExpression(QStringLiteral("^\\*.*"));
 }
 
 void AsmHighlighter::highlightBlock(const QString &text)
 {
-    // Whole-line `*` comment takes precedence over everything else.
-    if (m_wholeLineComment.match(text).hasMatch()) {
-        setFormat(0, text.length(), m_commentFormat);
-        return;
-    }
-
-    // `;` starts a comment anywhere on the line.
-    const int semicolon = text.indexOf(QLatin1Char(';'));
-    const int codeLength = (semicolon >= 0) ? semicolon : text.length();
+    // AsmLex decides where the code field ends: a `;` starts a comment unless
+    // it is inside a quoted string, and `*` in the first column makes the whole
+    // line a comment. A whole-line comment has no code at all, so nothing else
+    // is painted and the comment colour covers the line below.
+    const int comment = asmlex::commentStart(text);
+    const int codeLength = (comment < 0) ? text.length() : comment;
 
     for (const Rule &rule : m_rules) {
         auto it = rule.pattern.globalMatch(text);
@@ -173,12 +180,16 @@ void AsmHighlighter::highlightBlock(const QString &text)
         }
     }
 
-    auto labelMatch = m_labelPattern.match(text);
-    if (labelMatch.hasMatch() && labelMatch.capturedStart() < codeLength)
-        setFormat(labelMatch.capturedStart(1), labelMatch.capturedLength(1), m_labelFormat);
+    // A label may be indented: vasm reads the first field as a label wherever
+    // it starts, which is how the demos indent their local labels.
+    int labelStart = 0;
+    int labelLength = 0;
+    if (asmlex::isLabelDefinition(text, nullptr, &labelStart, &labelLength)
+        && labelStart < codeLength)
+        setFormat(labelStart, labelLength, m_labelFormat);
 
-    if (semicolon >= 0)
-        setFormat(semicolon, text.length() - semicolon, m_commentFormat);
+    if (comment >= 0)
+        setFormat(comment, text.length() - comment, m_commentFormat);
 }
 
 } // namespace pist

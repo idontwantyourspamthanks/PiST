@@ -11,6 +11,8 @@
 // here rather than assumed.
 
 #include "editor/CodeEditor.h"
+#include "editor/AsmHighlighter.h"
+#include "editor/InstrRef.h"
 #include "image/ImageDocument.h"
 #include "image/StFormats.h"
 #include "ui/ImageEditor.h"
@@ -27,10 +29,12 @@
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
 #include "ui/MainWindow.h"
+#include "build/BuildService.h"
 #include "build/FloppyImage.h"
 #include "ui/DisassemblyView.h"
 #include "ui/HardwareView.h"
 #include "ui/MemoryView.h"
+#include "emu/MemoryDump.h"
 #include "ui/PcHistoryView.h"
 #include "ui/SetupDialog.h"
 #include "ui/SettingsDialog.h"
@@ -72,10 +76,14 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTreeView>
 #include <QAbstractItemModel>
+#include <QImage>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QTemporaryDir>
 #include <QFontDatabase>
 #include <QSettings>
@@ -83,6 +91,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QTreeWidget>
 
 #include <cmath>
@@ -104,6 +113,56 @@ QString emulatorMissing()
     if (rom.path.isEmpty() || !rom.supportsAutostart())
         missing << QStringLiteral("an autostart-capable TOS ROM for an ST");
     return missing.join(QStringLiteral(", "));
+}
+
+/// The bytes of `path`, empty when it cannot be read. Used to compare a file
+/// before and after a round-trip byte for byte.
+QByteArray fileBytes(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return f.readAll();
+}
+
+bool writeFile(const QString &path, const QByteArray &bytes)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return false;
+    return f.write(bytes) == bytes.size();
+}
+
+/// Whether a symbolic link can be made in `dir` at all. The copy/move tests
+/// below are about links and would assert nothing on a platform or filesystem
+/// that cannot create one (Windows without developer mode).
+bool canCreateSymlinks(const QString &dir)
+{
+    const QString target = dir + QStringLiteral("/.symlink-probe-target");
+    const QString link = dir + QStringLiteral("/.symlink-probe-link");
+    if (!writeFile(target, QByteArrayLiteral("x")))
+        return false;
+    const bool ok = QFile::link(target, link) && QFileInfo(link).isSymLink();
+    QFile::remove(link);
+    QFile::remove(target);
+    return ok;
+}
+
+/// Whether `pixmap` paints anything at all. A pixmap with nothing drawn on it is
+/// still a valid, non-null QPixmap, so an icon that came out blank would pass a
+/// null check; the logo tests ask for ink instead.
+bool hasOpaquePixels(const QPixmap &pixmap)
+{
+    const QImage image = pixmap.toImage();
+    if (image.isNull())
+        return false;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (qAlpha(image.pixel(x, y)) != 0)
+                return true;
+        }
+    }
+    return false;
 }
 
 /// QStandardPaths::setTestModeEnabled is process-wide, and the setup-dialog
@@ -136,6 +195,98 @@ struct TestModeScope
     TestModeScope &operator=(const TestModeScope &) = delete;
 };
 
+/// Restore an environment variable on every path out of the test, including the
+/// early return an assertion takes: a structured environment stripped for a
+/// test that then fails would stay stripped for the rest of the suite, and the
+/// tests after it would silently look for their tools in the wrong place.
+class EnvScope
+{
+public:
+    explicit EnvScope(const char *name) : m_name(name), m_saved(qgetenv(name)) {}
+    ~EnvScope()
+    {
+        if (m_saved.isNull())
+            qunsetenv(m_name);
+        else
+            qputenv(m_name, m_saved);
+    }
+    EnvScope(const EnvScope &) = delete;
+    EnvScope &operator=(const EnvScope &) = delete;
+
+private:
+    const char *m_name;
+    QByteArray m_saved;
+};
+
+/// True once `finished` has recorded a reply for exactly `command`.
+///
+/// The deterministic form of "let that console command complete" for the
+/// emulator tests: the reply is the event the next action must not overtake, and
+/// a fixed sleep is only a guess about when it lands.
+bool commandAnswered(const QSignalSpy &finished, const QString &command)
+{
+    for (const QList<QVariant> &call : finished)
+        if (call.at(0).toString() == command)
+            return true;
+    return false;
+}
+
+/// The declarations of `selector`'s rule inside a stylesheet, empty when the
+/// rule is absent.
+///
+/// Lets a test pin what a rule is *for* — the separator gives the splitter a
+/// grab area in both orientations — without copying the sheet's source text, so
+/// a cosmetic restyle does not fail a behaviour test.
+QString styleRule(const QString &sheet, const QString &selector)
+{
+    const int at = sheet.indexOf(selector);
+    if (at < 0)
+        return {};
+    const int open = sheet.indexOf(QLatin1Char('{'), at);
+    const int close = sheet.indexOf(QLatin1Char('}'), open);
+    if (open < 0 || close < 0)
+        return {};
+    return sheet.mid(open, close - open);
+}
+
+/// True when `rule` declares `property` with a positive pixel value.
+bool declaresPositivePixels(const QString &rule, const QString &property)
+{
+    const QRegularExpression re(property + QStringLiteral(R"(\s*:\s*(\d+)px)"));
+    const QRegularExpressionMatch match = re.match(rule);
+    return match.hasMatch() && match.captured(1).toInt() > 0;
+}
+
+/// Ends whatever emulator session a test leaves running, on every path out of
+/// the test function. A failed QCOMPARE returns immediately, skipping the
+/// test's own host->stop(), and a window destroyed with a live session tears its
+/// children down in an order that runs the backend's session-end handler
+/// against siblings that are already gone: measured as a SIGSEGV/SIGABRT inside
+/// that handler, which loses the test binary and leaves a real Hatari spinning
+/// into the next test. Declared after the window so it runs before it, this
+/// stops the session while every widget is still whole, so a failure mid-test
+/// leaves nothing behind.
+class EmulatorStopper
+{
+public:
+    explicit EmulatorStopper(MainWindow &window) : m_window(window) {}
+
+    ~EmulatorStopper()
+    {
+        // Whichever transport the test ended up on: the window replaces its
+        // backend when the configured transport differs from the live one.
+        auto *backend = m_window.findChild<IDebugBackend *>();
+        if (backend && backend->isRunning())
+            backend->stop();
+    }
+
+    EmulatorStopper(const EmulatorStopper &) = delete;
+    EmulatorStopper &operator=(const EmulatorStopper &) = delete;
+
+private:
+    MainWindow &m_window;
+};
+
 } // namespace
 
 /// Skip the calling test — or fail it under PIST_REQUIRE_EMULATOR — when the
@@ -164,6 +315,8 @@ class TstGui : public QObject
 
 private slots:
     void initTestCase();
+    void init();
+    void cleanupTestCase();
     void windowConstructs();
     void aboutMenuIsFirstAndOpensGemDialog();
     void assemblesAndMapsLines();
@@ -177,7 +330,13 @@ private slots:
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
     void runStartsAnEmulatorSession();
+    /// An auto-selected ROM the chosen machine cannot run makes Hatari override
+    /// `--machine`, which it reports only as an error line — so the run must say
+    /// so itself. The two boundary cases ride in the same slot: a matching
+    /// auto-selected ROM and an explicitly configured ROM must stay quiet.
+    void autoSelectedRomForAnotherMachineWarnsAboutTheOverride();
     void breakpointSetBeforeRunFiresAndEditorFollows();
+    void breakpointAddedWhileRunningFiresThisSession();
     void stepOutAndRunToCursorReachTheirTargets();
     void openRecentMenuListsAndOpensFiles();
     void ctrlClickOpensIncludesAndJumpsToLabels();
@@ -191,6 +350,10 @@ private slots:
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
+    /// The guided run's one-shot is removed when another breakpoint ends the
+    /// run: left armed at the cursor line it would stop the program there later
+    /// for no reason.
+    void guidedProfileDropsAnUnfiredOneShot();
     void profilerButtonsExplainThemselvesInTheDock();
     void remoteControlWatchersSeeSessionEvents();
     void dockLayoutPersistsAcrossRestart();
@@ -203,6 +366,12 @@ private slots:
     void registerDockShowsFlagsUntilTheMachineStops();
     void layoutPresetsHideDocksAndRestore();
     void gitDockStaysUnderProjectFiles();
+    /// Git discovery follows the project the user opened, never the process
+    /// working directory: a window with nothing open must run no git at all,
+    /// because running `git status` inside whatever repository contains the
+    /// launch directory is how a suite run left `.git/index.lock` in PiST's own
+    /// checkout (MIN-81).
+    void gitDiscoveryFollowsTheOpenedProject();
     void dockTabMoveMenuMovesDockBetweenAreas();
     void dockTitleBarMoveMenuMovesDock();
     void titleBarLeftPressIsNotConsumed();
@@ -267,6 +436,24 @@ private slots:
     /// the hard drive (with pathRenamed for open documents), and across the
     /// hard-drive and floppy panes.
     void fileBrowserCopyMovePanes();
+    /// A copy-out whose host write fails reports the step that failed, so the
+    /// browser's message has a reason after the colon instead of the empty or
+    /// stale string the path used to carry (MIN-85).
+    void floppyCopyOutNamesTheFailingWrite();
+    /// A copy reproduces a symbolic link's content instead of silently
+    /// dropping it, and refuses outright when it cannot.
+    void fileBrowserCopyMaterialisesSymlinks();
+    /// The move fallback below a failed rename must not delete — or claim to
+    /// have deleted — a source it could not remove.
+    void fileBrowserMoveFallbackNeverLosesTheSource();
+    /// A floppy clipboard addresses entries of the image that was mounted when
+    /// it was filled: ejecting that disk, or putting another one in the drive,
+    /// must take the clipboard — and Paste — with it.
+    void fileBrowserClipboardDiesWithItsDisk();
+    /// A move across volumes materialises a nested symlink rather than handing
+    /// it to whatever QFile::rename does internally. A guard, not a red: see
+    /// the test's comment for what was measured.
+    void fileBrowserCrossDeviceMoveMaterialisesLinks();
     /// A text entry activated on a disk opens in an editor tab and saves back
     /// into the image, replacing its entry; binaries are refused and
     /// reopening raises the existing tab.
@@ -291,15 +478,46 @@ private slots:
     /// Phase cell size is editable from the panel and adding frames in sheet
     /// mode extends the strip.
     void phaseCellSizeAndStripGrowth();
+    /// Exporting the composed sheet as .pim writes the composition: the sheet
+    /// exporter's format table used to have no Pim case.
+    void sheetExportWritesTheComposedSheetAsPim();
     /// The slice dialog cuts an N-frame strip out of an imported sheet into a
     /// new phase's frames.
     void sliceDialogBuildsPhaseFromSheet();
+    /// The same slice onto a phase whose cell size differs from the current
+    /// phase's: every frame — the first one included — carries the sheet's
+    /// pixels, at the new phase's cell size. A GUARD, not a red: measured
+    /// against the pre-CRIT-2 addPhase (which built the frame at the previous
+    /// phase's cell) the slice still passed, because painting the first cell
+    /// remeshes the frame to the new size — see the body.
+    void slicingAPhaseFromASheetOfAnotherCellSize();
+    /// Re-slicing is refused for a phase index that no longer exists, the guard
+    /// its sibling already carries: the index is a caller's, and QVector::at()
+    /// on a stale one aborts the process in a debug build (MIN-88).
+    void reSlicingAnUnknownPhaseIsRefused();
     /// The select tool: a marquee drag sets the selection, dragging inside it
     /// moves the pixels, and copy/paste/nudge/delete edit the active layer
     /// through the undo stack.
     void imageSelectionCopyPaste();
+    /// The select tool's cut-out is an overlay on the frame, not part of it:
+    /// the canvas must paint the pixels again once the drag is over.
+    void selectionCutOutDoesNotStickToTheCanvas();
+    /// The canvas selection belongs to the document it was made on: replacing
+    /// the document, or opening a file over it, drops it.
+    void swappingTheDocumentDropsTheOldSelection();
     void undoEditsThePhaseItWasMadeIn();
     void refusedBuildAnswersAndDropsLaunchIntent();
+    /// A remote-initiated build or run must answer on buildCompleted without a
+    /// dialog: a modal's event loop holds the reply until the operation
+    /// timeout when nobody can dismiss it.
+    void remoteBuildAndRunRefusalsStayQuiet();
+    /// The launch half of a remote `run`: build, then a program the launch
+    /// cannot find. The refusal must answer the reply, not open a modal.
+    void remoteRunLaunchRefusalStaysQuiet();
+    /// resetSessionState() owns everything that must not cross a session
+    /// boundary, including a step-out and a profile save left waiting when the
+    /// session died: the next session's entry stop must not consume them.
+    void sessionResetDropsAnUnansweredStepOut();
     void stateSummaryClearsAfterSessionEnds();
     void projectAssemblerPathOverridesDiscovery();
     /// Importing an ST image adopts the file's palette registers as the
@@ -309,6 +527,11 @@ private slots:
     /// through the backend and its response appended to the console log.
     void consoleCommandRoundTrips();
     void editorTracksUnsavedChanges();
+    /// A Latin-1 source keeps its bytes through a load/save round-trip, and a
+    /// UTF-8 or ASCII one is written back unchanged.
+    void editorRoundTripsNonUtf8Sources();
+    /// Saving into a location that does not exist yet creates the parents.
+    void editorSaveCreatesMissingDirectories();
     void diagnoseReportsToolsAndRoms();
     /// The claim the first-run flow rests on: a tool the setup dialog just
     /// installed takes effect in the open window without a restart.
@@ -320,6 +543,9 @@ private slots:
     /// Font-size, font-family and theme preferences take effect on the editor
     /// and the application palette.
     void appearancePreferencesApply();
+    /// The Atari logo pixmap still draws both glyphs after the outline was
+    /// parsed once per pixmap instead of once per draw.
+    void atariLogoRendersBothGlyphs();
     void editorGotoIndentAndShortcutScheme();
     void quietColoursClearTheirBackground();
     void instructionStripFollowsTheCaret();
@@ -341,12 +567,77 @@ private slots:
     /// Find and replace in the editor: incremental hits, case/word options,
     /// wrapping, one-step undo for Replace All, and the bar closing cleanly.
     void editorFindAndReplace();
+    /// Next/Previous navigate from the caret, and the counter describes the hit
+    /// the caret is on — across an edit that moved the hits under the search.
+    void findNextFollowsTheCaretAcrossAnEdit();
+    /// The "1 replaced" note belongs to the replace: the next navigation is a
+    /// search step again and the live counter comes back.
+    void replaceNoteClearsOnNavigation();
+    /// A hit list in the thousands is capped for the live search (the label says
+    /// "more than"), only the hits on screen are decorated, and Replace All
+    /// still reaches every hit.
+    void findDecoratesOnlyWhatIsOnScreen();
+    /// The number gutter shares the viewport's coordinate space, so a click on
+    /// the row line N's text is on toggles line N — including while the
+    /// go-to bar has moved the viewport down.
+    void gutterClickLandsOnTheLineBesideIt();
+    /// Every document mutation is an undo command: an appended import (and the
+    /// palette it adopts) survives an undo/redo round-trip through the commands
+    /// pushed before it, as does a placement made from the panel.
+    void undoRoundTripKeepsAnImportedSheet();
+    /// Arming has one gate. An edit that reaches the pre-base window (a
+    /// watchpoint added while the emulator is still booting to the entry stop)
+    /// must not mark the session armed, or no source breakpoint is ever sent.
+    void preBaseWatchpointEditStillArmsBreakpoints();
     /// The Search menu exists, its shortcuts land on the focused editor, and an
     /// image tab has nothing to search.
     void searchMenuFollowsTheEditor();
     /// Problems, hardware, memory, breakpoints and the console say what they
     /// are; a disassembly row and a PC-history line hand their address out.
-    void panelsNameTheNextStep();
+    /// Split per surface: as one test the first failure hid every surface after
+    /// it, and the report could not name what broke.
+    void panelPlaceholdersNameTheNextStep();
+    void breakpointPanelNamesTheShortcuts();
+    void commonShortcutSchemeRenamesThePanelsKeys();
+    void buildAndSearchMenusCarryTheirActions();
+    void problemsDockListsABuildWarning();
+    void themeSheetFramesItsDocks();
+    void settingsDialogAndEditorChromeExposeTheirControls();
+    void hardwareAndDisassemblyViewsNameWhatTheyShow();
+    void pcHistoryDoubleClickReportsTheAddress();
+
+    /// The highlighter's mnemonic family is derived from the 68000 reference
+    /// plus the 68020/FPU extras, matched as whole words — the hand-written list
+    /// it replaced had drifted, and `blo.s` in the shipped demo went uncoloured.
+    void highlighterColoursMnemonicsOfTheReference();
+    void highlighterColoursTheWholeReferenceAndTheExtras();
+    /// Motorola syntax's single-quoted strings are strings: vasm's mot module
+    /// treats `'…'` exactly as `"…"`, and every string in the demos is
+    /// single-quoted, so the string rule must win over the mnemonic rule that
+    /// finds `ST` inside `'PiST scroll demo'`.
+    void singleQuotedStringsWinOverTheirContents();
+    /// The ordering guard for the same rule: the string rule is applied last, so
+    /// a quoted `add 12` is a string, not a mnemonic plus a number. (Like the
+    /// gutter case this passes pre-fix as well — what it pins is the order of the
+    /// rules, which a later rule reordering would break.)
+    void doubleQuotedStringsStillWinOverTheirContents();
+    /// A `;` inside a string does not start a comment (AsmLex owns that rule);
+    /// outside one it does, even with a quote in the comment text.
+    void aSemicolonInsideAStringIsNotAComment();
+    /// vasm reads the first field as a label wherever it starts, so an indented
+    /// label definition is a label.
+    void anIndentedLabelIsALabel();
+    /// REGRESSION GUARD, not a RED test: the gutter repaints when the error
+    /// lines are set, the mark is visible in it, and clearing restores the plain
+    /// rendering. Qt's updateRequest chain already reached the gutter on HEAD;
+    /// what this pins is the whole path, not a mechanism.
+    void settingErrorLinesRepaintsTheGutter();
+    /// A subject change with no session running must not leave the previous
+    /// subject's transcript on screen under the new label.
+    void hardwareViewDropsTheTranscriptOfTheSubjectItLeft();
+    /// A ROM the user picked must survive the machine change that rebuilds the
+    /// list, because that is the ROM OK persists.
+    void settingsDialogKeepsTheChosenRomAcrossAMachineChange();
 
 private:
     QString m_vasm;
@@ -375,12 +666,56 @@ void TstGui::initTestCase()
     // store. It never did touch the developer's PiST.conf — these binaries set
     // no organisation or application name, so QSettings resolved to an
     // "Unknown Organization" placeholder instead — but that file persisted
-    // across runs, and last/project drives the constructor's deferred
+    // across runs, and last/source drives the constructor's deferred
     // openRecentSource() while setup/promptDismissed gates the setup dialog.
+    // (This used to name last/project, a key the IDE wrote but never read; it is
+    // deleted — MIN-51 — and the store's real readers are the two above.)
     // main() redirects QSettings to a throwaway directory for the whole run.
     QVERIFY2(QSettings().fileName().startsWith(QDir::tempPath()),
              qPrintable(QStringLiteral("QSettings resolves to %1, outside %2")
                             .arg(QSettings().fileName(), QDir::tempPath())));
+
+    // Every window built by this suite sweeps the extracted-document cache at
+    // construction (pruneStaleSessions() -> pruneExtractedDocuments() over
+    // documentExtractDir()), and with the real cache root that means a test run
+    // prunes and repopulates the developer's ~/.cache/PiST/documents.
+    // QStandardPaths test mode cannot be used for this — main()'s note: it moves
+    // the data root that the tool and ROM lookups derive from — so the cache
+    // root is redirected on its own, before the first window exists. Linux only:
+    // XDG_CACHE_HOME is the XDG variable, and the cache location is not
+    // environment-selectable on macOS or Windows.
+#ifdef Q_OS_LINUX
+    qputenv("XDG_CACHE_HOME", QFile::encodeName(m_work->path() + QStringLiteral("/cache")));
+    QVERIFY2(QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
+                 .startsWith(QDir::tempPath()),
+             qPrintable(QStringLiteral("the cache root resolves to %1, outside %2")
+                            .arg(QStandardPaths::writableLocation(
+                                     QStandardPaths::GenericCacheLocation),
+                                 QDir::tempPath())));
+#endif
+}
+
+// Every test starts from an empty settings store. main() already points
+// QSettings at a throwaway directory, but that store is shared by the whole
+// run, so a key one test writes (layout state, appearance, the open-recent MRU,
+// the setup dismissal) changes what the next test's fresh MainWindow restores.
+// That coupling is how a test flaked on the success path: an early return
+// between a write and its hand-written cleanup skipped the cleanup. Clearing
+// here makes each test independent of what ran before it, and the per-test
+// defensive removes are gone with it.
+void TstGui::init()
+{
+    QSettings().clear();
+}
+
+void TstGui::cleanupTestCase()
+{
+    // The suite's scratch tree is a member, so it outlives every test and would
+    // otherwise only be reclaimed by the QTemporaryDir destructor at process
+    // exit — a full tree of listings, .prg files and session directories left in
+    // /tmp on every run, including a crashed one.
+    delete m_work;
+    m_work = nullptr;
 }
 
 void TstGui::windowConstructs()
@@ -416,10 +751,14 @@ void TstGui::aboutMenuIsFirstAndOpensGemDialog()
         auto *copyright = dialog->findChild<QLabel *>(QStringLiteral("aboutCopyright"));
         auto *credit = dialog->findChild<QLabel *>(QStringLiteral("aboutCredit"));
         QVERIFY(title && version && copyright && credit);
-        QCOMPARE(title->text(), QStringLiteral("PIST, Program in ST"));
+        // The branding strings are cosmetic; the contract is that the dialog
+        // carries all four. The year was pinned to the literal "2026", which
+        // would have failed the first January after it was written, so it is a
+        // four-digit year instead of a copy of the source text.
+        QVERIFY(title->text().contains(QLatin1String("PIST")));
         QCOMPARE(version->text(), QStringLiteral(PIST_VERSION));
-        QVERIFY(copyright->text().contains(QStringLiteral("2026")));
-        QCOMPARE(credit->text(), QStringLiteral("Koala Software/Dad.PRG"));
+        QVERIFY(QRegularExpression(QStringLiteral(R"(\d{4})")).match(copyright->text()).hasMatch());
+        QVERIFY(!credit->text().isEmpty());
         dialog->accept();
     });
     about->trigger();
@@ -537,6 +876,7 @@ void TstGui::runStartsAnEmulatorSession()
     QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     auto *host = window.findChild<EmulatorHost *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY(!host->isRunning());
@@ -559,6 +899,121 @@ void TstGui::runStartsAnEmulatorSession()
              "the emulator started but never reached the debugger");
 
     host->stop();
+}
+
+// Hatari resolves a machine/ROM mismatch itself: it overrides `--machine` to
+// match the ROM and reports it only as an error line, so a run that silently
+// becomes a different machine than the one selected is the failure this warns
+// about. Only the auto-selected ROM is checked — a ROM the user configured is
+// their own decision, marked "(not for <machine>)" where it is chosen — so both
+// boundaries ride along: a matching auto-selected ROM, and an explicit one.
+void TstGui::autoSelectedRomForAnotherMachineWarnsAboutTheOverride()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QList<TosRom> roms = findTosRoms();
+    const TosRom autoRom = selectPreferredRom(roms, Machine::Falcon);
+    if (autoRom.path.isEmpty())
+        QSKIP("no TOS ROM found to auto-select");
+    if (autoRom.supportsMachine(Machine::Falcon))
+        QSKIP("a Falcon-compatible ROM exists, so no override would happen");
+    const TosRom stRom = selectPreferredRom(roms, Machine::St);
+    if (stRom.path.isEmpty() || !stRom.supportsMachine(Machine::St))
+        QSKIP("no ST-capable ROM, so the matching-ROM boundary cannot be exercised");
+
+    // The same project shape for all three phases, differing only in what is
+    // configured: a spinning program (so the session is stoppable), no include
+    // paths (so no modal can interrupt), and a quiet Run through the slot.
+    const auto writeProject = [this](const QString &name, Machine machine, const QString &romPath) {
+        const QString path = m_work->path() + QLatin1Char('/') + name;
+        QFile src(path);
+        if (!src.open(QIODevice::WriteOnly | QIODevice::Text))
+            return QString();
+        src.write("\ttext\n"
+                  "start:\tmoveq\t#1,d0\n"
+                  "loop:\tbra.s\tloop\n"
+                  "\teven\n"
+                  "\tend\n");
+        src.close();
+
+        ProjectSettings settings;
+        settings.sourceFile = path;
+        settings.machine = machine;
+        settings.monitor = QStringLiteral("mono");
+        settings.memSizeMiB = 1;
+        settings.tosPath = romPath;
+        QString error;
+        if (!settings::save(settings, settings::projectFileFor(path), &error)) {
+            qWarning().noquote() << error;
+            return QString();
+        }
+        return path;
+    };
+
+    // The reported case: Falcon selected, no ROM configured, and no Falcon ROM
+    // on disk — selectPreferredRom returns the newest ROM anyway, so that the
+    // message can name it.
+    const QString falconSource =
+        writeProject(QStringLiteral("autooverride.s"), Machine::Falcon, QString());
+    QVERIFY(!falconSource.isEmpty());
+    {
+        MainWindow window;
+        EmulatorStopper stopper(window);
+        window.openPath(falconSource);
+        QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+        // The warning is emitted before Hatari spawns, so it must not be waited
+        // for through a Falcon + older-TOS boot (which would never arrive).
+        QTRY_VERIFY_WITH_TIMEOUT(
+            window.debugConsoleText().contains(QLatin1String("will override the machine")),
+            30000);
+        // It names both the ROM that will win and the machine that loses.
+        QVERIFY(window.debugConsoleText().contains(autoRom.fileName));
+        QVERIFY(window.debugConsoleText().contains(machineDisplayName(Machine::Falcon)));
+
+        // Safe before the session is up, and it ends whatever did start.
+        if (auto *host = window.findChild<EmulatorHost *>())
+            host->stop();
+    }
+
+    // Boundary: an auto-selected ROM the machine can run is no override. An
+    // implementation that warns whenever the ROM is not the machine's own would
+    // fail here.
+    const QString stSource = writeProject(QStringLiteral("automatch.s"), Machine::St, QString());
+    QVERIFY(!stSource.isEmpty());
+    {
+        MainWindow window;
+        EmulatorStopper stopper(window);
+        window.openPath(stSource);
+        QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+        // The ROM check sits between the build and the spawn, so reaching the
+        // spawn proves it ran — the negative assertion below is not vacuous.
+        QTRY_VERIFY_WITH_TIMEOUT(
+            window.debugConsoleText().contains(QLatin1String("Session started in")), 30000);
+        QVERIFY2(!window.debugConsoleText().contains(QLatin1String("will override the machine")),
+                 qPrintable(window.debugConsoleText()));
+        if (auto *host = window.findChild<EmulatorHost *>())
+            host->stop();
+    }
+
+    // Boundary: with the ROM configured explicitly, the same pairing stays
+    // quiet — the note is for the auto-selection only, and an implementation
+    // that dropped that condition fails here.
+    const QString explicitSource = writeProject(QStringLiteral("explicitrom.s"), Machine::Falcon,
+                                                autoRom.path);
+    QVERIFY(!explicitSource.isEmpty());
+    {
+        MainWindow window;
+        EmulatorStopper stopper(window);
+        window.openPath(explicitSource);
+        QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            window.debugConsoleText().contains(QLatin1String("Session started in")), 30000);
+        QVERIFY2(!window.debugConsoleText().contains(QLatin1String("will override the machine")),
+                 qPrintable(window.debugConsoleText()));
+        if (auto *host = window.findChild<EmulatorHost *>())
+            host->stop();
+    }
 }
 
 void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
@@ -592,6 +1047,105 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
     auto *host = window.findChild<EmulatorHost *>();
     QVERIFY(host);
     QTest::qWait(1500);
+    QVERIFY(!host->isRunning());
+}
+
+// The remote-control `build` and `run` verbs answer on buildCompleted, and
+// their reply loop cannot return while a modal is open: a refusal that opens
+// QMessageBox holds the reply until a human dismisses it, which for an agent on
+// the other end means the full operation timeout. Both refusals must reach
+// buildCompleted and the console with no modal widget anywhere.
+void TstGui::remoteBuildAndRunRefusalsStayQuiet()
+{
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+
+    // A modal is the bug under test, so watch for one from inside whatever
+    // event loop opens it: record it, then close it so the test can fail on the
+    // observation instead of sitting behind it until the watchdog.
+    QCOMPARE(QApplication::activeModalWidget(), nullptr);
+    bool sawModal = false;
+    QTimer poller;
+    poller.setInterval(10);
+    QObject::connect(&poller, &QTimer::timeout, [&sawModal] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            sawModal = true;
+            box->close();
+        }
+    });
+    poller.start();
+
+    // No source is open, so the build refuses. RemoteControl invokes the slot by
+    // name and its wait ends on buildCompleted.
+    QSignalSpy completed(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 5000);
+    QCOMPARE(completed.first().first().toBool(), false);
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("build refused")));
+    QVERIFY2(!sawModal, "a modal opened for a remote build refusal");
+
+    // Run refuses through the build it starts, and must answer the same way.
+    completed.clear();
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.count(), 1, 5000);
+    QCOMPARE(completed.first().first().toBool(), false);
+    QVERIFY2(!sawModal, "a modal opened for a remote run refusal");
+    QCOMPARE(QApplication::activeModalWidget(), nullptr);
+}
+
+// The launch half of a remote `run`: the build succeeds and the program it was
+// supposed to produce is gone, so launchEmulator refuses. That refusal used to
+// be a modal only, which left the agent's `run` reply waiting on the operation
+// timeout; it must answer buildCompleted(false) — the channel RemoteControl
+// waits on after the build — and log the reason.
+void TstGui::remoteRunLaunchRefusalStaysQuiet()
+{
+    const QString source = m_work->path() + QStringLiteral("/nolaunch.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\nstart:\tmoveq\t#0,d0\n\trts\n\teven\n\tend\n");
+    src.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+
+    bool sawModal = false;
+    QTimer poller;
+    poller.setInterval(10);
+    QObject::connect(&poller, &QTimer::timeout, [&sawModal] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            sawModal = true;
+            box->close();
+        }
+    });
+    poller.start();
+
+    QSignalSpy completed(&window, &MainWindow::buildCompleted);
+
+    // The launch runs straight after the build reports, so take the program away
+    // in that gap: the run then stops at launchEmulator's "the build did not
+    // produce …" precondition, which is where the modal used to appear.
+    const QString prg = settings::outputPathsFor(source).program;
+    QObject::connect(&window, &MainWindow::buildCompleted, this, [&prg](bool ok) {
+        if (ok)
+            QFile::remove(prg);
+    });
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(completed.count() >= 1, 30000);
+    QCOMPARE(completed.first().first().toBool(), true);
+    // The refusal is the answer the remote `run` waits for.
+    QTRY_VERIFY_WITH_TIMEOUT(completed.count() >= 2, 10000);
+    QCOMPARE(completed.last().first().toBool(), false);
+    QVERIFY2(!sawModal, "a modal opened for a remote run refusal");
+    QCOMPARE(QApplication::activeModalWidget(), nullptr);
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("did not produce")));
+    QVERIFY(!QFileInfo::exists(prg));
     QVERIFY(!host->isRunning());
 }
 
@@ -669,6 +1223,7 @@ void TstGui::remoteControlWatchersSeeSessionEvents()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.show();
     RemoteControl control(&window);
     window.setEventSink(&control);
@@ -746,6 +1301,7 @@ void TstGui::profilerCollectsAndMapsHotLines()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
     auto *host = window.findChild<EmulatorHost *>();
@@ -760,8 +1316,13 @@ void TstGui::profilerCollectsAndMapsHotLines()
     auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
     QVERIFY(input);
     input->setText(QStringLiteral("b d0 = 50 :once"));
+    QSignalSpy commandReplies(host, &IDebugBackend::commandFinished);
     QTest::keyClick(input, Qt::Key_Return);
-    QTest::qWait(300);  // let the command complete before profile on
+    // Wait for the command's own reply rather than guessing a delay: the
+    // breakpoint has to be armed before `profile on`, which memsets the
+    // counters. A sleep can only be right by luck.
+    QTRY_VERIFY_WITH_TIMEOUT(commandAnswered(commandReplies, QStringLiteral("b d0 = 50 :once")),
+                             15000);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "profileStart", Qt::DirectConnection));
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
@@ -839,6 +1400,7 @@ void TstGui::profileToCursorCollectsAndShowsResults()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
     auto *host = window.findChild<EmulatorHost *>();
@@ -909,6 +1471,98 @@ void TstGui::profileToCursorCollectsAndShowsResults()
     QVERIFY2(lines.contains(QStringLiteral("3")), qPrintable(lines.join(',')));
     QVERIFY(console.contains(QLatin1String("Collecting to")));
     QVERIFY(heat);
+}
+
+// The guided run's teardown has to drop the one-shot it armed. When the run
+// ends at the one-shot itself it is already consumed (`:once` removes it on the
+// hit), but when another breakpoint stops the machine first, the one-shot is
+// still armed at the cursor line — and the program would stop there later for no
+// reason at all. That is what the teardown is for, and what it used to send
+// instead was `db pc = $X :once`: `db` is dspbreak, a *DSP* breakpoint command,
+// so on an ST it printed "DSP isn't present or initialized." and deleted
+// nothing.
+void TstGui::guidedProfileDropsAnUnfiredOneShot()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/guidedstray.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#0,d0\n"       // line 2
+              "loop:\taddq.w\t#1,d0\n"       // line 3
+              "\tcmp.w\t#20,d0\n"            // line 4  <- the other breakpoint stops here
+              "\tblo.s\tloop\n"              // line 5
+              "done:\tbra.s\tdone\n"         // line 6  <- the guided run's target
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host && editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // A one-shot of the user's own, armed at the entry stop, which fires before
+    // the machine has executed far enough to reach the cursor line. It is what
+    // "another breakpoint won the race" means for the guided run.
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    input->setText(QStringLiteral("b d0 = 10 :once"));
+    QSignalSpy commandReplies(host, &IDebugBackend::commandFinished);
+    QTest::keyClick(input, Qt::Key_Return);
+    // Deterministic completion wait, as above: the one-shot must be armed
+    // before the guided run's own commands reach the debugger.
+    QTRY_VERIFY_WITH_TIMEOUT(commandAnswered(commandReplies, QStringLiteral("b d0 = 10 :once")),
+                             15000);
+
+    // Cursor on the measurement's end (line 6) and one click: arm the one-shot
+    // there, profile on, continue.
+    auto *toCursorButton = window.findChild<QToolButton *>(QStringLiteral("profilerToCursorButton"));
+    QVERIFY(toCursorButton);
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(5).position());
+    editor->setTextCursor(cursor);
+    QTest::mouseClick(toCursorButton, Qt::LeftButton);
+
+    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
+    // The run has to have been ended by the *other* breakpoint: a stop at the
+    // cursor line would leave nothing stray behind, and this test would pass
+    // without exercising the teardown at all.
+    QVERIFY2(editor->currentExecutionLine() != 6,
+             "the guided one-shot fired, so there is no stray breakpoint to clean up");
+    // Let the teardown's own commands (the save, and the breakpoint rebuild)
+    // flush while the machine is stopped.
+    QTest::qWait(1000);
+
+    // Continue: with the stray one-shot gone the program spins at `done` (line
+    // 6) and never stops. Left armed — what `db` did — the machine stops there
+    // as soon as the loop exits.
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTest::qWait(2000);
+    const bool stoppedAtTheCursor = host->isStopped();
+    const int line = editor->currentExecutionLine();
+    host->stop();
+
+    QVERIFY2(!stoppedAtTheCursor,
+             qPrintable(QStringLiteral("the guided run's one-shot was still armed: the machine "
+                                       "stopped at line %1 after the run had ended")
+                            .arg(line)));
 }
 
 // The dock's buttons follow the profiling state machine: with no session
@@ -1004,6 +1658,93 @@ void TstGui::importAppendAddsSheetReplaceReplaces()
     // added a sheet (1, 2, 3), so the dialog's Replace was a no-op.
     QVERIFY(editor.importFile(pi1Path, false));
     QCOMPARE(editor.document().sheets().size(), 1);
+}
+
+// SnapshotCommand::undo assigns the whole document, so a mutation that skips the
+// undo stack sits *under* the next command's `before`: undoing that one silently
+// wipes it, and its `after` cannot bring it back. An appended import is two such
+// mutations at once — the sheet target and the palette it adopts — and the
+// placement panel was a third.
+void TstGui::undoRoundTripKeepsAnImportedSheet()
+{
+    // A PI1 whose registers are deliberately not the editor default, so the
+    // palette the import adopts is part of what has to come back.
+    // Stfm, not Ste: a PI1 stores 3-bit words and an Ste palette is not
+    // representable in them — MAJ-38 made the codec honest about that, so these
+    // two fixtures were only green under the buggy 4-bit words. These indices
+    // are valid 3-bit triples: the deliberately non-default palette stays
+    // non-default and the round trip is index-exact again.
+    ImageDocument art = ImageDocument::create(8, 8, PaletteKind::Stfm);
+    QVector<int> custom;
+    for (int i = 0; i < 15; ++i)
+        custom.append(0x11 * (i + 1));
+    custom.append(0x001);
+    art.setActive(custom);
+    art.setPixel(0, custom.at(3));
+    const QString dir = m_work->path() + QStringLiteral("/undoimport");
+    QVERIFY(QDir().mkpath(dir));
+    const QString pi1Path = dir + QStringLiteral("/sheet.pi1");
+    QString error;
+    const QByteArray pi1 = exportPi1(art, 0, &error);
+    QVERIFY2(!pi1.isEmpty(), qPrintable(error));
+    QFile out(pi1Path);
+    QVERIFY(out.open(QIODevice::WriteOnly));
+    QCOMPARE(out.write(pi1), qint64(pi1.size()));
+    out.close();
+
+    ImageEditor editor;
+    editor.show();
+    editor.newDocument(8, 8, PaletteKind::Stfm);
+    const QVector<int> defaultPalette = editor.document().active();
+
+    // One command under the import. Undoing the import must stop on top of this
+    // one, not reach through it: the add-frame's `before` predates the import.
+    auto *addFrame = editor.findChild<QToolButton *>(QStringLiteral("imageAddFrame"));
+    QVERIFY(addFrame);
+    addFrame->click();
+    QCOMPARE(editor.document().frameCount(), 2);
+
+    QVERIFY(editor.importFile(pi1Path, true));
+    QCOMPARE(editor.document().sheets().size(), 1);
+    QCOMPARE(editor.document().active(), custom);
+    const QByteArray imported = editor.document().toJson();
+
+    // Ctrl+Z undoes the import: the sheet it added goes, the adopted palette
+    // goes back — and the frames that were already there stay untouched. Pre-fix
+    // there was no import command, so this undo assigned the add-frame's
+    // pre-import document and the frame count fell to 1 with the import gone.
+    editor.undo();
+    QCOMPARE(editor.document().sheets().size(), 0);
+    QCOMPARE(editor.document().active(), defaultPalette);
+    QCOMPARE(editor.document().frameCount(), 2);
+
+    // And the add-frame is still reachable below it.
+    editor.undo();
+    QCOMPARE(editor.document().frameCount(), 1);
+
+    // Redo restores both, byte for byte — the sheet, its path and the palette.
+    editor.redo();
+    editor.redo();
+    QCOMPARE(editor.document().toJson(), imported);
+
+    // The placement panel holds the same contract: one panel edit is one command
+    // covering the placement and the pixels it slices out of the sheet.
+    auto *sheetBox = editor.findChild<QComboBox *>(QStringLiteral("imagePhaseSheet"));
+    auto *x = editor.findChild<QSpinBox *>(QStringLiteral("imagePhaseX"));
+    QVERIFY(sheetBox && x);
+    sheetBox->setCurrentIndex(1);   // the imported sheet
+    QCOMPARE(editor.document().phases().at(0).sheet, 0);
+    x->setValue(4);
+    QCOMPARE(editor.document().phases().at(0).x, 4);
+
+    editor.undo();
+    QCOMPARE(editor.document().phases().at(0).x, 0);
+    editor.undo();
+    QCOMPARE(editor.document().phases().at(0).sheet, -1);
+    editor.redo();
+    editor.redo();
+    QCOMPARE(editor.document().phases().at(0).sheet, 0);
+    QCOMPARE(editor.document().phases().at(0).x, 4);
 }
 
 void TstGui::strokeDedupMakesUndoRestoreOriginal()
@@ -1102,6 +1843,7 @@ void TstGui::stateSummaryClearsAfterSessionEnds()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     auto *host = window.findChild<EmulatorHost *>();
     QVERIFY(host);
     window.openPath(source);
@@ -1114,9 +1856,146 @@ void TstGui::stateSummaryClearsAfterSessionEnds()
     QTRY_VERIFY_WITH_TIMEOUT(!window.stateSummary().startsWith(
                                  QStringLiteral("no session state")),
                              30000);
+
+    // The hardware transcript and the PC history are fetched at every stop, so
+    // both hold this session's text by now.
+    auto *hardware = window.findChild<HardwareView *>();
+    auto *pcHistory = window.findChild<PcHistoryView *>();
+    QVERIFY(hardware && pcHistory);
+    auto *hardwareText = hardware->findChild<QPlainTextEdit *>();
+    auto *historyText = pcHistory->findChild<QPlainTextEdit *>();
+    QVERIFY(hardwareText && historyText);
+    QTRY_VERIFY_WITH_TIMEOUT(!hardwareText->toPlainText().isEmpty(), 30000);
+    QTRY_VERIFY_WITH_TIMEOUT(!historyText->toPlainText().isEmpty(), 30000);
+
     host->stop();
     QTRY_VERIFY_WITH_TIMEOUT(!host->isRunning(), 10000);
     QCOMPARE(window.stateSummary(), QStringLiteral("no session state\n"));
+
+    // The PC bar belongs to the session that just ended too: it was painted
+    // from the last stop's PC and nothing else clears it, so left on screen it
+    // claims a line the machine is no longer at — and a wait for "the program
+    // counter reached line N" matches it instantly (MIN-83).
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 0, 10000);
+
+    // Both transcripts describe the session that just ended, and neither is
+    // re-requested without one: a dead machine's hardware report would read as
+    // the live state (NIT-5).
+    QTRY_VERIFY_WITH_TIMEOUT(hardwareText->toPlainText().isEmpty(), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(historyText->toPlainText().isEmpty(), 10000);
+    auto *summary = hardware->findChild<QLabel *>(QStringLiteral("hardwareSummary"));
+    QVERIFY(summary);
+    QVERIFY2(summary->text().isEmpty() && summary->isHidden(),
+             qPrintable(summary->text()));
+}
+
+// resetSessionState() is the single owner of everything that must not leak from
+// one debug session into the next, and a step-out left waiting on its stack dump
+// when the session dies is exactly that. Its flag used to survive the reset, so
+// the next session's own entry-stop stack dump was consumed as the step-out's
+// answer: a one-shot `b pc = $…` armed at the old stack's idea of a return
+// address, and a resume — the new session running away from its entry stop with
+// a breakpoint nobody asked for. The profile-save flag goes with it.
+void TstGui::sessionResetDropsAnUnansweredStepOut()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/resetstate.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                 // line 1
+              "start:\tmoveq\t#0,d0\n"   // line 2 — the entry stop
+              "loop:\tbra.s\tloop\n"     // line 3
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    // Two sessions in one window, so the transport is pinned rather than left
+    // to "auto": launchEmulator() *replaces* its backend when the transport the
+    // probe selects differs from the live one, and the host this test holds
+    // would then be a dangling pointer. Pinning it also keeps the test on the
+    // backend whose signals it asserts (profileSaveFinished is native-only); on
+    // a machine whose hatari is the HRDB fork the launch is refused with that
+    // reason rather than reporting a crash from freed memory.
+    settings.debugBackend = QStringLiteral("native");
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(host && editor);
+
+    // Session one: stop at entry, let that stop's own stack dump land, then leave
+    // a step-out and a profile save unanswered by killing the session in the same
+    // event-loop turn — neither response can ever arrive.
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+    QTest::qWait(1000);
+    QVERIFY(QMetaObject::invokeMethod(&window, "stepOut", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&window, "profileStop", Qt::DirectConnection));
+    QVERIFY2(!window.debugConsoleText().contains(QLatin1String("[step out] needs")),
+             "stepOut() must take the stopped-session path (the flag under test)");
+    QVERIFY2(!window.debugConsoleText().contains(QLatin1String("[profile] Needs a stopped")),
+             "profileStop() must take the stopped-session path (the flag under test)");
+    host->stop();
+    QVERIFY(!host->isRunning());
+
+    // Session two: the entry stop's stack dump must only feed the stack view.
+    // The console accumulates per window, not per session, so the session-two
+    // slice is what the text grew by while it ran. The editor's execution line
+    // is still 2 from session one, so session two's entry cannot be observed by
+    // line number — a stale 2 would make the wait pass while TOS is still
+    // booting and the machine then reads as "resumed". Wait for the host's own
+    // stop event instead.
+    QSignalSpy results(&window, &MainWindow::profileResultsReady);
+    const int consoleOffset = window.debugConsoleText().size();
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    // Session two's host, re-fetched rather than reused: a launch that changed
+    // the transport replaced the backend, and the pointer captured above would
+    // be dangling (see the transport pin above).
+    host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    QSignalSpy entryStop(host, &IDebugBackend::stoppedChanged);
+    QTRY_VERIFY_WITH_TIMEOUT(!entryStop.isEmpty() && entryStop.last().at(0).toBool(), 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+    QTest::qWait(1500);  // long enough for a stale flag to have fired
+
+    const QString sessionTwo = window.debugConsoleText().mid(consoleOffset);
+    const bool staleStepOut = sessionTwo.contains(QLatin1String("[step out]"));
+    const bool resumed = !host->isStopped();
+    const int entryLine = editor->currentExecutionLine();
+    // Observations captured; end the session before asserting so a failure
+    // cannot leave a live emulator for teardown.
+    host->stop();
+
+    QVERIFY2(!staleStepOut,
+             qPrintable(QStringLiteral("the stale step-out flag fired: %1")
+                            .arg(sessionTwo)));
+    QVERIFY2(!resumed,
+             qPrintable(QStringLiteral(
+                            "the new session was resumed from its entry stop; "
+                            "session two console: %1")
+                            .arg(sessionTwo)));
+    QCOMPARE(entryLine, 2);
+
+    // The old profile save must be gone too: a save completing now is this
+    // session's business. The completion is delivered exactly as the backend
+    // delivers it — what is under test is the flag's lifetime, not Hatari's
+    // profile-save output.
+    emit host->profileSaveFinished(
+        QStringLiteral("%1/profile.txt").arg(QDir::tempPath()));
+    QCOMPARE(results.count(), 0);
 }
 
 void TstGui::projectAssemblerPathOverridesDiscovery()
@@ -1147,6 +2026,12 @@ void TstGui::projectAssemblerPathOverridesDiscovery()
     QCOMPARE(window.assemblerPath(), copy);
 }
 
+// The HRDB fork is an *additional* prerequisite on top of the emulator ones, and
+// the suite's contract for a missing prerequisite is fail-loud: under
+// PIST_REQUIRE_EMULATOR a missing fork fails rather than skips, the same as a
+// missing assembler in initTestCase. (MIN-66: the workflow's comment used to
+// describe HRDB as outside that contract and skipping instead; the tests are the
+// contract of record.)
 void TstGui::hrdbProjectRunsThroughTheSwapPath()
 {
     const QString fork = qEnvironmentVariable("PIST_HRDB_HATARI");
@@ -1184,6 +2069,7 @@ void TstGui::hrdbProjectRunsThroughTheSwapPath()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.openPath(source);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
@@ -1233,6 +2119,7 @@ void TstGui::hrdbAutoSelectedFromForkProbe()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
 
@@ -1257,14 +2144,14 @@ void TstGui::dumpRewriteDoesNotEmitEdits()
         "000125a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n");
 
     // Editing disabled: baseline, no signals either way.
-    view.applyDump(dump);
+    view.applyDump(parseMemoryDump(dump));
     QCOMPARE(edits.size(), 0);
 
     // Editing enabled (the stopped state, when a user edit can be in flight):
     // the rewrite must still emit nothing — the bytes were not user edits.
     view.setEditingEnabled(true);
 
-    view.applyDump(dump);
+    view.applyDump(parseMemoryDump(dump));
     QCOMPARE(edits.size(), 0);
 }
 void TstGui::memoryEditEmitsForRealEdit()
@@ -1282,7 +2169,7 @@ void TstGui::memoryEditEmitsForRealEdit()
     const QString dump = QStringLiteral(
         "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"
         "000125a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n");
-    view.applyDump(dump);
+    view.applyDump(parseMemoryDump(dump));
 
     QSignalSpy edits(&view, &MemoryView::memoryEdited);
     auto *table = view.findChild<QTableWidget *>();
@@ -1302,15 +2189,15 @@ void TstGui::memoryEditEmitsForRealEdit()
     QCOMPARE(edits.first().at(0).toUInt(), 0x12591u);
     QCOMPARE(edits.first().at(1).toUInt(), 0xabu);
     // Confirm the write so the next dump is not treated as stale.
-    view.applyDump(QStringLiteral(
-        "00012590: 70 ab 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"));
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00012590: 70 ab 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n")));
     // A double-click on a cell whose 4-byte window looks like an address must
     // EDIT, not navigate — pointer-following is Alt+double-click. Use bytes
     // 00 01 25 96 (an address-like long) in row 1's first long position by
     // re-dumping a window that has them.
     QSignalSpy nav(&view, &MemoryView::dumpRequested);
-    view.applyDump(QStringLiteral(
-        "00012590: 00 01 25 96 70 01 61 04 74 03 60 fe 72 02 4e 75  ....p.a.t.`.r.Nu\n"));
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00012590: 00 01 25 96 70 01 61 04 74 03 60 fe 72 02 4e 75  ....p.a.t.`.r.Nu\n")));
     emit table->cellDoubleClicked(0, 1 + 1);
     QVERIFY2(qobject_cast<QLineEdit *>(QApplication::focusWidget()),
              "double-click on an address-like cell must open the editor");
@@ -1327,8 +2214,8 @@ void TstGui::memoryEditIgnoresStaleDump()
     QVERIFY(QTest::qWaitForWindowExposed(&view));
     view.setEditingEnabled(true);
     view.goToAddress(0x12590);
-    view.applyDump(QStringLiteral(
-        "00012590: 00 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  ..a.t.`.r.Nu..HI\n"));
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00012590: 00 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  ..a.t.`.r.Nu..HI\n")));
 
     auto *table = view.findChild<QTableWidget *>();
     QVERIFY(table);
@@ -1345,12 +2232,12 @@ void TstGui::memoryEditIgnoresStaleDump()
     QCOMPARE(edits.size(), 1);
 
     // This dump still has the old byte: it was requested before the write.
-    view.applyDump(QStringLiteral(
-        "00012590: 00 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  ..a.t.`.r.Nu..HI\n"));
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00012590: 00 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  ..a.t.`.r.Nu..HI\n")));
     QCOMPARE(table->item(0, 1)->text(), QStringLiteral("70"));
 
-    view.applyDump(QStringLiteral(
-        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"));
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n")));
     QCOMPARE(table->item(0, 1)->text(), QStringLiteral("70"));
 }
 
@@ -1378,6 +2265,7 @@ void TstGui::memoryEditSurvivesRefreshLive()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
     window.openPath(source);
@@ -1440,7 +2328,8 @@ void TstGui::stackViewDoubleClickFollowsAddress()
     // Two longs at SP 0x1000: 0x00012596 (inside the text range, so a likely
     // return address) and 0x43 (plain data — odd, so not address-like).
     view.setStackDump(0x1000,
-                      QStringLiteral("00001000: 00 01 25 96 00 00 00 43 00 00 00 00 00 00 00 00\n"),
+                      parseMemoryDump(QStringLiteral(
+                          "00001000: 00 01 25 96 00 00 00 43 00 00 00 00 00 00 00 00\n")),
                       0x12500, 0x12600);
 
     QSignalSpy spy(&view, &StackView::addressActivated);
@@ -1493,6 +2382,7 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     auto *host = window.findChild<EmulatorHost *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
@@ -1516,6 +2406,151 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
     QCOMPARE(editor->currentExecutionLine(), 2);
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+
+    host->stop();
+}
+
+// A breakpoint added while the program is running must still fire in that
+// session. The edit arrives with the machine running — the debugger is at a
+// prompt only on a stop — and the commands armBreakpoints() queues then wait in
+// the host, which holds stdin writes until the debugger is back, and are
+// dispatched at the next stop. The gate used to require isStopped(), so the edit
+// was dropped for the rest of the session: the panel and the gutter listed the
+// breakpoint, the emulator never heard of it, and the symptom was a breakpoint
+// that never fired — while a watchpoint added the same way was armed.
+void TstGui::breakpointAddedWhileRunningFiresThisSession()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    // Line 6 stops the first pass (armed before Run, the ordinary way) and line
+    // 7 is the breakpoint added mid-run. The countdown on 3-5 holds the machine
+    // running while the edit is made, so it lands in a run rather than against
+    // the stop that ends the countdown.
+    const QString source = m_work->path() + QStringLiteral("/midrun.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                        // line 1
+              "start:\tmoveq\t#0,d0\n"          // line 2  <- the entry stop
+              "delay:\tmove.l\t#$00200000,d1\n" // line 3
+              "wait:\tsubq.l\t#1,d1\n"          // line 4
+              "\tbne.s\twait\n"                 // line 5
+              "mark:\tnop\n"                    // line 6  <- armed before Run
+              "spin:\taddq.w\t#1,d0\n"          // line 7  <- added while running
+              "\tbra.s\tspin\n"                 // line 8
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY2(host, "MainWindow must own an EmulatorHost");
+    QVERIFY2(editor, "MainWindow must own a CodeEditor");
+    window.openPath(source);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
+                                      Q_ARG(int, 6)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // Resume and let the machine actually start running before editing it.
+    // resume() writes the continue once the entry attach's commands have
+    // drained, so isStopped() is still true in the frame that called it.
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(!host->isStopped(), 10000);
+    // The countdown is the whole runway for the edit: if it has already ended,
+    // the stop would be processed next and the edit would take the stopped path
+    // instead — the window under test missed, so say so rather than assert
+    // something weaker.
+    QVERIFY2(!host->isStopped(), "the countdown ended before the edit — the machine was stopped");
+    QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
+                                      Q_ARG(int, 7)));
+
+    // The countdown ends at the pre-armed line 6, and that stop is where the
+    // queued re-arm is dispatched. Resuming from it must reach line 7: with the
+    // edit dropped the program spins on 7-8 and never stops again.
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 6, 30000);
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 7, 20000);
+}
+
+// Arming has one gate: source breakpoints are planned only once the live bases
+// have arrived, and only then is the session marked armed. An edit that reaches
+// the pre-base window — emulator up, booting TOS to the entry breakpoint, no
+// `info basepage` answer yet — used to mark the session armed against an
+// unresolved program map, which produces no `b` command at all and, because
+// onStateUpdated() arms only while that flag is clear, left the whole run with
+// no source breakpoint armed and no second chance to arm one. The remote-control
+// `run` verb replies at process start, so an agent's immediate `watchpoint`
+// lands exactly there.
+void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/prebase.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"                     // line 1
+              "start:\tmoveq\t#0,d0\n"       // line 2  <- entry stop
+              "loop:\taddq.w\t#1,d0\n"        // line 3  <- breakpoint
+              "\tbra.s\tloop\n"               // line 4
+              "\teven\n"                       // line 5
+              "\tend\n");                      // line 6
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *host = window.findChild<EmulatorHost *>();
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY2(host, "MainWindow must own an EmulatorHost");
+    QVERIFY2(editor, "MainWindow must own a CodeEditor");
+
+    window.openPath(source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
+                                      Q_ARG(int, 3)));
+
+    // Watch the process come up instead of polling for it: from that instant to
+    // the entry stop is the TOS boot, and that gap is the window under test.
+    QSignalSpy processStarted(host, &EmulatorHost::runningChanged);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!host->isRunning())
+        QVERIFY2(processStarted.wait(30000), "the emulator never started");
+
+    // The pre-base window: process up, no state read yet, so no bases. A run
+    // that raced past the entry stop here would not be testing this path at all,
+    // so say so rather than quietly asserting nothing.
+    QVERIFY2(editor->currentExecutionLine() == 0,
+             "the entry stop already landed — the pre-base window was missed");
+
+    // The edit that used to poison the session: a watchpoint added while the
+    // debugger is still on its way to the entry breakpoint.
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error), qPrintable(error));
+
+    // The entry stop still completes, and the source breakpoint armed with it:
+    // resuming must stop on line 3 rather than run the loop forever.
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 20000);
 
     host->stop();
 }
@@ -1550,6 +2585,7 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     auto *host = window.findChild<EmulatorHost *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host);
@@ -1578,15 +2614,23 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
     host->stop();
 }
 // F4/Shift+F4 tour the Problems pane without the mouse: each step selects the
-// next diagnostic carrying a source line (wrapping, skipping line-less build
-// messages) and the editor follows, exactly like double-clicking the item.
+// next diagnostic carrying a source line (wrapping, skipping build-level
+// messages) and the editor follows, exactly like double-clicking the item. The
+// rows are the build's own diagnostics — the pane's rows are views of the
+// structured entries the build produced, so the fixture goes through the build
+// rather than through hand-made tree items, which no longer navigate.
 void TstGui::diagnosticKeyboardFlowToursProblems()
 {
     const QString source = m_work->path() + QStringLiteral("/diag.s");
     QFile src(source);
     QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
-    src.write("\ttext\nstart:\tmoveq\t#1,d0\n\tmoveq\t#2,d1\n\tmoveq\t#3,d2\n"
-              "\tmoveq\t#4,d3\n\tmoveq\t#5,d4\n\tmoveq\t#6,d5\n\trts\n\tend\n");
+    src.write("\ttext\n"                        // line 1
+              "start:\tmoveq\t#1,d0\n"          // line 2
+              "\tbogus_op\t#1,d1\n"             // line 3  <- error
+              "\tmoveq\t#3,d2\n"                // line 4
+              "\tbogus2\n"                      // line 5  <- error
+              "\trts\n"                         // line 6
+              "\tend\n");                       // line 7
     src.close();
 
     MainWindow window;
@@ -1598,32 +2642,37 @@ void TstGui::diagnosticKeyboardFlowToursProblems()
     QVERIFY(editor);
     window.openPath(source);
 
-    auto addItem = [&](const QString &file, int line) {
-        auto *item = new QTreeWidgetItem(problems);
-        item->setText(0, file);
-        item->setText(1, line > 0 ? QString::number(line) : QString());
-        item->setText(2, QStringLiteral("diagnostic"));
-    };
-    addItem(source, 2);
-    addItem(QStringLiteral("(build)"), 0);  // no line: skipped, never landed on
-    addItem(source, 7);
+    // Two assembly errors, so the tour has two rows with a source line to land
+    // on. A quiet build: the assembler's failure is reported in the pane.
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(problems->topLevelItemCount(), 2, 30000);
+
+    // And a build-level message: no file, no line (the shape the link-map note
+    // and an unlocated fatal both take). The service is driven directly because
+    // the window's own build path clears the pane first — this is the mix the
+    // tour has to walk.
+    auto *build = window.findChild<BuildService *>();
+    QVERIFY(build);
+    build->setSourceFile(QString());
+    build->build();
+    QTRY_COMPARE_WITH_TIMEOUT(problems->topLevelItemCount(), 3, 30000);
 
     auto editorLine = [&] { return editor->textCursor().blockNumber() + 1; };
 
     QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
     QCOMPARE(problems->currentIndex().row(), 0);
-    QCOMPARE(editorLine(), 2);
+    QCOMPARE(editorLine(), 3);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
-    QCOMPARE(problems->currentIndex().row(), 2);  // the line-less item was skipped
-    QCOMPARE(editorLine(), 7);
+    QCOMPARE(problems->currentIndex().row(), 1);
+    QCOMPARE(editorLine(), 5);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
-    QCOMPARE(problems->currentIndex().row(), 0);  // wrapped
+    QCOMPARE(problems->currentIndex().row(), 0);  // the line-less row was skipped, wrapped
 
     QVERIFY(QMetaObject::invokeMethod(&window, "previousDiagnostic", Qt::DirectConnection));
-    QCOMPARE(problems->currentIndex().row(), 2);  // backwards wraps too
-    QCOMPARE(editorLine(), 7);
+    QCOMPARE(problems->currentIndex().row(), 1);  // backwards wraps too
+    QCOMPARE(editorLine(), 5);
 }
 
 // A breakpoint, a problem row and F4 used to do nothing when the line lived
@@ -1642,7 +2691,8 @@ void TstGui::navigationOpensTheOtherFile()
     {
         QFile f(b);
         QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
-        f.write("\ttext\n\tnop\nhelper:\tnop\n\trts\n\tend\n");
+        // Line 4 is the unknown mnemonic the problem row below comes from.
+        f.write("\ttext\n\tnop\nhelper:\tnop\n\tbogus_op\n\trts\n\tend\n");
     }
 
     MainWindow window;
@@ -1656,6 +2706,14 @@ void TstGui::navigationOpensTheOtherFile()
     QVERIFY(current);
     QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
     QCOMPARE(current->textCursor().blockNumber() + 1, 3);
+
+    // The problem row for the last step: b.s is the current document here, so a
+    // quiet build fills the pane with its own diagnostic (b.s line 4).
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    auto *problems = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"))
+                         ->findChild<QTreeWidget *>();
+    QVERIFY(problems);
+    QTRY_COMPARE_WITH_TIMEOUT(problems->topLevelItemCount(), 1, 30000);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "goToBreakpoint", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("a.s")), Q_ARG(int, 2)));
@@ -1671,13 +2729,6 @@ void TstGui::navigationOpensTheOtherFile()
     current = qobject_cast<CodeEditor *>(tabs->currentWidget());
     QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("a.s"));
 
-    auto *problems = window.findChild<QDockWidget *>(QStringLiteral("problemsDock"))
-                         ->findChild<QTreeWidget *>();
-    QVERIFY(problems);
-    auto *item = new QTreeWidgetItem(problems);
-    item->setText(0, QStringLiteral("b.s"));
-    item->setText(1, QStringLiteral("4"));
-    item->setText(2, QStringLiteral("diagnostic"));
     QVERIFY(QMetaObject::invokeMethod(&window, "nextDiagnostic", Qt::DirectConnection));
     current = qobject_cast<CodeEditor *>(tabs->currentWidget());
     QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
@@ -1801,7 +2852,10 @@ void TstGui::instructionReferenceFollowsTheCursor()
 
     cursor.setPosition(editor->document()->findBlockByNumber(1).position());
     editor->setTextCursor(cursor);
-    QTest::qWait(50);
+    // The panel is left alone here, so there is nothing to wait *for*: flush the
+    // event loop so a queued follow-cursor update would still land before the
+    // assertion, instead of sleeping a guessed 50 ms first.
+    QCoreApplication::processEvents();
     QCOMPARE(view->currentMnemonic(), QStringLiteral("ADDQ"));  // a label: no-op
 }
 
@@ -1858,10 +2912,11 @@ void TstGui::osCallReferenceFollowsTheCursor()
     editor->setTextCursor(cursor);
     QTRY_COMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
 
-    // A directive line resolves nothing and leaves the panel alone.
+    // A directive line resolves nothing and leaves the panel alone. As above:
+    // flush rather than sleep, since nothing new is expected.
     cursor.setPosition(editor->document()->findBlockByNumber(0).position());
     editor->setTextCursor(cursor);
-    QTest::qWait(50);
+    QCoreApplication::processEvents();
     QCOMPARE(view->currentMnemonic(), QStringLiteral("gemdos:9"));
 }
 
@@ -2286,6 +3341,7 @@ void TstGui::consoleCommandRoundTrips()
              qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
 
@@ -2391,12 +3447,6 @@ void TstGui::viewMenuListsEveryDock()
 // returns to the hidden factory state.
 void TstGui::factoryLayoutShowsRegistersAndTheEditor()
 {
-    QSettings settings;
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
-
     MainWindow window;
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
@@ -2445,11 +3495,6 @@ void TstGui::factoryLayoutShowsRegistersAndTheEditor()
 
 void TstGui::windowGeometryPersistsAcrossRestart()
 {
-    QSettings settings;
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
     int width = 0;
     int height = 0;
     {
@@ -2474,20 +3519,12 @@ void TstGui::windowGeometryPersistsAcrossRestart()
         QCOMPARE(window.width(), width);
         QCOMPARE(window.height(), height);
     }
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
 }
 
 // A saved arrangement is the user's. The factory split must not put Registers
 // back on top of a layout that closed it.
 void TstGui::savedLayoutBeatsTheFactorySplit()
 {
-    QSettings settings;
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
     {
         MainWindow window;
         auto *registers = window.findChild<QDockWidget *>(QStringLiteral("registersDock"));
@@ -2504,10 +3541,6 @@ void TstGui::savedLayoutBeatsTheFactorySplit()
         QVERIFY2(!registers->isVisibleTo(&window),
                  "a saved layout that hid Registers must stay hidden");
     }
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
 }
 
 // The status bar used to show the assembler file name and Hatari's capability
@@ -2596,6 +3629,7 @@ void TstGui::statusBarNamesTheStop()
     QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
 
     MainWindow window;
+    EmulatorStopper stopper(window);
     auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
     auto *caret = window.findChild<QLabel *>(QStringLiteral("statusCaret"));
     QVERIFY(session && caret);
@@ -2655,8 +3689,13 @@ void TstGui::registerDockShowsFlagsUntilTheMachineStops()
     auto *n = window.findChild<QLabel *>(QStringLiteral("flagChipN"));
     auto *z = window.findChild<QLabel *>(QStringLiteral("flagChipZ"));
     QVERIFY(n && z);
-    QVERIFY(n->styleSheet().contains(QStringLiteral("#2fa04c")));
-    QVERIFY(!z->styleSheet().contains(QStringLiteral("#2fa04c")));
+    // A lit flag chip is filled and a clear one is not. The exact green is a
+    // cosmetic choice, so it is not pinned to the stylesheet's source text; the
+    // structure is what the user sees.
+    QVERIFY2(n->styleSheet() != z->styleSheet(),
+             "a set flag chip must be styled differently from a clear one");
+    QVERIFY(n->styleSheet().contains(QLatin1String("background")));
+    QVERIFY(z->styleSheet().contains(QLatin1String("transparent")));
     bool sawSr = false;
     for (QTableWidget *table : view->findChildren<QTableWidget *>()) {
         for (int row = 0; row < table->rowCount(); ++row) {
@@ -2675,12 +3714,6 @@ void TstGui::registerDockShowsFlagsUntilTheMachineStops()
 void TstGui::layoutPresetsHideDocksAndRestore()
 {
     QSettings settings;
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
-    settings.remove(QStringLiteral("layout/previous"));
-    settings.remove(QStringLiteral("layout/offeredSprite"));
 
     MainWindow window;
     window.resize(1000, 700);
@@ -2780,12 +3813,6 @@ void TstGui::layoutPresetsHideDocksAndRestore()
             sawColour = true;
     }
     QVERIFY2(sawColour, "the canvas status names the active colour index");
-
-    settings.remove(QStringLiteral("layout/previous"));
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
 }
 
 // Git is a project pane, not a debug one: it shares Project files' tab and
@@ -2793,10 +3820,6 @@ void TstGui::layoutPresetsHideDocksAndRestore()
 void TstGui::gitDockStaysUnderProjectFiles()
 {
     QSettings settings;
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
     settings.setValue(QStringLiteral("git/blame"), false);
 
     MainWindow window;
@@ -2862,13 +3885,87 @@ void TstGui::gitDockStaysUnderProjectFiles()
 
     editing->trigger();
     QVERIFY2(sharesTab(), "Editing puts Git back under Project files");
+}
 
-    settings.remove(QStringLiteral("git/blame"));
-    settings.remove(QStringLiteral("layout/previous"));
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-    settings.remove(QStringLiteral("layout/width"));
-    settings.remove(QStringLiteral("layout/height"));
+// The git panel follows the project the user opened. It used to be aimed at
+// whatever the file browser's model root happened to be, which is the process
+// working directory until a file is opened — so a window with no project ran
+// `git status` inside whichever repository contained the launch directory. This
+// suite runs from a build tree inside PiST's own checkout, which is why ~90
+// window constructions per run aimed git at the real `.git`, and a status child
+// abandoned at teardown leaves `.git/index.lock` there (MIN-81).
+//
+// Measured with a fake `git` first on PATH that records the working directory of
+// every invocation it is handed. Both directions are deterministic without a
+// sleep: with the fix the log stays empty (nothing is run at all), and the
+// awaited condition is checked immediately, so the passing case costs one event
+// loop turn rather than the timeout.
+void TstGui::gitDiscoveryFollowsTheOpenedProject()
+{
+    const QString bin = m_work->path() + QStringLiteral("/fakebin");
+    QVERIFY(QDir().mkpath(bin));
+    const QString log = bin + QStringLiteral("/invocations.log");
+#ifdef Q_OS_WIN
+    const QString git = bin + QStringLiteral("/git.bat");
+    QVERIFY(writeFile(git, QByteArrayLiteral("@echo off\r\necho %CD% ^& %* >> \"")
+                               + QFile::encodeName(log) + QByteArrayLiteral("\"\r\n")));
+#else
+    const QString git = bin + QStringLiteral("/git");
+    // `pwd -P`, not $PWD: the shell variable is inherited from the parent and
+    // does not follow QProcess's chdir, so it would report PiST's directory
+    // rather than the child's.
+    QVERIFY(writeFile(git, QStringLiteral("#!/bin/sh\necho \"$(pwd -P)|$*\" >> %1\nexit 1\n")
+                               .arg(log)
+                               .toUtf8()));
+    QVERIFY(QFile::setPermissions(git, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                           | QFileDevice::ExeOwner));
+#endif
+
+    // Every git child must run in a directory this test opened — the scratch
+    // tree — and never in the directory the process happens to be started from.
+    // Compared canonically, so a symlinked /tmp (macOS) matches either way.
+    const QString scratch = QFileInfo(m_work->path()).canonicalFilePath();
+    const auto gitStayedInTheScratchTree = [&]() {
+        const QStringList lines =
+            QString::fromUtf8(fileBytes(log)).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            const QString workDir = line.section(QLatin1Char('|'), 0, 0);
+            if (!QFileInfo(workDir).canonicalFilePath().startsWith(scratch))
+                return false;
+        }
+        return true;
+    };
+
+    const EnvScope pathScope("PATH");
+    const QString previous = qEnvironmentVariable("PATH");
+    qputenv("PATH", QFile::encodeName(bin + QDir::listSeparator() + previous));
+
+    {
+        // Nothing opened: the window has no project directory, so there is
+        // nothing for git to be pointed at.
+        MainWindow window;
+        QTRY_VERIFY_WITH_TIMEOUT(gitStayedInTheScratchTree(), 2000);
+        QVERIFY2(fileBytes(log).isEmpty(),
+                 qPrintable(QStringLiteral("a window with nothing open must run no git at all: %1")
+                                .arg(QString::fromUtf8(fileBytes(log)))));
+    }
+
+    {
+        // A document opened from the scratch tree: git is pointed at *that*
+        // directory, which is the project, and the log records it there.
+        QFile source(m_source);
+        QVERIFY(source.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        source.write("\tnop\n");
+        source.close();
+
+        MainWindow window;
+        window.openPath(m_source);
+        QTRY_VERIFY_WITH_TIMEOUT(!fileBytes(log).isEmpty(), 2000);
+        QVERIFY2(!fileBytes(log).isEmpty(), "opening a project must run git discovery");
+        QVERIFY2(gitStayedInTheScratchTree(),
+                 qPrintable(QStringLiteral("git ran outside the project:\n%1")
+                                .arg(QString::fromUtf8(fileBytes(log)))));
+    }
 }
 
 // Multiple memory panes: each is its own tabbed dock with its own routing tag,
@@ -2939,9 +4036,12 @@ void TstGui::floppyImagesReachTheCommandLine()
     SessionConfig spaced;
     spaced.hatariPath = QStringLiteral("hatari");
     spaced.programPath = QStringLiteral("/tmp/prog.prg");
-    spaced.floppyImages = {
-        QStringLiteral("/home/ryan/Code/AtariST/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st")
-    };
+    // Fabricated under the test's own temp tree: the shape that failed in the
+    // wild (spaces and parentheses) is what this checks, and a hard-coded
+    // personal path would make the fixture depend on whose machine runs it.
+    spaced.floppyImages = {m_work->path()
+                           + QStringLiteral(
+                               "/ST Format Magazine Issue 08 (1990-03)(Future Publishing).st")};
     QVERIFY(spaced.toArgv().contains(QDir::toNativeSeparators(spaced.floppyImages.at(0))));
 }
 
@@ -3257,7 +4357,8 @@ void TstGui::fileBrowserCopyMovePanes()
 
     auto contentOf = [](const QString &path) {
         QFile f(path);
-        f.open(QIODevice::ReadOnly);
+        if (!f.open(QIODevice::ReadOnly))
+            return QByteArray();
         return f.readAll();
     };
 
@@ -3315,6 +4416,316 @@ void TstGui::fileBrowserCopyMovePanes()
         leftOnA.append(e.path);
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY(!leftOnA.contains(QStringLiteral("ONE.TXT")));
+}
+
+// A copy-out that cannot write to the host reported whatever `error` last held,
+// which after a successful read is nothing at all: the browser's
+// "Could not copy PROG.PRG from disk.st:" ended in a colon with no reason, and
+// after an earlier damaged entry it reported *that* entry's damage for this one.
+// The failing step names itself now, so the message says what actually went
+// wrong.
+void TstGui::floppyCopyOutNamesTheFailingWrite()
+{
+    const QString dir = m_work->path() + QStringLiteral("/copyout");
+    QVERIFY(QDir().mkpath(dir));
+
+    QString error;
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("PROG.PRG");
+    file.data = QByteArrayLiteral("payload");
+    items.append(file);
+    const QString image = dir + QStringLiteral("/disk.st");
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    // A destination directory this user cannot write into. Where the write is
+    // allowed anyway — root, or a filesystem without permissions — there is no
+    // failure to report, so the case skips instead of passing vacuously.
+    const QString targetDir = dir + QStringLiteral("/locked");
+    QVERIFY(QDir().mkpath(targetDir));
+    QVERIFY(QFile::setPermissions(targetDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    {
+        QFile probe(targetDir + QStringLiteral("/probe"));
+        if (probe.open(QIODevice::WriteOnly)) {
+            probe.close();
+            probe.remove();
+            QFile::setPermissions(targetDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                               | QFileDevice::ExeOwner);
+            QSKIP("this user can write into a directory it has no write bit on");
+        }
+    }
+
+    struct Host : floppy::Transfer::Host
+    {
+        QString image;
+        QString mountedImage(int) const override { return image; }
+        bool confirmRewrite(const QString &) override { return true; }
+    } host;
+    host.image = image;
+
+    floppy::Transfer transfer(&host);
+    const floppy::Transfer::Result result =
+        transfer.imageToHost(0, {QStringLiteral("PROG.PRG")}, targetDir, false);
+    QVERIFY2(result.outcome == floppy::Transfer::CopyFailed,
+             "a failed copy-out must report the copy as failed");
+    QVERIFY2(!result.error.isEmpty(),
+             "the reason must not be empty: that is the colon with nothing after it");
+    QVERIFY2(result.error.contains(QStringLiteral("PROG.PRG")),
+             qPrintable(QStringLiteral("the reason must name the file it could not write: %1")
+                            .arg(result.error)));
+
+    QFile::setPermissions(targetDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                        | QFileDevice::ExeOwner);
+}
+
+// A copy must reproduce a symbolic link's content, not silently drop it. The
+// old copy skipped every link and still reported success — which mattered
+// because a move falls back to copy-then-delete, so a skipped link was deleted
+// with the source tree it lived in.
+void TstGui::fileBrowserCopyMaterialisesSymlinks()
+{
+    const QString dir = m_work->path() + QStringLiteral("/symlinks");
+    const QString src = dir + QStringLiteral("/src");
+    const QString dst = dir + QStringLiteral("/dst");
+    QVERIFY(QDir().mkpath(src));
+    QVERIFY(QDir().mkpath(dst));
+    QVERIFY(writeFile(src + QStringLiteral("/keep.txt"), QByteArrayLiteral("kept")));
+    if (!canCreateSymlinks(src))
+        QSKIP("this platform/filesystem does not support symbolic links");
+    QVERIFY(QFile::link(src + QStringLiteral("/keep.txt"), src + QStringLiteral("/link.txt")));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+
+    browser->copyHardDrivePaths({src}, false);
+    QVERIFY(browser->pasteIntoDirectory(dst));
+    const QString copied = dst + QStringLiteral("/src");
+    QCOMPARE(fileBytes(copied + QStringLiteral("/keep.txt")), QByteArrayLiteral("kept"));
+    // Materialised as the regular file it resolved to: the bytes are what the
+    // user sees, and nothing has to follow a link out of the copied tree.
+    QVERIFY2(QFileInfo(copied + QStringLiteral("/link.txt")).isFile(),
+             "the link's content must be copied, not skipped");
+    QVERIFY(!QFileInfo(copied + QStringLiteral("/link.txt")).isSymLink());
+    QCOMPARE(fileBytes(copied + QStringLiteral("/link.txt")), QByteArrayLiteral("kept"));
+
+    // A link to a directory has no single file to reproduce. The copy must
+    // refuse — and say so — rather than report success with the entry missing.
+    const QString tree = dir + QStringLiteral("/tree");
+    const QString dst2 = dir + QStringLiteral("/dst2");
+    QVERIFY(QDir().mkpath(tree + QStringLiteral("/real")));
+    QVERIFY(QDir().mkpath(dst2));
+    QVERIFY(writeFile(tree + QStringLiteral("/real/inner.txt"), QByteArrayLiteral("inner")));
+    QVERIFY(QFile::link(tree + QStringLiteral("/real"), tree + QStringLiteral("/dirlink")));
+
+    browser->copyHardDrivePaths({tree}, false);
+    QTimer::singleShot(0, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    QVERIFY2(!browser->pasteIntoDirectory(dst2),
+             "a copy that cannot reproduce an entry must fail, not drop it silently");
+}
+
+// The move fallback (copy, then delete the source) runs when a rename fails.
+// It must only delete after a copy that reproduced everything, and must never
+// announce a deletion it did not perform: pre-fix it emitted pathDeleted for a
+// source that was still on disk, so MainWindow closed the document as "deleted
+// on disk" and the user's file sat there unopened.
+void TstGui::fileBrowserMoveFallbackNeverLosesTheSource()
+{
+    const QString root = m_work->path() + QStringLiteral("/fallback");
+    const QString srcDir = root + QStringLiteral("/src");
+    const QString dstDir = root + QStringLiteral("/dst");
+    QVERIFY(QDir().mkpath(srcDir));
+    QVERIFY(QDir().mkpath(dstDir));
+    QVERIFY(writeFile(srcDir + QStringLiteral("/keep.txt"), QByteArrayLiteral("kept")));
+    if (!canCreateSymlinks(srcDir))
+        QSKIP("this platform/filesystem does not support symbolic links");
+    QVERIFY(QFile::link(srcDir + QStringLiteral("/keep.txt"), srcDir + QStringLiteral("/link.txt")));
+
+    // A read-only parent directory makes the rename fail (no write permission
+    // on the source's parent), so the move takes its copy-then-delete
+    // fallback; the delete then fails too, for the same reason. That failure is
+    // the point: the move did not happen and must be reported as such.
+    const auto ownerFull = QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+    const QString probeDir = root + QStringLiteral("/probe");
+    QVERIFY(QDir().mkpath(probeDir));
+    QVERIFY(writeFile(probeDir + QStringLiteral("/probe"), QByteArrayLiteral("x")));
+    QVERIFY(QFile::setPermissions(probeDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    const bool enforced = !QFile::remove(probeDir + QStringLiteral("/probe"));
+    QVERIFY(QFile::setPermissions(probeDir, ownerFull));
+    if (!enforced)
+        QSKIP("directory permissions are not enforced (running as root?)");
+    QVERIFY(QFile::setPermissions(srcDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    QSignalSpy renamed(browser, &FileBrowser::pathRenamed);
+    QSignalSpy deleted(browser, &FileBrowser::pathDeleted);
+    browser->copyHardDrivePaths({srcDir}, true);
+    // The refusal is reported with a modal warning; close it so the paste can
+    // return.
+    QTimer::singleShot(0, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    const bool moved = browser->pasteIntoDirectory(dstDir);
+    QVERIFY(QFile::setPermissions(srcDir, ownerFull));
+
+    QCOMPARE(deleted.count(), 0);
+    QCOMPARE(renamed.count(), 0);
+    QVERIFY2(!moved, "a move whose source could not be removed is not a successful move");
+    QVERIFY2(QFileInfo(srcDir + QStringLiteral("/keep.txt")).isFile(),
+             "the source must survive a move that could not complete");
+    QVERIFY2(QFileInfo(srcDir + QStringLiteral("/link.txt")).isSymLink(),
+             "the source tree must be untouched, symlink included");
+}
+
+// Copying entries off a floppy addresses paths inside the image that was mounted
+// at the time. Once that disk is ejected — or another image takes its place in
+// the same drive — the clipboard points at entries with no disk behind them, and
+// Paste used to stay enabled regardless: pasting then did nothing at all while
+// claiming to be available. The clipboard is dropped when its source is gone,
+// and the refusal is a refusal rather than a silent no-op.
+void TstGui::fileBrowserClipboardDiesWithItsDisk()
+{
+    const QString dir = m_work->path() + QStringLiteral("/clipdisk");
+    QVERIFY(QDir().mkpath(dir));
+    const QString src = dir + QStringLiteral("/prog.s");
+    QVERIFY(writeFile(src, QByteArrayLiteral("\tnop\n")));
+
+    QString error;
+    // One disk-image builder: an image holding a single file, or an empty one.
+    const auto makeImage = [&](const QString &name, const QString &entry) {
+        QVector<floppy::Item> items;
+        if (!entry.isEmpty()) {
+            floppy::Item file;
+            file.destPath = entry;
+            file.data = QByteArrayLiteral("payload");
+            items.append(file);
+        }
+        const QString path = dir + QLatin1Char('/') + name;
+        return floppy::writeImage(path, items, &error) ? path : QString();
+    };
+    const QString imageA = makeImage(QStringLiteral("a.st"), QStringLiteral("ONE.TXT"));
+    const QString imageB = makeImage(QStringLiteral("b.st"), QString());
+    const QString other = makeImage(QStringLiteral("other.st"), QStringLiteral("TWO.TXT"));
+    QVERIFY2(!imageA.isEmpty() && !imageB.isEmpty() && !other.isEmpty(), qPrintable(error));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    window.openPath(src);   // roots the hard-drive pane, so a paste target exists
+    browser->setFloppyImages({imageA, imageB});
+
+    // Reads the hard-drive context menu's Paste item the way the user sees it:
+    // menu.exec() runs a nested event loop, so the probe rides a zero-delay
+    // timer inside it, records the action, then closes the popup to return.
+    const auto pasteEnabledInMenu = [&window]() {
+        auto *view = window.findChild<QTreeView *>(QStringLiteral("hardDriveView"));
+        if (!view)
+            return false;
+        bool enabled = false;
+        QTimer::singleShot(0, [&enabled] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            if (!menu)
+                return;
+            for (QAction *action : menu->actions()) {
+                if (action->text() == QStringLiteral("Paste"))
+                    enabled = action->isEnabled();
+            }
+            menu->close();
+        });
+        const QPoint at(5, 5);
+        QContextMenuEvent event(QContextMenuEvent::Mouse, at,
+                                view->viewport()->mapToGlobal(at));
+        QApplication::sendEvent(view->viewport(), &event);
+        return enabled;
+    };
+
+    browser->copyFloppyEntries(0, {QStringLiteral("ONE.TXT")}, false);
+    QVERIFY2(pasteEnabledInMenu(), "a copied floppy entry must offer Paste");
+
+    // Ejecting A leaves the entry path with no disk behind it.
+    browser->setFloppyImages({QString(), imageB});
+    QVERIFY2(!pasteEnabledInMenu(), "Paste must die with the disk it copied from");
+    QVERIFY2(!browser->pasteIntoDirectory(dir),
+             "a paste from an ejected disk must refuse, not quietly do nothing");
+
+    // Another disk in the same drive is the same problem: an entry path is
+    // relative to the image that held it.
+    browser->setFloppyImages({other, imageB});
+    browser->copyFloppyEntries(0, {QStringLiteral("TWO.TXT")}, false);
+    QVERIFY2(pasteEnabledInMenu(), "a fresh copy must offer Paste again");
+    browser->setFloppyImages({imageA, imageB});
+    QVERIFY2(!pasteEnabledInMenu(), "a different disk in the drive must take Paste with it");
+}
+
+// A move across volumes must materialise a symbolic link inside the moved tree
+// instead of handing it to whatever QFile::rename does internally, which is Qt's
+// own copy path with Qt's link and permission semantics rather than the
+// browser's.
+//
+// HONEST LABEL: a guard, not a red on this Qt/filesystem. Measured on Qt 6.10.2,
+// a *directory* rename across volumes already fails (EXDEV, and Qt's fallback
+// for a failed rename only covers files), so the browser's copy+delete fallback
+// ran before the fix too and this test passed then. It WOULD be red where a
+// cross-device rename succeeds and does its own copy underneath — the Qt 6.5-era
+// premise the finding was filed under. What it now guards is that the
+// cross-volume route is unconditional, so the fallback's behaviour cannot regress.
+void TstGui::fileBrowserCrossDeviceMoveMaterialisesLinks()
+{
+    const QString tempRoot = QStorageInfo(m_work->path()).rootPath();
+
+    // A second mounted volume to move across. isReadOnly() is the mount's flag
+    // and not this user's permission on it, so the candidate is probed by
+    // actually creating the scratch directory.
+    QString scratch;
+    for (const QStorageInfo &volume : QStorageInfo::mountedVolumes()) {
+        if (!volume.isValid() || !volume.isReady() || volume.isReadOnly())
+            continue;
+        if (volume.rootPath() == tempRoot)
+            continue;
+        const QString candidate = volume.rootPath()
+            + QStringLiteral("/pist-crossdev-%1").arg(QCoreApplication::applicationPid());
+        if (QDir().mkpath(candidate)) {
+            scratch = candidate;
+            break;
+        }
+    }
+    if (scratch.isEmpty())
+        QSKIP("needs a second writable mounted volume to move across");
+
+    const QString srcDir = scratch + QStringLiteral("/src");
+    const QString dstDir = m_work->path() + QStringLiteral("/crossdev-dst");
+    QVERIFY(QDir().mkpath(srcDir));
+    QVERIFY(QDir().mkpath(dstDir));
+    QVERIFY(writeFile(srcDir + QStringLiteral("/keep.txt"), QByteArrayLiteral("kept")));
+    if (!canCreateSymlinks(srcDir)) {
+        QDir(scratch).removeRecursively();
+        QSKIP("this platform/filesystem does not support symbolic links");
+    }
+    QVERIFY(QFile::link(srcDir + QStringLiteral("/keep.txt"),
+                        srcDir + QStringLiteral("/inner.txt")));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    QSignalSpy deleted(browser, &FileBrowser::pathDeleted);
+
+    browser->copyHardDrivePaths({srcDir}, true);
+    QVERIFY(browser->pasteIntoDirectory(dstDir));
+    QVERIFY(!QFileInfo::exists(srcDir));
+    // The link is reproduced as the file it resolved to, in the tree's new home.
+    QCOMPARE(QFileInfo(dstDir + QStringLiteral("/src/inner.txt")).isSymLink(), false);
+    QCOMPARE(fileBytes(dstDir + QStringLiteral("/src/inner.txt")), QByteArrayLiteral("kept"));
+    // The source went with the move, not as a deletion: MainWindow closes the
+    // documents it is told were deleted on disk.
+    QCOMPARE(deleted.count(), 0);
+
+    QDir(scratch).removeRecursively();
 }
 
 void TstGui::floppyTextOpensAndSavesBack()
@@ -3399,6 +4810,30 @@ void TstGui::floppyTextOpensAndSavesBack()
     QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("DOCS/NOTE.TXT"), &saved, &error),
              qPrintable(error));
     QCOMPARE(saved, QByteArray("edited"));
+
+    // The write-back link dies with the tab that carried it. Closing DOC.TXT
+    // and then saving that same path as an ordinary document (the extracted
+    // file reopened, not through the disk pane) must leave the image alone:
+    // kept behind, the closed document's mapping outlived the tab and pushed
+    // whatever was saved at that path back into the image.
+    const QString extracted = editor->filePath();
+    QVERIFY(!extracted.isEmpty());
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    QVERIFY(QMetaObject::invokeMethod(&window, "onTabCloseRequested", Qt::DirectConnection,
+                                      Q_ARG(int, tabs->indexOf(editor))));
+    QCOMPARE(tabs->indexOf(editor), -1);
+
+    QVERIFY(window.openPath(extracted));
+    auto *reopened = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(reopened);
+    QCOMPARE(reopened->filePath(), extracted);
+    reopened->setPlainText(QStringLiteral("ordinary\n"));
+    saveAction->trigger();
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("DOC.TXT"), &saved, &error),
+             qPrintable(error));
+    QCOMPARE(saved, QByteArray("changed\n"));
 }
 
 // The editor's modified state drives the window title and the save prompt, and
@@ -3423,6 +4858,113 @@ void TstGui::editorTracksUnsavedChanges()
     // An id in the title with the modified marker is how Qt shows unsaved state.
     QVERIFY2(window.windowTitle().contains(QLatin1String("[*]")),
              qPrintable("title must carry the modified placeholder: " + window.windowTitle()));
+}
+
+// Atari ST sources are ASCII or Latin-1/ST-charset. A high-bit byte is not
+// valid UTF-8, so a bare UTF-8 QTextStream decoded it to U+FFFD with status Ok
+// and the next save wrote EF BF BD over the byte the user never touched. The
+// encoding the load detected is the one the save uses, so an unedited file
+// round-trips byte for byte.
+//
+// Line endings are the same class of fact: the document holds '\n' whatever the
+// file held, so the style the load saw is written back at save. Both halves are
+// asserted per fixture, because a CRLF file with a Latin-1 byte exercises the
+// two together.
+void TstGui::editorRoundTripsNonUtf8Sources()
+{
+    const QString dir = m_work->path() + QStringLiteral("/encodings");
+    QVERIFY(QDir().mkpath(dir));
+
+    // Latin-1: 0xE9 is 'é' and forms no valid UTF-8 sequence.
+    QByteArray latin1 = QByteArrayLiteral("dc.b 'caf");
+    latin1.append(char(0xE9));
+    latin1.append(QByteArrayLiteral("',13,10\n"));
+    const QString latin1Path = dir + QStringLiteral("/latin1.s");
+    QVERIFY(writeFile(latin1Path, latin1));
+
+    CodeEditor editor(appearance::editorTheme());
+    QVERIFY(editor.loadFile(latin1Path));
+    QVERIFY2(editor.toPlainText().contains(QChar(0x00E9)),
+             qPrintable(QStringLiteral("0xE9 must load as its character, not a replacement one: %1")
+                            .arg(editor.toPlainText())));
+    QVERIFY2(!editor.toPlainText().contains(QChar(0xFFFD)),
+             "a decoded source must not contain the replacement character");
+    QVERIFY(editor.saveFile(latin1Path));
+    QCOMPARE(fileBytes(latin1Path), latin1);
+
+    // UTF-8 with multi-byte characters — including one Latin-1 could encode,
+    // which must still be written back as UTF-8 because that is what the file
+    // was loaded as.
+    const QByteArray utf8 = QStringLiteral("\tnop\t; \u2500\u2500 caf\u00E9\n").toUtf8();
+    const QString utf8Path = dir + QStringLiteral("/utf8.s");
+    QVERIFY(writeFile(utf8Path, utf8));
+    QVERIFY(editor.loadFile(utf8Path));
+    QCOMPARE(editor.toPlainText(), QString::fromUtf8(utf8));
+    QVERIFY(editor.saveFile(utf8Path));
+    QCOMPARE(fileBytes(utf8Path), utf8);
+
+    // Pure ASCII, the third case in the invariant.
+    const QByteArray ascii = QByteArrayLiteral("\tnop\n\trts\n");
+    const QString asciiPath = dir + QStringLiteral("/ascii.s");
+    QVERIFY(writeFile(asciiPath, ascii));
+    QVERIFY(editor.loadFile(asciiPath));
+    QVERIFY(editor.saveFile(asciiPath));
+    QCOMPARE(fileBytes(asciiPath), ascii);
+
+    // Line endings are part of the bytes. A CRLF source (the common shape for
+    // anything edited on Windows or by an Atari tool) loaded and saved unedited
+    // must come back identical: pre-fix the document's '\n' was written as-is,
+    // so every line ending in the file changed, and a source saved back into a
+    // floppy image carried the rewrite into the image.
+    const QByteArray crlf = QByteArrayLiteral("\tnop\r\n\trts\r\n");
+    const QString crlfPath = dir + QStringLiteral("/crlf.s");
+    QVERIFY(writeFile(crlfPath, crlf));
+    QVERIFY(editor.loadFile(crlfPath));
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tnop\n\trts\n"));
+    QVERIFY(editor.saveFile(crlfPath));
+    QVERIFY2(fileBytes(crlfPath) == crlf,
+             qPrintable(QStringLiteral("a CRLF source must round-trip: %1")
+                            .arg(QString::fromLatin1(fileBytes(crlfPath).toHex(' ')))));
+
+    // The two features are independent, so CRLF has to survive alongside the
+    // Latin-1 encoding the load detected (a 0xE9 byte, which 0x0D and 0x0A do
+    // not disturb).
+    QByteArray latin1Crlf = QByteArrayLiteral("dc.b 'caf");
+    latin1Crlf.append(char(0xE9));
+    latin1Crlf.append(QByteArrayLiteral("',13,10\r\n"));
+    const QString latin1CrlfPath = dir + QStringLiteral("/latin1-crlf.s");
+    QVERIFY(writeFile(latin1CrlfPath, latin1Crlf));
+    QVERIFY(editor.loadFile(latin1CrlfPath));
+    QVERIFY(editor.saveFile(latin1CrlfPath));
+    QCOMPARE(fileBytes(latin1CrlfPath), latin1Crlf);
+
+    // And an edited CRLF document stays CRLF rather than turning into a mix:
+    // the style is a property of the file, not of the lines that were already
+    // there. Every separator in the saved bytes is a CRLF pair — one per line
+    // break in the document — so a single '\n' written bare would show up as a
+    // shortfall here. (appendPlainText opens a new line, hence the extra break.)
+    QVERIFY(editor.loadFile(crlfPath));
+    editor.appendPlainText(QStringLiteral("\tend"));
+    QVERIFY(editor.saveFile(crlfPath));
+    QCOMPARE(fileBytes(crlfPath).count(QByteArrayLiteral("\r\n")),
+             editor.toPlainText().count(QLatin1Char('\n')));
+    QVERIFY2(fileBytes(crlfPath).startsWith(QByteArrayLiteral("\tnop\r\n\trts\r\n")),
+             qPrintable(QString::fromLatin1(fileBytes(crlfPath).toHex(' '))));
+}
+
+// An extracted document is saved to a path the user has just chosen, which may
+// not exist yet: the save creates the parents instead of failing on them.
+void TstGui::editorSaveCreatesMissingDirectories()
+{
+    const QString dir = m_work->path() + QStringLiteral("/missing/parent/deep");
+    const QString path = dir + QStringLiteral("/doc.s");
+    QVERIFY(!QFileInfo::exists(dir));
+
+    CodeEditor editor(appearance::editorTheme());
+    editor.setPlainText(QStringLiteral("\tnop\n"));
+    QVERIFY2(editor.saveFile(path), qPrintable(editor.lastError()));
+    QCOMPARE(editor.filePath(), path);
+    QCOMPARE(fileBytes(path), QByteArrayLiteral("\tnop\n"));
 }
 
 // `--diagnose` is what release packaging uses to prove an archive resolves the
@@ -3483,10 +5025,11 @@ void TstGui::setupDialogShowsMissingPieces()
 {
     // Strip PATH and PIST_TOS_DIR so the missing-state is identical on every
     // machine, and redirect QStandardPaths so a previously fetched tool in the
-    // real per-user directory cannot leak in. All three are restored so later
-    // tests in this process are unaffected.
-    const QByteArray savedPath = qgetenv("PATH");
-    const QByteArray savedTosDir = qgetenv("PIST_TOS_DIR");
+    // real per-user directory cannot leak in. The scopes restore all of it on
+    // every path out, so an assertion that fails cannot leave the rest of the
+    // suite looking at a stripped environment.
+    const EnvScope pathScope("PATH");
+    const EnvScope tosDirScope("PIST_TOS_DIR");
     qputenv("PATH", "");
     qputenv("PIST_TOS_DIR", "");
     const TestModeScope testMode;
@@ -3498,11 +5041,6 @@ void TstGui::setupDialogShowsMissingPieces()
     // per-user directories and delete a user's genuinely fetched tools.
     QDir(toolchain::suggestedInstallDir()).removeRecursively();
     QDir(paths::suggestedRomDir()).removeRecursively();
-
-    // The dismissal flag follows QSettings into the shared test-mode root, so
-    // a previous run's flag would make this order-dependent; clear exactly the
-    // key the production code reads.
-    QSettings().remove(SetupDialog::dismissalKey());
 
     {
         SetupDialog dialog;
@@ -3541,17 +5079,15 @@ void TstGui::setupDialogShowsMissingPieces()
         dialog.done(0);
         QVERIFY(!SetupDialog::shouldPromptAtStartup());
     }
-
-    qputenv("PATH", savedPath);
-    qputenv("PIST_TOS_DIR", savedTosDir);
 }
 
 
 void TstGui::setupInstallTakesEffectWithoutRestart()
 {
-    // Same stripped, test-mode environment as setupDialogShowsMissingPieces.
-    const QByteArray savedPath = qgetenv("PATH");
-    const QByteArray savedTosDir = qgetenv("PIST_TOS_DIR");
+    // Same stripped, test-mode environment as setupDialogShowsMissingPieces,
+    // restored by the scopes on every path out.
+    const EnvScope pathScope("PATH");
+    const EnvScope tosDirScope("PIST_TOS_DIR");
     qputenv("PATH", "");
     qputenv("PIST_TOS_DIR", "");
     const TestModeScope testMode;
@@ -3581,18 +5117,11 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
 
     window.refreshToolchain();
     QCOMPARE(QDir::cleanPath(window.assemblerPath()), QDir::cleanPath(installed));
-
-    qputenv("PATH", savedPath);
-    qputenv("PIST_TOS_DIR", savedTosDir);
 }
 
 void TstGui::appearancePreferencesApply()
 {
     QSettings settings;
-    settings.remove(QStringLiteral("appearance/theme"));
-    settings.remove(QStringLiteral("appearance/fontSize"));
-    settings.remove(QStringLiteral("appearance/fontFamily"));
-
     MainWindow window;
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);
@@ -3600,7 +5129,7 @@ void TstGui::appearancePreferencesApply()
     // Font size: an explicit value wins over the platform default.
     const int defaultSize = editor->font().pointSize();
     settings.setValue(QStringLiteral("appearance/fontSize"), defaultSize + 6);
-    editor->applyFontPreferences();
+    editor->setTheme(appearance::editorTheme());
     QCOMPARE(editor->font().pointSize(), defaultSize + 6);
 
     // Font family: a real installed family is applied to the editor.
@@ -3609,7 +5138,7 @@ void TstGui::appearancePreferencesApply()
     QVERIFY(!family.isEmpty());
     QVERIFY(pist::appearance::editorFontChoices().contains(QStringLiteral("Monospace")));
     settings.setValue(QStringLiteral("appearance/fontFamily"), family);
-    editor->applyFontPreferences();
+    editor->setTheme(appearance::editorTheme());
     QCOMPARE(editor->font().family(), family);
 
     // Unset theme defaults to dark (the designed look).
@@ -3622,21 +5151,41 @@ void TstGui::appearancePreferencesApply()
     // the syntax colours to the dark set; light must undo both.
     settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("dark"));
     pist::appearance::applyTheme();
-    editor->applyFontPreferences();
+    editor->setTheme(appearance::editorTheme());
     QVERIFY(QApplication::palette().color(QPalette::Window).lightness() < 128);
     QVERIFY(pist::appearance::darkModeActive());
 
     settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("light"));
     pist::appearance::applyTheme();
-    editor->applyFontPreferences();
+    editor->setTheme(appearance::editorTheme());
     QVERIFY(QApplication::palette().color(QPalette::Window).lightness() >= 128);
     QVERIFY(!pist::appearance::darkModeActive());
 
-    // Restore the platform default for the rest of the suite.
-    settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("system"));
-    settings.remove(QStringLiteral("appearance/fontSize"));
-    settings.remove(QStringLiteral("appearance/fontFamily"));
+    // Leave the palette at the platform default again. The settings store is
+    // cleared between tests (init()), but the application palette is
+    // process-wide and would otherwise stay light for whatever runs next.
     pist::appearance::applyTheme();
+}
+
+// The logo pixmap carries the ST glyph, and the wordmark flag adds the ATARI
+// letters under it. The refactor behind this test parses the SVG outline once
+// per pixmap instead of once per draw; the drawing itself is meant to be
+// unchanged, so this is a regression guard rather than a red: it pins that both
+// flags still produce a pixmap, that they still select different glyphs, that
+// neither comes out blank, and that the window/menu icon builds at every size it
+// advertises.
+void TstGui::atariLogoRendersBothGlyphs()
+{
+    const QPixmap wordmark = appearance::atariLogoPixmap(88, true);
+    const QPixmap plain = appearance::atariLogoPixmap(88, false);
+    QVERIFY(!wordmark.isNull() && !plain.isNull());
+    QVERIFY2(wordmark.toImage() != plain.toImage(),
+             "the wordmark flag must still select the glyph it always did");
+    QVERIFY2(hasOpaquePixels(wordmark) && hasOpaquePixels(plain),
+             "a wrong or empty outline would leave the logo blank");
+
+    for (int size : {16, 20, 24, 32})
+        QVERIFY(!appearance::atariLogoIcon().pixmap(size, size).isNull());
 }
 
 // Ctrl+G is a one-line bar, Return copies the indent it just left, and the
@@ -3645,8 +5194,6 @@ void TstGui::appearancePreferencesApply()
 void TstGui::editorGotoIndentAndShortcutScheme()
 {
     QSettings settings;
-    settings.remove(QStringLiteral("appearance/shortcuts"));
-
     const QString src = m_work->path() + QStringLiteral("/keys.s");
     {
         QFile file(src);
@@ -3716,7 +5263,6 @@ void TstGui::editorGotoIndentAndShortcutScheme()
         QCOMPARE(scheme->currentData().toString(), QStringLiteral("common"));
         QCOMPARE(width->text(), QStringLiteral("8"));
     }
-    settings.remove(QStringLiteral("appearance/shortcuts"));
 }
 
 // Comments, gutter numerals, zero bytes and the muted "disabled / pending"
@@ -3771,10 +5317,6 @@ void TstGui::quietColoursClearTheirBackground()
 // opening that dock, and clicking it brings the dock forward.
 void TstGui::instructionStripFollowsTheCaret()
 {
-    QSettings settings;
-    settings.remove(QStringLiteral("layout/state"));
-    settings.remove(QStringLiteral("layout/geometry"));
-
     MainWindow window;
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
@@ -4063,9 +5605,13 @@ void TstGui::spriteEditorChromeSitsWhereItIsUsed()
     QVERIFY(!editor.findChild<QComboBox *>(QStringLiteral("imagePreviewPhase")));
     QCOMPARE(preview->size(), QSize(96, 96));
     play->click();
-    QTest::qWait(150);
+    QVERIFY2(play->isChecked(), "the play button must start playback");
+    // The preview box is a fixed 96×96 whatever playback state it is in; this
+    // used to sleep 150 ms and compare, which asserted the same invariant only
+    // after a guessed delay.
     QCOMPARE(preview->size(), QSize(96, 96));
     play->click();
+    QVERIFY(!play->isChecked());
 
     auto *layers = editor.findChild<QListWidget *>(QStringLiteral("imageLayers"));
     QVERIFY(layers);
@@ -4494,13 +6040,51 @@ void TstGui::phaseCellSizeAndStripGrowth()
     QCOMPARE(composed.pixels().at(16), image->document().active().at(2));
 }
 
+void TstGui::sheetExportWritesTheComposedSheetAsPim()
+{
+    // The sheet exporter's format switch was a copy of the single-frame
+    // exporter's and had drifted: it carried no Pim case, so exporting the
+    // composed sheet as .pim answered "Unknown export format" while the other
+    // path wrote the document. Both now encode through one table.
+    const QString dir = m_work->path() + QStringLiteral("/sheetpim");
+    QVERIFY(QDir().mkpath(dir));
+
+    ImageEditor editor;
+    editor.show();
+    editor.newDocument(16, 16, PaletteKind::Ste);
+    QCOMPARE(editor.document().addSheet(QString(), 320, 200), 0);
+    QVERIFY(editor.document().setPhasePlacement(0, 0, 8, 12));
+    const int colour = editor.document().active().at(6);
+    editor.document().setPixel(0, colour);
+
+    const QString path = dir + QStringLiteral("/sheet.pim");
+    QVERIFY2(editor.exportSheetFile(path, 0, false), qPrintable(editor.lastError()));
+    QVERIFY(QFileInfo(path).size() > 0);
+
+    // The composition comes back: the phase's pixel at [8, 12] of a 320×200
+    // frame, which is what the still-image formats of the same sheet hold.
+    ImageDocument reloaded;
+    QString error;
+    QVERIFY2(reloaded.load(path, &error), qPrintable(error));
+    QCOMPARE(reloaded.width(), 320);
+    QCOMPARE(reloaded.height(), 200);
+    QCOMPARE(reloaded.pixels().at(12 * 320 + 8), colour);
+}
+
 void TstGui::sliceDialogBuildsPhaseFromSheet()
 {
     const QString dir = m_work->path() + QStringLiteral("/slice");
     QVERIFY(QDir().mkpath(dir));
 
     // A 192x32 strip: six 32x32 cells, each marked with its own colour.
+    // The strip travels through a PI1, and PI1 stores 3-bit words (MAJ-38) —
+    // so every palette entry's channels come from {0,2,4,6,9,11,13,15}, the
+    // values the 3-bit codec (bit-replication expansion) round-trips exactly
+    // (7 and 8, for instance, come back as 6 and 9). Anything else would
+    // legitimately come back quantised, and the index comparison below would
+    // be comparing against a colour that never survived the file.
     ImageDocument strip = ImageDocument::create(192, 32, PaletteKind::Ste);
+    strip.setActive({0x000, 0xFFF, 0xDDD, 0xBBB, 0x999, 0x666, 0x444, 0x222});
     for (int k = 0; k < 6; ++k)
         strip.setPixel(k * 32, strip.active().at(k + 1));
     const QString pi1Path = dir + QStringLiteral("/strip.pi1");
@@ -4543,6 +6127,90 @@ void TstGui::sliceDialogBuildsPhaseFromSheet()
     QCOMPARE(image->document().frameCount(), 6);
     for (int k = 0; k < 6; ++k)
         QCOMPARE(image->document().frame(k).at(0), strip.active().at(k + 1));
+}
+
+// A sheet slice onto a document whose own cell is a different shape. The entry
+// (MAJ-55) filed the first sliced cell as rejected here, because the document
+// used to build a new phase's frame at the *previous* phase's cell size and
+// replaceActiveLayer() refuses a buffer that does not match the phase.
+//
+// Measured against a scratch build with the pre-CRIT-2 addPhase restored
+// (frame 0 created while the 8x8 phase was still current, composite 64 for a
+// 16x16 phase): replaceActiveLayer(cell) *accepted* the cell — it size-checks
+// the incoming buffer against the new phase, which matches — and its remesh
+// resized the frame to the cell. So the slicing path repaired itself, and this
+// test passes with and without CRIT-2's document fix. It is a GUARD: what it
+// pins is that a slice with differing cell sizes carries the sheet's pixels into
+// every frame at the new phase's size, first frame included.
+void TstGui::slicingAPhaseFromASheetOfAnotherCellSize()
+{
+    const int cell = 16;
+    ImageDocument doc = ImageDocument::create(8, 8, PaletteKind::Ste);
+    // The precondition the entry is about, asserted rather than assumed: the
+    // current phase's cell is not the one being sliced.
+    QCOMPARE(doc.phases().at(0).cellW, 8);
+    QCOMPARE(doc.phases().at(0).cellH, 8);
+
+    // A 64x16 sheet holding four solid 16x16 cells, each in its own colour.
+    ImportedSheet sheet;
+    sheet.width = 4 * cell;
+    sheet.height = cell;
+    sheet.kind = PaletteKind::Ste;
+    sheet.active = doc.active();
+    sheet.pixels.fill(kTransparent, sheet.width * sheet.height);
+    QVector<QVector<int>> expected;
+    for (int k = 0; k < 4; ++k) {
+        QVector<int> block(cell * cell, doc.active().at(k + 1));
+        for (int row = 0; row < cell; ++row)
+            for (int col = 0; col < cell; ++col)
+                sheet.pixels[row * sheet.width + k * cell + col] = doc.active().at(k + 1);
+        expected.append(block);
+    }
+
+    SheetSlicing slicing;
+    slicing.insert(0, sheet, doc.paletteKind());
+    QVERIFY2(slicing.hasSheet(0), "the sheet's pixels must be cached before slicing");
+
+    const int index = slicing.addPhaseFromSheet(doc, 0, QStringLiteral("walk"), 0, 0, cell, cell,
+                                                expected.size());
+    QCOMPARE(index, 1);
+    QCOMPARE(doc.phases().size(), 2);
+    QCOMPARE(doc.phases().at(1).cellW, cell);
+    QCOMPARE(doc.phases().at(1).cellH, cell);
+    QCOMPARE(doc.phases().at(1).frames.size(), expected.size());
+    QVERIFY(doc.setCurrentPhase(index));
+    for (int k = 0; k < expected.size(); ++k) {
+        QVERIFY(doc.setCurrentFrame(k));
+        const QVector<int> &frame = doc.frame(k);
+        QCOMPARE(frame.size(), cell * cell);
+        // The buffer the canvas and the exporters index with, and not only the
+        // composite: an undersized one over-reads in Release.
+        QCOMPARE(doc.activeLayerPixels().size(), cell * cell);
+        QVERIFY2(frame == expected.at(k),
+                 qPrintable(QStringLiteral("frame %1 must be the sheet's cell %1: %2")
+                                .arg(k)
+                                .arg(QString::number(frame.value(0, -9)))));
+    }
+}
+
+// reSliceUntouchedFrames takes the phase index from its caller, and the class is
+// public and reusable, so an index that no longer names a phase is reachable —
+// it is on the other side of an undo that removed one. Pre-fix the index went
+// straight into QVector::at(), which aborts a debug build (measured:
+// "ASSERT failure in QList<T>::at: index out of range"); the sibling
+// slicePlacedPhaseFrames already refuses the same input.
+void TstGui::reSlicingAnUnknownPhaseIsRefused()
+{
+    ImageDocument doc = ImageDocument::create(8, 8, PaletteKind::Ste);
+    SheetSlicing slicing;
+
+    QVERIFY2(!slicing.reSliceUntouchedFrames(doc, -1, 0, 0, 0),
+             "a negative phase index is not a phase");
+    QVERIFY2(!slicing.reSliceUntouchedFrames(doc, doc.phases().size(), 0, 0, 0),
+             "a phase index past the end is not a phase");
+    // And the live index still answers the ordinary question: a phase with no
+    // sheet behind it has nothing to re-slice.
+    QVERIFY(!slicing.reSliceUntouchedFrames(doc, 0, 0, 0, 0));
 }
 
 void TstGui::imageSelectionCopyPaste()
@@ -4626,6 +6294,83 @@ void TstGui::imageSelectionCopyPaste()
     QVERIFY(canvas->selection().isEmpty());
 }
 
+void TstGui::selectionCutOutDoesNotStickToTheCanvas()
+{
+    // A move drag paints the source cells as "cut out". That is an overlay on
+    // the frame, not a change to it: the canvas caches the frame image and
+    // rebuilds it only when the pixels change, so an overlay written into the
+    // cache would still be there on the repaint that follows the drag.
+    ImageEditor editor;
+    editor.show();
+    editor.newDocument(4, 4, PaletteKind::Ste);
+    auto *canvas = editor.findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    const int colour = editor.document().active().at(3);
+    editor.document().fillIndices({0, 1, 4, 5}, colour);
+
+    QToolButton *selectButton = nullptr;
+    for (auto *button : editor.findChildren<QToolButton *>()) {
+        if (button->property("tool").isValid()
+            && button->property("tool").toInt() == int(DrawTool::Select))
+            selectButton = button;
+    }
+    QVERIFY2(selectButton, "the select tool joins the toolbar");
+    QTest::mouseClick(selectButton, Qt::LeftButton);
+
+    const auto cellPoint = [&canvas](int x, int y) {
+        const int c = canvas->cellSize();
+        return QPoint(x * c + c / 2, y * c + c / 2);
+    };
+    canvas->setSelection(QRect(0, 0, 2, 2));
+    QCoreApplication::processEvents();
+
+    // Press inside the selection (the cut-out is live), let the canvas paint,
+    // then release without moving: the pixels never changed, so what the
+    // canvas shows afterwards is whatever it cached.
+    QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(0, 0));
+    QCoreApplication::processEvents();
+    QTest::mouseRelease(canvas, Qt::LeftButton, Qt::NoModifier, cellPoint(0, 0));
+    QCoreApplication::processEvents();
+
+    QImage shot(canvas->size(), QImage::Format_ARGB32);
+    shot.fill(Qt::black);
+    canvas->render(&shot);
+    const int c = canvas->cellSize();
+    const Rgb rgb = cubeRgb(PaletteKind::Ste, colour);
+    QCOMPARE(shot.pixelColor(c / 2, c / 2).rgb(), qRgb(rgb.r, rgb.g, rgb.b));
+}
+
+// The canvas selection names cells of the document it was made on. Every path
+// that swaps the document — New Image, replaceDocument, opening a file over it —
+// used to leave the old selection in place, so the marquee kept highlighting
+// coordinates that belonged to a document nobody is looking at any more.
+void TstGui::swappingTheDocumentDropsTheOldSelection()
+{
+    ImageEditor editor;
+    auto *canvas = editor.findChild<ImageCanvas *>();
+    QVERIFY(canvas);
+    QVERIFY(canvas->selection().isEmpty());
+
+    canvas->setSelection(QRect(1, 1, 4, 4));
+    QCOMPARE(canvas->selection(), QRect(1, 1, 4, 4));
+    editor.replaceDocument(ImageDocument::create(16, 16, PaletteKind::Stfm));
+    QVERIFY2(canvas->selection().isEmpty(),
+             "the selection addressed cells of the document that was replaced");
+
+    // The same when the new document comes off disk.
+    const QString dir = m_work->path() + QStringLiteral("/swapdoc");
+    QVERIFY(QDir().mkpath(dir));
+    const QString pim = dir + QStringLiteral("/sprite.pim");
+    QString error;
+    QVERIFY2(ImageDocument::create(16, 16, PaletteKind::Stfm).save(pim, &error), qPrintable(error));
+
+    canvas->setSelection(QRect(2, 2, 3, 3));
+    QCOMPARE(canvas->selection(), QRect(2, 2, 3, 3));
+    QVERIFY(editor.loadFile(pim));
+    QVERIFY2(canvas->selection().isEmpty(),
+             "the selection addressed cells of the document that was closed");
+}
+
 void TstGui::undoEditsThePhaseItWasMadeIn()
 {
     ImageEditor editor;
@@ -4684,10 +6429,15 @@ void TstGui::importAdoptsTheFilePalette()
     // A PI1 whose 16 registers are deliberately not the editor default:
     // importing must adopt the file's registers, in file order, so the
     // colours its pixels use are not reported as overspill.
-    ImageDocument art = ImageDocument::create(8, 8, PaletteKind::Ste);
+    // Stfm, not Ste: a PI1 stores 3-bit words and an Ste palette is not
+    // representable in them — MAJ-38 made the codec honest about that, so these
+    // two fixtures were only green under the buggy 4-bit words. These indices
+    // are valid 3-bit triples: the deliberately non-default palette stays
+    // non-default and the round trip is index-exact again.
+    ImageDocument art = ImageDocument::create(8, 8, PaletteKind::Stfm);
     QVector<int> custom;
     for (int i = 0; i < 15; ++i)
-        custom.append(0x111 * (i + 1));
+        custom.append(0x11 * (i + 1));
     custom.append(0x001);
     QVERIFY2(art.active() != custom, "test palette must differ from the default");
 
@@ -4706,6 +6456,10 @@ void TstGui::importAdoptsTheFilePalette()
 
     ImageEditor editor;
     editor.show();
+    // The fixture is Stfm and the comparison is on raw cube indices, so the
+    // document's kind must match: importFile decodes the file's 3-bit words
+    // into the TARGET document's kind.
+    editor.newDocument(32, 32, PaletteKind::Stfm);
     QVERIFY(editor.importFile(pi1Path, false));
     QCOMPARE(editor.document().active(), custom);
 
@@ -4769,7 +6523,7 @@ void TstGui::sheetPixelsSurviveReopen()
 
 void TstGui::editorFindAndReplace()
 {
-    CodeEditor editor;
+    CodeEditor editor(appearance::editorTheme());
     editor.show();
     editor.activateWindow();
     QVERIFY(QTest::qWaitForWindowActive(&editor));
@@ -4869,6 +6623,201 @@ void TstGui::editorFindAndReplace()
     QVERIFY(!editor.findChild<QWidget *>(QStringLiteral("editorReplaceText"))->isVisible());
 }
 
+// Next and Previous are meant to step from the caret. The hit index they stepped
+// from, though, is re-derived from the anchor the search began at whenever the
+// document changes: an edit above the hits (a pasted line, a reformat) therefore
+// sent Next backwards to where the search opened, and left the "n of m" label
+// describing a hit the caret was not on.
+void TstGui::findNextFollowsTheCaretAcrossAnEdit()
+{
+    CodeEditor editor(appearance::editorTheme());
+    editor.show();
+    editor.activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(&editor));
+    editor.setPlainText(QStringLiteral("move.w d0,d1\nmovem.l d2-d7,-(sp)\nmoveq #0,d0\nMOVE d0,d1\n"));
+    editor.showFindBar(false);
+
+    auto *find = editor.findChild<QLineEdit *>(QStringLiteral("editorFindText"));
+    auto *status = editor.findChild<QLabel *>(QStringLiteral("editorFindStatus"));
+    QVERIFY(find && status);
+
+    find->setText(QStringLiteral("move"));
+    QCOMPARE(editor.findMatchCount(), 4);
+    editor.findNext();
+    editor.findNext();
+    QCOMPARE(editor.textCursor().selectionStart(), 33);   // the third hit
+
+    // A hit-bearing line inserted above the caret. The selection is a range in
+    // the document, so it rides the edit down with the text it selects.
+    QTextCursor c(editor.document());
+    c.setPosition(0);
+    c.insertText(QStringLiteral("\tMOVE a0,a1\n"));
+    QCOMPARE(editor.findMatchCount(), 5);
+    const int caret = editor.textCursor().selectionStart();
+    QCOMPARE(caret, 45);
+
+    // Next must continue from the caret — not from where the re-run search
+    // started — and the label must describe the hit the caret lands on.
+    editor.findNext();
+    QVERIFY(editor.textCursor().selectionStart() > caret);
+    QCOMPARE(editor.textCursor().selectionStart(), 57);   // the fifth hit
+    QVERIFY(status->text().contains(QLatin1String("5 of 5")));
+
+    // And Previous walks back to the hit the caret came from.
+    editor.findPrevious();
+    QCOMPARE(editor.textCursor().selectionStart(), 45);
+}
+
+// "1 replaced" is a report on the replace, not the search's position. It used to
+// stay up while the user walked the hits, so the label kept announcing a replace
+// the caret had long left; the live counter has to come back on navigation.
+void TstGui::replaceNoteClearsOnNavigation()
+{
+    CodeEditor editor(appearance::editorTheme());
+    editor.show();
+    editor.activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(&editor));
+    editor.setPlainText(QStringLiteral("move.w d0,d1\nmovem.l d2-d7,-(sp)\nmoveq #0,d0\nMOVE d0,d1\n"));
+    editor.showFindBar(true);
+
+    auto *find = editor.findChild<QLineEdit *>(QStringLiteral("editorFindText"));
+    auto *replace = editor.findChild<QLineEdit *>(QStringLiteral("editorReplaceText"));
+    auto *replaceOne = editor.findChild<QPushButton *>(QStringLiteral("editorReplaceOne"));
+    auto *status = editor.findChild<QLabel *>(QStringLiteral("editorFindStatus"));
+    QVERIFY(find && replace && replaceOne && status);
+
+    find->setText(QStringLiteral("move"));
+    replace->setText(QStringLiteral("jump"));
+    replaceOne->click();
+    QVERIFY(status->text().contains(QLatin1String("1 replaced")));
+    QCOMPARE(editor.findMatchCount(), 3);   // the one just written is gone
+
+    // The next navigation is a search step again: the note goes, and the counter
+    // for the hit the caret is on takes its place.
+    editor.findNext();
+    QVERIFY2(!status->text().contains(QLatin1String("replaced")),
+             "the replace note belongs to the replace, not to the search");
+    QVERIFY(status->text().contains(QLatin1String("of")));
+    QCOMPARE(editor.findMatchIndex(), 1);   // "2 of 3"
+}
+
+// A common needle in a large document has thousands of hits, and the live list is
+// rebuilt on every keystroke and every cursor move. It stops at a cap — and only
+// the hits on screen become decorations — while a replace still acts on every
+// one of them. The cap must show itself nowhere but the label's "more than", and
+// it must not cost a replacement.
+//
+// Mix of red and guard: the capped count, the "more than" label and the
+// viewport-sized decoration list are red pre-fix (the live list held all 2500 and
+// decorated all of them); the Replace All half below passed pre-fix too and is
+// kept as a guard — it fails if the uncapped rescan behind the replace is
+// removed, which is exactly what a capped list would break.
+void TstGui::findDecoratesOnlyWhatIsOnScreen()
+{
+    CodeEditor editor(appearance::editorTheme());
+    editor.resize(400, 120);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+    QString text;
+    for (int line = 0; line < 2500; ++line)
+        text += QStringLiteral("x\n");
+    editor.setPlainText(text);
+    editor.showFindBar(false);
+
+    auto *find = editor.findChild<QLineEdit *>(QStringLiteral("editorFindText"));
+    auto *status = editor.findChild<QLabel *>(QStringLiteral("editorFindStatus"));
+    QVERIFY(find && status);
+    find->setText(QStringLiteral("x"));
+
+    QCOMPARE(editor.findMatchCount(), 2000);
+    QVERIFY2(status->text().contains(QLatin1String("more than")),
+             "a capped count is a floor, and the label must say so");
+    QVERIFY2(editor.extraSelections().size() < 40,
+             "only the hits on screen may be turned into decorations");
+
+    // Scrolling brings another window of hits onto the screen, and the
+    // decorations are rebuilt from the visible range rather than staying at the
+    // top of the document. The scroll has to stay inside the capped list: hits
+    // past the cap are not in the live list at all.
+    QScrollBar *bar = editor.verticalScrollBar();
+    QVERIFY(bar->maximum() > 0);
+    bar->setValue(bar->maximum() / 2);
+    int firstVisible = 0;
+    int lastVisible = 0;
+    editor.visibleLineRange(firstVisible, lastVisible);
+    QVERIFY2(lastVisible > 100, "the scroll must actually have moved the viewport");
+
+    int decoratedHits = 0;
+    for (const QTextEdit::ExtraSelection &sel : editor.extraSelections()) {
+        if (!sel.cursor.hasSelection())
+            continue;   // the caret-line selection carries no range
+        const int line = sel.cursor.blockNumber() + 1;
+        QVERIFY2(line >= firstVisible && line <= lastVisible,
+                 "a hit is decorated wherever it is, not where it is on screen");
+        ++decoratedHits;
+    }
+    QVERIFY2(decoratedHits > 0, "the scrolled-to window's hits must be decorated");
+
+    // Exactness the cap must not break: Replace All is the whole document's.
+    auto *replace = editor.findChild<QLineEdit *>(QStringLiteral("editorReplaceText"));
+    auto *replaceAll = editor.findChild<QPushButton *>(QStringLiteral("editorReplaceAll"));
+    QVERIFY(replace && replaceAll);
+    editor.showFindBar(true);
+    replace->setText(QStringLiteral("y"));
+    replaceAll->click();
+    QVERIFY(!editor.toPlainText().contains(QLatin1Char('x')));
+    QVERIFY(status->text().contains(QLatin1String("2500 replaced")));
+}
+
+// The gutter carries the viewport's coordinate space, both ways: the paint walks
+// blockBoundingGeometry(block).translated(contentOffset()).top() — viewport
+// coordinates — and lineAtY() maps a click back through the same numbers. Laid
+// out from the raw contents rect while the go-to bar holds the viewport down by
+// the bar's height, it sat exactly that much too high: every number (and the
+// breakpoint dot, the PC bar, the profiler heat, the blame lane) drew beside the
+// line below the one it annotates, so clicking the number the user sees next to
+// line N toggled N + (bar height / row height) — a breakpoint armed on the wrong
+// line, silently.
+void TstGui::gutterClickLandsOnTheLineBesideIt()
+{
+    CodeEditor editor(appearance::editorTheme());
+    QString text;
+    for (int line = 1; line <= 40; ++line)
+        text += QStringLiteral("line_%1:\tnop\n").arg(line);
+    editor.setPlainText(text);
+    // Tall enough that the line under test is on screen whatever the editor
+    // font works out to be.
+    editor.resize(420, 560);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+    editor.showGotoBar();
+    QVERIFY(editor.gotoBarVisible());
+
+    auto *gutter = editor.findChild<QWidget *>(QStringLiteral("lineNumberArea"));
+    QVERIFY(gutter);
+
+    // The row line 8's text is on — which is the row its number is meant to sit
+    // beside, and where the user aims. Taken in viewport coordinates, carried to
+    // the screen and back, so the click is the user's point whatever geometry
+    // the gutter was given: deriving it from the gutter's own mapping would move
+    // the click along with the bug and always "hit".
+    const int line = 8;
+    const QTextCursor there(editor.document()->findBlockByNumber(line - 1));
+    const QRect row = editor.cursorRect(there);
+    const QPoint onScreen = editor.viewport()->mapToGlobal(QPoint(0, row.center().y()));
+    const int gutterY = gutter->mapFromGlobal(onScreen).y();
+    QVERIFY2(gutterY >= 0 && gutterY < gutter->height(),
+             "the row under test must be inside the gutter to be clicked");
+
+    QSignalSpy clicks(&editor, &CodeEditor::gutterClicked);
+    QTest::mouseClick(gutter, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(gutter->width() / 2, gutterY));
+    QCOMPARE(clicks.count(), 1);
+    QCOMPARE(clicks.at(0).at(0).toInt(), line);
+}
+
 void TstGui::searchMenuFollowsTheEditor()
 {
     MainWindow window;
@@ -4941,7 +6890,12 @@ void TstGui::searchMenuFollowsTheEditor()
     QVERIFY(findAction->isEnabled());
 }
 
-void TstGui::panelsNameTheNextStep()
+// Each of these was one 180-line test over nine surfaces: the first failure hid
+// every surface after it, and the report could not say which one broke. One test
+// per surface, and the stylesheet assertion reads the rule's contract instead of
+// its source text (see styleRule).
+
+void TstGui::panelPlaceholdersNameTheNextStep()
 {
     MainWindow window;
     window.show();
@@ -4959,7 +6913,13 @@ void TstGui::panelsNameTheNextStep()
     QVERIFY(console);
     QVERIFY(console->placeholderText().contains(QStringLiteral("Debugger command")));
     QVERIFY(console->toolTip().contains(QStringLiteral("b breakpoint")));
+}
 
+void TstGui::breakpointPanelNamesTheShortcuts()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
     auto *breakpoints = window.findChild<QDockWidget *>(QStringLiteral("breakpointsDock"));
     QVERIFY(breakpoints);
     breakpoints->show();
@@ -4970,6 +6930,26 @@ void TstGui::panelsNameTheNextStep()
     QVERIFY(empty->text().contains(QStringLiteral("gutter")));
     auto *breakpointTable = breakpoints->findChild<QTableWidget *>();
     QVERIFY(breakpointTable && breakpointTable->isHidden());
+}
+
+// The shortcut scheme is a setting the empty panel reads: Common is opt-in, and
+// the panel has to name the keys that scheme actually uses.
+void TstGui::commonShortcutSchemeRenamesThePanelsKeys()
+{
+    struct RestoreScheme {
+        ~RestoreScheme() { QSettings().remove(QStringLiteral("appearance/shortcuts")); }
+    } restoreScheme;
+    QSettings().setValue(QStringLiteral("appearance/shortcuts"), QStringLiteral("common"));
+    MainWindow commonWindow;
+    auto *commonEmpty = commonWindow.findChild<QLabel *>(QStringLiteral("breakpointEmpty"));
+    QVERIFY(commonEmpty);
+    QVERIFY(commonEmpty->text().contains(QStringLiteral("F9")));
+    QVERIFY(!commonEmpty->text().contains(QStringLiteral("F8")));
+}
+
+void TstGui::buildAndSearchMenusCarryTheirActions()
+{
+    MainWindow window;
 
     auto *buildMenu = window.findChild<QMenu *>(QStringLiteral("buildMenu"));
     auto *runMenu = window.findChild<QMenu *>(QStringLiteral("runMenu"));
@@ -4986,6 +6966,32 @@ void TstGui::panelsNameTheNextStep()
     QVERIFY(buildMenu->actions().contains(buildAction));
     QVERIFY(buildMenu->actions().contains(nextDiagnostic));
     QVERIFY(!runMenu->actions().contains(buildAction));
+
+    for (QAction *menu : window.menuBar()->actions()) {
+        if (!menu->menu())
+            continue;
+        const QString title = menu->text().remove(QLatin1Char('&'));
+        QVERIFY(title != QLatin1String("Tools"));
+        if (title == QLatin1String("Search")) {
+            for (QAction *action : menu->menu()->actions())
+                QVERIFY(!action->text().contains(QStringLiteral("Diagnostic")));
+        }
+    }
+}
+
+// A build that warns must land in Problems with the colour the theme gives a
+// warning, not merely a row.
+void TstGui::problemsDockListsABuildWarning()
+{
+    MainWindow window;
+    auto *buildMenu = window.findChild<QMenu *>(QStringLiteral("buildMenu"));
+    QVERIFY(buildMenu);
+    QAction *buildAction = nullptr;
+    for (QAction *action : window.findChildren<QAction *>()) {
+        if (action->shortcut() == QKeySequence(Qt::Key_F7))
+            buildAction = action;
+    }
+    QVERIFY(buildAction);
 
     const QString warnSrc = m_work->path() + QStringLiteral("/warn.s");
     {
@@ -5010,36 +7016,42 @@ void TstGui::panelsNameTheNextStep()
     QCOMPARE(warning->foreground(2).color(), appearance::colors().warning);
     QVERIFY(!warning->icon(0).isNull());
     QCOMPARE(warning->text(1), QStringLiteral("3"));
+}
 
-    for (QAction *menu : window.menuBar()->actions()) {
-        if (!menu->menu())
-            continue;
-        const QString title = menu->text().remove(QLatin1Char('&'));
-        QVERIFY(title != QLatin1String("Tools"));
-        if (title == QLatin1String("Search")) {
-            for (QAction *action : menu->menu()->actions())
-                QVERIFY(!action->text().contains(QLatin1String("Diagnostic")));
-        }
+// The chrome sheet is what gives dock separators a grab area. Dark and light
+// both carry it; "system" must leave the platform's own look alone.
+void TstGui::themeSheetFramesItsDocks()
+{
+    QSettings settings;
+    for (const QString &theme : {QStringLiteral("dark"), QStringLiteral("light")}) {
+        settings.setValue(QStringLiteral("appearance/theme"), theme);
+        appearance::applyTheme();
+        const QString rule =
+            styleRule(qApp->styleSheet(), QStringLiteral("QMainWindow::separator"));
+        QVERIFY2(!rule.isEmpty(),
+                 qPrintable(QStringLiteral("the %1 theme must style the dock separators")
+                                .arg(theme)));
+        QVERIFY2(declaresPositivePixels(rule, QStringLiteral("width")),
+                 qPrintable(QStringLiteral("the %1 separator needs a horizontal grab area: %2")
+                                .arg(theme, rule)));
+        QVERIFY2(declaresPositivePixels(rule, QStringLiteral("height")),
+                 qPrintable(QStringLiteral("the %1 separator needs a vertical grab area: %2")
+                                .arg(theme, rule)));
     }
 
-    // The chrome sheet is applied for the dark and light themes. System clears
-    // it, and an earlier test in this process may have left that in place.
-    QSettings themeSettings;
-    const QVariant previousTheme = themeSettings.value(QStringLiteral("appearance/theme"));
-    themeSettings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("dark"));
+    settings.setValue(QStringLiteral("appearance/theme"), QStringLiteral("system"));
     appearance::applyTheme();
-    const QString sheet = qApp->styleSheet();
-    const int sep = sheet.indexOf(QStringLiteral("QMainWindow::separator"));
-    QVERIFY(sep >= 0);
-    const QString rule = sheet.mid(sep, 160);
-    QVERIFY(rule.contains(QStringLiteral("width: 4px")));
-    QVERIFY(rule.contains(QStringLiteral("height: 4px")));
-    if (previousTheme.isValid())
-        themeSettings.setValue(QStringLiteral("appearance/theme"), previousTheme);
-    else
-        themeSettings.remove(QStringLiteral("appearance/theme"));
-    appearance::applyTheme();
+    QVERIFY2(qApp->styleSheet().isEmpty(),
+             "the system theme must leave the platform's own chrome alone");
 
+    // Back to the default for whatever runs next. The store is cleared between
+    // tests, but the application palette is process-wide.
+    settings.remove(QStringLiteral("appearance/theme"));
+    appearance::applyTheme();
+}
+
+void TstGui::settingsDialogAndEditorChromeExposeTheirControls()
+{
     SettingsDialog dialog{ProjectSettings()};
     auto *sample = dialog.findChild<QLabel *>(QStringLiteral("editorFontSample"));
     QVERIFY(sample);
@@ -5055,26 +7067,29 @@ void TstGui::panelsNameTheNextStep()
     QVERIFY(transform && transform->menu() && shift && bar);
     QVERIFY(transform->menu()->actions().contains(shift));
     QVERIFY(!bar->actions().contains(shift));
+}
 
+void TstGui::hardwareAndDisassemblyViewsNameWhatTheyShow()
+{
     HardwareView hardware;
     auto *chips = hardware.findChild<QComboBox *>();
     QVERIFY(chips);
     QCOMPARE(chips->itemText(1), QStringLiteral("mfp"));
     QVERIFY(chips->itemData(1, Qt::ToolTipRole).toString().contains(QStringLiteral("68901")));
-    hardware.setInfo(QStringLiteral(
+    hardware.setInfo(hataritext::parseHardwareInfo(QStringLiteral(
         "Video base : 0x00012596\n"
         "VBL counter : 1\n"
         "HBL line : 0\n"
         "V-overscan : none\n"
         "Refresh rate : 50 Hz\n"
-        "Frame skips : 0\n"));
+        "Frame skips : 0\n")));
     auto *summary = hardware.findChild<QLabel *>(QStringLiteral("hardwareSummary"));
     QVERIFY(summary);
     QVERIFY(summary->text().contains(QStringLiteral("$00012596")));
     QVERIFY(summary->text().contains(QStringLiteral("50 Hz")));
     QVERIFY(summary->text().contains(QStringLiteral("overscan none")));
     QVERIFY(!summary->text().contains(QStringLiteral("palette")));
-    hardware.setInfo(QStringLiteral("MFP registers follow"));
+    hardware.setInfo(hataritext::parseHardwareInfo(QStringLiteral("MFP registers follow")));
     QVERIFY(summary->text().isEmpty());
     QVERIFY(summary->isHidden());
 
@@ -5094,7 +7109,10 @@ void TstGui::panelsNameTheNextStep()
     emit table->cellDoubleClicked(0, 0);
     QCOMPARE(disasmSpy.count(), 1);
     QCOMPARE(disasmSpy.at(0).at(0).toUInt(), 0x12396u);
+}
 
+void TstGui::pcHistoryDoubleClickReportsTheAddress()
+{
     PcHistoryView history;
     history.setHistory(QStringLiteral("00012396  move.w d0,d1\n"));
     history.resize(420, 160);
@@ -5110,16 +7128,6 @@ void TstGui::panelsNameTheNextStep()
     QVERIFY(QApplication::sendEvent(edit->viewport(), &dbl));
     QCOMPARE(historySpy.count(), 1);
     QCOMPARE(historySpy.at(0).at(0).toUInt(), 0x12396u);
-
-    struct RestoreScheme {
-        ~RestoreScheme() { QSettings().remove(QStringLiteral("appearance/shortcuts")); }
-    } restoreScheme;
-    QSettings().setValue(QStringLiteral("appearance/shortcuts"), QStringLiteral("common"));
-    MainWindow commonWindow;
-    auto *commonEmpty = commonWindow.findChild<QLabel *>(QStringLiteral("breakpointEmpty"));
-    QVERIFY(commonEmpty);
-    QVERIFY(commonEmpty->text().contains(QStringLiteral("F9")));
-    QVERIFY(!commonEmpty->text().contains(QStringLiteral("F8")));
 }
 
 void TstGui::floppyRewriteOfAForeignDiskAsks()
@@ -5150,11 +7158,12 @@ void TstGui::floppyRewriteOfAForeignDiskAsks()
     QVERIFY2(floppy::saveRaw(image, raw, &error), qPrintable(error));
 
     MainWindow window;
-    // The constructor queues "reopen where the user left off", which loads a
-    // project and re-syncs the disk slots from its (empty) settings. Let that
-    // land before mounting, or it wipes the mount at the next event loop —
-    // which here is the confirmation dialog's.
-    QTest::qWait(50);
+    // The constructor queues "reopen where the user left off" on a zero-delay
+    // timer, which loads a project and re-syncs the disk slots from its (empty)
+    // settings. Flush that timer now, rather than sleeping on a guess, so it
+    // cannot land after the mount and wipe it at the next event loop — here the
+    // confirmation dialog's.
+    QCoreApplication::processEvents();
     auto *browser = window.findChild<FileBrowser *>();
     QVERIFY(browser);
     browser->setFloppyImages({image, QString()});
@@ -5185,6 +7194,269 @@ void TstGui::floppyRewriteOfAForeignDiskAsks()
     QVERIFY(floppy::looksLikeCanonical720k(raw.left(512), raw.size()));
 }
 
+namespace {
+
+/// The colour the highlighter paints behind character `pos` of block `block`.
+///
+/// The highlighter applies its formats to the block's *layout*, and only once
+/// the document has been laid out — so the widget must be shown and events
+/// processed before the ranges are readable. (QSyntaxHighlighter::format(pos) is
+/// protected, and measured on Qt 6.10 it returns a default format in this setup
+/// even after highlighting; layout()->formats() is the observable that carries
+/// the colours.)
+QColor highlightColourAt(const QPlainTextEdit &edit, int pos, int block = 0)
+{
+    const QTextBlock b = edit.document()->findBlockByNumber(block);
+    for (const QTextLayout::FormatRange &r : b.layout()->formats()) {
+        if (pos >= r.start && pos < r.start + r.length)
+            return r.format.foreground().color();
+    }
+    return QColor();
+}
+
+/// One fresh widget per case: setting the same text again on the same document
+/// does not re-highlight.
+void highlight(QPlainTextEdit *edit, const QString &source)
+{
+    new AsmHighlighter(edit->document(), appearance::editorTheme()); // owned by the document
+    edit->setPlainText(source);
+    edit->resize(600, 120);
+    edit->show();
+    QCoreApplication::processEvents();
+    QVERIFY2(!edit->document()->firstBlock().layout()->formats().isEmpty(),
+             "the highlighter's formats never reached the layout");
+}
+
+/// Counts the paint events a widget receives. The gutter is a plain QWidget, so
+/// its repaints are observable only through an event filter.
+class PaintCounter : public QObject
+{
+public:
+    int paints = 0;
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override
+    {
+        if (event->type() == QEvent::Paint)
+            ++paints;
+        return false;
+    }
+};
+
+} // namespace
+
+void TstGui::highlighterColoursMnemonicsOfTheReference()
+{
+    QPlainTextEdit edit;
+    // `blo.s` is the shipped demo's own spelling (demo/hello.s), and the mnemonic
+    // family is matched as whole words, so the size suffix is outside the match.
+    highlight(&edit, QStringLiteral("\tblo.s\tcount"));
+    QCOMPARE(highlightColourAt(edit, 1), appearance::colors().keyword);
+    QCOMPARE(highlightColourAt(edit, 4), QColor());   // the `.` of the suffix
+}
+
+void TstGui::highlighterColoursTheWholeReferenceAndTheExtras()
+{
+    // A mnemonic the 68000 reference lists...
+    QVERIFY(instructionRef(QStringLiteral("bhs")) != nullptr);
+    QPlainTextEdit fromTable;
+    highlight(&fromTable, QStringLiteral("\tbhs\tdone"));
+    QCOMPARE(highlightColourAt(fromTable, 1), appearance::colors().keyword);
+
+    // ...and one only the 68020+/FPU extras carry, which the reference omits.
+    QVERIFY(instructionRef(QStringLiteral("bkpt")) == nullptr);
+    QPlainTextEdit fromExtras;
+    highlight(&fromExtras, QStringLiteral("\tbkpt\t#1"));
+    QCOMPARE(highlightColourAt(fromExtras, 1), appearance::colors().keyword);
+}
+
+void TstGui::singleQuotedStringsWinOverTheirContents()
+{
+    QPlainTextEdit edit;
+    const QString source = QStringLiteral("\tdc.b\t'PiST scroll demo'");
+    highlight(&edit, source);
+
+    const int quote = source.indexOf(QLatin1Char('\''));
+    const int lastQuote = source.lastIndexOf(QLatin1Char('\''));
+    const int st = source.indexOf(QLatin1String("ST"));
+    QVERIFY(quote > 0 && lastQuote > quote && st > quote);
+
+    // `ST` inside `PiST` is a 68000 mnemonic spelled like a substring, and the
+    // string rule is applied after the mnemonic rule, so the string wins.
+    QCOMPARE(highlightColourAt(edit, st), appearance::colors().string);
+    QCOMPARE(highlightColourAt(edit, quote), appearance::colors().string);
+    for (int pos = quote; pos <= lastQuote; ++pos)
+        QCOMPARE(highlightColourAt(edit, pos), appearance::colors().string);
+}
+
+void TstGui::doubleQuotedStringsStillWinOverTheirContents()
+{
+    QPlainTextEdit edit;
+    const QString source = QStringLiteral("\tdc.b\t\"add 12\"");
+    highlight(&edit, source);
+
+    const int add = source.indexOf(QLatin1String("add"));
+    const int twelve = source.indexOf(QLatin1String("12"));
+    QVERIFY(add > 0 && twelve > add);
+    QCOMPARE(highlightColourAt(edit, add), appearance::colors().string);
+    QCOMPARE(highlightColourAt(edit, twelve), appearance::colors().string);
+}
+
+void TstGui::aSemicolonInsideAStringIsNotAComment()
+{
+    QPlainTextEdit edit;
+    const QString source = QStringLiteral("\tdc.b\t';'");
+    highlight(&edit, source);
+    const int semicolon = source.indexOf(QLatin1Char(';'));
+    QVERIFY(semicolon > 0);
+    QCOMPARE(highlightColourAt(edit, semicolon), appearance::colors().string);
+
+    // Control: outside a string the same character is a comment, and a quote
+    // inside a comment does not start one.
+    QPlainTextEdit control;
+    const QString controlSource = QStringLiteral("\tmoveq\t#1,d0\t; note '");
+    highlight(&control, controlSource);
+    const int controlSemicolon = controlSource.indexOf(QLatin1Char(';'));
+    QVERIFY(controlSemicolon > 0);
+    QCOMPARE(highlightColourAt(control, controlSemicolon), appearance::colors().comment);
+}
+
+void TstGui::anIndentedLabelIsALabel()
+{
+    QPlainTextEdit edit;
+    const QString source = QStringLiteral("\tloop:\tmoveq\t#0,d0");
+    highlight(&edit, source);
+
+    const int moveq = source.indexOf(QLatin1String("moveq"));
+    QVERIFY(moveq > 0);
+    QCOMPARE(highlightColourAt(edit, 1), appearance::colors().label);
+    QCOMPARE(highlightColourAt(edit, moveq), appearance::colors().keyword);
+}
+
+void TstGui::settingErrorLinesRepaintsTheGutter()
+{
+    PaintCounter counter;   // declared first, so the editor's filter target dies before it
+    CodeEditor editor(appearance::editorTheme());
+    editor.resize(520, 220);
+    editor.setPlainText(QStringLiteral("start:\tmoveq\t#0,d0\n"
+                                       "loop:\taddq.w\t#1,d0\n"
+                                       "\tbra.s\tloop\n"
+                                       "\trts\n"
+                                       "\tend\n"));
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+    auto *gutter = editor.findChild<QWidget *>(QStringLiteral("lineNumberArea"));
+    QVERIFY2(gutter, "CodeEditor must have a lineNumberArea child");
+    gutter->installEventFilter(&counter);
+    // The harness must be able to see a repaint at all, or every assertion
+    // below would pass for the wrong reason.
+    counter.paints = 0;
+    gutter->repaint();
+    QVERIFY2(counter.paints > 0, "paint events never reached the harness");
+    const QImage plain = gutter->grab().toImage();
+
+    counter.paints = 0;
+    editor.setErrorLines({4});
+    QCoreApplication::processEvents();
+    QVERIFY2(counter.paints > 0, "marking an error line must repaint the gutter");
+    const QImage marked = gutter->grab().toImage();
+    QVERIFY2(marked != plain, "the error marker must be visible in the gutter");
+
+    // The control step: a breakpoint mark goes through the same path, so a
+    // harness that stopped delivering paints fails here.
+    counter.paints = 0;
+    editor.setBreakpointLines({2});
+    QCoreApplication::processEvents();
+    QVERIFY2(counter.paints > 0, "marking a breakpoint must repaint the gutter");
+
+    counter.paints = 0;
+    editor.setErrorLines({});
+    editor.setBreakpointLines({});
+    QCoreApplication::processEvents();
+    QVERIFY2(counter.paints > 0, "clearing the markers must repaint the gutter");
+    QCOMPARE(gutter->grab().toImage(), plain);
+}
+
+void TstGui::hardwareViewDropsTheTranscriptOfTheSubjectItLeft()
+{
+    HardwareView hardware;
+    auto *chips = hardware.findChild<QComboBox *>();
+    auto *text = hardware.findChild<QPlainTextEdit *>();
+    auto *summary = hardware.findChild<QLabel *>(QStringLiteral("hardwareSummary"));
+    QVERIFY(chips && text && summary);
+
+    // The default subject is video; its transcript is what the host fetches.
+    QCOMPARE(hardware.subject(), QStringLiteral("video"));
+    hardware.setInfo(hataritext::parseHardwareInfo(QStringLiteral("Video base : 0x00012596\n"
+                                    "VBL counter : 1\n"
+                                    "Refresh rate : 50 Hz\n")));
+    QVERIFY(text->toPlainText().contains(QLatin1String("Video base")));
+    // The header is exactly the report's own fields, in the pane's wording —
+    // the view parses nothing, so a field the report does not carry (here the
+    // overscan) cannot appear and one it does cannot be dropped (MAJ-45).
+    QCOMPARE(summary->text(), QStringLiteral("Screen $00012596 · 50 Hz"));
+
+    // No session is running, so nothing re-requests `info mfp`: whatever is on
+    // screen after the switch is what the user reads under the new label.
+    chips->setCurrentText(QStringLiteral("mfp"));
+    QCOMPARE(hardware.subject(), QStringLiteral("mfp"));
+    QCOMPARE(text->toPlainText(), QString());
+    QCOMPARE(summary->text(), QString());
+    QVERIFY(summary->isHidden());
+}
+
+void TstGui::settingsDialogKeepsTheChosenRomAcrossAMachineChange()
+{
+    const QList<TosRom> roms = findTosRoms();
+    if (roms.isEmpty())
+        QSKIP("no TOS ROM found to choose");
+
+    ProjectSettings settings;
+    settings.machine = Machine::St;
+    settings.tosPath = roms.first().path;
+    SettingsDialog dialog{settings};
+
+    // The dialog's machine and ROM combos, addressed by what they show rather
+    // than by name: the machines are listed in full, and the ROM list leads with
+    // Automatic.
+    QComboBox *machine = nullptr;
+    QComboBox *rom = nullptr;
+    for (QComboBox *box : dialog.findChildren<QComboBox *>()) {
+        if (box->count() == allMachines().size()
+            && box->itemText(0) == machineDisplayName(Machine::St))
+            machine = box;
+        else if (box->itemText(0).startsWith(QLatin1String("Automatic")))
+            rom = box;
+    }
+    QVERIFY2(machine && rom, "the settings dialog must show a machine and a ROM list");
+    QCOMPARE(rom->currentData().toString(), roms.first().path);
+
+    // The user picks another ROM than the stored one: the last entry is a plain
+    // list choice when there is a second ROM, and Automatic otherwise.
+    const QString stored = roms.first().path;
+    const bool anotherRom = rom->count() > 1 && rom->itemData(rom->count() - 1).toString() != stored;
+    rom->setCurrentIndex(anotherRom ? rom->count() - 1 : 0);
+    const QString picked = rom->currentData().toString();
+    QVERIFY2(picked != stored, "the pick must differ from the stored ROM, or this proves nothing");
+    // The pick is what OK would persist, before anything re-runs the list.
+    QCOMPARE(dialog.settings().tosPath, picked);
+
+    // Changing the machine rebuilds the ROM list (onMachineChanged).
+    const int machineIndex = machine->currentIndex();
+    machine->setCurrentIndex(machineIndex == 0 ? 1 : 0);
+    QCOMPARE(rom->currentData().toString(), picked);
+    QCOMPARE(dialog.settings().tosPath, picked);
+
+    // Boundary: Automatic (empty data) is a choice too, so the machine change
+    // must not resurrect the stored ROM over it.
+    rom->setCurrentIndex(0);
+    QCOMPARE(dialog.settings().tosPath, QString());
+    machine->setCurrentIndex(machine->currentIndex() == 0 ? 1 : 0);
+    QCOMPARE(rom->currentData().toString(), QString());
+    QCOMPARE(dialog.settings().tosPath, QString());
+}
+
 // Settings are redirected to a throwaway directory for the whole run, so the
 // suite neither reads nor writes a store it shares with previous runs (or with
 // the developer): MainWindow restores layout/state from QSettings, the setup
@@ -5204,6 +7476,17 @@ void TstGui::floppyRewriteOfAForeignDiskAsks()
 // rather than skips when PIST_REQUIRE_EMULATOR is set.
 int main(int argc, char *argv[])
 {
+    // Headless with no QT_QPA_PLATFORM, QApplication aborts hard (qFatal) before
+    // a single test can skip — which loses the whole binary, not one test. CI
+    // sets the variable; a container or a bare `xvfb`-less shell does not, so
+    // default to the offscreen plugin when there is no display to connect to.
+    // An explicit setting always wins.
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")
+        && qEnvironmentVariableIsEmpty("DISPLAY")
+        && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QTemporaryDir settings;
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());

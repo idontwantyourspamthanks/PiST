@@ -5,15 +5,15 @@
 #pragma once
 
 #include "build/Diagnostic.h"
-#include "debug/Breakpoint.h"
-#include "debug/Watchpoint.h"
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
+#include "control/ControlHost.h"
 #include "emu/HatariProbe.h"
 #include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
+#include "ui/RemoteStateAdapter.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -31,12 +31,19 @@ class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
 class QTreeWidget;
+class QTreeWidgetItem;
+
+#include <functional>
 
 namespace pist {
 
 class BuildService;
+class BreakpointWatchpointModel;
 class CodeEditor;
 class BreakpointPanel;
+class DebugSessionController;
+class ProfilerController;
+class SessionLauncher;
 class InstructionRefView;
 class SymbolsView;
 class RemoteControl;
@@ -52,13 +59,34 @@ class StackView;
 class HardwareView;
 class EmulatorDisplayWidget;
 
-class MainWindow : public QMainWindow
+/// The IDE's main window. It is the shell: it owns the docks, the tabs and the
+/// menus, and it is the one place the modules meet.
+///
+/// The MAJ-41 seams below (the session controller, the launcher, the
+/// breakpoint and watchpoint models, the profiler and the remote-state
+/// adapter) are constructed here and handed *only the operations they perform
+/// on this window*, as their own `Host` structs of callbacks (MIN-89). They
+/// used to reach the private members directly through granted access; a seam
+/// now compiles against its collaborator list alone, which is what the
+/// declarations below and the host aggregates in the constructor spell out.
+///
+/// MainWindow is also the control layer's `ControlHost` (control/ControlHost.h):
+/// the remote-control verbs are its own methods, so the protocol drives the IDE
+/// through an interface the control module owns rather than through this
+/// header (MIN-86).
+class MainWindow : public QMainWindow, public control::ControlHost
 {
     Q_OBJECT
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+
+    /// The tag the remote-control `readmem` verb's dump carries. Memory panes
+    /// are tagged from 0 up (addMemoryPane), so a negative tag can never belong
+    /// to one: the dump is answered to the verb that asked instead of being
+    /// applied to a view.
+    static constexpr int kRemoteReadTag = -1;
 
 public slots:
     /// Open a source file by path, without a dialog. Used for the command line
@@ -68,7 +96,7 @@ public slots:
     /// openPath without the failure modal: the remote `open` verb drives this,
     /// because a modal offscreen (or against an agent with nobody to dismiss
     /// it) blocks the reply forever. Failure is reported by the return value.
-    bool openPathQuiet(const QString &path);
+    bool openPathQuiet(const QString &path) override;
 
     /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
     void addMemoryPane(quint32 initialAddress = 0);
@@ -100,12 +128,57 @@ public slots:
     /// appended to the console log when it arrives (matched by command text).
     void sendConsoleCommand(const QString &command);
 
+    /// Typed debugger reads for the remote-control interface, whose `readmem`
+    /// and `disasm` verbs return the answer itself rather than filling a pane
+    /// or the snapshot. A memory read's rows arrive on
+    /// debugReadMemoryFinished, a disassembly's text on debugReadFinished, each
+    /// with the address that was asked about.
+    void debugReadMemory(quint32 address, int length) override;
+    void debugReadDisassembly(quint32 address) override;
+
     /// The assembler path builds will use, for tests and diagnostics.
     QString assemblerPath() const;
 
     /// A plain-text snapshot of the machine state (registers, PC, running
     /// state), for the remote-control interface. Read-only.
-    QString stateSummary() const;
+    QString stateSummary() const override;
+
+public:
+    /// The remote `setmem`: the memory write with no pane to refresh, since
+    /// the caller has no view. The pane-aware setMemoryByte below is the same
+    /// write for the memory views.
+    bool writeMemoryByte(quint32 address, quint32 value) override;
+
+    /// The remote `screenshot`: raise the window, capture it (XGetImage — see
+    /// ui/EmbedX11.h; QScreen::grabWindow returns black under XWayland here and
+    /// cannot see the reparented emulator window) and save it to `path`. False
+    /// when the capture or the write failed.
+    bool saveScreenshot(const QString &path) override;
+
+    // The control layer's event subscriptions (control/ControlHost.h): each is
+    // the QObject::connect MainWindow's own signal would take, with `context`
+    // as the connection's owner, returned so the waiter can disconnect. The
+    // signals themselves stay on this class — the IDE's other code connects to
+    // them directly, and these hooks exist so the control layer never has to
+    // name a MainWindow to do the same.
+
+    /// The asynchronous build finished.
+    QMetaObject::Connection onBuildCompleted(QObject *context,
+                                             std::function<void(bool)> handler) override;
+    /// The emulator session started or stopped.
+    QMetaObject::Connection onSessionRunningChanged(QObject *context,
+                                                    std::function<void(bool)> handler) override;
+    /// A profile save was parsed, or could not be.
+    QMetaObject::Connection onProfileResultsReady(QObject *context,
+                                                  std::function<void(bool)> handler) override;
+    /// A debugger command's response arrived.
+    QMetaObject::Connection onDebugCommandFinished(
+        QObject *context, std::function<void(const QString &, const QString &)> handler) override;
+    /// A typed read's answer arrived, with the address it was asked about.
+    QMetaObject::Connection onDebugReadFinished(
+        QObject *context, std::function<void(quint32, const QString &)> handler) override;
+    QMetaObject::Connection onDebugReadMemoryFinished(
+        QObject *context, std::function<void(quint32, const QList<MemoryRow> &)> handler) override;
 
 signals:
     /// The asynchronous build finished, for the remote-control interface to
@@ -124,6 +197,16 @@ signals:
 
     /// A response to an arbitrary debugger command sent via debugCommand.
     void debugCommandFinished(const QString &command, const QString &response);
+
+    /// The answer to a typed remote read (debugReadMemory/debugReadDisassembly),
+    /// carrying the address it was asked about so a late answer cannot satisfy
+    /// the next request.
+    ///
+    /// The two reads report differently because what they asked for differs: a
+    /// disassembly is text, a memory dump is the rows the backend parsed from
+    /// it (MAJ-45).
+    void debugReadFinished(quint32 address, const QString &response);
+    void debugReadMemoryFinished(quint32 address, const QList<MemoryRow> &rows);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -155,12 +238,25 @@ private slots:
     void openProject();
     void saveProject();
     void editSettings();
-    void build();
-    void run();
-    void launchEmulator();
-    void stopSession();
-    void step();
-    void stepOver();
+    /// Build the source. The remote-control `build` verb invokes this slot by
+    /// name (QMetaObject::invokeMethod), so a refusal here is quiet — console
+    /// and status bar — because a modal nobody can dismiss (an agent on the
+    /// other end, or an offscreen window) would hold the reply until its
+    /// operation timeout: the failure openPathQuiet exists to avoid. The
+    /// menu/toolbar/shortcut entry is buildInteractive().
+    void build() override;
+    /// Run: build now, launch when it finishes. RemoteControl's `run` verb
+    /// invokes this slot by name, so its refusals are quiet for the same
+    /// reason as build()'s. The menu/toolbar/shortcut entry is
+    /// runInteractive().
+    void run() override;
+    /// Build/Run from the menu, toolbar and their shortcuts: the same
+    /// operations with the modal refusals they have always shown.
+    void buildInteractive();
+    void runInteractive();
+    void stopSession() override;
+    void step() override;
+    void stepOver() override;
     /// Step out of the current subroutine: one-shot breakpoint at the return
     /// address read from the stack, then resume (no Hatari primitive exists).
     void stepOut();
@@ -169,8 +265,8 @@ private slots:
     /// Profiling is armed/collected while stopped: Hatari starts collection on
     /// continue and zeroes it if any breakpoint is armed mid-run, so both
     /// actions refuse a running machine.
-    void profileStart();
-    bool profileStop();
+    void profileStart() override;
+    bool profileStop() override;
     /// Enable the profile actions from the session/profiling state: Start and
     /// Profile to cursor need stopped-and-not-profiling, Stop and Show needs
     /// stopped-and-profiling. Called on stoppedChanged and every state change.
@@ -186,11 +282,11 @@ private slots:
     void previousDiagnostic();
     void stepDiagnostic(int direction);
     void pauseSession();
-    void resume();
+    void resume() override;
 
     void removeBreakpoint(const QString &file, int line);
     void goToBreakpoint(const QString &file, int line);
-    bool toggleBreakpointAtLine(int line);
+    bool toggleBreakpointAtLine(int line) override;
 
     void editBreakpointCondition(int line);
     void clearAllBreakpoints();
@@ -202,26 +298,30 @@ private slots:
     void removeWatchpoint(int index);
 
 public:
-    /// Write a memory byte through the debugger (`w b <addr>=<value>`), when
-    /// stopped. Shared by the memory views' editing and the remote `setmem`.
-    /// `pane` is the memory pane to refresh after the write; null (the remote
-    /// path) refreshes the first pane.
+    /// Write a memory byte through the debugger (the `writeMemoryByte` intent:
+    /// `w b $<addr> $<val>` on the native transport, the fork's `memset`
+    /// otherwise), when stopped. The memory views' editing path; the remote
+    /// `setmem` verb reaches the same write through writeMemoryByte. `pane` is
+    /// the memory pane to refresh after the write; null (writeMemoryByte)
+    /// refreshes the first pane.
     bool setMemoryByte(quint32 address, quint32 value, MemoryView *pane = nullptr);
 
-    /// Send an arbitrary debugger command (for the remote `cmd`). The response
-    /// arrives via debugCommandFinished.
-    void debugCommand(const QString &command);
+    /// Send a debugger command as written (for the remote `cmd`) — free text,
+    /// because it is the client's own. The response arrives via
+    /// debugCommandFinished.
+    void debugCommand(const QString &command) override;
 
-    /// Write a register through the debugger (`r <reg>=<value>`), when stopped.
-    /// Shared by the register view's editing and the remote-control `setreg`
-    /// command. Returns false (and logs) when the machine is not stopped.
-    bool setRegister(const QString &regName, quint32 value);
+    /// Write a register through the debugger (the `writeRegister` intent), when
+    /// stopped. Shared by the register view's editing and the remote-control
+    /// `setreg` command. Returns false (and logs) when the machine is not
+    /// stopped.
+    bool setRegister(const QString &regName, quint32 value) override;
 
     /// Whether the current editor's file has an instruction at `line`,
     /// according to the program map. True when there is no map yet — arming
     /// will decide then, so "can't tell" must not read as "cannot fire".
     /// For the remote `breakpoint` reply.
-    bool lineHasCode(int line) const;
+    bool lineHasCode(int line) const override;
 
     /// Toggle a breakpoint at (file, line) directly — the base-name keying the
     /// whole IDE uses. Shared by toggleBreakpointAtLine (current editor) and
@@ -232,47 +332,47 @@ public:
     /// reply text either way: "ok <file>:<line> [= 0x…]" or an "error …"
     /// naming why (unknown name, or a position-less symbol). For the remote
     /// `breakpoint <label>` form.
-    bool toggleBreakpointAtLabel(const QString &name, QString *detail);
+    bool toggleBreakpointAtLabel(const QString &name, QString *detail) override;
     /// The current editor document as JSON {path, text}, for the remote
     /// `read` verb — what the IDE is showing, so an agent needn't guess.
     /// JSON rather than raw text because the block protocol terminates on a
     /// lone `.` line, which assembly source can legitimately contain.
     /// Empty object when no source is open.
-    QJsonObject documentJson() const;
+    QJsonObject documentJson() const override;
 
     /// Machine state as JSON: {running, stopped}, plus pc/d0-7/a0-7/sr when a
     /// register batch has landed. For the remote `statejson` verb, which the
     /// MCP shim serves as structured content.
-    QJsonObject stateJson() const;
+    QJsonObject stateJson() const override;
 
     /// The Problems pane as JSON objects {file, line, message}, for the
     /// remote `problems` verb.
-    QJsonArray problemsJson() const;
+    QJsonArray problemsJson() const override;
 
     /// Every open document as JSON objects {path, modified, current}, for the
     /// remote `tabs` verb — the agent's map of what the IDE has open.
-    QJsonArray tabsJson() const;
+    QJsonArray tabsJson() const override;
 
     /// Save the current document without a dialog. False when it has no path
     /// yet (a name can't be chosen remotely) or the write failed. For the
     /// remote `save` verb.
-    bool saveCurrentDocument();
+    bool saveCurrentDocument() override;
 
     /// Profiler hot lines as JSON objects {line, count}, sorted by descending
     /// count, for the remote `profile results` verb. Empty when no profile
     /// has been collected.
-    QJsonArray profilerResultsJson() const;
+    QJsonArray profilerResultsJson() const override;
 
     /// The build's symbols as JSON objects {name, file?, line?, address?},
     /// optionally name-filtered (case-insensitive). Addresses appear only once
     /// the program map has live bases — SymbolsView's honesty rule. For the
     /// remote `symbols` verb.
-    QJsonArray symbolsJson(const QString &filter) const;
+    QJsonArray symbolsJson(const QString &filter) const override;
 
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use
     /// it without a prompt. Returns false and sets error on a bad address.
-    bool addWatchpointAddress(const QString &text, QString *error);
+    bool addWatchpointAddress(const QString &text, QString *error) override;
 
     /// Compose the current phase's sheet and write it to `path`, writing
     /// back into a mounted floppy when the sheet came from one.
@@ -289,7 +389,14 @@ public:
 private:
     void createActions();
     void createMenus();
+    /// Build the panels, wire them to each other, then put them on the View
+    /// menu. Three passes over one arrangement, in that order: every panel has
+    /// to exist before anything is wired to it, and the menu lists the docks
+    /// that exist.
     void createDocks();
+    void buildPanels();
+    void wirePanels();
+    void buildViewMenu();
     void createToolBar();
     void createStatusBar();
 
@@ -327,20 +434,28 @@ private:
     /// call on a freshly created backend.
     void wireBackend();
 
-    /// Reset everything that must not leak from one debug session into the
-    /// next: the arming state and resolved bases (GEMDOS relocates the
- /// program on every run), the cached machine state (the remote `state`
-    /// command must not answer for a dead session) and any pending remote
-    /// command. Called at launch and again when the session ends, so a
-    /// session's state has exactly one lifetime and one owner.
-    void resetSessionState();
-
     /// Report a build that refused to start (no source, failed save, missing
     /// linker): a refusal is still a finished build as far as callers are
     /// concerned — run()'s launch intent must be dropped rather than left
     /// armed for the next successful build, and a remote-control `build`
-    /// must be answered now, not after its timeout.
+    /// must be answered now, not after its timeout. A quiet build (see
+    /// buildImpl) reports the reason on the console and the status bar instead
+    /// of opening a modal.
     void refuseBuild(const QString &title, const QString &reason, bool critical);
+
+    /// Report a run that could not start. A quiet run (see m_quietDialogs)
+    /// reports the reason on the console and the status bar and answers
+    /// buildCompleted(false) — the failure channel RemoteControl's `run` reply
+    /// wait ends on — rather than leaving the reply to its operation timeout;
+    /// an interactive run keeps the modal it has always shown.
+    void refuseRun(const QString &title, const QString &reason, bool critical);
+
+    /// Shared bodies of the quiet (remote-invoked) and interactive entries.
+    /// `quiet` suppresses the modal dialogs on the refusal paths; it is carried
+    /// on the window because a run's launch happens after the build's async
+    /// hop, where the argument is gone.
+    void buildImpl(bool quiet);
+    void runImpl(bool quiet);
 
     /// Load the project settings that sit beside a source file, if any.
     void loadProjectForSource(const QString &sourcePath);
@@ -436,19 +551,9 @@ private:
     void onStateUpdated(const pist::MachineState &state);
     void locationFromPc(quint32 pc);
 
-    /// Called once the debugger stops. This is the point at which the program's
-    /// load address is known, so breakpoints can finally be resolved and armed.
-    void onDebuggerStopped();
-    void armBreakpoints();
-
     /// Rebuild the program's source mapping from the listings this build
     /// produced, and load the linker's placement map when there was a link.
     void rebuildProgramMap();
-
-    /// Fold the addresses the ArmPlan resolved back into the stored breakpoint
-    /// list, so the panel shows where each one actually landed.
-    QList<Breakpoint> mergeResolved(const ArmPlan &plan) const;
-    void refreshBreakpointMarkers();
 
     /// Whether the emulator's display can be embedded in this session: it needs
     /// PiST to be an X11 (xcb) client, and the control socket that carries the
@@ -517,6 +622,22 @@ private:
     ImageEditor *m_image = nullptr;
     BuildService *m_build = nullptr;
 
+    /// The MAJ-41 seams. Qt parent-child owns them (each is constructed with
+    /// `this` as its parent), and each was handed a Host — the operations it
+    /// performs on this window (MIN-89), built in the constructor. These
+    /// pointers are how MainWindow calls *into* a seam; the seams call back
+    /// through their Hosts, never through these.
+    DebugSessionController *m_session = nullptr;
+    SessionLauncher *m_launcher = nullptr;
+    BreakpointWatchpointModel *m_bpModel = nullptr;
+    ProfilerController *m_profiling = nullptr;
+    RemoteStateAdapter *m_remoteState = nullptr;
+
+    DebugSessionController *sessionController() const { return m_session; }
+    BreakpointWatchpointModel *breakpointsModel() const { return m_bpModel; }
+    ProfilerController *profilerController() const { return m_profiling; }
+    SessionLauncher *sessionLauncher() const { return m_launcher; }
+
 
     /// The most recent machine state, kept so the remote-control interface can
     /// answer `state` without touching the emulator.
@@ -558,14 +679,22 @@ private:
     /// the remote `problems` verb reports what the pane shows rather than
     /// re-deriving it. The widget shows the same severity as a coloured
     /// square on the file and a tint on the message.
-    struct ProblemEntry
-    {
-        QString file;
-        int line = 0;
-        QString message;
-        bool error = false;
-    };
-    QList<ProblemEntry> m_problemEntries;
+    ///
+    /// The row type is the state adapter's (RemoteStateAdapter::ProblemRow):
+    /// the four fields *are* that verb's JSON, so the pane's list and the
+    /// adapter's report are one shape rather than two that must agree.
+    QList<RemoteStateAdapter::ProblemRow> m_problemEntries;
+
+    /// Add one row to the Problems pane. The row carries its index into
+    /// m_problemEntries as item data, so every reader gets the structured
+    /// entry rather than parsing the display strings back out of the tree: the
+    /// file column of a build-level note is a translated placeholder, and the
+    /// line column is formatted for the eye.
+    QTreeWidgetItem *addProblemRow(const RemoteStateAdapter::ProblemRow &entry);
+
+    /// The entry a Problems row indexes, or null when the row has none.
+    const RemoteStateAdapter::ProblemRow *problemEntryFor(const QTreeWidgetItem *item) const;
+
     DisassemblyView *m_disassembly = nullptr;
     RegistersView *m_registers = nullptr;
     MemoryView *m_memory = nullptr;
@@ -601,19 +730,6 @@ private:
     RemoteControl *m_eventSink = nullptr;
     class ProfilerView *m_profiler = nullptr;
     QDockWidget *m_profilerDock = nullptr;
-    /// A `profile save` is in flight; its commandFinished parses the file.
-    bool m_profileSavePending = false;
-    /// Hatari is collecting profile counts (set by Profile Start / Profile to
-    /// cursor, cleared by Profile Stop and session end). Drives which of the
-    /// three profile actions make sense right now.
-    bool m_profilingActive = false;
-    /// A "profile to cursor line" run is collecting; the next stop saves and
-    /// shows, and deletes the one-shot if some other stop won the race.
-    bool m_profileGuided = false;
-    quint32 m_profileGuidedAddr = 0;
-    /// A stop was announced; the next state batch carries its PC, so the
-    /// stopped event is published from onStateUpdated with the detail filled.
-    bool m_stopEventPending = false;
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QDockWidget *m_problemsDock = nullptr;
@@ -637,36 +753,17 @@ private:
     ProgramLineMap m_programMap;
     LineMap::SectionBases m_bases;
 
-    /// Breakpoints are stored per file:line, never per address: the program is
-    /// relocated by GEMDOS on every run (docs/PLAN.md §5 rule 6).
-    QList<Breakpoint> m_breakpoints;
-
-    /// Address watchpoints: break when a memory value changes (see
-    /// debug/Watchpoint.h). Armed and cleared alongside the source breakpoints.
-    QList<Watchpoint> m_watchpoints;
-
-    /// Set once the entry stop has been handled for the current session, so the
-    /// arming sequence runs exactly once.
-    bool m_sessionArmed = false;
-
-
     /// The debugger command a remote `cmd` is waiting on, so its response is
     /// routed to debugCommandFinished.
     QString m_pendingDebugCommand;
 
-    /// Set once breakpoints have been armed against the live bases this session.
-    /// Arming has to wait for the basepage response (not a timer, which always
-    /// loses that race), so this guards doing it exactly once, when they arrive.
-    bool m_breakpointsArmedThisSession = false;
-
-    /// A stack dump requested by stepOut() is in flight; the next
-    /// stackDumpReady arms the return-address breakpoint instead of only
-    /// feeding the stack view.
-    bool m_stepOutPending = false;
-
-    /// Set by Run, consumed by onBuildFinished. Needed because the build is
-    /// asynchronous: the launch has to wait for it, not run alongside it.
-    bool m_launchAfterBuild = false;
+    /// True while the build/run in flight was started by the quiet entry points
+    /// (build()/run(), the slots RemoteControl invokes by name): a refusal then
+    /// reports itself on the console and the status bar instead of a modal
+    /// dialog, whose own event loop would hold the remote reply until the
+    /// operation timeout. Set by buildImpl()/runImpl(), so it is still set when
+    /// launchEmulator() runs after the build's async hop.
+    bool m_quietDialogs = false;
 
     /// Session directory of the current (or most recent) run, so it can be
     /// removed when the session ends instead of accumulating in the temp

@@ -4,9 +4,11 @@
 
 #include "build/FloppyImage.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QSet>
 #include <QVector>
 
@@ -104,10 +106,19 @@ quint16 fat12Get(const QByteArray &image, int fatOffset, int index)
 }
 
 /// An 8.3 name, space-padded.
+///
+/// A literal shorter than the 11-character field stops at its own terminator
+/// rather than being read to the end of the field: the padding is what the
+/// missing characters become, and the bytes past the NUL are not the caller's
+/// to hand over (every current call site passes exactly 11, which is what hid
+/// it — finding NIT-10).
 void putName(QVector<quint8> &image, int offset, const char *name)
 {
-    for (int i = 0; i < 11; ++i)
-        image[offset + i] = name[i] ? quint8(name[i]) : 0x20;
+    int i = 0;
+    for (; i < 11 && name[i]; ++i)
+        image[offset + i] = quint8(name[i]);
+    for (; i < 11; ++i)
+        image[offset + i] = 0x20;
 }
 
 void putName11(QVector<quint8> &image, int offset, const QByteArray &name11)
@@ -250,7 +261,7 @@ bool geometryFromSectors(int sectors, int *tracks, int *sides, int *spt)
 bool decodeMsa(const QByteArray &msa, QByteArray *raw, QString *error)
 {
     if (!isMsa(msa)) {
-        setError(error, QStringLiteral("not an MSA image"));
+        setError(error, QObject::tr("not an MSA image"));
         return false;
     }
     const int spt = readBe16(msa, 2);
@@ -259,7 +270,7 @@ bool decodeMsa(const QByteArray &msa, QByteArray *raw, QString *error)
     const int endTrack = readBe16(msa, 8);
     if (spt <= 0 || spt > 32 || sides < 1 || sides > 2 || startTrack < 0
         || endTrack < startTrack || endTrack > 85) {
-        setError(error, QStringLiteral("MSA header is not a plausible ST floppy"));
+        setError(error, QObject::tr("MSA header is not a plausible ST floppy"));
         return false;
     }
     const int trackSize = spt * kSectorSize;
@@ -270,13 +281,13 @@ bool decodeMsa(const QByteArray &msa, QByteArray *raw, QString *error)
     for (int track = startTrack; track <= endTrack; ++track) {
         for (int side = 0; side < sides; ++side) {
             if (cursor + 2 > msa.size()) {
-                setError(error, QStringLiteral("truncated MSA track header"));
+                setError(error, QObject::tr("truncated MSA track header"));
                 return false;
             }
             const int length = readBe16(msa, cursor);
             cursor += 2;
             if (length <= 0 || cursor + length > msa.size()) {
-                setError(error, QStringLiteral("truncated MSA track data"));
+                setError(error, QObject::tr("truncated MSA track data"));
                 return false;
             }
             const QByteArray packed = msa.mid(cursor, length);
@@ -285,7 +296,7 @@ bool decodeMsa(const QByteArray &msa, QByteArray *raw, QString *error)
             if (length == trackSize) {
                 trackData = packed;
             } else if (!decompressTrack(packed, trackSize, &trackData)) {
-                setError(error, QStringLiteral("MSA track %1 side %2 does not decompress")
+                setError(error, QObject::tr("MSA track %1 side %2 does not decompress")
                                     .arg(track)
                                     .arg(side));
                 return false;
@@ -300,12 +311,12 @@ bool decodeMsa(const QByteArray &msa, QByteArray *raw, QString *error)
 bool encodeMsa(const QByteArray &raw, QByteArray *msa, QString *error)
 {
     if (raw.size() % kSectorSize != 0 || raw.isEmpty()) {
-        setError(error, QStringLiteral("raw floppy image is not a whole number of sectors"));
+        setError(error, QObject::tr("raw floppy image is not a whole number of sectors"));
         return false;
     }
     int tracks = 0, sides = 0, spt = 0;
     if (!geometryFromSectors(raw.size() / kSectorSize, &tracks, &sides, &spt)) {
-        setError(error, QStringLiteral("cannot infer MSA geometry from a %1-byte image")
+        setError(error, QObject::tr("cannot infer MSA geometry from a %1-byte image")
                             .arg(raw.size()));
         return false;
     }
@@ -416,7 +427,7 @@ bool rootDirBytes(const QByteArray &raw, const Geo &g, QByteArray *out, QString 
         (qint64(g.reservedSectors) + qint64(g.fatCount) * g.fatSectors) * g.sectorSize;
     const qint64 bytes = qint64(g.rootSectors) * g.sectorSize;
     if (start < 0 || bytes <= 0 || start + bytes > raw.size()) {
-        setError(error, QStringLiteral("floppy root directory is truncated"));
+        setError(error, QObject::tr("floppy root directory is truncated"));
         return false;
     }
     *out = raw.mid(int(start), int(bytes));
@@ -438,41 +449,87 @@ QString sanitize83Component(const QString &text)
     return out;
 }
 
+/// The bytes of one 8.3 name field, up to the padding at its end, as TOS text.
+/// Space is the format's pad byte, but a third-party imaging tool may pad with
+/// NUL instead; reading that byte as a name character turned the padding into
+/// literal underscores in every path that names the entry (`NULPAD.TXT` listed
+/// as `NULPAD__.TXT`) and in the 8.3 name a carry-forward wrote back.
+QString latin1Field(const QByteArray &field)
+{
+    const int end = field.indexOf('\0');
+    return QString::fromLatin1(end < 0 ? field : field.left(end));
+}
+
 QString display83(const QByteArray &name11)
 {
-    const QString name = sanitize83Component(QString::fromLatin1(name11.left(8)).trimmed());
-    const QString ext = sanitize83Component(QString::fromLatin1(name11.mid(8, 3)).trimmed());
+    const QString name = sanitize83Component(latin1Field(name11.left(8)).trimmed());
+    const QString ext = sanitize83Component(latin1Field(name11.mid(8, 3)).trimmed());
     if (ext.isEmpty())
         return name;
     return name + QLatin1Char('.') + ext;
 }
 
-QByteArray readChain(const QByteArray &image, const Geo &g, int start, quint32 fileSize,
-                     bool isDir)
+/// Read a cluster chain's bytes, refusing a damaged chain instead of returning
+/// whatever could be collected.
+///
+/// `start` is the entry's first cluster and `fileSize` its declared size (0 for
+/// a directory, which has none). Returns false with `error` set when the chain
+/// loops back on a cluster it already walked, links to a cluster outside the
+/// image, or — for a file — ends before `fileSize` bytes: a damaged chain used
+/// to come back as a shorter buffer, indistinguishable from a short file, so
+/// `readFileRaw` reported a truncated copy-out as success and `updateImage`
+/// carried the truncation into the replacement image and renamed that over the
+/// user's own, destroying the orphaned clusters a repair would need. Damage now
+/// fails closed, as a damaged MSA archive already does in loadRaw.
+///
+/// The walk stays bounded: `cluster < 0xFF0` caps the cluster number, the cycle
+/// set visits each of those at most once, and every cluster read must lie whole
+/// inside the image, so memory cannot outgrow the image itself.
+bool readChain(const QByteArray &image, const Geo &g, int start, quint32 fileSize,
+               bool isDir, QByteArray *out, QString *error)
 {
-    if (start < 2)
-        return {};
-    QByteArray out;
+    out->clear();
     QSet<int> seen;
     int cluster = start;
     const int fatOff = g.reservedSectors * g.sectorSize;
     while (cluster >= 2 && cluster < 0xFF0) {
-        if (seen.contains(cluster) || seen.size() > 4096)
-            break;
+        if (seen.contains(cluster)) {
+            setError(error, QObject::tr("its cluster chain loops back to cluster %1")
+                                .arg(cluster));
+            out->clear();
+            return false;
+        }
         seen.insert(cluster);
         const qint64 off = geoClusterOffset(g, cluster);
-        if (off < 0 || off + g.clusterSize > image.size())
-            break;
-        out += image.mid(int(off), g.clusterSize);
+        if (off < 0 || off + g.clusterSize > image.size()) {
+            setError(error, QObject::tr("its cluster chain links to cluster %1, outside "
+                                        "the image")
+                                .arg(cluster));
+            out->clear();
+            return false;
+        }
+        *out += image.mid(int(off), g.clusterSize);
         cluster = int(fat12Get(image, fatOff, cluster));
     }
-    if (!isDir && fileSize < quint32(out.size()))
-        out.resize(int(fileSize));
-    return out;
+    if (isDir)
+        return true;
+    if (quint32(out->size()) < fileSize) {
+        setError(error, QObject::tr("only %1 of the %2 bytes its directory entry declares "
+                                    "are reachable")
+                            .arg(out->size())
+                            .arg(fileSize));
+        out->clear();
+        return false;
+    }
+    // A chain's last cluster is normally only partly used; the directory entry's
+    // size is what says where the file ends.
+    out->resize(int(fileSize));
+    return true;
 }
 
 struct RawDirEntry {
     QString name;
+    QByteArray name11;
     bool isDir = false;
     quint16 cluster = 0;
     quint32 size = 0;
@@ -498,6 +555,7 @@ QVector<RawDirEntry> parseDirBytes(const QByteArray &dir)
             continue;
         RawDirEntry e;
         e.name = name;
+        e.name11 = name11;
         e.isDir = attr & 0x10;
         e.cluster = read16(dir, off + 26);
         e.size = read32(dir, off + 28);
@@ -528,6 +586,7 @@ void listDir(const QByteArray &image, const Geo &g, const QByteArray &dirBytes,
     for (const RawDirEntry &e : parseDirBytes(dirBytes)) {
         Entry item;
         item.path = prefix.isEmpty() ? e.name : prefix + QLatin1Char('/') + e.name;
+        item.name11 = e.name11;
         item.isDirectory = e.isDir;
         item.size = e.isDir ? 0 : e.size;
         item.cluster = e.cluster;
@@ -541,8 +600,13 @@ void listDir(const QByteArray &image, const Geo &g, const QByteArray &dirBytes,
             if (visitedDirs->contains(e.cluster))
                 continue;
             visitedDirs->insert(e.cluster);
-            const QByteArray child = readChain(image, g, e.cluster, 0, true);
-            listDir(image, g, child, item.path, depth + 1, visitedDirs, out);
+            // A listing stays best-effort: a damaged directory chain leaves the
+            // folder listed but unexpanded instead of blanking the panel. The
+            // readers a caller names by path, and the rewriting updateImage,
+            // fail closed on the same damage.
+            QByteArray child;
+            if (readChain(image, g, e.cluster, 0, true, &child, nullptr))
+                listDir(image, g, child, item.path, depth + 1, visitedDirs, out);
         }
     }
 }
@@ -661,7 +725,7 @@ bool allocateClusters(Node *node, bool isRoot, int *nextCluster, QString *error)
                 continue;
             }
             if (*nextCluster - 2 + child.clusterCount > kMaxDataClusters) {
-                setError(error, QStringLiteral("the selected files do not fit on a 720 KiB floppy"));
+                setError(error, QObject::tr("the selected files do not fit on a 720 KiB floppy"));
                 return false;
             }
             child.cluster = *nextCluster;
@@ -673,7 +737,7 @@ bool allocateClusters(Node *node, bool isRoot, int *nextCluster, QString *error)
 
     node->clusterCount = clustersForDir(2 + node->children.size());
     if (*nextCluster - 2 + node->clusterCount > kMaxDataClusters) {
-        setError(error, QStringLiteral("the selected files do not fit on a 720 KiB floppy"));
+        setError(error, QObject::tr("the selected files do not fit on a 720 KiB floppy"));
         return false;
     }
     node->cluster = *nextCluster;
@@ -695,13 +759,22 @@ void writeFatForNode(QVector<quint8> &fat, const Node &node)
         writeFatForNode(fat, child);
 }
 
-void writeDirEntries(QVector<quint8> &image, int offset, const Node &dir, bool includeDots)
+/// One directory's entries. `parentCluster` is the start cluster of the
+/// directory enclosing this one — what FAT requires a `..` entry to hold, and 0
+/// for a child of the root directory, which has no cluster of its own.
+/// Hard-coding 0 made every subdirectory claim the root as its parent, so a
+/// depth-2 tree exported from the project files (SUB/INNER) sent TOS's "open
+/// parent" straight to the root and had host-side FAT checkers flag the image;
+/// PiST's own reader never noticed, because it skips `.`/`..` and resolves
+/// top-down (finding MAJ-39).
+void writeDirEntries(QVector<quint8> &image, int offset, const Node &dir, bool includeDots,
+                     quint16 parentCluster)
 {
     int at = offset;
     if (includeDots) {
         putDirEntry(image, at, ".          ", 0x10, quint16(dir.cluster), 0);
         at += 32;
-        putDirEntry(image, at, "..         ", 0x10, 0, 0);
+        putDirEntry(image, at, "..         ", 0x10, parentCluster, 0);
         at += 32;
     }
     for (const Node &child : dir.children) {
@@ -713,11 +786,19 @@ void writeDirEntries(QVector<quint8> &image, int offset, const Node &dir, bool i
     }
 }
 
-void writeNodeData(QVector<quint8> &image, const Node &node, bool isRoot)
+/// Write every directory's entries and every file's data below `node`.
+///
+/// `parentCluster` is the enclosing directory's own start cluster, which the
+/// directory written here records as its `..`. The root owns no cluster — the
+/// FAT layout fixes its directory in the reserved area and allocateClusters
+/// leaves `cluster` at 0 — so root's children are the ones whose `..` is 0.
+void writeNodeData(QVector<quint8> &image, const Node &node, quint16 parentCluster)
 {
-    if (!isRoot && node.isDir && node.clusterCount > 0) {
+    // The root's own entries go to the fixed root area in writeImage; every
+    // other directory here is an allocation with a cluster of its own.
+    if (node.isDir && node.clusterCount > 0) {
         const int start = clusterOffset(node.cluster);
-        writeDirEntries(image, start, node, true);
+        writeDirEntries(image, start, node, true, parentCluster);
     }
     if (!node.isDir && node.clusterCount > 0) {
         const int start = clusterOffset(node.cluster);
@@ -725,7 +806,7 @@ void writeNodeData(QVector<quint8> &image, const Node &node, bool isRoot)
             image[start + i] = quint8(node.data.at(i));
     }
     for (const Node &child : node.children)
-        writeNodeData(image, child, false);
+        writeNodeData(image, child, quint16(node.cluster));
 }
 
 void writeBootSector(QVector<quint8> &image)
@@ -748,26 +829,51 @@ void writeBootSector(QVector<quint8> &image)
     put16(image, 510, 0xaa55);
 }
 
-bool insertItem(Node *root, const Item &item, QString *error)
+/// A `destPath` in the one form the tree walk uses: `/`-separated, no leading
+/// separator, and the `.` root shortcut spelled as nothing.
+QString normalizeDest(const QString &destPath)
 {
-    QString dest = QDir::fromNativeSeparators(item.destPath).trimmed();
+    QString dest = QDir::fromNativeSeparators(destPath).trimmed();
     while (dest.startsWith(QLatin1Char('/')))
         dest.remove(0, 1);
     if (dest == QLatin1String("."))
         dest.clear();
+    return dest;
+}
+
+/// The 8.3 name one path component is written with: the raw field a carried
+/// entry brought along (`carried` maps a normalised dest path to the name11 its
+/// directory holds), otherwise the component's host spelling. Deriving a name
+/// that already exists on the disk instead of carrying it rewrote unrelated
+/// entries whenever a file was copied onto a disk — lower-case names came back
+/// upper-cased, Latin-1 accents were mangled (`0xE9` → `0xC9`), and a NUL-padded
+/// field became literal underscores (finding MIN-38).
+QByteArray carriedName11(const QHash<QString, QByteArray> &carried, const QString &key,
+                         const QString &component)
+{
+    const auto it = carried.constFind(key);
+    return it == carried.constEnd() ? name11FromHost(component) : it.value();
+}
+
+bool insertItem(Node *root, const Item &item, const QHash<QString, QByteArray> &carried,
+                QString *error)
+{
+    const QString dest = normalizeDest(item.destPath);
     if (dest.isEmpty()) {
         if (item.isDirectory)
             return true;
-        setError(error, QStringLiteral("a file cannot be written to the floppy root without a name"));
+        setError(error, QObject::tr("a file cannot be written to the floppy root without a name"));
         return false;
     }
 
     const QStringList parts = dest.split(QLatin1Char('/'), Qt::SkipEmptyParts);
     Node *dir = root;
+    QString key;
     for (int i = 0; i < parts.size(); ++i) {
         const bool last = (i + 1 == parts.size());
         const bool wantDir = !last || item.isDirectory;
-        const QByteArray wanted = name11FromHost(parts.at(i));
+        key = key.isEmpty() ? parts.at(i) : key + QLatin1Char('/') + parts.at(i);
+        const QByteArray wanted = carriedName11(carried, key, parts.at(i));
 
         Node *existing = nullptr;
         for (Node &child : dir->children) {
@@ -779,14 +885,14 @@ bool insertItem(Node *root, const Item &item, QString *error)
         if (existing) {
             if (wantDir) {
                 if (!existing->isDir) {
-                    setError(error, QStringLiteral("%1 collides with a file on the floppy").arg(dest));
+                    setError(error, QObject::tr("%1 collides with a file on the floppy").arg(dest));
                     return false;
                 }
                 dir = existing;
                 continue;
             }
             if (existing->isDir) {
-                setError(error, QStringLiteral("%1 collides with a folder on the floppy")
+                setError(error, QObject::tr("%1 collides with a folder on the floppy")
                                     .arg(dest));
                 return false;
             }
@@ -800,7 +906,7 @@ bool insertItem(Node *root, const Item &item, QString *error)
             used.insert(child.name11);
         const QByteArray name11 = uniqueName11(wanted, &used);
         if (name11.isEmpty()) {
-            setError(error, QStringLiteral("too many name collisions for %1").arg(parts.at(i)));
+            setError(error, QObject::tr("too many name collisions for %1").arg(parts.at(i)));
             return false;
         }
         if (wantDir) {
@@ -823,7 +929,7 @@ void collectPath(const QString &root, const QString &path, bool recurseHidden,
         return;
     const QFileInfo info(path);
     if (!info.exists()) {
-        setError(error, QStringLiteral("missing %1").arg(path));
+        setError(error, QObject::tr("missing %1").arg(path));
         *ok = false;
         return;
     }
@@ -859,7 +965,7 @@ void collectPath(const QString &root, const QString &path, bool recurseHidden,
 
     QFile file(info.absoluteFilePath());
     if (!file.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("cannot read %1: %2").arg(path, file.errorString()));
+        setError(error, QObject::tr("cannot read %1: %2").arg(path, file.errorString()));
         *ok = false;
         return;
     }
@@ -876,7 +982,7 @@ bool writeAutoFolderImage(const QString &imagePath, const QString &programPath,
 {
     QFile program(programPath);
     if (!program.open(QIODevice::ReadOnly)) {
-        *error = QStringLiteral("cannot read %1: %2").arg(programPath, program.errorString());
+        setError(error, QObject::tr("cannot read %1: %2").arg(programPath, program.errorString()));
         return false;
     }
     const QByteArray prg = program.readAll();
@@ -895,7 +1001,7 @@ bool writeAutoFolderImage(const QString &imagePath, const QString &programPath,
     // does not fit rather than writing past the image and the FAT — the same
     // guard writeImage's allocateClusters applies to the generic export path.
     if (prgClusters > kMaxDataClusters - 1) {
-        setError(error, QStringLiteral("the program does not fit on a 720 KiB floppy"));
+        setError(error, QObject::tr("the program does not fit on a 720 KiB floppy"));
         return false;
     }
     for (int f = 0; f < kFatCount; ++f) {
@@ -931,11 +1037,11 @@ bool writeAutoFolderImage(const QString &imagePath, const QString &programPath,
 
     QFile out(imagePath);
     if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        *error = QStringLiteral("cannot write %1: %2").arg(imagePath, out.errorString());
+        setError(error, QObject::tr("cannot write %1: %2").arg(imagePath, out.errorString()));
         return false;
     }
     if (out.write(reinterpret_cast<const char *>(image.constData()), image.size()) != image.size()) {
-        *error = QStringLiteral("short write to %1").arg(imagePath);
+        setError(error, QObject::tr("short write to %1").arg(imagePath));
         return false;
     }
     return true;
@@ -945,7 +1051,7 @@ bool loadRaw(const QString &imagePath, QByteArray *raw, QString *error)
 {
     QFile file(imagePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("cannot read %1: %2").arg(imagePath, file.errorString()));
+        setError(error, QObject::tr("cannot read %1: %2").arg(imagePath, file.errorString()));
         return false;
     }
     const QByteArray bytes = file.readAll();
@@ -970,11 +1076,11 @@ bool saveRaw(const QString &imagePath, const QByteArray &raw, QString *error)
     }
     QFile out(imagePath);
     if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        setError(error, QStringLiteral("cannot write %1: %2").arg(imagePath, out.errorString()));
+        setError(error, QObject::tr("cannot write %1: %2").arg(imagePath, out.errorString()));
         return false;
     }
     if (out.write(payload) != payload.size()) {
-        setError(error, QStringLiteral("short write to %1").arg(imagePath));
+        setError(error, QObject::tr("short write to %1").arg(imagePath));
         return false;
     }
     return true;
@@ -984,7 +1090,7 @@ QVector<Entry> listRaw(const QByteArray &raw, QString *error)
 {
     Geo geo;
     if (!parseGeo(raw, &geo)) {
-        setError(error, QStringLiteral("not a FAT12 floppy image"));
+        setError(error, QObject::tr("not a FAT12 floppy image"));
         return {};
     }
     QByteArray dirBytes;
@@ -1011,22 +1117,28 @@ bool looksLikeCanonical720k(const QByteArray &firstSector, qint64 imageSize)
         && firstSector.mid(3, 8) == QByteArrayLiteral("mkfs.fat");
 }
 
+QString normalizeEntryPath(const QString &path)
+{
+    QString clean = QDir::fromNativeSeparators(path.trimmed());
+    while (clean.startsWith(QLatin1Char('/')))
+        clean.remove(0, 1);
+    while (clean.endsWith(QLatin1Char('/')))
+        clean.chop(1);
+    return clean;
+}
+
 bool readFileRaw(const QByteArray &raw, const QString &entryPath, QByteArray *data,
                  QString *error)
 {
     Geo g;
     if (!parseGeo(raw, &g)) {
-        setError(error, QStringLiteral("not a FAT12 floppy image"));
+        setError(error, QObject::tr("not a FAT12 floppy image"));
         return false;
     }
-    QString clean = QDir::fromNativeSeparators(entryPath).trimmed();
-    while (clean.startsWith(QLatin1Char('/')))
-        clean.remove(0, 1);
-    while (clean.endsWith(QLatin1Char('/')))
-        clean.chop(1);
+    const QString clean = normalizeEntryPath(entryPath);
     const QStringList parts = clean.split(QLatin1Char('/'), Qt::SkipEmptyParts);
     if (parts.isEmpty()) {
-        setError(error, QStringLiteral("no entry named on the floppy"));
+        setError(error, QObject::tr("no entry named on the floppy"));
         return false;
     }
 
@@ -1039,23 +1151,37 @@ bool readFileRaw(const QByteArray &raw, const QString &entryPath, QByteArray *da
         const QVector<RawDirEntry> entries = parseDirBytes(dirBytes);
         const RawDirEntry *found = dirEntryNamed(entries, parts.at(i));
         if (!found) {
-            setError(error, QStringLiteral("%1 is not on the floppy").arg(clean));
+            setError(error, QObject::tr("%1 is not on the floppy").arg(clean));
             return false;
         }
         if (i + 1 == parts.size()) {
             if (found->isDir) {
-                setError(error, QStringLiteral("%1 is a folder").arg(clean));
+                setError(error, QObject::tr("%1 is a folder").arg(clean));
+                return false;
+            }
+            // Only a chain that yields the entry's whole declared size is a
+            // read; a refusal here keeps a copy-out from silently truncating.
+            QByteArray bytes;
+            QString chainError;
+            if (!readChain(raw, g, found->cluster, found->size, false, &bytes, &chainError)) {
+                setError(error, QObject::tr("%1 on the floppy is damaged: %2")
+                                    .arg(clean, chainError));
                 return false;
             }
             if (data)
-                *data = readChain(raw, g, found->cluster, found->size, false);
+                *data = bytes;
             return true;
         }
         if (!found->isDir) {
-            setError(error, QStringLiteral("%1 is not a folder").arg(clean));
+            setError(error, QObject::tr("%1 is not a folder").arg(clean));
             return false;
         }
-        dirBytes = readChain(raw, g, found->cluster, 0, true);
+        QString dirError;
+        if (!readChain(raw, g, found->cluster, 0, true, &dirBytes, &dirError)) {
+            setError(error, QObject::tr("%1 on the floppy is damaged: %2")
+                                .arg(parts.at(i), dirError));
+            return false;
+        }
     }
     return false;
 }
@@ -1065,8 +1191,7 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
 {
     const QString suffix = QFileInfo(imagePath).suffix().toLower();
     if (suffix == QLatin1String("dim") || suffix == QLatin1String("ipf")) {
-        setError(error,
-                 QStringLiteral("PiST can only rewrite .st, .img and .msa images"));
+        setError(error, QObject::tr("PiST can only rewrite .st, .img and .msa images"));
         return false;
     }
     if (additions.isEmpty() && removals.isEmpty())
@@ -1084,11 +1209,7 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
 
     QStringList removed;
     for (const QString &path : removals) {
-        QString clean = QDir::fromNativeSeparators(path).trimmed();
-        while (clean.startsWith(QLatin1Char('/')))
-            clean.remove(0, 1);
-        while (clean.endsWith(QLatin1Char('/')))
-            clean.chop(1);
+        const QString clean = normalizeEntryPath(path);
         if (!clean.isEmpty())
             removed.append(clean);
     }
@@ -1096,7 +1217,7 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
     QVector<Item> items;
     Geo g;
     if (!parseGeo(raw, &g)) {
-        setError(error, QStringLiteral("not a FAT12 floppy image"));
+        setError(error, QObject::tr("not a FAT12 floppy image"));
         return false;
     }
     for (const Entry &entry : entries) {
@@ -1112,13 +1233,30 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
             continue;
         Item item;
         item.destPath = entry.path;
+        item.name11 = entry.name11;
         item.isDirectory = entry.isDirectory;
         // Read each file by its own directory cluster, not by re-resolving its
         // name. A FAT image can hold two entries with the same 8.3 name; a name
         // lookup returns the first for both, so the second's bytes would be
         // silently replaced by the first's (finding B9).
+        //
+        // A chain that cannot yield the entry's declared size is damage, not a
+        // short file: staging it would write the truncation over the user's own
+        // image and lose the clusters a repair would need, so the update is
+        // refused here, before the first byte is staged. A folder's chain has no
+        // declared size to check against, and the walk tolerates a damaged one
+        // by leaving the folder unexpanded — verify it too, or the rewrite would
+        // quietly drop a whole subtree (finding CRIT-3).
+        QString chainError;
+        QByteArray carriedData;
+        if (!readChain(raw, g, entry.cluster, entry.isDirectory ? 0 : entry.size,
+                       entry.isDirectory, &carriedData, &chainError)) {
+            setError(error, QObject::tr("%1 on the floppy is damaged: %2")
+                                .arg(entry.path, chainError));
+            return false;
+        }
         if (!entry.isDirectory)
-            item.data = readChain(raw, g, entry.cluster, entry.size, false);
+            item.data = carriedData;
         items.append(item);
     }
     items += additions;
@@ -1144,21 +1282,21 @@ bool updateImage(const QString &imagePath, const QVector<Item> &additions,
                                                 .arg(info.completeBaseName(), suffix);
     QFile::remove(backup);
     if (!QFile::rename(imagePath, backup)) {
-        setError(error, QStringLiteral("could not set %1 aside for replacement "
-                                       "(is the image in use?)")
+        setError(error, QObject::tr("could not set %1 aside for replacement "
+                                    "(is the image in use?)")
                             .arg(imagePath));
         QFile::remove(staged);
         return false;
     }
     if (!QFile::rename(staged, imagePath)) {
-        setError(error, QStringLiteral("could not replace %1 with the staged image")
+        setError(error, QObject::tr("could not replace %1 with the staged image")
                             .arg(imagePath));
         if (QFile::rename(backup, imagePath)) {
             QFile::remove(staged);
             return false;
         }
         const QString previous = error ? *error : QString();
-        setError(error, QStringLiteral("%1\nThe original was preserved as %2.")
+        setError(error, QObject::tr("%1\nThe original was preserved as %2.")
                             .arg(previous, backup));
         QFile::remove(staged);
         return false;
@@ -1171,12 +1309,25 @@ bool writeImage(const QString &imagePath, const QVector<Item> &items, QString *e
 {
     Node root;
     root.isDir = true;
+    // The raw names the caller carried forward for entries that already exist on
+    // a disk (`updateImage`): every component of such a path is written with the
+    // bytes its directory holds, so an entry the operation did not touch is
+    // re-emitted byte for byte. Only a host name is derived from its spelling.
+    QHash<QString, QByteArray> carried;
     for (const Item &item : items) {
-        if (!insertItem(&root, item, error))
+        if (item.name11.isEmpty())
+            continue;
+        const QStringList parts =
+            normalizeDest(item.destPath).split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        if (!parts.isEmpty())
+            carried.insert(parts.join(QLatin1Char('/')), item.name11);
+    }
+    for (const Item &item : items) {
+        if (!insertItem(&root, item, carried, error))
             return false;
     }
     if (root.children.size() > kRootEntries) {
-        setError(error, QStringLiteral("too many entries in the floppy root directory"));
+        setError(error, QObject::tr("too many entries in the floppy root directory"));
         return false;
     }
 
@@ -1199,8 +1350,8 @@ bool writeImage(const QString &imagePath, const QVector<Item> &items, QString *e
     }
 
     const int rootStart = (kReservedSectors + kFatCount * kFatSectors) * kSectorSize;
-    writeDirEntries(image, rootStart, root, false);
-    writeNodeData(image, root, true);
+    writeDirEntries(image, rootStart, root, false, 0);
+    writeNodeData(image, root, 0);
 
     const QByteArray raw(reinterpret_cast<const char *>(image.constData()), image.size());
     return saveRaw(imagePath, raw, error);
@@ -1210,7 +1361,7 @@ bool collectHostItems(const QString &rootDirectory, const QStringList &hostPaths
                       QVector<Item> *items, QString *error)
 {
     if (!items) {
-        setError(error, QStringLiteral("no output list"));
+        setError(error, QObject::tr("no output list"));
         return false;
     }
     items->clear();
@@ -1224,7 +1375,7 @@ bool collectHostItems(const QString &rootDirectory, const QStringList &hostPaths
             return false;
     }
     if (items->isEmpty()) {
-        setError(error, QStringLiteral("nothing to export"));
+        setError(error, QObject::tr("nothing to export"));
         return false;
     }
     return true;

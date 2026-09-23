@@ -4,6 +4,8 @@
 
 #include "git/GitService.h"
 
+#include "build/ProcessUtil.h"
+
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
@@ -20,6 +22,41 @@ QStringList uniquePaths(const QStringList &paths)
             out.append(path);
     }
     return out;
+}
+
+/// The error for a staged path that the checked set leaves out. `paths` is
+/// non-empty.
+QString stagedOutsideMessage(const QStringList &paths)
+{
+    return GitService::tr("%1 is staged but not checked — include it or unstage it.")
+        .arg(paths.join(QStringLiteral(", ")));
+}
+
+/// Why a commit must not run, or an empty string when the index is exactly the
+/// checked set. `selection` is the checked paths. A path staged in the index
+/// but left out of the selection would be swept into a pathspec-less commit,
+/// and a conflicted path would commit markers — both are refused here, before
+/// `git add` runs, so the user's index is never rewritten to hide them.
+QString commitBlocker(const GitStatus &status, const QStringList &selection)
+{
+    QStringList conflicted;
+    QStringList outside;
+    for (const GitChangeEntry &entry : status.entries) {
+        if (entry.conflicted) {
+            if (selection.contains(entry.path) && !conflicted.contains(entry.path))
+                conflicted.append(entry.path);
+        } else if (entry.group == GitChange::Staged && !selection.contains(entry.path)) {
+            if (!outside.contains(entry.path))
+                outside.append(entry.path);
+        }
+    }
+    if (!conflicted.isEmpty()) {
+        return GitService::tr("Cannot commit a conflicted path: %1. Resolve it first.")
+            .arg(conflicted.join(QStringLiteral(", ")));
+    }
+    if (!outside.isEmpty())
+        return stagedOutsideMessage(outside);
+    return {};
 }
 
 } // namespace
@@ -44,10 +81,9 @@ GitService::GitService(QObject *parent)
         m_proc->closeWriteChannel();
     });
     connect(m_proc, &QProcess::finished, this, [this](int, QProcess::ExitStatus) { settle(false); });
-    connect(m_proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        // FailedToStart does not emit finished, which would leave the queue stuck.
-        if (error == QProcess::FailedToStart)
-            settle(true);
+    connectFailedToStart(m_proc, this, [this] {
+        // FailedToStart emits no finished, which would leave the queue stuck.
+        settle(true);
     });
 }
 
@@ -55,11 +91,7 @@ GitService::~GitService()
 {
     // A window closing mid-status must not destroy a live QProcess. settle()
     // would then run against an object that is already going away.
-    m_proc->disconnect(this);
-    if (m_proc->state() != QProcess::NotRunning) {
-        m_proc->kill();
-        m_proc->waitForFinished(2000);
-    }
+    killAndRelease(m_proc, this);
 }
 
 QString GitService::gitProgram()
@@ -200,32 +232,41 @@ void GitService::commit(const QStringList &stage, const QStringList &unstage,
         return;
     }
 
-    // Unstage first, then add, then commit only the chosen paths. A file that
-    // was already staged but left unchecked is restored out of the index so it
-    // cannot ride along, and `commit -- paths` refuses to take anything else.
+    // A staged row the panel left unchecked is still in the index, so a
+    // pathspec-less commit would take it. Refuse rather than unstage it: the
+    // index is the user's, partial `git add -p` selections included. The index
+    // is read below as well, so a path staged outside PiST is caught too.
+    QStringList unchecked;
+    for (const QString &path : uniquePaths(unstage)) {
+        if (!commitPaths.contains(path))
+            unchecked.append(path);
+    }
+    if (!unchecked.isEmpty()) {
+        emit operationFinished(QStringLiteral("commit"), false, stagedOutsideMessage(unchecked));
+        return;
+    }
+
+    // Add the ticked working-tree rows, then commit the index with no
+    // pathspec. The first step reads the index so a path staged outside the
+    // selection, or a conflicted path, stops the commit before `git add` runs.
     // No `-a`, no `--no-verify`: hooks run, and the checkboxes are the set.
     Task task;
     task.name = QStringLiteral("commit");
     task.workDir = m_root;
     task.dirGen = m_dirGen;
-    const QStringList drop = uniquePaths(unstage);
+    task.commitSelection = uniquePaths(paths + stage);
+    task.steps.append({{QStringLiteral("status"), QStringLiteral("--porcelain=v1"),
+                        QStringLiteral("-z"), QStringLiteral("-b")},
+                       {}});
     const QStringList add = uniquePaths(stage);
-    if (!drop.isEmpty()) {
-        QStringList args{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")};
-        args += drop;
-        task.steps.append({args, {}});
-    }
     if (!add.isEmpty()) {
         QStringList args{QStringLiteral("add"), QStringLiteral("--")};
         args += add;
         task.steps.append({args, {}});
     }
-    QStringList args{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-"),
-                     QStringLiteral("--")};
-    args += commitPaths;
     QByteArray body = text.toUtf8();
     body.append('\n');
-    task.steps.append({args, body});
+    task.steps.append({{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")}, body});
     enqueue(task);
     setBusy(true);
 }
@@ -438,6 +479,22 @@ void GitService::settle(bool failedToStart)
         m_running = false;
         finishTask(false);
         return;
+    }
+
+    // A commit reads the index first. Stop here, before `git add` runs, when a
+    // staged path is outside the checked set or a checked path is conflicted:
+    // the index is the user's, and a conflict is never committed as a
+    // resolution the user was not shown.
+    if (m_current.name == QLatin1String("commit") && m_current.step == 0) {
+        const QString blocked = commitBlocker(parsePorcelain(m_current.stdoutBuf),
+                                              m_current.commitSelection);
+        if (!blocked.isEmpty()) {
+            m_current.stdoutBuf.clear();
+            m_current.stderrBuf = blocked.toUtf8();
+            m_running = false;
+            finishTask(false);
+            return;
+        }
     }
 
     ++m_current.step;

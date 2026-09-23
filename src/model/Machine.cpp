@@ -2,7 +2,7 @@
 //
 // PiST - an IDE for Atari ST assembly development
 
-#include "emu/Machine.h"
+#include "model/Machine.h"
 
 namespace pist {
 
@@ -19,47 +19,50 @@ namespace {
 bool isStTos(int version) { return version >= 0x0100 && version < 0x0106; }
 bool isSteTos(int version) { return version == 0x0106 || version == 0x0162; }
 
+/// The one table of machines: CLI spelling, display name and enum together, so
+/// the compiler cross-checks what used to be three copies (a switch, a lookup
+/// table and a literal list) that could drift apart silently (MIN-6).
+struct MachineInfo
+{
+    Machine machine;
+    const char *cli;
+    const char *display;
+};
+
+constexpr MachineInfo kMachines[] = {
+    {Machine::St, "st", "ST"},
+    {Machine::MegaSt, "megast", "Mega ST"},
+    {Machine::Ste, "ste", "STe"},
+    {Machine::MegaSte, "megaste", "Mega STe"},
+    {Machine::Tt, "tt", "TT"},
+    {Machine::Falcon, "falcon", "Falcon"},
+};
+
 } // namespace
 
 QString machineCliName(Machine machine)
 {
-    switch (machine) {
-    case Machine::St:      return QStringLiteral("st");
-    case Machine::MegaSt:  return QStringLiteral("megast");
-    case Machine::Ste:     return QStringLiteral("ste");
-    case Machine::MegaSte: return QStringLiteral("megaste");
-    case Machine::Tt:      return QStringLiteral("tt");
-    case Machine::Falcon:  return QStringLiteral("falcon");
-    }
+    for (const MachineInfo &info : kMachines)
+        if (info.machine == machine)
+            return QLatin1String(info.cli);
     return QStringLiteral("st");
 }
 
 QString machineDisplayName(Machine machine)
 {
-    switch (machine) {
-    case Machine::St:      return QStringLiteral("ST");
-    case Machine::MegaSt:  return QStringLiteral("Mega ST");
-    case Machine::Ste:     return QStringLiteral("STe");
-    case Machine::MegaSte: return QStringLiteral("Mega STe");
-    case Machine::Tt:      return QStringLiteral("TT");
-    case Machine::Falcon:  return QStringLiteral("Falcon");
-    }
+    for (const MachineInfo &info : kMachines)
+        if (info.machine == machine)
+            return QLatin1String(info.display);
     return QStringLiteral("ST");
 }
 
 bool machineFromCliName(const QString &name, Machine *machine)
 {
     const QString lower = name.toLower();
-    struct Entry { const char *cli; Machine machine; };
-    static const Entry entries[] = {
-        {"st", Machine::St},         {"megast", Machine::MegaSt},
-        {"ste", Machine::Ste},       {"megaste", Machine::MegaSte},
-        {"tt", Machine::Tt},         {"falcon", Machine::Falcon},
-    };
-    for (const Entry &entry : entries) {
-        if (lower == QLatin1String(entry.cli)) {
+    for (const MachineInfo &info : kMachines) {
+        if (lower == QLatin1String(info.cli)) {
             if (machine)
-                *machine = entry.machine;
+                *machine = info.machine;
             return true;
         }
     }
@@ -68,8 +71,10 @@ bool machineFromCliName(const QString &name, Machine *machine)
 
 QList<Machine> allMachines()
 {
-    return {Machine::St, Machine::MegaSt, Machine::Ste,
-            Machine::MegaSte, Machine::Tt, Machine::Falcon};
+    QList<Machine> machines;
+    for (const MachineInfo &info : kMachines)
+        machines.append(info.machine);
+    return machines;
 }
 
 bool machineAcceptsTos(Machine machine, int versionCode, bool isEmuTos)

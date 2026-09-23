@@ -9,7 +9,7 @@
 // "unknown", and the application only rejects ROMs whose version is *known* to
 // be too old — so the guard against the silent-hang case would be skippable.
 
-#include "emu/Machine.h"
+#include "model/Machine.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 
@@ -86,6 +86,8 @@ private slots:
     // selection
     void prefersNewestCompatibleRom();
     void steSelectionAvoidsStOnlyRom();
+    void fallbackPrefersMachineCompatibleRom();
+    void fallbackPicksNewestCompatibleRom();
 
     // Bundled-ROM discovery. Every release archive ships its ROM in share/emutos
     // beside the executable's parent, but nothing searched there, so the ROM
@@ -397,6 +399,66 @@ void TstTosRom::steSelectionAvoidsStOnlyRom()
              "an STe must not be given an ST-only ROM");
     QCOMPARE(chosen.versionCode, 0x0162);
     QVERIFY(chosen.supportsAutostart());
+}
+
+// With nothing that fully suits the machine, the fallback must still prefer a
+// ROM the machine can run. An incompatible one is worse than useless: Hatari
+// resolves the pairing by overriding --machine (reporting only an ERROR line),
+// so the session silently runs a different machine than the project selected —
+// exactly what the ROM/machine model exists to prevent. A compatible ROM, even
+// a too-old one, boots on the requested machine through the AUTO-folder floppy
+// fallback the launch path already implements.
+void TstTosRom::fallbackPrefersMachineCompatibleRom()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("a-102.img"), 0x0102).isEmpty());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("b-404.img"), 0x0404).isEmpty());
+
+    const QList<TosRom> roms = scanTosRoms(dir.path());
+    QCOMPARE(roms.size(), 2);
+
+    // Neither ROM is both compatible with an ST and autostart-capable, so this is
+    // the fallback path. The 1.02 is the one Hatari will actually boot on an ST;
+    // the newer 4.04 Falcon ROM would make Hatari switch the machine.
+    const TosRom chosen = selectPreferredRom(roms, Machine::St);
+    QCOMPARE(chosen.versionCode, 0x0102);
+    QVERIFY2(chosen.supportsMachine(Machine::St),
+             "the fallback must not hand an ST a ROM that makes Hatari override --machine");
+
+    // When nothing on disk suits the machine at all the fallback still names a
+    // ROM: an STe with only a 1.04 ST image gets that image, because the run path
+    // has to say *which* ROM will make Hatari override the machine. An invalid
+    // entry here would turn a mismatch into "no TOS ROM found", which is false.
+    QTemporaryDir onlySt;
+    QVERIFY(onlySt.isValid());
+    QVERIFY(!writeRom(onlySt.path(), QStringLiteral("a-104.img"), 0x0104).isEmpty());
+    const QList<TosRom> stRoms = scanTosRoms(onlySt.path());
+    QCOMPARE(stRoms.size(), 1);
+
+    const TosRom named = selectPreferredRom(stRoms, Machine::Ste);
+    QVERIFY2(!named.path.isEmpty(), "the fallback must still name a ROM");
+    QCOMPARE(named.versionCode, 0x0104);
+}
+
+// Compatible-but-old beats incompatible-new, and among compatible ROMs the newest
+// wins. Mega ST accepts the 1.x ST ROMs and nothing newer; both 1.00 and 1.02 are
+// compatible but too old to autostart, so the fallback has a real choice: 1.02,
+// not the first entry and not the newest overall.
+void TstTosRom::fallbackPicksNewestCompatibleRom()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("a-100.img"), 0x0100).isEmpty());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("b-102.img"), 0x0102).isEmpty());
+    QVERIFY(!writeRom(dir.path(), QStringLiteral("c-404.img"), 0x0404).isEmpty());
+
+    const QList<TosRom> roms = scanTosRoms(dir.path());
+    QCOMPARE(roms.size(), 3);
+
+    const TosRom chosen = selectPreferredRom(roms, Machine::MegaSt);
+    QCOMPARE(chosen.versionCode, 0x0102);
+    QVERIFY(chosen.supportsMachine(Machine::MegaSt));
 }
 
 // ---------------------------------------------------------------------------

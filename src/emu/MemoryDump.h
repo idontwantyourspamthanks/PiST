@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QList>
+#include <QMetaType>
 #include <QString>
 #include <QVector>
 
@@ -30,6 +31,14 @@ struct MemoryRow
 /// mapping that does not survive decoding as UTF-8, and we render our own.
 QList<MemoryRow> parseMemoryDump(const QString &response);
 
+/// Render rows back as the `memdump` text Hatari prints — the inverse of
+/// parseMemoryDump, one `00012596: 48 7a 00 0c  Hz..?<..NA\OK` line per row.
+///
+/// For the transport that never sees that text: the hrdb fork answers a dump
+/// with a uuencoded payload, so its rows are decoded rather than parsed and
+/// this is how the log still gets a readable dump.
+QString renderMemoryDump(const QList<MemoryRow> &rows);
+
 /// Render the character column for a row, using printable ASCII and '.' for
 /// everything else. Kept separate so the view and tests agree on it.
 QString renderMemoryChars(const QVector<quint8> &bytes);
@@ -39,6 +48,10 @@ QString renderMemoryChars(const QVector<quint8> &bytes);
 /// in memory actually has.
 quint32 readLongBE(const QByteArray &bytes, int offset);
 
+/// The same read for callers holding a dump's bytes as parsed (a row, or a
+/// run of them) rather than as the text they were parsed from.
+quint32 readLongBE(const QVector<quint8> &bytes, int offset);
+
 /// Whether a 32-bit value could be an address on an ST: non-zero, even (the
 /// 68000 faults on odd word/long accesses), and inside the 24-bit address bus.
 /// The emulator's own state uses 32-bit registers, so pointers routinely carry
@@ -46,3 +59,10 @@ quint32 readLongBE(const QByteArray &bytes, int offset);
 bool looksLikeAddress(quint32 value);
 
 } // namespace pist
+
+// A dump's rows cross the backend boundary on signals (MAJ-45), so they are
+// Qt metatypes: a queued connection or a QSignalSpy would otherwise be unable
+// to carry them. Declared here, beside the type, and registered by the
+// backends that emit them.
+Q_DECLARE_METATYPE(pist::MemoryRow)
+Q_DECLARE_METATYPE(QList<pist::MemoryRow>)

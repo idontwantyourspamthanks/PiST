@@ -113,6 +113,47 @@ QColor cubeColor(PaletteKind kind, int index)
     return cubeRgb(kind, index).toColor();
 }
 
+namespace {
+
+// The "empty" textures: the two tones of the checkerboard the grid canvas has
+// always painted, and the flat panel the imported-sheet underlay uses.
+constexpr QRgb kEmptyLight = qRgb(40, 40, 40);
+constexpr QRgb kEmptyDark = qRgb(70, 70, 70);
+constexpr QRgb kEmptyFlat = qRgb(50, 50, 50);
+
+} // namespace
+
+QImage indicesToImage(const QVector<int> &pixels, int width, int height, PaletteKind kind,
+                      EmptyStyle empty, const QRect &region)
+{
+    const QRect area = region.isNull() ? QRect(0, 0, width, height)
+                                       : region.intersected(QRect(0, 0, width, height));
+    if (area.isEmpty())
+        return {};
+    QImage image(area.width(), area.height(), QImage::Format_ARGB32);
+    if (empty == EmptyStyle::Transparent)
+        image.fill(Qt::transparent);
+    for (int y = 0; y < area.height(); ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < area.width(); ++x) {
+            const int sx = area.x() + x;
+            const int sy = area.y() + y;
+            const int cube = pixels.value(sy * width + sx, kTransparent);
+            if (cube < 0) {
+                if (empty == EmptyStyle::Checkerboard)
+                    line[x] = ((sx + sy) & 1) == 0 ? kEmptyLight : kEmptyDark;
+                else if (empty == EmptyStyle::Flat)
+                    line[x] = kEmptyFlat;
+                // Transparent keeps the clear value the fill above set.
+                continue;
+            }
+            const Rgb rgb = cubeRgb(kind, cube);
+            line[x] = qRgb(rgb.r, rgb.g, rgb.b);
+        }
+    }
+    return image;
+}
+
 int snapChannel(PaletteKind kind, int value)
 {
     const QVector<int> levels = channelLevels(kind);
@@ -241,6 +282,14 @@ QVector<quint16> stColourTable(PaletteKind kind, const QVector<int> &active)
     QVector<quint16> table(kMaxActive, 0);
     for (int i = 0; i < kMaxActive && i < active.size(); ++i)
         table[i] = colourWord(kind, cubeRgb(kind, active.at(i)));
+    return table;
+}
+
+QVector<quint16> stfmColourTable(PaletteKind kind, const QVector<int> &active)
+{
+    QVector<quint16> table(kMaxActive, 0);
+    for (int i = 0; i < kMaxActive && i < active.size(); ++i)
+        table[i] = stfmColourWord(cubeRgb(kind, active.at(i)));
     return table;
 }
 

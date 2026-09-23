@@ -9,6 +9,17 @@
 
 namespace pist {
 
+/// The machine vocabulary: which machines PiST offers, what Hatari calls them,
+/// and which TOS versions each accepts.
+///
+/// It lives here, in a leaf of its own (`pist_model`, Qt6::Core only), because
+/// two modules need it and neither one owns it: `emu/` talks to the emulator,
+/// and `project/` persists a machine name in the `.pistproject` file (MIN-56 —
+/// `project/` used to include `emu/` for these declarations alone, which put a
+/// leaf module above one it should not know about and made a JSON reader's test
+/// compile the emulator module). ROM discovery stays in `emu/`: it reads the
+/// filesystem and knows the search order, which the vocabulary does not.
+///
 /// Emulated machine.
 ///
 /// Machine and TOS ROM are not independent: Hatari rejects some pairings and

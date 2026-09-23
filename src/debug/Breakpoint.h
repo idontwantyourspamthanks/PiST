@@ -52,9 +52,16 @@ struct ArmPlan
     /// Breakpoints that were armed, with `address` and `resolved` filled in.
     QList<Breakpoint> armed;
 
-    /// Human-readable labels of breakpoints that had no address, because their
-    /// line emitted no code or data.
+    /// Human-readable labels of breakpoints that could not be armed: their line
+    /// emitted no code, or their own condition is one Hatari's breakpoint
+    /// grammar rejects.
     QStringList unresolved;
+
+    /// Why each entry of `unresolved` was left out, parallel to it. The two
+    /// causes are different problems — a line with no address, a condition the
+    /// debugger will refuse — and the panel and console can only say which if
+    /// the plan carries it (MIN-10).
+    QStringList unresolvedReasons;
 };
 
 /// Resolve source-line breakpoints to Hatari `b` commands.

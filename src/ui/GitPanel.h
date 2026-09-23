@@ -24,8 +24,10 @@ class QTreeWidgetItem;
 namespace pist {
 
 /// Status, the commit set, pull/push, the branch, a diff of the selected row,
-/// and a flat history. The checked rows are the commit: nothing else is staged
-/// into it, and a file left unchecked is taken back out of the index first.
+/// and a flat history. The checked rows are the commit: a checked unstaged row
+/// stages its working-tree content, and a staged path left unchecked makes the
+/// commit refuse (naming it) instead of being taken back out of the index. A
+/// conflicted path is listed, not checkable, and never committed.
 /// The branch selector switches with `git switch`; New… creates one. A switch
 /// that would overwrite local edits is refused by git, and that error is
 /// shown. The diff is read-only and only present while a file or a commit is

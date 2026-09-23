@@ -98,7 +98,6 @@ public slots:
 signals:
     void finished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void outputLine(const QString &line);
-    void stepStarted(const QString &description);
 
 private:
     /// One command in the build. A single-source build is one step; a linked
@@ -107,11 +106,20 @@ private:
     {
         QString program;
         QStringList arguments;
-        QString description;
         bool isLinker = false;
     };
 
-    void planSteps();
+    /// Turn the configured sources into the process steps to run, in order.
+    ///
+    /// Returns false with `error` set when the plan itself cannot be built — two
+    /// sources that resolve to the same object path, which would assemble one
+    /// module twice and leave the other out of the link with no diagnostic at
+    /// all (finding MIN-40) — and leaves `m_steps` empty for a build that has no
+    /// first step to run, which `build()`'s own guard reports: a linked build
+    /// with no linker configured plans *nothing*, rather than appending a link
+    /// step whose empty program QProcess can only report as
+    /// "Could not run ''. Is it installed?" (finding MIN-36).
+    bool planSteps(QString *error);
     void runNextStep();
     void finishBuild(bool success);
     void handleStderrLine(const QString &line);

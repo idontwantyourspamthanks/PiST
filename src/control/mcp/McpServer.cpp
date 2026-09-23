@@ -4,10 +4,13 @@
 
 #include "control/mcp/McpServer.h"
 
+#include "control/ControlProtocol.h"
 #include "control/mcp/ControlClient.h"
 
 #include <QJsonDocument>
 #include <QJsonParseError>
+
+#include <utility>
 
 namespace pist::mcp {
 
@@ -51,6 +54,29 @@ QJsonArray textContent(const QString &text)
     block.insert(QStringLiteral("type"), QStringLiteral("text"));
     block.insert(QStringLiteral("text"), text);
     return QJsonArray{block};
+}
+
+/// The name of the first string argument in `args` that carries a line break,
+/// or an empty string when none does.
+///
+/// Every string argument a tool takes is interpolated into a line-protocol
+/// command, and the IDE frames on '\n': an argument carrying one is executed
+/// there as a second verb — `quit`, deliberately absent from this catalog,
+/// among them — and its reply desyncs the shim's one-in-flight correlation.
+/// The arguments are attacker-influenceable without a malicious MCP client
+/// (source text an agent has just read, fed back as an argument), so the scan
+/// covers the whole argument object rather than each call site by hand, which
+/// is also what keeps a newly added argument from being forgotten.
+QString lineBreakParameter(const QJsonObject &args)
+{
+    for (auto it = args.constBegin(); it != args.constEnd(); ++it) {
+        if (!it.value().isString())
+            continue;
+        const QString value = it.value().toString();
+        if (value.contains(QLatin1Char('\n')) || value.contains(QLatin1Char('\r')))
+            return it.key();
+    }
+    return QString();
 }
 
 } // namespace
@@ -145,6 +171,12 @@ void McpServer::setToken(const QString &token)
 {
     m_control->setToken(token);
     m_events->setToken(token);
+}
+
+void McpServer::setDiscoveryResolver(ControlClient::DiscoveryResolver resolver)
+{
+    m_control->setDiscoveryResolver(resolver);
+    m_events->setDiscoveryResolver(std::move(resolver));
 }
 
 void McpServer::handleLine(const QByteArray &line)
@@ -342,7 +374,7 @@ void McpServer::handleResourcesRead(const QJsonValue &id, const QJsonObject &par
     }
 
     const quint64 token = m_nextToken++;
-    m_outstanding.insert(token, Outstanding{id, QStringLiteral("resource:") + uri, QString()});
+    m_outstanding.insert(token, Outstanding{id, QStringLiteral("resource:") + uri, QString(), true});
     m_control->request(command, true, token);
 }
 
@@ -441,10 +473,37 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         return;
     }
 
+    // A call whose argument carries a line break is refused here, before any
+    // command is built and before anything goes on the wire: the protocol is
+    // line-framed, so the text after the break would run as a separate verb.
+    const QString badArgument = lineBreakParameter(args);
+    if (!badArgument.isEmpty()) {
+        sendError(id, kInvalidParams,
+                  QStringLiteral("Invalid parameter '%1': a line break cannot appear in a "
+                                 "control command argument")
+                      .arg(badArgument));
+        return;
+    }
+
     // pist_watch is the one tool that is not a straight pass-through: it
     // establishes (or re-reads) the event subscription.
     if (name == QLatin1String("pist_watch")) {
         if (!m_events->isSubscribed()) {
+            // A second call while the first is waiting for its acknowledgement
+            // used to overwrite the pending id, so the first call's JSON-RPC id
+            // was never answered and that client hung forever (MIN-8). One
+            // subscription serves one waiter; the second call is refused and
+            // answered at once instead.
+            if (m_havePendingWatch) {
+                QJsonObject result;
+                result.insert(QStringLiteral("content"),
+                              textContent(QStringLiteral(
+                                  "a watch subscription is already in flight; call "
+                                  "pist_watch again once it is acknowledged")));
+                result.insert(QStringLiteral("isError"), true);
+                sendResult(id, result);
+                return;
+            }
             m_pendingWatchId = id;
             m_havePendingWatch = true;
             ensureSubscribed();
@@ -465,30 +524,24 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
     }
 
     // Every other tool is a remote-control verb with zero or more text
-    // arguments. `block` must match the verb's framing (see RemoteControl's
-    // help): a mismatch would misparse the reply.
+    // arguments: the command is built here, and its reply framing is read back
+    // from the verb's own table row below.
     QString command;
-    bool block = false;
     if (name == QLatin1String("pist_state")) {
         // statejson, not state: the JSON is served as structured content (see
         // deliverReply), which is what an agent should consume.
         command = QStringLiteral("statejson");
-        block = true;
     } else if (name == QLatin1String("pist_problems")) {
         command = QStringLiteral("problems");
-        block = true;
     } else if (name == QLatin1String("pist_read")) {
         command = QStringLiteral("read");
-        block = true;
     } else if (name == QLatin1String("pist_console")) {
         command = QStringLiteral("console");
-        block = true;
     } else if (name == QLatin1String("pist_breakpoints")) {
         // There is no dedicated breakpoint-listing verb; the debugger's own
         // breakpoint listing is the honest answer, and `b` with no arguments
-        // lists them. It is a block reply.
+        // lists them.
         command = QStringLiteral("cmd b");
-        block = true;
     } else if (name == QLatin1String("pist_run")) {
         command = QStringLiteral("run");
     } else if (name == QLatin1String("pist_build")) {
@@ -503,22 +556,18 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         command = QStringLiteral("profile stop");
     } else if (name == QLatin1String("pist_profile_results")) {
         command = QStringLiteral("profile results");
-        block = true;
     } else if (name == QLatin1String("pist_symbols")) {
         const QString filter = args.value(QStringLiteral("filter")).toString();
         command = filter.isEmpty() ? QStringLiteral("symbols")
                                    : QStringLiteral("symbols ") + filter;
-        block = true;
     } else if (name == QLatin1String("pist_readmem")) {
         command = QStringLiteral("readmem %1 %2")
                       .arg(args.value(QStringLiteral("address")).toString(),
                            args.value(QStringLiteral("length")).toString());
-        block = true;
     } else if (name == QLatin1String("pist_disasm")) {
         const QString address = args.value(QStringLiteral("address")).toString();
         command = address.isEmpty() ? QStringLiteral("disasm")
                                     : QStringLiteral("disasm ") + address;
-        block = true;
     } else if (name == QLatin1String("pist_stop")) {
         command = QStringLiteral("stop");
     } else if (name == QLatin1String("pist_step")) {
@@ -545,10 +594,8 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
     } else if (name == QLatin1String("pist_cmd")) {
         const QString text = args.value(QStringLiteral("command")).toString();
         command = QStringLiteral("cmd %1").arg(text);
-        block = true;
     } else if (name == QLatin1String("pist_tabs")) {
         command = QStringLiteral("tabs");
-        block = true;
     } else if (name == QLatin1String("pist_save")) {
         command = QStringLiteral("save");
     } else if (name == QLatin1String("pist_screenshot")) {
@@ -560,8 +607,13 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         return;
     }
 
+    // The framing comes from the verb table (control/ControlProtocol.h), not
+    // from a flag repeated per tool: the shim must frame the reply exactly the
+    // way the server sends it, and the two cannot drift apart (MIN-52).
+    const bool block = control::isBlockCommand(command);
+
     const quint64 token = m_nextToken++;
-    m_outstanding.insert(token, Outstanding{id, name});
+    m_outstanding.insert(token, Outstanding{id, name, QString(), block});
     m_control->request(command, block, token);
 }
 
@@ -573,7 +625,12 @@ void McpServer::deliverReply(quint64 token, const QString &text)
     const Outstanding outstanding = it.value();
     m_outstanding.erase(it);
 
-    const bool isError = text.startsWith(QLatin1String("error"));
+    // A block's outcome comes from its explicit ok/error status header, which
+    // the client turns into a reply or a failure (so a body beginning with
+    // "error" is never a failure here). Only the single-line verbs still carry
+    // their outcome in the text, and there "ok"/"error …" is the whole line
+    // (MIN-9).
+    const bool isError = !outstanding.block && text.startsWith(QLatin1String("error"));
 
     // A resource read wraps its body as resource contents, not a tool result.
     if (outstanding.tool.startsWith(QLatin1String("resource:"))) {
@@ -595,7 +652,8 @@ void McpServer::deliverReply(quint64 token, const QString &text)
     // and answer when it lands, with the original error kept as the text.
     if (isError && outstanding.tool == QLatin1String("pist_build")) {
         m_outstanding.insert(token, Outstanding{outstanding.id,
-                                                QStringLiteral("pist_build_diagnostics"), text});
+                                                QStringLiteral("pist_build_diagnostics"), text,
+                                                true});
         m_control->request(QStringLiteral("problems"), true, token);
         return;
     }

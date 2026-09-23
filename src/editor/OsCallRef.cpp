@@ -4,16 +4,24 @@
 
 #include "editor/OsCallRef.h"
 
+#include <QHash>
+
 namespace pist {
 
 namespace {
 
-void add(QList<OsCallInfo> &table, int trap, int opcode, const char *name, const char *prototype,
-         const char *summary, const char *returns, const char *availability, int stackBytes)
+/// Append one entry and return it, so a call whose canonical binding has an
+/// irregular shape can set the layout member that describes it (see OsCallInfo).
+/// The reference stays valid until the next append, and every caller uses it
+/// immediately.
+OsCallInfo &add(QList<OsCallInfo> &table, int trap, int opcode, const char *name,
+                const char *prototype, const char *summary, const char *returns,
+                const char *availability, int stackBytes)
 {
     table.append(OsCallInfo{trap, opcode, QString::fromLatin1(name), QString::fromLatin1(prototype),
                             QString::fromLatin1(summary), QString::fromLatin1(returns),
                             QString::fromLatin1(availability), stackBytes});
+    return table.last();
 }
 
 // Phrases repeated across whole families, so a family reads consistently.
@@ -101,7 +109,7 @@ QList<OsCallInfo> buildTable()
         "Release a block allocated with Malloc.", "0 ok, EIMBA", "", 6);
     add(t, 1, 74, "Mshrink", "int32_t Mshrink(void *block, int32_t newsiz)",
         "Shrink an allocated block to newsiz bytes; the binding pushes a reserved zero word after the size.",
-        "0 ok, EIMBA or EGSBF", "", 12);
+        "0 ok, EIMBA or EGSBF", "", 12).reservedWords = 1;
 
     // --- GEMDOS: processes ----------------------------------------------------
     add(t, 1, 0, "Pterm0", "void Pterm0(void)",
@@ -113,7 +121,7 @@ QList<OsCallInfo> buildTable()
         "Terminate but stay resident, keeping keepcnt bytes starting at the basepage.", noReturn, "", 8);
     add(t, 1, 75, "Pexec", "int32_t Pexec(uint16_t mode, ...)",
         "Load and/or run a program: mode 0 load+go, 3 load only, 4 go, 5 create basepage, 7 with prgflags.",
-        "mode 0/4: child exit code; mode 3/5/7: basepage pointer", "", 16);
+        "mode 0/4: child exit code; mode 3/5/7: basepage pointer", "", 16).fixedArgBlock = true;
     add(t, 1, 76, "Pterm", "void Pterm(uint16_t retcode)",
         "Terminate the process with an exit code.", noReturn, "", 4);
 
@@ -160,7 +168,7 @@ QList<OsCallInfo> buildTable()
         "Find the next match after Fsfirst; fills the DTA.", "0 if found, negative error code", "", 2);
     add(t, 1, 86, "Frename", "int32_t Frename(const char *oldname, const char *newname)",
         "Rename a file; the binding pushes a reserved zero word after oldname.",
-        "0 ok, negative error code", "", 12);
+        "0 ok, negative error code", "", 12).reservedWords = 1;
     add(t, 1, 87, "Fdatime", "void Fdatime(DOSTIME *timeptr, int16_t handle, int16_t wflag)",
         "Read a file's timestamp, or set it when wflag is 1.", noReturn, "", 10);
 
@@ -194,9 +202,15 @@ QList<OsCallInfo> buildTable()
     // --- XBIOS: special --------------------------------------------------------
     add(t, 14, 1, "Ssbrk", "void *Ssbrk(int16_t count)",
         "Reserve memory before GEMDOS starts; a dummy routine in ROM TOS.", "block address", "", 4);
-    add(t, 14, 11, "Dbmsg", "void Dbmsg(int16_t rsrvd, int16_t msg_num, int32_t msg_arg)",
-        "Send a message to a resident debugger; rsrvd must be 5, msg_num selects the operation.",
-        noReturn, "with a resident debugger (the Atari Debugger)", 10);
+    // Dbmsg's first argument is its reserved word, and its value must be 5: the
+    // binding pushes that literal rather than a placeholder for the caller.
+    OsCallInfo &dbmsg = add(t, 14, 11, "Dbmsg",
+                            "void Dbmsg(int16_t rsrvd, int16_t msg_num, int32_t msg_arg)",
+                            "Send a message to a resident debugger; rsrvd must be 5, msg_num "
+                            "selects the operation.",
+                            noReturn, "with a resident debugger (the Atari Debugger)", 10);
+    dbmsg.reservedArg = 0;
+    dbmsg.reservedArgValue = 5;
     add(t, 14, 17, "Random", "int32_t Random(void)",
         "Return a 24-bit pseudo-random number (software generator).", "random value in bits 0-23", "", 2);
     add(t, 14, 38, "Supexec", "int32_t Supexec(int32_t (*func)())",
@@ -357,22 +371,48 @@ QString osCallLayerKey(int trap)
     }
 }
 
+namespace {
+
+/// The two look-ups the scanner makes, hashed: a scan of all 111 entries with a
+/// case-insensitive compare each is what these two were doing on the editor's
+/// per-cursor path. Built from the table itself, so a row added above is
+/// reachable at once and the index cannot drift from the listing — the shape
+/// InstrRef uses for its mnemonics, for the same reason.
+///
+/// The trap number keys the outer hash in both indexes, which is what keeps the
+/// layers apart: a look-up for a trap the table does not cover finds no inner
+/// hash and answers nullptr, exactly as the linear scan did. Name keys are
+/// lower-cased, which is what an ASCII identifier's case-insensitive compare
+/// amounts to; both the table's names and the source words it resolves are ASCII.
+struct OsCallIndex
+{
+    QHash<int, QHash<int, const OsCallInfo *>> byOpcode;
+    QHash<int, QHash<QString, const OsCallInfo *>> byName;
+};
+
+const OsCallIndex &osCallIndex()
+{
+    static const OsCallIndex index = [] {
+        OsCallIndex i;
+        for (const OsCallInfo &info : osCallTable()) {
+            i.byOpcode[info.trap].insert(info.opcode, &info);
+            i.byName[info.trap].insert(info.name.toLower(), &info);
+        }
+        return i;
+    }();
+    return index;
+}
+
+} // namespace
+
 const OsCallInfo *osCallRef(int trap, int opcode)
 {
-    for (const OsCallInfo &info : osCallTable()) {
-        if (info.trap == trap && info.opcode == opcode)
-            return &info;
-    }
-    return nullptr;
+    return osCallIndex().byOpcode.value(trap).value(opcode, nullptr);
 }
 
 const OsCallInfo *osCallRefByName(int trap, const QString &name)
 {
-    for (const OsCallInfo &info : osCallTable()) {
-        if (info.trap == trap && info.name.compare(name, Qt::CaseInsensitive) == 0)
-            return &info;
-    }
-    return nullptr;
+    return osCallIndex().byName.value(trap).value(name.toLower(), nullptr);
 }
 
 } // namespace pist

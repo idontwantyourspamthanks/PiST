@@ -68,19 +68,37 @@ QString probeVersion(const QString &path)
 
 /// Whether a process probe can answer the version at all.
 ///
-/// On Windows, hatari is excluded: its --version opens a NEW console, prints
-/// there and then waits for Enter (opencon.c / Main_ErrorExit), and with no
-/// arguments it launches the full emulator GUI — so probing it pops windows
-/// and stalls for the timeout. Its version comes from the content probe
-/// (emu/HatariProbe) instead.
+/// hatari is excluded on every platform, and the reason is not a Windows one:
+/// `--version` on a GUI build prints into a console the process does not own and
+/// then waits for Enter, and with no arguments at all it launches the full
+/// emulator GUI. Either way the probe blocks its caller — the GUI thread here —
+/// for the timeout, and pops a window on the user's screen on Linux and macOS
+/// exactly as on Windows. Its version and its capabilities come from the content
+/// probe (emu/HatariProbe) instead, which is why this was never noticed as a
+/// platform-neutral rule.
 bool canProbeByProcess(const QString &program)
 {
-#ifdef Q_OS_WIN
     return program != QLatin1String("hatari");
-#else
-    Q_UNUSED(program);
-    return true;
+}
+
+/// The path an explicit override names, by the same rule the discovery steps
+/// resolve a program: a path that is already an executable file is taken as it
+/// is, and on Windows a name without a suffix also resolves as `<name>.exe` —
+/// the rule `findExecutable` applies below, which a bare `QFileInfo` check does
+/// not. Without it a perfectly good override of
+/// `C:\\PiST\\tools\\vasmm68k_mot` reported the tool as missing on Windows while
+/// the same name resolved through discovery.
+QString resolveOverridePath(const QString &overridePath)
+{
+    const QFileInfo info(overridePath);
+    if (info.isFile() && info.isExecutable())
+        return info.absoluteFilePath();
+#ifdef Q_OS_WIN
+    const QFileInfo exe(overridePath + QStringLiteral(".exe"));
+    if (exe.isFile() && exe.isExecutable())
+        return exe.absoluteFilePath();
 #endif
+    return {};
 }
 
 ToolInfo locate(const QString &program, const QString &overridePath)
@@ -90,40 +108,33 @@ ToolInfo locate(const QString &program, const QString &overridePath)
 
     // 1. An explicit path from settings wins outright, even if it does not
     //    resolve: pointing PiST at a binary that has moved is a mistake worth
-    //    reporting rather than silently substituting a different one.
+    //    reporting rather than silently substituting a different one. `reason`
+    //    is what lets the caller report that instead of showing the bare name.
     if (!overridePath.isEmpty()) {
-        const QFileInfo override(overridePath);
-        if (override.isFile() && override.isExecutable())
-            info.path = override.absoluteFilePath();
+        info.path = resolveOverridePath(overridePath);
+        if (info.path.isEmpty()) {
+            info.reason = QObject::tr("'%1' is not an executable file").arg(overridePath);
+        }
         return info;
     }
 
-    // 2. Beside the application (release bundles), then the per-user tools
-    //    directory a fetch would populate.
+    // 2. Every directory searchPaths() reports, in its order: beside the
+    //    application (release bundles), the per-user tools directory a fetch
+    //    populates, then the system search path. One list drives the lookup and
+    //    the report — `pist --diagnose` prints what was searched, so a directory
+    //    listed there is a promise that it is actually searched.
     //
     //    findExecutable is used with explicit directories rather than a direct
     //    QFileInfo check, because it applies the platform's own notion of an
     //    executable name: on Windows that includes the `.exe` suffix, so a
     //    bundled `vasmm68k_mot.exe` is found where a bare `vasmm68k_mot` lookup
     //    would silently miss it.
-    const QStringList preferred = {QCoreApplication::applicationDirPath(),
-                                   suggestedInstallDir()};
-    const QString beside = QStandardPaths::findExecutable(program, preferred);
-    if (!beside.isEmpty()) {
-        info.path = beside;
-        if (canProbeByProcess(program))
-            info.version = probeVersion(info.path);
-        return info;
-    }
-
-    // 3. The system search path.
-    const QString onPath = QStandardPaths::findExecutable(program);
-    if (!onPath.isEmpty()) {
-        info.path = onPath;
+    const QString found = QStandardPaths::findExecutable(program, searchPaths());
+    if (!found.isEmpty()) {
+        info.path = found;
         if (canProbeByProcess(program))
             info.version = probeVersion(info.path);
     }
-
 
     return info;
 }
@@ -132,13 +143,14 @@ ToolInfo locate(const QString &program, const QString &overridePath)
 
 QStringList searchPaths()
 {
+    // The directories locate() walks, in order — one list, so the report and the
+    // lookup cannot drift apart. It used to list ApplicationsLocation as well,
+    // which locate() never searched: those directories hold .desktop entries,
+    // not executables, so `pist --diagnose` told the user to put a binary where
+    // it would not be found.
     QStringList paths;
     paths << QCoreApplication::applicationDirPath();
     paths << suggestedInstallDir();
-
-    const QStringList standard = QStandardPaths::standardLocations(QStandardPaths::ApplicationsLocation);
-    for (const QString &p : standard)
-        paths << p;
 
     const QString envPath = QProcessEnvironment::systemEnvironment()
                                 .value(QStringLiteral("PATH"));
@@ -183,15 +195,20 @@ QString suggestedInstallDir()
 
 QString assemblerInstallHint()
 {
+    // No package-manager sentence here any more: `apt install vasm` does not
+    // exist (checked against both the Debian and the Ubuntu package index), and
+    // it was the first thing this hint told a user whose assembler was missing.
+    // What does exist is the pinned fetch the setup dialog runs, so that is what
+    // the hint points at.
     return QObject::tr(
         "PiST uses vasm (vasmm68k_mot) as its assembler, and does not ship it.\n\n"
         "vasm is not free software: its licence permits redistribution unmodified "
         "for non-commercial use, which is why PiST never patches it and why it is "
         "not committed to this repository. Get it from the author:\n\n"
         "    http://sun.hasenbraten.de/vasm/\n\n"
-        "Some distributions also package it (for example `apt install vasm` on "
-        "Debian and Ubuntu). Alternatively set an explicit path in Project "
-        "Settings, or place the binary in:\n\n    %1")
+        "PiST can fetch and build it for you — that is what the first-run setup "
+        "offers — or set an explicit path in Project Settings, or place the binary "
+        "in:\n\n    %1")
         .arg(suggestedInstallDir());
 }
 
@@ -221,9 +238,10 @@ QString emulatorInstallHint()
         "The Linux AppImage normally carries Hatari inside it, so if you are "
         "running one, this is a packaging fault rather than something you can "
         "fix — please report it.\n\n"
-        "The macOS and Windows archives, and builds from source, do not include "
-        "it. Install it with your package manager, or set an explicit path in "
-        "Project Settings, or place the executable in:\n\n    %1\n\n"
+        "The macOS archive and builds from source do not include it (the Windows "
+        "archive bundles the same fork the AppImage carries, so there it is a "
+        "packaging fault too). Install it with your package manager, or set an "
+        "explicit path in Project Settings, or place the executable in:\n\n    %1\n\n"
         "Version matters: use Hatari 2.5 or later. The debugger transport PiST "
         "relies on works reliably on 2.6.x, and the truncated register dumps "
         "returned by 2.4.1 break source-line debugging. Ubuntu 24.04 ships 2.4.1 "

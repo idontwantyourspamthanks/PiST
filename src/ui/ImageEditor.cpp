@@ -6,9 +6,12 @@
 
 #include "image/StFormats.h"
 #include "image/Transform.h"
+#include "ui/AnimationPreviewWidget.h"
 #include "ui/Appearance.h"
+#include "ui/BitplaneExportController.h"
 #include "ui/ImageCanvas.h"
 #include "ui/SheetCanvas.h"
+#include "ui/SheetSlicing.h"
 #include "ui/PalettePickerDialog.h"
 
 #include <QAbstractButton>
@@ -32,8 +35,6 @@
 #include <QMenu>
 #include <QPixmap>
 #include <QPushButton>
-#include <QDialogButtonBox>
-#include <QFormLayout>
 #include <QStackedWidget>
 #include <QScrollArea>
 #include <QSize>
@@ -51,13 +52,12 @@ namespace pist {
 
 namespace {
 
-constexpr int kPreviewSize = 96;
-
 class PaintCommand : public QUndoCommand
 {
 public:
     PaintCommand(ImageDocument *doc, int phase, int frame, int layer,
-                 const QVector<int> &indices, const QVector<int> &before, int colour)
+                 const QVector<int> &indices, const QVector<int> &before, int colour,
+                 const QString &text)
         : m_doc(doc)
         , m_phase(phase)
         , m_frame(frame)
@@ -66,7 +66,7 @@ public:
         , m_before(before)
         , m_colour(colour)
     {
-        setText(QStringLiteral("paint"));
+        setText(text);
     }
 
     void undo() override
@@ -219,159 +219,13 @@ QImage frameThumbnail(const ImageDocument &doc, int frame)
     const int h = doc.height();
     if (w <= 0 || h <= 0)
         return {};
-    QImage image(w, h, QImage::Format_ARGB32);
-    const QVector<int> &pixels = doc.frame(frame);
-    for (int y = 0; y < h; ++y) {
-        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
-        for (int x = 0; x < w; ++x) {
-            const int cube = pixels.value(y * w + x, kTransparent);
-            if (cube < 0) {
-                const bool checker = ((x + y) & 1) == 0;
-                line[x] = checker ? qRgb(48, 48, 48) : qRgb(32, 32, 32);
-            } else {
-                const Rgb rgb = cubeRgb(doc.paletteKind(), cube);
-                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
-            }
-        }
-    }
+    // Checkerboard, like the canvas: the thumbnail of a frame shows the same
+    // empty texture as the canvas showing that frame.
+    const QImage image = indicesToImage(doc.frame(frame), w, h, doc.paletteKind(),
+                                        EmptyStyle::Checkerboard);
     const int thumbH = 32;
     const int thumbW = qBound(24, image.width() * thumbH / h, 72);
     return image.scaled(thumbW, thumbH, Qt::KeepAspectRatio, Qt::FastTransformation);
-}
-
-/// The "slice a phase out of the imported sheet" dialog. Every field change
-/// repaints the preview boxes on the sheet canvas, so the numbers can be
-/// checked against the art before anything is cut.
-class SlicePhaseDialog : public QDialog
-{
-public:
-    SlicePhaseDialog(QWidget *parent, const QString &suggestedName, int defaultW,
-                     int defaultH, int sheetWidth)
-    {
-        setWindowTitle(tr("Slice phase from sheet"));
-        auto *form = new QFormLayout(this);
-
-        m_name = new QLineEdit(suggestedName, this);
-        m_name->setObjectName(QStringLiteral("sliceName"));
-        form->addRow(tr("Name:"), m_name);
-
-        m_w = makeSpin(QStringLiteral("sliceCellW"), defaultW, 1, 320);
-        form->addRow(tr("Sprite width:"), m_w);
-        m_h = makeSpin(QStringLiteral("sliceCellH"), defaultH, 1, 200);
-        form->addRow(tr("Sprite height:"), m_h);
-        m_x = makeSpin(QStringLiteral("sliceX"), 0, 0, sheetWidth - 1);
-        form->addRow(tr("First cell x:"), m_x);
-        m_y = makeSpin(QStringLiteral("sliceY"), 0, 0, 199);
-        form->addRow(tr("First cell y:"), m_y);
-        // A strip runs left to right, so pre-fill how many whole cells fit.
-        m_count = makeSpin(QStringLiteral("sliceCount"),
-                           qMax(1, (sheetWidth - m_x->value()) / qMax(1, m_w->value())), 1, 99);
-        form->addRow(tr("Frame count:"), m_count);
-
-        auto connect_ = [this](QSpinBox *box) {
-            connect(box, qOverload<int>(&QSpinBox::valueChanged), this,
-                    [this] { if (onChanged) onChanged(values()); });
-        };
-        connect_(m_w);
-        connect_(m_h);
-        connect_(m_x);
-        connect_(m_y);
-        connect_(m_count);
-        connect(m_name, &QLineEdit::textChanged, this,
-                [this] { if (onChanged) onChanged(values()); });
-
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                             this);
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        form->addRow(buttons);
-    }
-
-    struct Values {
-        QString name;
-        int x = 0;
-        int y = 0;
-        int cellW = 32;
-        int cellH = 32;
-        int count = 1;
-    };
-
-    Values values() const
-    {
-        return {m_name->text().trimmed(), m_x->value(), m_y->value(), m_w->value(),
-                m_h->value(), m_count->value()};
-    }
-
-    std::function<void(const Values &)> onChanged;
-
-private:
-    QSpinBox *makeSpin(const QString &objectName, int value, int min, int max)
-    {
-        auto *box = new QSpinBox(this);
-        box->setObjectName(objectName);
-        box->setRange(min, max);
-        box->setValue(value);
-        return box;
-    }
-
-    QLineEdit *m_name = nullptr;
-    QSpinBox *m_w = nullptr;
-    QSpinBox *m_h = nullptr;
-    QSpinBox *m_x = nullptr;
-    QSpinBox *m_y = nullptr;
-    QSpinBox *m_count = nullptr;
-};
-
-QImage sheetUnderlayImage(const ImportedSheet &sheet, PaletteKind kind)
-{
-    QImage underlay(sheet.width, sheet.height, QImage::Format_ARGB32);
-    for (int y = 0; y < sheet.height; ++y) {
-        auto *line = reinterpret_cast<QRgb *>(underlay.scanLine(y));
-        for (int x = 0; x < sheet.width; ++x) {
-            const int value = sheet.pixels.at(y * sheet.width + x);
-            if (value < 0)
-                line[x] = qRgb(50, 50, 50);
-            else {
-                const Rgb rgb = cubeRgb(kind, value);
-                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
-            }
-        }
-    }
-    return underlay;
-}
-
-/// Upper bound on a sheet file read back from a JSON-supplied path. ST images
-/// are tiny; this exists only to bound an untrusted path that points at a large
-/// regular file (the read is otherwise unbounded — see loadSheetPixels).
-constexpr qint64 kMaxSheetBytes = 64LL * 1024 * 1024;
-
-/// (Re)load the pixel data of every sheet target that has a readable file,
-/// so slicing works after a document is reopened. Sheets without a path or
-/// with a missing file stay pixel-less until re-imported.
-void loadSheetPixels(ImageDocument &doc, QHash<int, ImportedSheet> &pixels,
-                     QHash<int, QImage> &underlays)
-{
-    pixels.clear();
-    underlays.clear();
-    for (int i = 0; i < doc.sheets().size(); ++i) {
-        const ImageSheet &sheet = doc.sheets().at(i);
-        // The path comes from the file being loaded, so treat it as untrusted:
-        // require a regular file (not /dev/zero, a FIFO or a directory — all of
-        // which QFileInfo::exists reports true) and bound its size, or readAll()
-        // on a special or huge file hangs the open or exhausts memory.
-        const QFileInfo info(sheet.path);
-        if (sheet.path.isEmpty() || !info.isFile() || info.size() > kMaxSheetBytes)
-            continue;
-        QFile file(sheet.path);
-        if (!file.open(QIODevice::ReadOnly))
-            continue;
-        ImportedSheet imported;
-        if (importStImage(file.readAll(), stFormatFromPath(sheet.path), doc.paletteKind(),
-                          &imported, nullptr)) {
-            pixels.insert(i, imported);
-            underlays.insert(i, sheetUnderlayImage(imported, doc.paletteKind()));
-        }
-    }
 }
 
 appearance::Icon iconForTool(DrawTool tool)
@@ -400,17 +254,8 @@ appearance::Icon iconForTool(DrawTool tool)
 
 } // namespace
 
-ImageEditor::ImageEditor(QWidget *parent)
-    : QWidget(parent)
+QToolBar *ImageEditor::buildToolbar()
 {
-    m_undo = new QUndoStack(this);
-    m_doc = ImageDocument::create(32, 32, PaletteKind::Ste);
-    m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(2);
-
     auto *bar = new QToolBar(this);
     bar->setIconSize(QSize(20, 20));
     bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
@@ -639,8 +484,14 @@ ImageEditor::ImageEditor(QWidget *parent)
     bar->addAction(m_actReExport);
     refreshReExport();
 
-    layout->addWidget(bar);
+    return bar;
+}
 
+/// Build the editing body the toolbar sits above: the swatch column, the grid
+/// canvas and its sheet-mode stack, the filmstrip, and the layer/phase/preview
+/// column. Everything it builds hangs off the editor's `layout`.
+void ImageEditor::buildEditorBody(QVBoxLayout *layout)
+{
     auto *body = new QHBoxLayout;
     layout->addLayout(body, 1);
 
@@ -675,7 +526,7 @@ ImageEditor::ImageEditor(QWidget *parent)
     canvasColumn->addWidget(m_modeStack, 1);
     body->addLayout(canvasColumn, 1);
 
-    // m_phases does not exist yet at this point in the constructor, so the
+    // m_phases does not exist yet at this point in the construction, so the
     // lambda guards instead of using it as the context object.
     connect(m_sheetCanvas, &SheetCanvas::phaseSelected, this, [this](int index) {
         if (m_phases)
@@ -810,37 +661,10 @@ ImageEditor::ImageEditor(QWidget *parent)
     auto *right = new QVBoxLayout;
     right->setSpacing(4);
 
-    auto *playRow = new QHBoxLayout;
-    m_actPlay = new QAction(tr("Play"), this);
-    m_actPlay->setIcon(appearance::icon(appearance::Icon::Run));
-    m_actPlay->setCheckable(true);
-    m_actPlay->setToolTip(tr("Play animation"));
-    connect(m_actPlay, &QAction::toggled, this, &ImageEditor::togglePlay);
-    auto *playBtn = new QToolButton(this);
-    playBtn->setObjectName(QStringLiteral("imagePlay"));
-    playBtn->setDefaultAction(m_actPlay);
-    playBtn->setAutoRaise(true);
-    playBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    playRow->addWidget(playBtn);
-    m_fpsBox = new QSpinBox(this);
-    m_fpsBox->setObjectName(QStringLiteral("imageFps"));
-    m_fpsBox->setRange(1, 60);
-    m_fpsBox->setValue(m_fps);
-    m_fpsBox->setSuffix(QStringLiteral(" fps"));
-    m_fpsBox->setMaximumWidth(88);
-    m_fpsBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    connect(m_fpsBox, qOverload<int>(&QSpinBox::valueChanged), this, &ImageEditor::fpsChanged);
-    playRow->addWidget(m_fpsBox);
-    packIcons(playRow);
-    right->addLayout(playRow);
-
-    m_preview = new QLabel(this);
-    m_preview->setObjectName(QStringLiteral("imagePreview"));
-    m_preview->setFixedSize(kPreviewSize, kPreviewSize);
-    m_preview->setAlignment(Qt::AlignCenter);
-    m_preview->setScaledContents(false);
-    m_preview->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    right->addWidget(m_preview);
+    // The player owns the preview box, the fps box and the play/pause action;
+    // it is fixed-size, so `right` gives it the same column the pieces had.
+    m_previewWidget = new AnimationPreviewWidget(&m_doc, this);
+    right->addWidget(m_previewWidget);
 
     right->addWidget(new QLabel(tr("Layers"), this));
     m_layers = new QListWidget(this);
@@ -948,10 +772,47 @@ ImageEditor::ImageEditor(QWidget *parent)
     placementLayout->addLayout(cellRow);
     right->addWidget(m_phasePlacement);
     right->addStretch(1);
-    m_previewTimer = new QTimer(this);
-    connect(m_previewTimer, &QTimer::timeout, this, &ImageEditor::previewTick);
 
     body->addLayout(right);
+}
+
+ImageEditor::ImageEditor(QWidget *parent)
+    : QWidget(parent)
+{
+    m_undo = new QUndoStack(this);
+    m_doc = ImageDocument::create(32, 32, PaletteKind::Ste);
+    m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(2);
+
+    // The re-export recipe lives with the exporter, and its announcements feed
+    // the status label and the editor's own bitplaneReExported — the shell
+    // prints the block map from that one.
+    m_bitplaneExport = new BitplaneExportController(m_doc, this);
+    connect(m_bitplaneExport, &BitplaneExportController::recipeChanged, this,
+            &ImageEditor::refreshReExport);
+    connect(m_bitplaneExport, &BitplaneExportController::bitplaneReExported, this,
+            [this](const QString &path, const QString &scroller, const QString &error) {
+                if (!error.isEmpty()) {
+                    if (m_status)
+                        m_status->setText(tr("Re-export failed: %1").arg(error));
+                    emit bitplaneReExported(path, scroller, error);
+                    return;
+                }
+                if (m_status) {
+                    m_status->setText(scroller.isEmpty()
+                        ? tr("Re-exported %1.").arg(QFileInfo(path).fileName())
+                        : tr("Re-exported %1 and %2.")
+                              .arg(QFileInfo(path).fileName(), QFileInfo(scroller).fileName()));
+                }
+                emit bitplaneReExported(path, scroller, QString());
+            });
+
+    layout->addWidget(buildToolbar());
+
+    buildEditorBody(layout);
 
     m_status = new QLabel(this);
     layout->addWidget(m_status);
@@ -961,20 +822,15 @@ ImageEditor::ImageEditor(QWidget *parent)
     QTimer::singleShot(0, this, &ImageEditor::fitToView);
 }
 
-void ImageEditor::newDocument(int width, int height, PaletteKind kind)
+void ImageEditor::adoptDocument()
 {
-    m_doc = ImageDocument::create(width, height, kind);
-    m_filePath.clear();
     m_undo->clear();
-    m_importedSheets.clear();
-    m_sheetUnderlays.clear();
     forgetBitplaneExport();
-    if (m_actPlay)
-        m_actPlay->setChecked(false);
+    m_previewWidget->stop();
     m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
     m_canvas->setDocument(&m_doc);
-    clearSelection();
-    clearSelection();
+    // The selection addresses cells of the document that just went away, so it
+    // goes with it — exactly once, for every path that swaps the document.
     clearSelection();
     m_canvas->setCurrentColour(m_colour);
     rebuildSwatches();
@@ -983,21 +839,19 @@ void ImageEditor::newDocument(int width, int height, PaletteKind kind)
     fitToView();
 }
 
+void ImageEditor::newDocument(int width, int height, PaletteKind kind)
+{
+    m_doc = ImageDocument::create(width, height, kind);
+    m_filePath.clear();
+    m_sheetSlicing.clear();
+    adoptDocument();
+}
+
 void ImageEditor::replaceDocument(const ImageDocument &doc)
 {
     m_doc = doc;
     m_filePath.clear();
-    m_undo->clear();
-    forgetBitplaneExport();
-    if (m_actPlay)
-        m_actPlay->setChecked(false);
-    m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
-    m_canvas->setDocument(&m_doc);
-    m_canvas->setCurrentColour(m_colour);
-    rebuildSwatches();
-    refreshChrome();
-    notifyModified();
-    fitToView();
+    adoptDocument();
 }
 
 bool ImageEditor::loadFile(const QString &path)
@@ -1008,18 +862,8 @@ bool ImageEditor::loadFile(const QString &path)
         return false;
     }
     m_filePath = path;
-    m_undo->clear();
-    forgetBitplaneExport();
-    if (m_actPlay)
-        m_actPlay->setChecked(false);
-    m_colour = m_doc.active().isEmpty() ? kTransparent : m_doc.active().first();
-    m_canvas->setDocument(&m_doc);
-    m_canvas->setCurrentColour(m_colour);
-    loadSheetPixels(m_doc, m_importedSheets, m_sheetUnderlays);
-    rebuildSwatches();
-    refreshChrome();
-    notifyModified();
-    fitToView();
+    m_sheetSlicing.load(m_doc);
+    adoptDocument();
     return true;
 }
 
@@ -1071,9 +915,27 @@ bool ImageEditor::importFile(const QString &path, bool append)
     // it. The sheet itself is added by the shared path below.
     if (!append) {
         replaceDocument(ImageDocument::create(32, 32, m_doc.paletteKind()));
-        m_importedSheets.clear();
-        m_sheetUnderlays.clear();
+        m_sheetSlicing.clear();
     }
+
+    // Both mutations below — adopting the file's palette and registering the
+    // sheet — are part of this one import, and the undo stack has to know about
+    // them. Untracked, Ctrl+Z reached back past the import: the command sitting
+    // under it holds a `before` that predates the import, so assigning it wiped
+    // the sheet, the adopted palette and every placement made since, and its
+    // `after` could not put them back.
+    //
+    // Undo of an appended import therefore means "the document as it was": the
+    // added sheet target goes and the palette goes back to the one in use. That
+    // is what append means — the current image kept, the import added to it —
+    // so undoing it must leave the current image untouched.
+    //
+    // "Replace" needs no command of its own: replaceDocument() above cleared the
+    // history, so the import is this document's base state, exactly as a
+    // File > Open is. Nothing is left on the stack that could reach back past it.
+    ImageDocument before;
+    if (append)
+        before = m_doc;
 
     // Adopt the imported file's palette: phases sliced from this sheet paint
     // with its registers, so the swatch bar follows the file instead of the
@@ -1088,8 +950,9 @@ bool ImageEditor::importFile(const QString &path, bool append)
     // and phases are sliced out of it, rather than the pixels being edited
     // in place.
     const int index = m_doc.addSheet(path, sheet.width, sheet.height);
-    m_importedSheets.insert(index, sheet);
-    m_sheetUnderlays.insert(index, sheetUnderlayImage(sheet, m_doc.paletteKind()));
+    m_sheetSlicing.insert(index, sheet, m_doc.paletteKind());
+    if (append)
+        pushSnapshot(before, tr("import sheet"));
 
     m_actSheetMode->setChecked(true);
     m_sheetCanvas->setSheetIndex(index);
@@ -1103,10 +966,15 @@ bool ImageEditor::importFile(const QString &path, bool append)
 bool ImageEditor::exportFile(const QString &path, bool spriteSafe)
 {
     const StImageFormat format = stFormatFromPath(path);
+    // A `.pim` is the document's own format, so exporting one is saving the
+    // document: it keeps the file path and clears the modified flag, and there
+    // is no single frame to pick.
+    if (format == StImageFormat::Pim)
+        return saveFile(path);
     QString error;
     const ImageDocument *sheet = &m_doc;
     ImageDocument safe;
-    if (spriteSafe && format != StImageFormat::Pim) {
+    if (spriteSafe) {
         safe = spriteSafeDocument(m_doc, &error);
         if (!error.isEmpty()) {
             m_lastError = error;
@@ -1114,46 +982,31 @@ bool ImageEditor::exportFile(const QString &path, bool spriteSafe)
         }
         sheet = &safe;
     }
-    QByteArray bytes;
-    switch (format) {
-    case StImageFormat::Pi1:
-        bytes = exportPi1(*sheet, sheet->currentFrame(), &error);
-        break;
-    case StImageFormat::Neo:
-        bytes = exportNeo(*sheet, sheet->currentFrame(), QFileInfo(path).completeBaseName(), &error);
-        break;
-    case StImageFormat::Iff:
-        bytes = exportIff(*sheet, sheet->currentFrame(), &error);
-        break;
-    case StImageFormat::Png:
-        bytes = exportPng(*sheet, sheet->currentFrame(), &error);
-        break;
-    case StImageFormat::Mbk:
-        bytes = exportStosMbk(*sheet, 0, 1, &error);
-        break;
-    case StImageFormat::Assembler:
-        bytes = exportAssembler(*sheet, sheet->currentFrame(), &error);
-        break;
-    case StImageFormat::BitplaneBin:
-        bytes = exportBitplanes(*sheet, sheet->currentFrame(), &error);
-        break;
-    case StImageFormat::Pim:
-        return saveFile(path);
-    default:
+    return writeEncodedFile(path, *sheet, format, sheet->currentFrame());
+}
+
+/// Encode `doc` in the format `path` names and write it — the one tail both
+/// exporters use, so they cannot drift on which formats exist or on what an
+/// encoder that produces nothing means. An unknown extension and an encoder
+/// that refuses are both failures that leave the target file alone; the
+/// second exporter used to accept empty output and truncate the file to zero
+/// bytes.
+bool ImageEditor::writeEncodedFile(const QString &path, const ImageDocument &doc,
+                                   StImageFormat format, int frame)
+{
+    if (format == StImageFormat::Unknown) {
         m_lastError = tr("Unknown export format for %1").arg(path);
         return false;
     }
+    QString error;
+    const QByteArray bytes =
+        encodeStImage(doc, format, frame, QFileInfo(path).completeBaseName(), &error);
     if (bytes.isEmpty()) {
         m_lastError = error.isEmpty() ? tr("Export failed") : error;
         return false;
     }
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        m_lastError = file.errorString();
-        return false;
-    }
-    if (file.write(bytes) != bytes.size()) {
-        m_lastError = file.errorString();
+    if (!writeStImage(path, bytes, &error)) {
+        m_lastError = error;
         return false;
     }
     return true;
@@ -1217,8 +1070,7 @@ void ImageEditor::applyAppearance()
         m_actShiftDown->setIcon(appearance::icon(Icon::ShiftDown));
     if (m_actReExport)
         m_actReExport->setIcon(appearance::icon(Icon::Save));
-    if (m_actPlay)
-        m_actPlay->setIcon(appearance::icon(m_playing ? Icon::Pause : Icon::Run));
+    m_previewWidget->applyAppearance();
     if (m_addFrame)
         m_addFrame->setIcon(appearance::icon(Icon::AddFrame));
     if (m_dupFrame)
@@ -1243,6 +1095,7 @@ void ImageEditor::applyAppearance()
 void ImageEditor::undo()
 {
     m_undo->undo();
+    resyncFromRestoredDocument();
     refreshChrome();
     notifyModified();
 }
@@ -1250,8 +1103,26 @@ void ImageEditor::undo()
 void ImageEditor::redo()
 {
     m_undo->redo();
+    resyncFromRestoredDocument();
     refreshChrome();
     notifyModified();
+}
+
+void ImageEditor::resyncFromRestoredDocument()
+{
+    // A command's undo/redo assigns a whole document, so every piece of editor
+    // state derived from it has to follow. The current colour can be outside the
+    // restored palette (undo of a palette edit). And the imported-sheet pixels
+    // are a cache of what the document's sheets name — an undone import drops a
+    // sheet whose pixels must go with it, a redone one brings back a sheet whose
+    // pixels have to be read again. Re-deriving them is exactly what a reopen
+    // does, so the two can never disagree; a document with no sheets at all (the
+    // usual case) skips the read.
+    if (!m_doc.active().isEmpty() && !m_doc.active().contains(m_colour))
+        m_colour = m_doc.active().first();
+    m_canvas->setCurrentColour(m_colour);
+    if (!m_doc.sheets().isEmpty() || m_sheetSlicing.hasAnyPixels())
+        m_sheetSlicing.load(m_doc);
 }
 
 void ImageEditor::setTool()
@@ -1278,7 +1149,13 @@ void ImageEditor::openPalettePicker()
     PalettePickerDialog dialog(m_doc.paletteKind(), m_doc.active(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
+    // A palette edit is a document mutation like any other: one accepted
+    // dialog is one command, or an older command's undo would assign a `before`
+    // taken with the old registers and silently revert this one.
+    const ImageDocument before = m_doc;
     m_doc.setActive(dialog.active());
+    if (m_doc.active() != before.active())
+        pushSnapshot(before, tr("change palette"));
     if (!m_doc.active().contains(m_colour) && !m_doc.active().isEmpty())
         m_colour = m_doc.active().first();
     m_canvas->setCurrentColour(m_colour);
@@ -1383,15 +1260,7 @@ void ImageEditor::addFrame()
     m_doc.addFrame();
     // A frame added to a placed phase extends the strip: pull the next cell
     // from the sheet's pixels when they are available.
-    const ImagePhase &phase = m_doc.phases().at(m_doc.currentPhase());
-    if (phase.sheet >= 0 && m_importedSheets.contains(phase.sheet)) {
-        const QVector<QVector<int>> cells =
-            sliceSheetCells(m_importedSheets.value(phase.sheet), phase.x, phase.y,
-                            phase.cellW, phase.cellH, phase.frames.size());
-        const int index = m_doc.currentFrame();
-        if (index < cells.size())
-            m_doc.replaceActiveLayer(cells.at(index));
-    }
+    m_sheetSlicing.sliceAddedFrame(m_doc);
     pushSnapshot(before, tr("add frame"));
     refreshChrome();
     notifyModified();
@@ -1447,8 +1316,7 @@ void ImageEditor::selectFrame(int row)
     if (row < 0)
         return;
     m_doc.setCurrentFrame(row);
-    if (!m_playing)
-        m_previewFrame = row;
+    m_previewWidget->setFrame(row);
     refreshLayers();
     refreshOnion();
     refreshPreview();
@@ -1678,6 +1546,12 @@ void ImageEditor::onNewSheet()
     notifyModified();
 }
 
+bool ImageEditor::sheetModeActive() const
+{
+    // setSheetMode() selects the sheet page of the mode stack (index 1).
+    return m_modeStack && m_modeStack->currentIndex() == 1;
+}
+
 void ImageEditor::refreshSheetView()
 {
     if (!m_sheetCanvas)
@@ -1688,7 +1562,7 @@ void ImageEditor::refreshSheetView()
     else if (m_doc.sheets().isEmpty())
         sheet = -1;
     m_sheetCanvas->setSheetIndex(sheet);
-    m_sheetCanvas->setUnderlay(m_sheetUnderlays.value(sheet));
+    m_sheetCanvas->setUnderlay(m_sheetSlicing.underlay(sheet));
     m_sheetCanvas->setSelectedPhase(m_phases ? m_phases->currentRow() : -1);
     m_sheetCanvas->setDocument(&m_doc);
     m_sheetCanvas->updateGeometry();
@@ -1742,13 +1616,19 @@ void ImageEditor::onPhasePlacementChanged()
     const int oldSheet = m_doc.phases().at(phase).sheet;
     const int oldX = m_doc.phases().at(phase).x;
     const int oldY = m_doc.phases().at(phase).y;
+    const ImageDocument before = m_doc;
     if (!m_doc.setPhasePlacement(phase, sheet, m_phaseX->value(), m_phaseY->value()))
         return;
     // Attaching or moving a phase slices the art under frames that are
     // still untouched; drawn frames keep their pixels.
     slicePlacedPhaseFrames(phase);
     reSliceUntouchedFrames(phase, oldSheet, oldX, oldY);
-    // Placement edits are metadata tweaks, like phase renames: no snapshot.
+    // One command per panel edit, with the pixels folded in: `before` predates
+    // the placement and the slicing it triggers. This is not the "metadata
+    // tweak" it used to claim to be — the sheet drag path for the very same
+    // mutation has always snapshotted, and an untracked one here let an older
+    // command's undo assign a document from before it.
+    pushSnapshot(before, tr("place phase"));
     refreshPhases();
     refreshSheetView();
     notifyModified();
@@ -1771,75 +1651,22 @@ void ImageEditor::onPhaseCellSizeChanged()
 
 void ImageEditor::slicePlacedPhaseFrames(int phaseIndex)
 {
-    if (phaseIndex < 0 || phaseIndex >= m_doc.phases().size())
+    // The cut itself lives with the sheet pixels and the document it slices
+    // into; the refresh that follows is the editor's.
+    if (!m_sheetSlicing.slicePlacedPhaseFrames(m_doc, phaseIndex))
         return;
-    const ImagePhase &phase = m_doc.phases().at(phaseIndex);
-    if (phase.sheet < 0 || !m_importedSheets.contains(phase.sheet))
-        return;
-    const QVector<QVector<int>> cells =
-        sliceSheetCells(m_importedSheets.value(phase.sheet), phase.x, phase.y,
-                        phase.cellW, phase.cellH, phase.frames.size());
-    const int savedPhase = m_doc.currentPhase();
-    const int savedFrame = m_doc.currentFrame();
-    bool changed = false;
-    for (int k = 0; k < cells.size() && k < phase.frames.size(); ++k) {
-        // Only frames that are still empty get filled: drawn frames survive
-        // a move or a re-place.
-        bool empty = true;
-        for (int value : phase.frames.at(k).composite)
-            empty &= value < 0;
-        if (!empty || cells.at(k).isEmpty())
-            continue;
-        m_doc.setCurrentPhase(phaseIndex);
-        m_doc.setCurrentFrame(k);
-        m_doc.replaceActiveLayer(cells.at(k));
-        changed = true;
-    }
-    m_doc.setCurrentPhase(savedPhase);
-    m_doc.setCurrentFrame(savedFrame);
-    if (changed) {
-        refreshChrome();
-        refreshPreview();
-        notifyModified();
-    }
+    refreshChrome();
+    refreshPreview();
+    notifyModified();
 }
 
 void ImageEditor::reSliceUntouchedFrames(int phaseIndex, int oldSheet, int oldX, int oldY)
 {
-    const ImagePhase &phase = m_doc.phases().at(phaseIndex);
-    if (phase.sheet < 0 || !m_importedSheets.contains(phase.sheet))
+    if (!m_sheetSlicing.reSliceUntouchedFrames(m_doc, phaseIndex, oldSheet, oldX, oldY))
         return;
-    const ImportedSheet &imported = m_importedSheets.value(phase.sheet);
-    const int count = phase.frames.size();
-    const QVector<QVector<int>> newCells =
-        sliceSheetCells(imported, phase.x, phase.y, phase.cellW, phase.cellH, count);
-    // Frames are "untouched" when they still match the cells they were cut
-    // from — or when they are empty and there is no older cell to compare.
-    QVector<QVector<int>> oldCells;
-    if (oldSheet >= 0 && m_importedSheets.contains(oldSheet))
-        oldCells = sliceSheetCells(m_importedSheets.value(oldSheet), oldX, oldY,
-                                   phase.cellW, phase.cellH, count);
-    const int savedPhase = m_doc.currentPhase();
-    const int savedFrame = m_doc.currentFrame();
-    bool changed = false;
-    for (int k = 0; k < count && k < newCells.size(); ++k) {
-        const QVector<int> &frame = phase.frames.at(k).composite;
-        const bool untouched = oldCells.isEmpty() || frame == oldCells.at(k)
-            || std::all_of(frame.cbegin(), frame.cend(), [](int value) { return value < 0; });
-        if (!untouched || frame == newCells.at(k))
-            continue;
-        m_doc.setCurrentPhase(phaseIndex);
-        m_doc.setCurrentFrame(k);
-        m_doc.replaceActiveLayer(newCells.at(k));
-        changed = true;
-    }
-    m_doc.setCurrentPhase(savedPhase);
-    m_doc.setCurrentFrame(savedFrame);
-    if (changed) {
-        refreshChrome();
-        refreshPreview();
-        notifyModified();
-    }
+    refreshChrome();
+    refreshPreview();
+    notifyModified();
 }
 
 void ImageEditor::slicePhaseFromSheet()
@@ -1884,20 +1711,15 @@ void ImageEditor::slicePhaseFromSheet()
 int ImageEditor::addPhaseFromSheet(int sheetIndex, const QString &name, int x, int y,
                                    int cellW, int cellH, int count)
 {
-    if (!m_importedSheets.contains(sheetIndex))
+    if (!m_sheetSlicing.hasSheet(sheetIndex))
         return -1;
-    const QVector<QVector<int>> cells =
-        sliceSheetCells(m_importedSheets.value(sheetIndex), x, y, cellW, cellH, count);
-    if (cells.isEmpty())
-        return -1;
+    // The slice is one document mutation, so its undo entry is one snapshot
+    // taken over it (pixels folded in, like every other mutation here).
     const ImageDocument before = m_doc;
-    const int index = m_doc.addPhase(name, cellW, cellH);
-    m_doc.setPhasePlacement(index, sheetIndex, x, y);
-    m_doc.replaceActiveLayer(cells.first());
-    for (int k = 1; k < cells.size(); ++k) {
-        m_doc.addFrame();
-        m_doc.replaceActiveLayer(cells.at(k));
-    }
+    const int index = m_sheetSlicing.addPhaseFromSheet(m_doc, sheetIndex, name, x, y, cellW,
+                                                       cellH, count);
+    if (index < 0)
+        return -1;
     pushSnapshot(before, tr("add phase from sheet"));
     refreshChrome();
     m_phases->setCurrentRow(index);
@@ -1921,7 +1743,11 @@ bool ImageEditor::exportSheetFile(const QString &path, int sheetIndex, bool spri
         m_lastError = error;
         return false;
     }
-    if (spriteSafe) {
+    const StImageFormat format = stFormatFromPath(path);
+    // A `.pim` carries the whole composed sheet losslessly, so there is
+    // nothing for the sprite-safe colour shuffle to protect; the still-image
+    // formats reserve colour 0 for it, which is what makes them re-import.
+    if (spriteSafe && format != StImageFormat::Pim) {
         ImageDocument safe = spriteSafeDocument(composed, &error);
         if (!error.isEmpty()) {
             m_lastError = error;
@@ -1929,107 +1755,22 @@ bool ImageEditor::exportSheetFile(const QString &path, int sheetIndex, bool spri
         }
         composed = safe;
     }
-
-    const StImageFormat format = stFormatFromPath(path);
-    QByteArray bytes;
-    switch (format) {
-    case StImageFormat::Pi1:
-        bytes = exportPi1(composed, 0, &error);
-        break;
-    case StImageFormat::Neo:
-        bytes = exportNeo(composed, 0, QFileInfo(path).completeBaseName(), &error);
-        break;
-    case StImageFormat::Iff:
-        bytes = exportIff(composed, 0, &error);
-        break;
-    case StImageFormat::Png:
-        bytes = exportPng(composed, 0, &error);
-        break;
-    case StImageFormat::Mbk:
-        bytes = exportStosMbk(composed, 0, 1, &error);
-        break;
-    case StImageFormat::Assembler:
-        bytes = exportAssembler(composed, 0, &error);
-        break;
-    case StImageFormat::BitplaneBin:
-        bytes = exportBitplanes(composed, 0, &error);
-        break;
-    default:
-        m_lastError = tr("Unknown export format for %1").arg(path);
-        return false;
-    }
-    if (!error.isEmpty()) {
-        m_lastError = error;
-        return false;
-    }
-
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
-        || file.write(bytes) != bytes.size()) {
-        m_lastError = file.errorString();
-        return false;
-    }
-    return true;
-}
-
-bool ImageEditor::writeBytes(const QString &path, const QByteArray &bytes)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)
-        || file.write(bytes) != bytes.size()) {
-        m_lastError = file.errorString();
-        return false;
-    }
-    return true;
-}
-
-bool ImageEditor::exportBitplaneBytes(const QString &path, int phase,
-                                      const BitplaneDataOptions &options,
-                                      const QString &scroller)
-{
-    // Encode both before opening either: an encoder that refuses (a phase that
-    // is gone, no blocks selected) must not leave a truncated `.dat` where a
-    // good one was. The `.dat` is the product and goes first; the scroller is
-    // its companion, so a scroller that will not open is reported against a
-    // `.dat` that is already out — the same report the explicit export makes.
-    QString error;
-    const QByteArray data = exportBitplaneData(m_doc, phase, options, &error);
-    if (data.isEmpty()) {
-        m_lastError = error.isEmpty() ? tr("Export failed") : error;
-        return false;
-    }
-    QByteArray demo;
-    if (!scroller.isEmpty()) {
-        demo = exportScrollDemo(m_doc, phase, options, QFileInfo(path).fileName(), &error);
-        if (demo.isEmpty()) {
-            m_lastError = error.isEmpty() ? tr("Export failed") : error;
-            return false;
-        }
-    }
-    if (!writeBytes(path, data))
-        return false;
-    if (scroller.isEmpty())
-        return true;
-    if (!writeBytes(scroller, demo)) {
-        m_lastError = tr("wrote %1, but could not write the scroller %2: %3")
-                          .arg(QFileInfo(path).fileName(), QFileInfo(scroller).fileName(),
-                               m_lastError);
-        return false;
-    }
-    return true;
+    // The composed sheet is one frame (`composeSheet` builds a single-frame
+    // document), and the shared tail knows the Pim case the sheet path used
+    // to miss.
+    return writeEncodedFile(path, composed, format, 0);
 }
 
 void ImageEditor::forgetBitplaneExport()
 {
-    m_bitplaneRecipe = BitplaneExportRecipe{};
-    refreshReExport();
+    m_bitplaneExport->forget();
 }
 
 void ImageEditor::refreshReExport()
 {
     if (!m_actReExport)
         return;
-    const bool ready = !m_bitplaneRecipe.path.isEmpty();
+    const bool ready = m_bitplaneExport->canReExport();
     m_actReExport->setEnabled(ready);
     if (!ready) {
         m_actReExport->setToolTip(
@@ -2037,77 +1778,68 @@ void ImageEditor::refreshReExport()
                "and no dialog (Ctrl+Shift+E) — enabled once one has been exported"));
         return;
     }
-    const QString name = QFileInfo(m_bitplaneRecipe.path).fileName();
-    m_actReExport->setToolTip(m_bitplaneRecipe.scroller.isEmpty()
+    const QString name = QFileInfo(m_bitplaneExport->lastExportPath()).fileName();
+    m_actReExport->setToolTip(m_bitplaneExport->lastExportScroller().isEmpty()
         ? tr("Write %1 again with the same phase and blocks, no dialog (Ctrl+Shift+E)").arg(name)
         : tr("Write %1 and %2 again with the same phase and blocks, no dialog (Ctrl+Shift+E)")
-              .arg(name, QFileInfo(m_bitplaneRecipe.scroller).fileName()));
+              .arg(name, QFileInfo(m_bitplaneExport->lastExportScroller()).fileName()));
 }
 
 void ImageEditor::setBitplaneExportScroller(const QString &scroller)
 {
-    if (m_bitplaneRecipe.path.isEmpty())
-        return;
-    m_bitplaneRecipe.scroller = scroller;
-    refreshReExport();
+    m_bitplaneExport->setScroller(scroller);
 }
 
 bool ImageEditor::exportBitplaneFile(const QString &path, int phase,
                                      const BitplaneDataOptions &options)
 {
-    if (!exportBitplaneBytes(path, phase, options, QString()))
-        return false;
-    // The choices are not in the `.pim` and not in the project: export stays
-    // explicit, so how to repeat it lives here, for this document, this
-    // session. A fresh export re-seeds it; the scroller comes in behind via
-    // setBitplaneExportScroller().
-    m_bitplaneRecipe = BitplaneExportRecipe{path, phase, options, QString()};
-    refreshReExport();
-    return true;
+    if (m_bitplaneExport->exportBitplane(path, phase, options))
+        return true;
+    m_lastError = m_bitplaneExport->lastError();
+    return false;
 }
 
 bool ImageEditor::exportScrollDemoFile(const QString &path, int phase,
                                        const BitplaneDataOptions &options,
                                        const QString &dataFile)
 {
-    QString error;
-    const QByteArray bytes = exportScrollDemo(m_doc, phase, options, dataFile, &error);
-    if (bytes.isEmpty()) {
-        m_lastError = error.isEmpty() ? tr("Export failed") : error;
-        return false;
-    }
-    return writeBytes(path, bytes);
+    if (m_bitplaneExport->writeScrollDemo(path, phase, options, dataFile))
+        return true;
+    m_lastError = m_bitplaneExport->lastError();
+    return false;
 }
 
 bool ImageEditor::reExportBitplaneData()
 {
-    if (m_bitplaneRecipe.path.isEmpty()) {
-        m_lastError = tr("No bitplane export to repeat yet — export one first.");
-        return false;
-    }
-    // Overwrite, no dialog and no prompt: the remembered export is the user
-    // saying what this file is, and the action is only enabled after one.
-    return exportBitplaneBytes(m_bitplaneRecipe.path, m_bitplaneRecipe.phase,
-                               m_bitplaneRecipe.options, m_bitplaneRecipe.scroller);
+    if (m_bitplaneExport->reExport())
+        return true;
+    m_lastError = m_bitplaneExport->lastError();
+    return false;
 }
 
 void ImageEditor::reExportBitplane()
 {
-    const QString path = m_bitplaneRecipe.path;
-    const QString scroller = m_bitplaneRecipe.scroller;
-    if (!reExportBitplaneData()) {
-        if (m_status)
-            m_status->setText(tr("Re-export failed: %1").arg(m_lastError));
-        emit bitplaneReExported(path, scroller, m_lastError);
-        return;
-    }
-    if (m_status) {
-        m_status->setText(scroller.isEmpty()
-            ? tr("Re-exported %1.").arg(QFileInfo(path).fileName())
-            : tr("Re-exported %1 and %2.").arg(QFileInfo(path).fileName(),
-                                               QFileInfo(scroller).fileName()));
-    }
-    emit bitplaneReExported(path, scroller, QString());
+    m_bitplaneExport->reExport();
+}
+
+bool ImageEditor::canReExportBitplane() const
+{
+    return m_bitplaneExport->canReExport();
+}
+
+QString ImageEditor::lastBitplaneExportPath() const
+{
+    return m_bitplaneExport->lastExportPath();
+}
+
+int ImageEditor::lastBitplaneExportPhase() const
+{
+    return m_bitplaneExport->lastExportPhase();
+}
+
+BitplaneDataOptions ImageEditor::lastBitplaneExportOptions() const
+{
+    return m_bitplaneExport->lastExportOptions();
 }
 
 void ImageEditor::refreshOnion()
@@ -2125,29 +1857,7 @@ void ImageEditor::refreshOnion()
 
 void ImageEditor::refreshPreview()
 {
-    if (!m_preview)
-        return;
-    if (!m_playing)
-        m_previewFrame = m_doc.currentFrame();
-    m_previewFrame = qBound(0, m_previewFrame, m_doc.frameCount() - 1);
-    QImage image(m_doc.width(), m_doc.height(), QImage::Format_ARGB32);
-    const QVector<int> &pixels = m_doc.frame(m_previewFrame);
-    for (int y = 0; y < m_doc.height(); ++y) {
-        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
-        for (int x = 0; x < m_doc.width(); ++x) {
-            const int cube = pixels.value(y * m_doc.width() + x, kTransparent);
-            if (cube < 0) {
-                const bool checker = ((x + y) & 1) == 0;
-                line[x] = checker ? qRgb(40, 40, 40) : qRgb(70, 70, 70);
-            } else {
-                const Rgb rgb = cubeRgb(m_doc.paletteKind(), cube);
-                line[x] = qRgb(rgb.r, rgb.g, rgb.b);
-            }
-        }
-    }
-    const QSize box(kPreviewSize, kPreviewSize);
-    m_preview->setPixmap(QPixmap::fromImage(
-        image.scaled(box, Qt::KeepAspectRatio, Qt::FastTransformation)));
+    m_previewWidget->refresh();
     if (m_actRotate)
         m_actRotate->setEnabled(m_doc.width() == m_doc.height());
 }
@@ -2233,9 +1943,17 @@ void ImageEditor::paintIndices(const QVector<int> &indices, int colour)
         m_strokeBefore.append(layer.value(index, kTransparent));
     }
     m_doc.fillIndices(indices, colour, m_strokeLayer);
-    refreshCanvas();
-    refreshPreview();
-    updateOverspill();
+    // A mouse-move does the least that shows the new pixels: one repaint of
+    // the grid canvas, whose image is rebuilt once inside paintEvent. The
+    // full refresh cascade this used to run cost a second ARGB32 rebuild per
+    // event (setDocument's, thrown away by paintEvent's), a scaled preview
+    // QImage and QPixmap, a full-frame overspill() scan and a geometry pass
+    // over the hidden sheet view. The preview and the overspill count are
+    // recomputed once, in finishStroke(), where the stroke's pixels are final
+    // and the sheet view (if it is the visible mode) is redrawn.
+    m_canvas->invalidateImage();
+    if (sheetModeActive())
+        refreshSheetView();
     notifyModified();
 }
 
@@ -2244,17 +1962,30 @@ void ImageEditor::finishStroke()
     if (m_strokeIndices.isEmpty())
         return;
     m_undo->push(new PaintCommand(&m_doc, m_strokePhase, m_strokeFrame, m_strokeLayer,
-                                  m_strokeIndices, m_strokeBefore, m_strokeColour));
+                                  m_strokeIndices, m_strokeBefore, m_strokeColour,
+                                  tr("paint")));
     m_strokeIndices.clear();
     m_strokeBefore.clear();
     m_strokeSeen.clear();
+    // The stroke's pixels are final now, so the two views that depend on the
+    // whole frame are rebuilt once instead of once per mouse-move: the
+    // animation preview and the overspill count.
+    refreshPreview();
+    updateOverspill();
 }
 
 void ImageEditor::pickColour(int cubeIndex)
 {
+    // The eye-dropper pulls the picked cube into the active set when it is not
+    // in it, which edits the document's palette: that needs the same undo entry
+    // an accepted palette dialog gets. Picking a colour already in the set is
+    // not a document change and must not commit one.
+    const ImageDocument before = m_doc;
     m_colour = cubeIndex;
     if (cubeIndex >= 0 && !m_doc.active().contains(cubeIndex))
         m_doc.toggleActive(cubeIndex);
+    if (m_doc.active() != before.active())
+        pushSnapshot(before, tr("add colour to palette"));
     m_canvas->setCurrentColour(m_colour);
     rebuildSwatches();
     notifyModified();
@@ -2339,7 +2070,10 @@ void ImageEditor::rotate90()
     if (m_doc.width() != m_doc.height())
         return;
     const QVector<int> before = m_doc.activeLayerPixels();
-    if (!m_doc.replaceActiveLayer(rotateIndexed(before, m_doc.width(), 90)))
+    // The exact quarter-turn (a pixel permutation), not the general resampler:
+    // same picture for a right angle, and no float pass over the cell.
+    if (!m_doc.replaceActiveLayer(
+            rotate90Cw(before, m_doc.width(), m_doc.height(), nullptr, nullptr)))
         return;
     applyLayerBuffer(before, tr("rotate 90"));
     refreshCanvas();
@@ -2383,38 +2117,6 @@ void ImageEditor::onionChanged()
         return;
     m_onionDistance = m_onion->currentData().toInt();
     refreshOnion();
-}
-
-void ImageEditor::togglePlay(bool on)
-{
-    m_playing = on;
-    if (m_playing) {
-        m_previewFrame = 0;
-        m_previewTimer->start(qMax(1, 1000 / qMax(1, m_fps)));
-        m_actPlay->setIcon(appearance::icon(appearance::Icon::Pause));
-        m_actPlay->setToolTip(tr("Pause animation"));
-        refreshPreview();
-    } else {
-        m_previewTimer->stop();
-        m_previewFrame = m_doc.currentFrame();
-        m_actPlay->setIcon(appearance::icon(appearance::Icon::Run));
-        m_actPlay->setToolTip(tr("Play animation"));
-        refreshPreview();
-    }
-}
-
-void ImageEditor::previewTick()
-{
-    m_previewFrame = nextPreviewFrame(m_previewFrame, m_doc.frameCount(), 0,
-                                      m_doc.frameCount() - 1);
-    refreshPreview();
-}
-
-void ImageEditor::fpsChanged(int fps)
-{
-    m_fps = qBound(1, fps, 60);
-    if (m_playing)
-        m_previewTimer->start(qMax(1, 1000 / m_fps));
 }
 
 void ImageEditor::addLayer()
@@ -2517,7 +2219,7 @@ void ImageEditor::addPhase()
 {
     // Over a freshly imported sheet, adding a phase slices cells out of it.
     const int sheet = m_sheetCanvas ? m_sheetCanvas->sheetIndex() : -1;
-    if (m_actSheetMode->isChecked() && sheet >= 0 && m_importedSheets.contains(sheet)) {
+    if (m_actSheetMode->isChecked() && sheet >= 0 && m_sheetSlicing.hasSheet(sheet)) {
         slicePhaseFromSheet();
         return;
     }

@@ -10,11 +10,16 @@
 
 #include "control/mcp/McpServer.h"
 
+#include "control/mcp/ControlClient.h"
+
 #include <algorithm>
 #include <memory>
+#include <QFile>
 #include <QJsonDocument>
+#include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QtTest>
 
 using namespace pist::mcp;
@@ -27,26 +32,64 @@ namespace {
 class FakeIde : public QObject
 {
 public:
+    /// Refuse any connection whose first line is not `auth <token>`, exactly as
+    /// a listening IDE does (RemoteControl::onReadyRead). Empty — the default —
+    /// means no token is checked, which is what the tests that predate tokens
+    /// rely on.
+    void setToken(const QString &token) { m_token = token; }
+
     bool start()
     {
         if (!m_server.listen(QHostAddress::LocalHost))
             return false;
         connect(&m_server, &QTcpServer::newConnection, this, [this] {
             QTcpSocket *client = m_server.nextPendingConnection();
+            m_accepted.append(client);
             connect(client, &QTcpSocket::readyRead, this, [this, client] {
+                const QByteArray chunk = client->readAll();
+                m_wire += chunk;
                 QByteArray &buffer = m_buffers[client];
-                buffer += client->readAll();
+                buffer += chunk;
                 int nl = 0;
                 while ((nl = buffer.indexOf('\n')) >= 0) {
-                    m_lines.append({client, QString::fromUtf8(buffer.left(nl))});
+                    const QString line = QString::fromUtf8(buffer.left(nl));
                     buffer.remove(0, nl + 1);
+                    if (!m_token.isEmpty() && !m_authed.contains(client)) {
+                        m_lines.append({client, line});
+                        if (line == QLatin1String("auth ") + m_token) {
+                            m_authed.insert(client);
+                            sendTo(client, "ok\n");
+                        } else {
+                            sendTo(client, "error auth required\n");
+                            client->disconnectFromHost();
+                            // The real IDE stops reading here: the connection is
+                            // going away and a line behind the refusal is not
+                            // executed (pipelinedCommandAfterBadAuth).
+                            break;
+                        }
+                        continue;
+                    }
+                    m_lines.append({client, line});
                 }
             });
         });
         return true;
     }
 
+    /// Shut the fake down the way an exiting IDE does: stop listening and close
+    /// every accepted connection, so a shim holding one sees the disconnect.
+    void stop()
+    {
+        m_server.close();
+        for (QTcpSocket *client : std::as_const(m_accepted))
+            client->disconnectFromHost();
+    }
+
     quint16 port() const { return m_server.serverPort(); }
+
+    /// Everything the shim has written, whatever it framed it as: an assertion
+    /// about what reached the IDE rather than about how it was split.
+    QByteArray wire() const { return m_wire; }
 
     /// The next complete command line from any connection, waiting for one.
     /// Empty on timeout — the caller's QCOMPARE then fails with a readable diff.
@@ -64,15 +107,25 @@ public:
         // Replies belong to whoever asked last: on the wrong socket the shim
         // would hang waiting for an answer that went to the other connection.
         QVERIFY(m_lastFrom);
-        m_lastFrom->write(raw);
-        m_lastFrom->flush();
+        sendTo(m_lastFrom, raw);
     }
 
 private:
+    void sendTo(QTcpSocket *client, const QByteArray &raw)
+    {
+        m_lastFrom = client;
+        client->write(raw);
+        client->flush();
+    }
+
     QTcpServer m_server;
     QHash<QTcpSocket *, QByteArray> m_buffers;
+    QByteArray m_wire;
     QList<QPair<QTcpSocket *, QString>> m_lines;
+    QSet<QTcpSocket *> m_authed;
+    QList<QTcpSocket *> m_accepted;
     QTcpSocket *m_lastFrom = nullptr;
+    QString m_token;
 };
 
 } // namespace
@@ -152,6 +205,36 @@ class TstMcp : public QObject
         return params;
     }
 
+    /// Publish an address the way a listening IDE does (its discovery file):
+    /// `host port token [protocol-version]` on one line (the shape
+    /// RemoteControl::listen writes). The real one is written owner-only and to
+    /// a well-known path; a test points the shim at its own file instead. The
+    /// version field is optional the way it is on the wire: a line without one
+    /// is an IDE older than the handshake.
+    void writeDiscovery(const QString &path, quint16 port, const QString &token,
+                        int protocolVersion = -1)
+    {
+        QFile file(path);
+        QVERIFY2(file.open(QIODevice::WriteOnly | QIODevice::Truncate), qPrintable(path));
+        QString line = QStringLiteral("127.0.0.1 %1 %2").arg(port).arg(token);
+        if (protocolVersion >= 0)
+            line += QStringLiteral(" %1").arg(protocolVersion);
+        file.write((line + QLatin1Char('\n')).toUtf8());
+        file.close();
+    }
+
+    /// The first `notifications/message` emitted (an event pushed to the
+    /// agent), or a null object when none has arrived yet.
+    QJsonObject firstEventNotification() const
+    {
+        for (const QJsonObject &m : m_out) {
+            if (m.value(QStringLiteral("method")).toString()
+                == QLatin1String("notifications/message"))
+                return m;
+        }
+        return QJsonObject();
+    }
+
 private slots:
     /// QtTest reuses one instance across methods (and only slots named init
     /// are invoked between them); earlier replies must not be matched later.
@@ -226,7 +309,7 @@ private slots:
         // structuredContent and the same JSON pretty-printed as the text block.
         send(server.get(), 2, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_state")));
         QCOMPARE(ide.nextLine(), QStringLiteral("statejson"));
-        ide.send("{\"running\":false,\"stopped\":true,\"pc\":\"0x00012596\"}\n.\n");
+        ide.send("ok\n{\"running\":false,\"stopped\":true,\"pc\":\"0x00012596\"}\n.\n");
         reply = waitReply(2);
         QVERIFY(resultText(reply).contains(QLatin1String("0x00012596")));
         QCOMPARE(reply.value(QStringLiteral("result")).toObject()
@@ -278,7 +361,7 @@ private slots:
         send(server.get(), 2, QStringLiteral("resources/read"),
              QJsonObject{{QStringLiteral("uri"), QStringLiteral("pist://state")}});
         QCOMPARE(ide.nextLine(), QStringLiteral("statejson"));
-        ide.send("{\"running\":false,\"stopped\":true}\n.\n");
+        ide.send("ok\n{\"running\":false,\"stopped\":true}\n.\n");
         reply = waitReply(2);
         const QJsonArray contents = reply.value(QStringLiteral("result")).toObject()
                                         .value(QStringLiteral("contents")).toArray();
@@ -332,7 +415,7 @@ private slots:
         send(server.get(), 7, QStringLiteral("tools/call"),
              callParams(QStringLiteral("pist_tabs")));
         QCOMPARE(ide.nextLine(), QStringLiteral("tabs"));
-        ide.send("[]\n.\n");
+        ide.send("ok\n[]\n.\n");
         reply = waitReply(7);
         QVERIFY(!resultIsError(reply));
 
@@ -349,7 +432,7 @@ private slots:
         QCOMPARE(ide.nextLine(), QStringLiteral("build"));
         ide.send("error build failed\n");
         QCOMPARE(ide.nextLine(), QStringLiteral("problems"));
-        ide.send("[{\"file\":\"a.s\",\"line\":3,\"message\":\"bad\",\"severity\":\"error\"}]\n.\n");
+        ide.send("ok\n[{\"file\":\"a.s\",\"line\":3,\"message\":\"bad\",\"severity\":\"error\"}]\n.\n");
         reply = waitReply(9);
         QVERIFY(resultIsError(reply));
         const QJsonArray problems = reply.value(QStringLiteral("result")).toObject()
@@ -373,7 +456,7 @@ private slots:
         send(server.get(), 1, QStringLiteral("tools/call"),
              callParams(QStringLiteral("pist_symbols"), args));
         QCOMPARE(ide.nextLine(), QStringLiteral("symbols cou"));
-        ide.send("[{\"name\":\"count\",\"file\":\"hello.s\",\"line\":22}]\n.\n");
+        ide.send("ok\n[{\"name\":\"count\",\"file\":\"hello.s\",\"line\":22}]\n.\n");
         QJsonObject reply = waitReply(1);
         const QJsonArray items = reply.value(QStringLiteral("result")).toObject()
                                      .value(QStringLiteral("structuredContent")).toObject()
@@ -399,14 +482,14 @@ private slots:
         send(server.get(), 3, QStringLiteral("tools/call"),
              callParams(QStringLiteral("pist_readmem"), args));
         QCOMPARE(ide.nextLine(), QStringLiteral("readmem $12596 16"));
-        ide.send("[{\"address\":\"0x00012596\",\"bytes\":\"7000\"}]\n.\n");
+        ide.send("ok\n[{\"address\":\"0x00012596\",\"bytes\":\"7000\"}]\n.\n");
         reply = waitReply(3);
         QVERIFY(resultText(reply).contains(QLatin1String("7000")));
 
         send(server.get(), 4, QStringLiteral("tools/call"),
              callParams(QStringLiteral("pist_disasm")));
         QCOMPARE(ide.nextLine(), QStringLiteral("disasm"));
-        ide.send("[{\"address\":\"0x00012596\",\"bytes\":\"7000\",\"text\":\"moveq #$00,d0\"}]\n.\n");
+        ide.send("ok\n[{\"address\":\"0x00012596\",\"bytes\":\"7000\",\"text\":\"moveq #$00,d0\"}]\n.\n");
         reply = waitReply(4);
         QVERIFY(resultText(reply).contains(QLatin1String("moveq")));
         // Pre-existing tools: an edit-boundary slip once deleted these
@@ -430,6 +513,67 @@ private slots:
         QCOMPARE(ide.nextLine(), QStringLiteral("stop"));
         ide.send("ok\n");
         reply = waitReply(7);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    /// An argument is interpolated into a line-protocol command, and the IDE
+    /// frames on '\n': without a check, an argument carrying one is executed
+    /// there as a second verb — `quit`, withheld from the catalog on purpose,
+    /// among them — and its extra reply line desyncs the one-in-flight
+    /// correlation. The argument is attacker-influenceable without a malicious
+    /// MCP client: source text an agent has just read (pist_read) fed back as a
+    /// path or a command.
+    void toolArgumentWithALineBreakIsRefusedAndNeverFramed()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        QJsonObject args;
+        args.insert(QStringLiteral("path"), QStringLiteral("/tmp/evil.s\nquit"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_open"), args));
+        // Nothing reached the IDE at all — pre-fix the whole thing is framed,
+        // so `open /tmp/evil.s` and the injected `quit` both arrive and the
+        // verb withheld from this catalog runs on the IDE.
+        QVERIFY2(ide.nextLine(1000).isEmpty(),
+                 qPrintable(QStringLiteral("a refused call reached the wire: %1")
+                                .arg(QString::fromUtf8(ide.wire()))));
+        QJsonObject reply = waitReply(1);
+        QCOMPARE(reply.value(QStringLiteral("error")).toObject()
+                     .value(QStringLiteral("code")).toInt(),
+                 -32602);
+        QVERIFY2(reply.value(QStringLiteral("error")).toObject()
+                     .value(QStringLiteral("message")).toString()
+                     .contains(QLatin1String("path")),
+                 qPrintable(QJsonDocument(reply).toJson(QJsonDocument::Compact)));
+
+        // The other injection surface is free text an agent composes, so it
+        // gets the same treatment; a bare carriage return is a break too.
+        args = {};
+        args.insert(QStringLiteral("command"), QStringLiteral("info mfp\rstop"));
+        send(server.get(), 2, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_cmd"), args));
+        QVERIFY2(ide.nextLine(1000).isEmpty(),
+                 qPrintable(QStringLiteral("an unrunnable command reached the wire: %1")
+                                .arg(QString::fromUtf8(ide.wire()))));
+        reply = waitReply(2);
+        QCOMPARE(reply.value(QStringLiteral("error")).toObject()
+                     .value(QStringLiteral("code")).toInt(),
+                 -32602);
+        QVERIFY2(reply.value(QStringLiteral("error")).toObject()
+                     .value(QStringLiteral("message")).toString()
+                     .contains(QLatin1String("command")),
+                 qPrintable(QJsonDocument(reply).toJson(QJsonDocument::Compact)));
+
+        // The refusal is per-call: the next call is framed and answered, so a
+        // rejected argument neither wedges the shim nor leaves the fake IDE's
+        // first wire line something other than the command asked for.
+        send(server.get(), 3, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("build"));
+        ide.send("ok\n");
+        reply = waitReply(3);
         QVERIFY(!resultIsError(reply));
     }
 
@@ -511,6 +655,103 @@ private slots:
         QVERIFY(resultText(reply).startsWith(QLatin1String("watch failed:")));
     }
 
+    /// A block's body is data: a line that is only '.' must not truncate it and
+    /// a line beginning with "error" must not turn a successful call into a
+    /// failure. The body travels with an explicit status header, and body lines
+    /// starting with '.' are dot-stuffed (the sender prefixes one extra '.'; the
+    /// client strips one). (Pre-fix the reply was cut at the first lone '.' and
+    /// the header line leaked into the text.)
+    void blockBodiesSurviveDotsAndErrorPrefixes()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_console")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("console"));
+        // The lone '.' is stuffed as '..' so it cannot read as the terminator.
+        ide.send("ok\nfirst line\n..\nerror 2 in line\nlast line\n.\n");
+
+        const QJsonObject reply = waitReply(1);
+        QVERIFY2(!resultIsError(reply),
+                 qPrintable(QJsonDocument(reply).toJson(QJsonDocument::Compact)));
+        const QString text = resultText(reply);
+        QVERIFY2(text.startsWith(QLatin1String("first line")), qPrintable(text));
+        QVERIFY2(text.contains(QLatin1String("\n.\n")), qPrintable(text));
+        QVERIFY2(text.contains(QLatin1String("error 2 in line")), qPrintable(text));
+        QVERIFY2(text.contains(QLatin1String("last line")), qPrintable(text));
+    }
+
+    /// A second pist_watch while the first is still waiting for its
+    /// acknowledgement must not overwrite the pending id — that left the first
+    /// call unanswered forever. The second is refused, the first is answered.
+    void aSecondWatchWhileOneIsPendingIsRefused()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_watch")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("watch"));
+
+        // The acknowledgement has not arrived yet; the second call must be
+        // answered now, not displace the first.
+        send(server.get(), 2, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_watch")));
+        const QJsonObject refused = waitReply(2);
+        QVERIFY2(!refused.isEmpty(), "the superseding watch call was never answered");
+        QVERIFY(resultIsError(refused));
+        QVERIFY(resultText(refused).contains(QLatin1String("in flight")));
+
+        // The acknowledgement answers the *first* call.
+        ide.send("ok\n");
+        const QJsonObject first = waitReply(1);
+        QVERIFY2(!first.isEmpty(), "the first watch call was never answered");
+        QVERIFY(!resultIsError(first));
+    }
+
+    /// A watch the IDE acknowledges never leaves the call hanging: the shim
+    /// answers the waiting tool with a failure once its ack timer expires.
+    /// (Pre-fix subscribe() armed no timer, so the tool waited forever.)
+    void aWatchAckThatNeverArrivesIsAnswered()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_watch")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("watch"));
+        // No acknowledgement is ever sent.
+
+        const QJsonObject reply = waitReply(1, 15000);
+        QVERIFY2(!reply.isEmpty(), "the watch call was left waiting on an ack that never came");
+        QVERIFY(resultIsError(reply));
+        QVERIFY(resultText(reply).contains(QLatin1String("did not answer")));
+    }
+
+    /// The shim's reply buffer is capped: a runaway reply fails the flight with
+    /// an error instead of growing memory without limit. (Guard, not a
+    /// regression demo: pre-fix the same input waits out the 180 s reply
+    /// timeout, so the RED is the timeout itself, not a fast failure.)
+    void anOversizedReplyFailsTheFlightInsteadOfGrowing()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_console")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("console"));
+        // 17 MiB with no newline: over the shim's 16 MiB cap.
+        ide.send(QByteArray(17 * 1024 * 1024, 'x'));
+
+        const QJsonObject reply = waitReply(1, 30000);
+        QVERIFY2(!reply.isEmpty(), "the oversized reply never resulted in an answer");
+        QVERIFY(resultIsError(reply));
+        QVERIFY2(resultText(reply).contains(QLatin1String("buffer limit")),
+                 qPrintable(resultText(reply)));
+    }
+
     void noEndpointFailsTheCallWithTheRemedy()
     {
         auto server = makeServer(0); // port 0: not configured
@@ -518,6 +759,151 @@ private slots:
         const QJsonObject reply = waitReply(1);
         QVERIFY(resultIsError(reply));
         QVERIFY(resultText(reply).contains(QLatin1String("not configured")));
+    }
+
+    /// A token the IDE refuses is a session that has ended, and the shim must
+    /// not treat it as the end of the road: the discovery file names the session
+    /// that is running now, so re-reading it and dialing once more is what keeps
+    /// an agent working across an IDE restart. (Pre-fix: "authentication
+    /// rejected by PiST: error auth required", and the request fails.)
+    void aRefusedTokenIsRetriedWithTheOneTheFilePublishes()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString discovery = dir.filePath(QStringLiteral("control-port"));
+
+        FakeIde ide;
+        QVERIFY(ide.start());
+        ide.setToken(QStringLiteral("live-token"));
+        writeDiscovery(discovery, ide.port(), QStringLiteral("live-token"));
+
+        // The shim dials holding a token no live session issued: its read of the
+        // file raced the restart, so the entry it resolved (and --token or
+        // PIST_CONTROL_TOKEN pinned, the same way) is the previous session's
+        // while the file now carries this one's.
+        auto server = makeServer(ide.port());
+        server->setToken(QStringLiteral("stale-token"));
+        bool handedStaleOnce = false;
+        server->setDiscoveryResolver([&] {
+            if (!handedStaleOnce) {
+                handedStaleOnce = true;
+                return ControlClient::Discovery{QStringLiteral("127.0.0.1"), ide.port(),
+                                                QStringLiteral("stale-token")};
+            }
+            return ControlClient::readDiscoveryFile(discovery);
+        });
+
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build")));
+
+        // The stale token is refused, the file is re-read, and the retried
+        // connection carries both the live token and the request that was
+        // waiting — which is why the refused connection never saw `build`.
+        QCOMPARE(ide.nextLine(), QStringLiteral("auth stale-token"));
+        QCOMPARE(ide.nextLine(), QStringLiteral("auth live-token"));
+        QCOMPARE(ide.nextLine(), QStringLiteral("build"));
+        ide.send("ok\n");
+
+        const QJsonObject reply = waitReply(1);
+        QVERIFY2(!resultIsError(reply),
+                 qPrintable(QJsonDocument(reply).toJson(QJsonDocument::Compact)));
+        QCOMPARE(resultText(reply), QStringLiteral("ok"));
+    }
+
+    /// A discovery line publishing a control-protocol version this shim does
+    /// not speak must be refused before it is dialed (MIN-52). Negotiating
+    /// first and then failing verb-by-verb hides the real problem: the two
+    /// halves are from different releases. An absent version still connects —
+    /// that is an IDE older than the handshake, covered by every other case.
+    void anIncompatibleProtocolVersionIsRefusedBeforeDialing()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString discovery = dir.filePath(QStringLiteral("control-port"));
+
+        FakeIde ide;
+        QVERIFY(ide.start());
+        ide.setToken(QStringLiteral("live-token"));
+        writeDiscovery(discovery, ide.port(), QStringLiteral("live-token"), 99);
+
+        auto server = makeServer(ide.port());
+        server->setDiscoveryResolver(
+            [&] { return ControlClient::readDiscoveryFile(discovery); });
+
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build")));
+
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(resultIsError(reply));
+        QVERIFY2(resultText(reply).contains(QLatin1String("control protocol 99")),
+                 qPrintable(resultText(reply)));
+        QVERIFY2(resultText(reply).contains(QLatin1String("upgrade the half that is older")),
+                 qPrintable(resultText(reply)));
+        // Nothing was dialed: the fake IDE never saw an auth attempt.
+        QVERIFY(ide.nextLine().isEmpty());
+    }
+
+    /// An IDE restart is a new session — a new token, and a control port that
+    /// may have moved — and the shim, which lives as long as the agent's client
+    /// does, has to follow it without being restarted itself. (Pre-fix the one
+    /// reconnect presents the old token to the old port, is refused, and the
+    /// subscription goes silent for good: the failure is indistinguishable from
+    /// an IDE that never came back.)
+    void anIdeRestartIsFollowedWithoutRestartingTheShim()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString discovery = dir.filePath(QStringLiteral("control-port"));
+
+        FakeIde first;
+        QVERIFY(first.start());
+        first.setToken(QStringLiteral("token-one"));
+        writeDiscovery(discovery, first.port(), QStringLiteral("token-one"));
+
+        auto server = makeServer(first.port());
+        server->setToken(QStringLiteral("token-one"));
+        server->setDiscoveryResolver(
+            [discovery] { return ControlClient::readDiscoveryFile(discovery); });
+
+        // Subscribed and watching.
+        send(server.get(), 1, QStringLiteral("tools/call"), callParams(QStringLiteral("pist_watch")));
+        QCOMPARE(first.nextLine(), QStringLiteral("auth token-one"));
+        QCOMPARE(first.nextLine(), QStringLiteral("watch"));
+        first.send("ok\n");
+        QVERIFY(!resultIsError(waitReply(1)));
+
+        // The IDE exits — and stays down past the first retry, so the shim has
+        // to keep the subscription alive across a dial that fails.
+        first.stop();
+        QTest::qWait(1200);
+
+        // It comes back as a new session: another port, another token, published
+        // to the same discovery file.
+        FakeIde second;
+        QVERIFY(second.start());
+        second.setToken(QStringLiteral("token-two"));
+        writeDiscovery(discovery, second.port(), QStringLiteral("token-two"));
+
+        // Without anything else driving it, the shim re-resolves, re-authenticates
+        // and re-subscribes.
+        QCOMPARE(second.nextLine(15000), QStringLiteral("auth token-two"));
+        QCOMPARE(second.nextLine(), QStringLiteral("watch"));
+        second.send("ok\n");
+
+        // Events flow again on the new session...
+        second.send("event stopped pc=0x00012596\n");
+        QTRY_VERIFY_WITH_TIMEOUT(!firstEventNotification().isEmpty(), 5000);
+
+        // ...and a tool call is answered by it: the second connection resolves
+        // the moved port too, and waits for the new token's ack before sending.
+        send(server.get(), 2, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build")));
+        QCOMPARE(second.nextLine(), QStringLiteral("auth token-two"));
+        QCOMPARE(second.nextLine(), QStringLiteral("build"));
+        second.send("ok\n");
+        const QJsonObject reply = waitReply(2);
+        QVERIFY2(!resultIsError(reply),
+                 qPrintable(QJsonDocument(reply).toJson(QJsonDocument::Compact)));
     }
 };
 

@@ -65,6 +65,10 @@ hatari — the emulator
     compiled by the release workflow from the upstream, unmodified source
     tarball, pinned by checksum. The basis for this is the licence above: the
     GPL, version 2 or later, permits redistribution of the compiled binary.
+    The binary itself is conveyed under version 2 rather than "or later",
+    because three of the files Hatari compiles in grant version 2 alone — the
+    "or later" option on the other files cannot lift the combined work. See
+    the readline entry below, and docs/PLAN.md §10.
 
     Two commitments follow from that basis:
       - the binary is NEVER patched or modified. PiST drives Hatari purely
@@ -94,22 +98,32 @@ hatari — the emulator
     macOS archive still requires the user to install Hatari themselves
     (`brew install hatari` carries 2.6.1).
 
-readline — the line editor linked into Hatari
-    GNU General Public License, version 3 or later. It is redistributed because
-    the bundled Hatari links it, so it is present inside the AppImage as part of
-    that binary rather than being chosen separately.
+readline — NOT redistributed
+    GNU General Public License, version 3 or later.
     https://ftp.gnu.org/gnu/readline/
 
-    Redistribution: the same basis as Hatari above, with one qualification.
-    Hatari is licensed version 2 *or later*, and that is the only reason the two
-    can be combined: a GPL version 3 library joins GPL version 2 code only
-    through the "or later" option, so a version-2-only Hatari could not carry
-    readline at all.
+    PiST does not ship it, and the bundled Hatari is built without it: no
+    readline library travels in any archive, and no archive's generated
+    THIRD-PARTY.txt lists readline as a component. (The AppImage still carries
+    a copy of GPL-3.0.txt, but for Qt — the LGPLv3 incorporates the GPLv3 by
+    reference — not for readline.)
 
-    It is load-bearing functionally, not incidentally. With readline, Hatari's
-    debugger prints its prompt to stdout; without it, Hatari falls back to fgets
-    and prints the prompt to stderr, which is a different transport path that
-    PiST's host does not use. The bundled build must therefore link it.
+    This is a licence constraint, not a packaging preference. Hatari is
+    *mostly* licensed version 2 or later, and version 3 code joins version 2
+    code only through that "or later" option — which is exactly the argument
+    that used to be made here for carrying readline. It does not hold. Three
+    files Hatari compiles into every binary — src/cpu/uae/attributes.h,
+    src/cpu/uae/types.h and src/cpu/uae/vm.h — grant version 2 alone, with no
+    "or later", and a licence is not upgraded by majority vote: the Hatari
+    binaries this project conveys are therefore GPLv2 as combined works, and a
+    GPL version 3 library cannot join them. docs/PLAN.md §10 audits those three
+    files and the include chains that reach them.
+
+    Nothing is lost functionally. Without readline Hatari's debugger falls back
+    to `fgets` and writes its prompt to *stderr* rather than to stdout. PiST
+    frames a command on the `> ` prompt on either stream — it counts `> ` on
+    stdout and stderr — so the transport works the same way built either way,
+    and docs/PLAN.md §2.4 records which configurations the suites run against.
 
 A TOS ROM image is also required. Original Atari TOS images remain copyrighted
 and are NEVER distributed with PiST; the user supplies one. The ROM's version is

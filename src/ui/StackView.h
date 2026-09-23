@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "emu/MemoryDump.h"
+
 #include <QWidget>
 
 class QTableWidget;
@@ -25,10 +27,12 @@ public:
     explicit StackView(QWidget *parent = nullptr);
 
 public slots:
-    /// Populate from a `memdump` response taken at the stack pointer. The text
-    /// segment runs from textBase to textEnd, so values inside it can be marked
-    /// as likely return addresses.
-    void setStackDump(quint32 sp, const QString &response,
+    /// Populate from a stack dump already parsed into rows (the backend that
+    /// read the debugger's `memdump` did the parsing: MAJ-45). It was taken at
+    /// the stack pointer, so the first long is the innermost return address.
+    /// The text segment runs from textBase to textEnd, so values inside it can
+    /// be marked as likely return addresses.
+    void setStackDump(quint32 sp, const QList<MemoryRow> &rows,
                       quint32 textBase, quint32 textEnd);
 
     /// Clear the view (no session, or registers not yet valid).
@@ -49,7 +53,9 @@ private slots:
 private:
     QTableWidget *m_table = nullptr;
     quint32 m_sp = 0;
-    QString m_lastResponse;
+    /// The last dump as parsed, so an appearance change re-renders it without
+    /// going back to the emulator.
+    QList<MemoryRow> m_lastRows;
     quint32 m_lastTextBase = 0;
     quint32 m_lastTextEnd = 0;
     bool m_haveDump = false;

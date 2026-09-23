@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "editor/EditorTheme.h"
+
 #include <QColor>
 #include <QCursor>
 #include <QFont>
@@ -115,6 +117,14 @@ struct Colors
 
 QString theme();
 
+/// The QSettings keys behind the preferences above, one accessor per key beside
+/// its reader: the settings dialog writes through these instead of spelling the
+/// key out again, so the two halves of a preference cannot drift apart.
+const QString &themeKey();
+const QString &shortcutSchemeKey();
+const QString &fontSizeKey();
+const QString &fontFamilyKey();
+
 /// "pist" (F10 steps into, F9 continues) or "common" (F10 steps over, F11
 /// steps into, F9 toggles a breakpoint, F5 continues while stopped).
 /// Anything else is read as "pist".
@@ -140,7 +150,17 @@ void applyTheme();
 /// inspecting the active palette. Drives editor and debug-pane colours.
 bool darkModeActive();
 
+/// The colours the widgets paint with, for the current theme. Cached: cheap
+/// enough to call per cell, per row and per paint frame. The cache is rebuilt
+/// when applyTheme() runs or the application palette changes, so a copy taken
+/// inside a call stays consistent — do not hold one across a theme change.
 Colors colors();
+
+/// The editor's theme: the monospace font, the effective darkness, and just the
+/// colours `CodeEditor` and `AsmHighlighter` read. The UI builds it and hands it
+/// over — editing the theme is this module's business, painting it is the
+/// editor's — so `src/editor/` never has to include this header (MIN-86).
+EditorTheme editorTheme();
 
 /// Toolbar glyph. For `Icon::Brush`, a valid opaque `paint` fills the brush head.
 QIcon icon(Icon id, const QColor &paint = QColor());

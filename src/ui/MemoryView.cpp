@@ -4,6 +4,7 @@
 
 #include "ui/MemoryView.h"
 
+#include "emu/HexFormat.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
 
@@ -24,11 +25,6 @@ namespace {
 constexpr int kAddressColumn = 0;
 constexpr int kFirstByteColumn = 1;
 constexpr int kCharColumn = kFirstByteColumn + 16;
-
-QString hex8(quint32 value)
-{
-    return QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
-}
 
 } // namespace
 
@@ -115,11 +111,11 @@ void MemoryView::goToAddress(quint32 address)
     m_pendingEdit = false;
     m_staleDumps = 0;
     m_base = address - (address % kRowBytes);
-    m_addressEdit->setText(hex8(m_base));
+    m_addressEdit->setText(hex::hex32(m_base));
     // The old region's bytes must not survive under the new base: until the
     // fresh dump arrives, blank beats wrong — and a discarded stale dump
     // (applyDump refuses one not starting at m_base) leaves exactly this.
-    m_lastDump.clear();
+    m_lastRows.clear();
     clear();
     emit dumpRequested(m_base, kRowBytes * kRows);
 }
@@ -182,13 +178,12 @@ void MemoryView::applyAppearance()
 {
     appearance::markMono(m_table);
     m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
-    if (!m_lastDump.isEmpty())
-        applyDump(m_lastDump);
+    if (!m_lastRows.isEmpty())
+        applyDump(m_lastRows);
 }
 
-void MemoryView::applyDump(const QString &response)
+void MemoryView::applyDump(const QList<MemoryRow> &rows)
 {
-    const QList<MemoryRow> rows = parseMemoryDump(response);
     if (rows.isEmpty()) {
         m_status->setText(tr("No memory data returned."));
         return;
@@ -217,7 +212,7 @@ void MemoryView::applyDump(const QString &response)
         m_staleDumps = 0;
     }
 
-    m_lastDump = response;
+    m_lastRows = rows;
 
     // Programmatic rewrites are not user edits: with editing enabled (the
     // stopped state), every setText would otherwise fire itemChanged →
@@ -241,7 +236,7 @@ void MemoryView::applyDump(const QString &response)
             addressItem = new QTableWidgetItem;
             m_table->setItem(row, kAddressColumn, addressItem);
         }
-        addressItem->setText(hex8(dump.address));
+        addressItem->setText(hex::hex32(dump.address));
         addressItem->setForeground(theme.address);
 
         for (int i = 0; i < kRowBytes; ++i) {
@@ -289,7 +284,7 @@ void MemoryView::applyDump(const QString &response)
     // `rows.size() * kRowBytes` overstates the dump.
     m_status->setText(tr("%1 bytes from $%2")
                           .arg(static_cast<int>(m_bytes.size()))
-                          .arg(hex8(m_base)));
+                          .arg(hex::hex32(m_base)));
 }
 
 void MemoryView::setEditingEnabled(bool enabled)

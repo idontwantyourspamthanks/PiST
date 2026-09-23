@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "emu/HatariTextParse.h"
+
 #include <QString>
 #include <QWidget>
 
@@ -31,8 +33,10 @@ public:
     QString subject() const;
 
 public slots:
-    /// Fill the view with the response to an `info <subject>` command.
-    void setInfo(const QString &text);
+    /// Fill the view with an `info <subject>` report: the transcript and the
+    /// summary of it that the backend parsed (MAJ-45). Nothing here reads the
+    /// transcript for meaning — it only renders what came with it.
+    void setInfo(const HardwareSummary &summary);
 
     /// Clear the view (no session).
     void clear();

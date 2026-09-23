@@ -278,7 +278,7 @@ void BitplaneExportDialog::refreshMap()
                          9);
     }
     if (frameStride > 0) {
-        text += QStringLiteral("each further frame is %1 bytes on (%2 frames)\n")
+        text += tr("each further frame is %1 bytes on (%2 frames)\n")
                     .arg(frameStride)
                     .arg(selected.frames);
     }

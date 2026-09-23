@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "emu/Machine.h"
+#include "model/Machine.h"
 
 #include <QList>
 #include <QString>
@@ -87,9 +87,9 @@ struct ProjectSettings
 ///
 ///   - a **project file** (`<name>.pistproject`, JSON) beside the source, holding
 ///     everything above, so a project is portable and reviewable;
-///   - **application state** for the most recently used project paths, so the
-///     IDE reopens where the user left off and a brand-new session still has
-///     sensible defaults.
+///   - **application state** for the most recently used source paths, so the IDE
+///     reopens where the user left off and a brand-new session still has sensible
+///     defaults.
 ///
 /// Neither touches Hatari's own configuration.
 namespace settings {
@@ -116,12 +116,37 @@ OutputPaths outputPathsFor(const QString &sourcePath);
 /// Default path of the project file for a source file.
 QString projectFileFor(const QString &sourcePath);
 
+/// Write @p settings to @p path.
+///
+/// Stored strings are written exactly as given: nothing is re-relativised
+/// against the project, so a save never rewrites a path the user typed.
 bool save(const ProjectSettings &settings, const QString &path, QString *error);
+
+/// Read @p path into @p settings.
+///
+/// Relative `includePaths` and `additionalSources` entries are resolved against
+/// the project file's own directory, so a project means the same thing wherever
+/// PiST was started; absolute entries are kept as written.
+///
+/// A file written by a newer PiST (a `version` this build does not know) is
+/// refused, as is any entry of the wrong type, and @p error says why. Nothing is
+/// written in either case, so the file on disk is left exactly as it was.
 bool load(ProjectSettings *settings, const QString &path, QString *error);
 
-/// Remember/recall the last used paths, via QSettings.
-void rememberLastProject(const QString &projectPath, const QString &sourcePath);
-QString lastProjectPath();
+/// Remember the source file the session is on, and move it to the head of the
+/// recent list. The writer behind `lastSourcePath()` and `recentSources()`.
+///
+/// The project file path used to be stored here too, under `last/project`; no
+/// reader ever existed for it, so the key is gone rather than carried (MIN-51).
+void rememberLastSource(const QString &sourcePath);
+
+/// The QSettings keys behind the two below, one accessor per key beside its
+/// reader, so the writer and the reader cannot spell one key two ways (MIN-53).
+const QString &lastSourceKey();
+const QString &recentSourcesKey();
+
+/// The source file the last session was on, for the "reopen where you left off"
+/// path, and the MRU list behind File ▸ Open Recent.
 QString lastSourcePath();
 /// Most-recently-opened source files, MRU first, for File ▸ Open Recent.
 QStringList recentSources();

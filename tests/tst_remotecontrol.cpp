@@ -56,8 +56,35 @@ private slots:
     void wrongTokenIsRejectedAndDropped();
     void pipelinedCommandAfterBadAuthNeverExecutes();
     void commandBeforeAuthIsRejected();
+    void unframedFloodIsDroppedAndTheServerKeepsServing();
+    void profileStopIsBusyGatedAgainstOtherConnections();
     void initTestCase();
 };
+
+/// The remote-control server drives the window through its slots, and the
+/// profile-stop path it serialises needs a window whose `profileStop` reports a
+/// save under way and then holds the wait. A real one needs a live emulator
+/// session (tst_gui drives that end to end); this stands in for the two things
+/// that frame the wait — `profileStop`, which reports started, and the
+/// `profileResultsReady` signal the test emits to release it — and nothing else,
+/// so what is under test is the gate around the nested loop.
+class ProfileWindow : public MainWindow
+{
+    Q_OBJECT
+
+public:
+    ProfileWindow() = default;
+
+public slots:
+    /// Report a save as started and do nothing: the parse that follows is the
+    /// test's to trigger, exactly as a real save's parse is the IDE's.
+    bool profileStop();
+};
+
+bool ProfileWindow::profileStop()
+{
+    return true;
+}
 
 
 void TstRemoteControl::initTestCase()
@@ -70,7 +97,8 @@ void TstRemoteControl::initTestCase()
 }
 namespace {
 
-QString exchange(QTcpSocket &client, const QByteArray &command, bool block);
+QString exchange(QTcpSocket &client, const QByteArray &command, bool block, int timeoutMs = 5000);
+bool connectAndAuth(RemoteControl &control, QTcpSocket &client);
 
 /// A control client bound to one MainWindow, listening on an OS-assigned port.
 struct Session
@@ -83,33 +111,38 @@ struct Session
     {
         if (!control.listen(0, error))
             return false;
-
-        // Pump a full event loop rather than call QTcpSocket::waitForConnected:
-        // that wait watches only the client socket's notifier, so in a
-        // same-process test the server's newConnection would never be delivered
-        // and every command would go unanswered. In production the application
-        // runs a continuous event loop, so this is purely a test-harness concern.
-        QEventLoop loop;
-        QTimer timer;
-        timer.setSingleShot(true);
-        QObject::connect(&client, &QTcpSocket::connected, &loop, &QEventLoop::quit);
-        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-        client.connectToHost(QHostAddress::LocalHost, control.boundPort());
-        timer.start(5000);
-        loop.exec();
-        if (client.state() != QAbstractSocket::ConnectedState)
-            return false;
-
-        // Every connection opens with the session token.
-        return exchange(client, "auth " + control.token().toUtf8(), false).trimmed()
-               == QLatin1String("ok");
+        return connectAndAuth(control, client);
     }
 };
+
+/// Connect `client` to `control` and present the session token, pumping a full
+/// event loop rather than calling QTcpSocket::waitForConnected: that wait
+/// watches only the client socket's notifier, so in a same-process test the
+/// server's newConnection would never be delivered and every command would go
+/// unanswered. In production the application runs a continuous event loop, so
+/// this is purely a test-harness concern.
+bool connectAndAuth(RemoteControl &control, QTcpSocket &client)
+{
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&client, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    client.connectToHost(QHostAddress::LocalHost, control.boundPort());
+    timer.start(5000);
+    loop.exec();
+    if (client.state() != QAbstractSocket::ConnectedState)
+        return false;
+
+    // Every connection opens with the session token.
+    return exchange(client, "auth " + control.token().toUtf8(), false).trimmed()
+           == QLatin1String("ok");
+}
 
 /// Send a command and read the reply, pumping a full event loop so the server
 /// (same process) gets to run. Reads until a complete line for one-line replies,
 /// or until the block terminator for block replies.
-QString exchange(QTcpSocket &client, const QByteArray &command, bool block)
+QString exchange(QTcpSocket &client, const QByteArray &command, bool block, int timeoutMs)
 {
     QByteArray received;
     QEventLoop loop;
@@ -123,7 +156,7 @@ QString exchange(QTcpSocket &client, const QByteArray &command, bool block)
     });
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     client.write(command + "\n");
-    timer.start(5000);
+    timer.start(timeoutMs);
     loop.exec();
     return QString::fromUtf8(received);
 }
@@ -138,6 +171,25 @@ QString roundTripBlock(QTcpSocket &client, const QByteArray &command)
     return exchange(client, command, true);
 }
 
+/// The body of a raw block reply, decoded the way a client does: drop the status
+/// header line and the '.' terminator, and undo the dot-stuffing (a body line
+/// that starts with '.' is sent with one extra leading '.').
+QString blockBody(const QString &raw)
+{
+    QString text = raw;
+    if (text.endsWith(QLatin1String("\n.\n")))
+        text.chop(3);
+    const int headerEnd = text.indexOf(QLatin1Char('\n'));
+    if (headerEnd >= 0)
+        text = text.mid(headerEnd + 1);
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    QStringList unescaped;
+    unescaped.reserve(lines.size());
+    for (const QString &line : lines)
+        unescaped.append(line.startsWith(QLatin1String("..")) ? line.mid(1) : line);
+    return unescaped.join(QLatin1Char('\n'));
+}
+
 } // namespace
 
 void TstRemoteControl::helpListsCommands()
@@ -150,6 +202,15 @@ void TstRemoteControl::helpListsCommands()
     QVERIFY(reply.contains(QStringLiteral("run")));
     QVERIFY(reply.contains(QStringLiteral("screenshot")));
     QVERIFY(reply.contains(QStringLiteral("state")));
+    // The block carries its status as an explicit first line, so a body line
+    // beginning with "error" (or a lone '.') can never change the outcome.
+    QVERIFY(reply.startsWith(QLatin1String("ok\n")));
+    // NIT-8/MIN-12: `cmd` and `help` are commands themselves and were missing;
+    // `read` returns JSON, not "path then its text".
+    QVERIFY2(reply.contains(QStringLiteral("cmd <command>")), qPrintable(reply));
+    QVERIFY2(reply.contains(QStringLiteral("help             this list")), qPrintable(reply));
+    QVERIFY2(reply.contains(QStringLiteral("JSON {path, text}")), qPrintable(reply));
+    QVERIFY2(!reply.contains(QStringLiteral("'path' then its text")), qPrintable(reply));
     // A block reply is terminated so the client always knows where it ends.
     QVERIFY(reply.endsWith(QLatin1String("\n.\n")));
 }
@@ -347,7 +408,7 @@ void TstRemoteControl::readReturnsTheOpenDocument()
 
     QCOMPARE(roundTrip(s.client, "open " + path.toUtf8()), QStringLiteral("ok"));
     QString reply = roundTripBlock(s.client, "read");
-    reply.chop(3); // block terminator, not content
+    reply = blockBody(reply);
     // JSON {path, text}: a lone '.' line in the source must not truncate the
     // read, which is why the document travels as JSON rather than raw text.
     const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8());
@@ -364,7 +425,7 @@ void TstRemoteControl::statejsonIsAJsonObject()
     // No session: the JSON carries the flags and nothing else, and must parse.
     // roundTripBlock keeps the framing terminator, which is not JSON.
     QString reply = roundTripBlock(s.client, "statejson");
-    reply.chop(3);
+    reply = blockBody(reply);
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8(), &parseError);
     QVERIFY2(parseError.error == QJsonParseError::NoError, qPrintable(reply));
@@ -380,7 +441,7 @@ void TstRemoteControl::problemsIsAJsonArray()
     QVERIFY2(s.start(&error), qPrintable(error));
 
     QString reply = roundTripBlock(s.client, "problems");
-    reply.chop(3);
+    reply = blockBody(reply);
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8(), &parseError);
     QVERIFY2(parseError.error == QJsonParseError::NoError, qPrintable(reply));
@@ -428,7 +489,7 @@ void TstRemoteControl::tabsListsTheOpenDocument()
     QCOMPARE(roundTrip(s.client, "open " + path.toUtf8()), QStringLiteral("ok"));
 
     QString reply = roundTripBlock(s.client, "tabs");
-    reply.chop(3);
+    reply = blockBody(reply);
     const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8());
     QVERIFY(doc.isArray());
     bool found = false;
@@ -483,7 +544,7 @@ void TstRemoteControl::symbolsAfterBuildListTheLabels()
     QCOMPARE(roundTrip(s.client, "build"), QStringLiteral("ok"));
 
     QString reply = roundTripBlock(s.client, "symbols");
-    reply.chop(3);
+    reply = blockBody(reply);
     const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8());
     QVERIFY(doc.isArray());
     QStringList names;
@@ -493,7 +554,7 @@ void TstRemoteControl::symbolsAfterBuildListTheLabels()
 
     // The filter narrows by name, case-insensitively.
     reply = roundTripBlock(s.client, "symbols COU");
-    reply.chop(3);
+    reply = blockBody(reply);
     const QJsonDocument filtered = QJsonDocument::fromJson(reply.toUtf8());
     QCOMPARE(filtered.array().size(), 1);
 }
@@ -536,10 +597,15 @@ void TstRemoteControl::readmemAndDisasmRefuseWithoutASession()
     QVERIFY2(s.start(&error), qPrintable(error));
 
     // Usage is validated before any debugger round trip. These errors are
-    // block-framed like the verbs themselves; reading them line-wise would
-    // leave the terminator queued and desync the next exchange.
-    QVERIFY(roundTripBlock(s.client, "readmem $100").startsWith(QStringLiteral("error usage")));
-    QVERIFY(roundTripBlock(s.client, "disasm bogus").startsWith(QStringLiteral("error usage")));
+    // block-framed like the verbs themselves, with an explicit `error` status
+    // line; reading them line-wise would leave the terminator queued and
+    // desync the next exchange.
+    QVERIFY(roundTripBlock(s.client, "readmem $100").startsWith(QLatin1String("error\n")));
+    QVERIFY(blockBody(roundTripBlock(s.client, "readmem $100"))
+                .startsWith(QStringLiteral("error usage")));
+    QVERIFY(roundTripBlock(s.client, "disasm bogus").startsWith(QLatin1String("error\n")));
+    QVERIFY(blockBody(roundTripBlock(s.client, "disasm bogus"))
+                .startsWith(QStringLiteral("error usage")));
 
     // With no emulator session the debugger never answers, so the verb's
     // nested wait runs its full 10 s timeout before the refusal — the point
@@ -646,6 +712,48 @@ void TstRemoteControl::commandBeforeAuthIsRejected()
     QCOMPARE(reply.trimmed(), QStringLiteral("error auth required"));
 }
 
+void TstRemoteControl::unframedFloodIsDroppedAndTheServerKeepsServing()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // A peer that connects and streams bytes containing no newline has said
+    // nothing yet, so it is still *unauthenticated* while it does it — the auth
+    // gate needs a complete first line, and a line that never ends never gets
+    // that far. Before the cap, every byte it streamed accumulated in
+    // QTcpSocket's buffer with no limit at all, so on a shared machine any
+    // local user could grow the IDE's memory until the process died.
+    QTcpSocket flooder;
+    {
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        QObject::connect(&flooder, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        flooder.connectToHost(QHostAddress::LocalHost, s.control.boundPort());
+        timer.start(5000);
+        loop.exec();
+    }
+    QVERIFY(flooder.state() == QAbstractSocket::ConnectedState);
+
+    // Well past the 64 KiB cap, with no newline anywhere in it.
+    flooder.write(QByteArray(1024 * 1024, 'x'));
+
+    // Dropped promptly, rather than left holding the buffer waiting for a line
+    // that is never coming.
+    QTRY_VERIFY_WITH_TIMEOUT(flooder.state() != QAbstractSocket::ConnectedState, 5000);
+
+    // The drop is per-connection: the server is unharmed and still serves its
+    // authenticated client.
+    QCOMPARE(roundTrip(s.client, "watchpoint $12345"), QStringLiteral("ok"));
+
+    // And the cap constrains unterminated data, not command size: a long but
+    // properly terminated line still frames and is answered.
+    const QByteArray longButTerminated = QByteArray("symbols ") + QByteArray(8 * 1024, 'a');
+    QVERIFY(roundTripBlock(s.client, longButTerminated).endsWith(QLatin1String("\n.\n")));
+}
+
 void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()
 {
     Session s;
@@ -678,10 +786,63 @@ void TstRemoteControl::secondBlockingCommandIsRefusedWhileOneWaits()
 
     // The second client is refused rather than waiting on the same signals as
     // the first and being answered with its result.
-    const QString reply = QString::fromUtf8(other.readAll()).trimmed();
+    const QString raw = QString::fromUtf8(other.readAll());
+    const QString reply = blockBody(raw);
     QVERIFY2(reply.startsWith(QStringLiteral("error busy")),
-             qPrintable(QStringLiteral("second client got: %1").arg(reply)));
+             qPrintable(QStringLiteral("second client got: %1").arg(raw)));
 }
+void TstRemoteControl::profileStopIsBusyGatedAgainstOtherConnections()
+{
+    ProfileWindow window;
+    RemoteControl control(&window);
+    QString error;
+    QVERIFY2(control.listen(0, &error), qPrintable(error));
+
+    QTcpSocket first;
+    QVERIFY(connectAndAuth(control, first));
+
+    // A second, authenticated client waiting to get a word in.
+    QTcpSocket second;
+    QVERIFY(connectAndAuth(control, second));
+
+    // `profile stop` blocks on a nested loop until the save has been parsed, and
+    // that loop services every connection: a second client's blocking verb must
+    // therefore be refused, not run inside it (which stacks loops, and lets a
+    // `run` restart the emulator session while the save is still being parsed),
+    // and the window's single-slot debug-command routing depends on it. `cmd` is
+    // used rather than `build` because a build with no source open raises a
+    // modal dialog.
+    //
+    // The profile wait is released only once the second client has been
+    // answered, which is the order the gate guarantees: while `profile stop` is
+    // waiting, nothing else runs, so the refusal is what ends the wait. The
+    // long-stop release exists so a missing refusal fails this test rather than
+    // hanging it (and pre-fix, when the second `cmd` runs inside the wait, the
+    // wait is held past the client's own timeout and no refusal ever arrives).
+    QByteArray secondReply;
+    QObject::connect(&second, &QTcpSocket::readyRead, &second, [&] {
+        secondReply += second.readAll();
+        if (!secondReply.isEmpty())
+            window.profileResultsReady(true);
+    });
+    QTimer::singleShot(8000, &window, [&window] { window.profileResultsReady(true); });
+    QTimer::singleShot(300, &second, [&second] { second.write("cmd r\n"); });
+
+    // Generous, because pre-fix this reply does not come until the second
+    // client's `cmd` has finished running inside the wait (its own 10 s
+    // timeout): the assertion that then fails is the one below, naming what the
+    // second client actually got.
+    QCOMPARE(exchange(first, "profile stop", false, 20000).trimmed(), QStringLiteral("ok"));
+    QVERIFY2(blockBody(QString::fromUtf8(secondReply)).startsWith("error busy:"),
+             qPrintable(QStringLiteral("second client got: %1")
+                            .arg(QString::fromUtf8(secondReply))));
+
+    // The single-client path is unchanged: a lone `profile stop` still waits for
+    // the parse and answers "ok".
+    QTimer::singleShot(200, &window, [&window] { window.profileResultsReady(true); });
+    QCOMPARE(roundTrip(first, "profile stop"), QStringLiteral("ok"));
+}
+
 // See tst_gui's main() for why both QSettings calls are needed and why
 // QStandardPaths::setTestModeEnabled is not used here.
 int main(int argc, char *argv[])
@@ -689,6 +850,14 @@ int main(int argc, char *argv[])
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QTemporaryDir settings;
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+
+    // Invariant 7: a GUI suite must skip rather than qFatal when there is no
+    // display and no platform was chosen (CI sets QT_QPA_PLATFORM; a bare
+    // container does not) — MAJ-50.
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")
+        && qEnvironmentVariableIsEmpty("DISPLAY")
+        && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
 
     QApplication app(argc, argv);
     TstRemoteControl testCase;

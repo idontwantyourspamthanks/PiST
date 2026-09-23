@@ -25,11 +25,9 @@
 #include <QString>
 #include <QStringList>
 
-class QTcpSocket;
+#include "control/mcp/ControlClient.h"
 
 namespace pist::mcp {
-
-class ControlClient;
 
 /// One MCP session over stdio.
 ///
@@ -50,6 +48,14 @@ public:
     /// The session token both connections present on connect (the IDE's
     /// discovery file carries it). Forwarded to both ControlClients.
     void setToken(const QString &token);
+
+    /// Re-resolve the IDE's address before every dial (see
+    /// ControlClient::setDiscoveryResolver): the shim outlives the IDE it
+    /// drives, and a restarted IDE is a new session on a possibly new port with
+    /// a new token. Forwarded to both connections — the event one has to
+    /// reconnect on its own, without an agent asking for anything.
+    void setDiscoveryResolver(ControlClient::DiscoveryResolver resolver);
+
     /// Feed one line (without the newline) as received on stdin. A JSON syntax
     /// error produces a JSON-RPC parse-error reply, as the spec requires.
     void handleLine(const QByteArray &line);
@@ -98,6 +104,12 @@ private:
         /// A chained answer's context: the original error text when this is
         /// the `problems` follow-up to a failed pist_build.
         QString detail;
+        /// Whether the verb was sent expecting a block reply. A block carries
+        /// an explicit ok/error status (its body is never sniffed), so this is
+        /// what keeps a block body that starts with "error" — a compiler
+        /// diagnostic, a command's own output — from being reported as a failed
+        /// call (MIN-9).
+        bool block = false;
     };
 
     QString m_host;

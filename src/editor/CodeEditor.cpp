@@ -5,9 +5,10 @@
 #include "editor/CodeEditor.h"
 
 #include "editor/AsmHighlighter.h"
-#include "ui/Appearance.h"
+#include "editor/EditorTheme.h"
 
 #include <QContextMenuEvent>
+#include <QDir>
 #include <QFile>
 #include <QFrame>
 #include <QFileInfo>
@@ -19,9 +20,9 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QShortcut>
+#include <QStringConverter>
 #include <QTextBlock>
 #include <QTimer>
-#include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -30,6 +31,17 @@
 namespace pist {
 
 namespace {
+
+/// Whether every character of `text` has a Latin-1 byte, i.e. survives
+/// toLatin1() without becoming '?'. Characters above U+00FF need UTF-8.
+bool fitsLatin1(const QString &text)
+{
+    for (const QChar ch : text) {
+        if (ch.unicode() > 0xFF)
+            return false;
+    }
+    return true;
+}
 
 class LineNumberArea : public QWidget
 {
@@ -98,17 +110,49 @@ bool isWordCharacter(const QChar &character)
     return character.isLetterOrNumber() || character == QLatin1Char('_');
 }
 
+/// How many hits a keystroke's search keeps. A common token in a large file has
+/// thousands of them, and the search re-runs on every keystroke and every cursor
+/// move; the label admits the cap ("more than N hits") rather than report a
+/// total the walk never reached, and the replace actions re-scan without it, so
+/// nothing but the label and the reach of Next/Previous depends on it.
+constexpr int kMaxMatches = 2000;
+
+/// The hit the selection is on when it is one of `hits`, else -1.
+int indexOfSelectedHit(const QList<QTextCursor> &hits, const QTextCursor &selection)
+{
+    if (!selection.hasSelection())
+        return -1;
+    for (int i = 0; i < hits.size(); ++i) {
+        if (hits.at(i).selectionStart() == selection.selectionStart()
+            && hits.at(i).selectionEnd() == selection.selectionEnd())
+            return i;
+    }
+    return -1;
+}
+
+/// The first hit at or after `position`, wrapping to the first one; -1 when
+/// there are none.
+int indexAtOrAfter(const QList<QTextCursor> &hits, int position)
+{
+    for (int i = 0; i < hits.size(); ++i) {
+        if (hits.at(i).selectionStart() >= position)
+            return i;
+    }
+    return hits.isEmpty() ? -1 : 0; // wrap
+}
+
 } // namespace
 
-CodeEditor::CodeEditor(QWidget *parent)
+CodeEditor::CodeEditor(const EditorTheme &theme, QWidget *parent)
     : QPlainTextEdit(parent)
+    , m_theme(theme)
 {
     setLineWrapMode(QPlainTextEdit::NoWrap);
 
-    m_highlighter = new AsmHighlighter(document());
+    m_highlighter = new AsmHighlighter(document(), m_theme);
 
-    // After the highlighter exists: it also applies the theme's syntax colours.
-    applyFontPreferences();
+    // After the highlighter exists: it also applies the theme's font and colours.
+    setTheme(theme);
 
     m_lineNumberArea = new LineNumberArea(this);
 
@@ -280,13 +324,13 @@ void CodeEditor::buildGotoBar()
     m_gotoEdit->installEventFilter(this);
 }
 
-void CodeEditor::applyFontPreferences()
+void CodeEditor::setTheme(const EditorTheme &theme)
 {
-    const QFont font = appearance::editorFont();
-    setFont(font);
-    setTabStopDistance(8 * QFontMetricsF(font).horizontalAdvance(QLatin1Char(' ')));
+    m_theme = theme;
+    setFont(m_theme.font);
+    setTabStopDistance(8 * QFontMetricsF(m_theme.font).horizontalAdvance(QLatin1Char(' ')));
 
-    m_highlighter->setDarkMode(appearance::darkModeActive());
+    m_highlighter->setTheme(m_theme);
     refreshExtraSelections();
     if (m_lineNumberArea)
         updateLineNumberAreaWidth(0);
@@ -314,11 +358,10 @@ int CodeEditor::lineNumberAreaWidth() const
 
 void CodeEditor::updateLineNumberAreaWidth(int)
 {
+    // The blame lane appears without the window itself changing size, so there
+    // is no resize event to lean on. The geometry rides along with the margins
+    // (see updateViewportMargins).
     updateViewportMargins();
-    // The margin change does not always resize the gutter widget, and the
-    // blame lane appears without the window itself changing size.
-    const QRect cr = contentsRect();
-    m_lineNumberArea->setGeometry(QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
 }
 
 void CodeEditor::updateViewportMargins()
@@ -326,6 +369,18 @@ void CodeEditor::updateViewportMargins()
     const int bottom = findBarVisible() ? m_findBarHeight : 0;
     const int top = gotoBarVisible() ? m_gotoBarHeight : 0;
     setViewportMargins(lineNumberAreaWidth(), top, 0, bottom);
+
+    // The gutter has to be laid out from those same margins, never from the raw
+    // contents rect: it carries the viewport's coordinate space. The paint walks
+    // blockBoundingGeometry(block).translated(contentOffset()) — viewport
+    // coordinates — and lineAtY() maps a click back through the same numbers, so
+    // a gutter that starts at the contents rect while the viewport starts `top`
+    // pixels lower draws every number that much above the text it annotates, and
+    // a click beside line N lands on N + top/rowHeight. The bars change the
+    // margins without a resize, so this is the one place both are kept in step.
+    const QRect cr = contentsRect();
+    m_lineNumberArea->setGeometry(QRect(cr.left(), cr.top() + top, lineNumberAreaWidth(),
+                                        qMax(0, cr.height() - top - bottom)));
 }
 
 void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
@@ -345,10 +400,20 @@ void CodeEditor::updateLineNumberArea(const QRect &rect, int dy)
 void CodeEditor::resizeEvent(QResizeEvent *event)
 {
     QPlainTextEdit::resizeEvent(event);
-    const QRect cr = contentsRect();
-    m_lineNumberArea->setGeometry(
-        QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
+    // Re-applies the margins and the gutter geometry that follows them: both
+    // depend on the new contents rect.
+    updateViewportMargins();
     layoutFindBar();
+}
+
+void CodeEditor::scrollContentsBy(int dx, int dy)
+{
+    QPlainTextEdit::scrollContentsBy(dx, dy);
+    // Only the hits in the viewport carry a decoration, so a scroll has to
+    // build the ones it brought in — after the viewport has moved, which is
+    // where this runs, unlike updateRequest (emitted before the scroll).
+    if (dy && findBarVisible())
+        refreshExtraSelections();
 }
 
 void CodeEditor::layoutFindBar()
@@ -371,13 +436,12 @@ void CodeEditor::onCursorPositionChanged()
 void CodeEditor::refreshExtraSelections()
 {
     QList<QTextEdit::ExtraSelection> selections;
-    const appearance::Colors c = appearance::colors();
     const int cursorLine = textCursor().blockNumber() + 1;
 
     // Cursor line, underneath the debugger's PC highlight when they coincide.
     if (cursorLine > 0 && cursorLine != m_currentExecutionLine) {
         QTextEdit::ExtraSelection sel;
-        sel.format.setBackground(c.currentLine);
+        sel.format.setBackground(m_theme.currentLine);
         sel.format.setProperty(QTextFormat::FullWidthSelection, true);
         sel.cursor = textCursor();
         sel.cursor.clearSelection();
@@ -387,7 +451,7 @@ void CodeEditor::refreshExtraSelections()
     // Current execution line, as reported by the debugger.
     if (m_currentExecutionLine > 0 && m_currentExecutionLine <= blockCount()) {
         QTextEdit::ExtraSelection sel;
-        sel.format.setBackground(c.executionLine);
+        sel.format.setBackground(m_theme.executionLine);
         sel.format.setProperty(QTextFormat::FullWidthSelection, true);
         sel.cursor = QTextCursor(document()->findBlockByNumber(m_currentExecutionLine - 1));
         sel.cursor.clearSelection();
@@ -395,13 +459,27 @@ void CodeEditor::refreshExtraSelections()
     }
 
     // Find hits, except the one the selection is on: that one wears the
-    // selection colour, and an extra selection would paint over it.
-    if (findBarVisible()) {
+    // selection colour, and an extra selection would paint over it. Only the
+    // hits in the viewport are turned into selections at all: this list is
+    // rebuilt on every keystroke and every cursor move, and QPlainTextEdit walks
+    // every selection it holds on every paint, so a hit list of thousands cost
+    // far more than the handful on screen are worth. The hits are in document
+    // order, so the walk starts in the window and stops past it; scrolling
+    // rebuilds the window (scrollContentsBy).
+    if (findBarVisible() && !m_matches.isEmpty()) {
+        int firstVisible = 0;
+        int lastVisible = 0;
+        visibleLineRange(firstVisible, lastVisible);
         for (int i = 0; i < m_matches.size(); ++i) {
+            const int line = m_matches.at(i).blockNumber() + 1;
+            if (line < firstVisible)
+                continue;
+            if (line > lastVisible)
+                break;
             if (i == m_matchIndex)
                 continue;
             QTextEdit::ExtraSelection sel;
-            sel.format.setBackground(c.searchMatch);
+            sel.format.setBackground(m_theme.searchMatch);
             sel.format.setProperty(QTextFormat::FullWidthSelection, false);
             sel.cursor = m_matches.at(i);
             selections.append(sel);
@@ -414,7 +492,7 @@ void CodeEditor::refreshExtraSelections()
             continue;
         QTextEdit::ExtraSelection sel;
         sel.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
-        sel.format.setUnderlineColor(c.error);
+        sel.format.setUnderlineColor(m_theme.error);
         sel.format.setProperty(QTextFormat::FullWidthSelection, false);
         QTextCursor cursor(document()->findBlockByNumber(line - 1));
         cursor.select(QTextCursor::LineUnderCursor);
@@ -440,6 +518,12 @@ void CodeEditor::clearCurrentExecutionLine()
 void CodeEditor::setErrorLines(const QList<int> &lines)
 {
     m_errorLines = lines;
+    // The markers live in the gutter, so repaint it explicitly, as the
+    // breakpoint, heat and blame setters do: the extra selections only cover the
+    // viewport, and the markers must not depend on their repaint reaching the
+    // gutter as a side effect.
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
     refreshExtraSelections();
 }
 
@@ -555,8 +639,7 @@ void CodeEditor::gotoLine(int line)
 void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
 {
     QPainter painter(m_lineNumberArea);
-    const appearance::Colors c = appearance::colors();
-    painter.fillRect(event->rect(), c.gutter);
+    painter.fillRect(event->rect(), m_theme.gutter);
 
     // Blame is a lane of its own. Every marker below is drawn in the number
     // gutter, shifted right by the lane, so a breakpoint dot stays where a
@@ -565,7 +648,7 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
     const int width = m_lineNumberArea->width();
     const int gutter = width - lane;
     if (lane > 0) {
-        painter.setPen(c.muted);
+        painter.setPen(m_theme.muted);
         painter.drawLine(lane - 1, event->rect().top(), lane - 1, event->rect().bottom());
     }
 
@@ -592,7 +675,7 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
                 else
                     text = blamed->author;
                 if (!text.isEmpty()) {
-                    painter.setPen(blamed->uncommitted ? c.warning : c.muted);
+                    painter.setPen(blamed->uncommitted ? m_theme.warning : m_theme.muted);
                     const QString elided = fontMetrics().elidedText(text, Qt::ElideRight, lane - 10);
                     painter.drawText(4, top, lane - 8, height, Qt::AlignLeft | Qt::AlignVCenter, elided);
                 }
@@ -609,13 +692,13 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
             }
 
             if (line == m_currentExecutionLine)
-                painter.fillRect(lane, top, 3, bottom - top, c.gutterPc);
+                painter.fillRect(lane, top, 3, bottom - top, m_theme.gutterPc);
 
             if (m_breakpointLines.contains(line)) {
                 // A filled dot, drawn rather than glyph-based so it does not
                 // depend on a font that happens to have the character.
                 painter.setRenderHint(QPainter::Antialiasing, true);
-                painter.setBrush(c.breakpoint);
+                painter.setBrush(m_theme.breakpoint);
                 painter.setPen(Qt::NoPen);
                 const int d = qMax(5, height - 6);
                 // Geometrically centred in the text box, then dropped a little
@@ -630,13 +713,13 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
             }
 
             if (m_errorLines.contains(line)) {
-                painter.setPen(c.error);
+                painter.setPen(m_theme.error);
                 painter.drawText(lane, top, gutter - 6,
                                  height, Qt::AlignRight,
                                  QStringLiteral("!"));
             }
 
-            painter.setPen(line == m_currentExecutionLine ? c.gutterPc : c.gutterText);
+            painter.setPen(line == m_currentExecutionLine ? m_theme.gutterPc : m_theme.gutterText);
             painter.drawText(lane, top, gutter - 6,
                              height, Qt::AlignRight, QString::number(line));
         }
@@ -722,6 +805,7 @@ void CodeEditor::hideFindBar()
     m_findBar->hide();
     m_matches.clear();
     m_matchIndex = -1;
+    m_matchesCapped = false;
     m_replaceNote.clear();
     m_findBarHeight = 0;
     updateViewportMargins();
@@ -752,28 +836,59 @@ bool CodeEditor::isWholeWord(const QTextCursor &hit) const
     return !isWordCharacter(document()->characterAt(end));
 }
 
+QList<QTextCursor> CodeEditor::collectMatches(int limit, bool *capped) const
+{
+    QList<QTextCursor> hits;
+    if (capped)
+        *capped = false;
+    const QString needle = findNeedle();
+    if (needle.isEmpty())
+        return hits;
+
+    QTextDocument::FindFlags flags;
+    if (m_findCase && m_findCase->isChecked())
+        flags |= QTextDocument::FindCaseSensitively;
+    const bool wholeWord = m_findWord && m_findWord->isChecked();
+    QTextCursor at(document());
+    while (true) {
+        const QTextCursor hit = document()->find(needle, at, flags);
+        if (hit.isNull())
+            break;
+        at = hit;
+        if (wholeWord && !isWholeWord(hit))
+            continue;
+        // One hit past the limit is what proves the label's "more than": the
+        // limit alone only says the walk stopped.
+        if (limit > 0 && hits.size() >= limit) {
+            if (capped)
+                *capped = true;
+            break;
+        }
+        hits.append(hit);
+    }
+    return hits;
+}
+
+QList<QTextCursor> CodeEditor::replacementHits() const
+{
+    if (!m_matchesCapped)
+        return m_matches;
+    return collectMatches(0, nullptr);
+}
+
+QString CodeEditor::matchStatusText() const
+{
+    if (m_matchesCapped)
+        return tr("%1 of more than %2").arg(m_matchIndex + 1).arg(m_matches.size());
+    return tr("%1 of %2").arg(m_matchIndex + 1).arg(m_matches.size());
+}
+
 void CodeEditor::refreshMatches(int anchor, bool selectHit)
 {
-    m_matches.clear();
     const QString needle = findNeedle();
-    if (!needle.isEmpty()) {
-        QTextDocument::FindFlags flags;
-        if (m_findCase && m_findCase->isChecked())
-            flags |= QTextDocument::FindCaseSensitively;
-        const bool wholeWord = m_findWord && m_findWord->isChecked();
-        QTextCursor at(document());
-        while (true) {
-            const QTextCursor hit = document()->find(needle, at, flags);
-            if (hit.isNull())
-                break;
-            at = hit;
-            if (wholeWord && !isWholeWord(hit))
-                continue;
-            m_matches.append(hit);
-        }
-    }
+    m_matches = collectMatches(kMaxMatches, &m_matchesCapped);
 
-    m_matchIndex = m_matches.isEmpty() ? -1 : matchIndexAtOrAfter(qMax(0, anchor));
+    m_matchIndex = m_matches.isEmpty() ? -1 : indexAtOrAfter(m_matches, qMax(0, anchor));
     if (selectHit && m_matchIndex >= 0)
         selectMatch(m_matchIndex);
     else
@@ -788,16 +903,7 @@ void CodeEditor::refreshMatches(int anchor, bool selectHit)
     else if (m_matches.isEmpty())
         m_findStatus->setText(tr("no matches"));
     else
-        m_findStatus->setText(tr("%1 of %2").arg(m_matchIndex + 1).arg(m_matches.size()));
-}
-
-int CodeEditor::matchIndexAtOrAfter(int position) const
-{
-    for (int i = 0; i < m_matches.size(); ++i) {
-        if (m_matches.at(i).selectionStart() >= position)
-            return i;
-    }
-    return m_matches.isEmpty() ? -1 : 0; // wrap
+        m_findStatus->setText(matchStatusText());
 }
 
 void CodeEditor::selectMatch(int index)
@@ -809,7 +915,7 @@ void CodeEditor::selectMatch(int index)
     ensureCursorVisible();
     refreshExtraSelections();
     if (m_findStatus && m_replaceNote.isEmpty())
-        m_findStatus->setText(tr("%1 of %2").arg(index + 1).arg(m_matches.size()));
+        m_findStatus->setText(matchStatusText());
 }
 
 void CodeEditor::findNext()
@@ -820,12 +926,18 @@ void CodeEditor::findNext()
     }
     if (m_matches.isEmpty())
         return;
-    const int from = m_matchIndex >= 0 ? m_matches.at(m_matchIndex).selectionEnd()
-                                       : textCursor().position();
-    const int next = matchIndexAtOrAfter(from);
-    // matchIndexAtOrAfter wraps to the first hit once past the last one; only
-    // when the caret is already on it does that mean "the same hit again".
-    selectMatch(next == m_matchIndex ? (next + 1) % m_matches.size() : next);
+    // Navigate from where the caret actually is, not from the hit the search was
+    // opened on. An edit in between re-runs refreshMatches from m_findAnchor, so
+    // the index alone would send Next backwards to where the search began, and
+    // leave the position label describing a hit the user is not on.
+    m_replaceNote.clear();
+    const int current = indexOfSelectedHit(m_matches, textCursor());
+    const int from = current >= 0 ? m_matches.at(current).selectionEnd()
+                                  : textCursor().position();
+    const int next = indexAtOrAfter(m_matches, from);
+    // indexAtOrAfter wraps to the first hit once past the last one; only when
+    // the caret is already on it does that mean "the same hit again".
+    selectMatch(next == current ? (next + 1) % m_matches.size() : next);
 }
 
 void CodeEditor::findPrevious()
@@ -836,8 +948,10 @@ void CodeEditor::findPrevious()
     }
     if (m_matches.isEmpty())
         return;
-    const int from = m_matchIndex >= 0 ? m_matches.at(m_matchIndex).selectionStart()
-                                       : textCursor().position();
+    m_replaceNote.clear();
+    const int current = indexOfSelectedHit(m_matches, textCursor());
+    const int from = current >= 0 ? m_matches.at(current).selectionStart()
+                                  : textCursor().position();
     for (int i = m_matches.size() - 1; i >= 0; --i) {
         if (m_matches.at(i).selectionStart() < from) {
             selectMatch(i);
@@ -847,34 +961,24 @@ void CodeEditor::findPrevious()
     selectMatch(m_matches.size() - 1); // wrap to the last
 }
 
-int CodeEditor::currentMatchFromSelection() const
-{
-    const QTextCursor selection = textCursor();
-    if (!selection.hasSelection())
-        return -1;
-    for (int i = 0; i < m_matches.size(); ++i) {
-        if (m_matches.at(i).selectionStart() == selection.selectionStart()
-            && m_matches.at(i).selectionEnd() == selection.selectionEnd())
-            return i;
-    }
-    return -1;
-}
-
 void CodeEditor::replaceOne()
 {
     if (!findBarVisible())
         showFindBar(true);
     if (m_matches.isEmpty())
         return;
-    int index = currentMatchFromSelection();
-    if (index < 0) {
-        findNext();
-        index = m_matchIndex;
-        if (index < 0)
-            return;
-    }
 
-    QTextCursor hit = m_matches.at(index);
+    // Replacing is one-off and destructive, so it reads the exact hit list: the
+    // live one stops at the scan cap, and which hit the caret is nearest is not
+    // something the cap is allowed to change.
+    const QList<QTextCursor> hits = replacementHits();
+    int index = indexOfSelectedHit(hits, textCursor());
+    if (index < 0)
+        index = indexAtOrAfter(hits, textCursor().position());
+    if (index < 0)
+        return;
+
+    QTextCursor hit = hits.at(index);
     hit.insertText(m_replaceEdit->text());
     m_replaceNote = tr("1 replaced");
     // The document change re-ran the search; come back to the next hit after
@@ -890,13 +994,17 @@ void CodeEditor::replaceAll()
     if (m_matches.isEmpty())
         return;
 
+    // Same as replaceOne: the count and the hits replaced must be the document's,
+    // not the cap's.
+    const QList<QTextCursor> hits = replacementHits();
+
     // Backwards, so the replacements do not shift the positions still to come,
     // and inside one edit block so the lot undoes as a single step.
     QTextCursor undo(document());
     undo.beginEditBlock();
-    const int count = m_matches.size();
+    const int count = hits.size();
     for (int i = count - 1; i >= 0; --i) {
-        QTextCursor hit = m_matches.at(i);
+        QTextCursor hit = hits.at(i);
         hit.insertText(m_replaceEdit->text());
     }
     undo.endEditBlock();
@@ -961,11 +1069,34 @@ bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
 bool CodeEditor::loadFile(const QString &path)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    if (!file.open(QIODevice::ReadOnly))
         return false;
 
-    QTextStream stream(&file);
-    setPlainText(stream.readAll());
+    // The bytes are read raw and decoded here rather than by a QTextStream
+    // (UTF-8 in both directions). Atari ST sources are ASCII or Latin-1/ST
+    // characters: a high-bit byte in a comment or a string literal is not
+    // valid UTF-8, and a lenient decode turns it into U+FFFD without
+    // reporting anything, so the next save writes EF BF BD over bytes the
+    // user never touched. A strict decode separates the two cases: valid
+    // UTF-8 stays UTF-8, anything else is the Latin-1 the ST actually used.
+    // A UTF-8 byte-order mark is kept as U+FEFF so it round-trips too.
+    QByteArray raw = file.readAll();
+    // Read before the normalisation below erases the evidence: the style is
+    // what saveFile writes back, so an unedited round-trip keeps the file's
+    // own line endings instead of rewriting all of them.
+    m_lineEnding = raw.contains(QByteArrayLiteral("\r\n")) ? LineEnding::CrLf
+                                                          : LineEnding::Lf;
+    raw.replace(QByteArrayLiteral("\r\n"), QByteArrayLiteral("\n"));
+    QStringDecoder utf8(QStringConverter::Utf8, QStringConverter::Flag::ConvertInitialBom);
+    QString text = utf8.decode(raw);
+    if (utf8.hasError()) {
+        text = QString::fromLatin1(raw);
+        m_sourceEncoding = SourceEncoding::Latin1;
+    } else {
+        m_sourceEncoding = SourceEncoding::Utf8;
+    }
+
+    setPlainText(text);
     m_filePath = path;
     document()->setModified(false);
     return true;
@@ -973,22 +1104,50 @@ bool CodeEditor::loadFile(const QString &path)
 
 bool CodeEditor::saveFile(const QString &path)
 {
-    // No QIODevice::Text on the write: on Windows it would translate every \n
-    // to \r\n, so the bytes on disk would differ from the editor's content —
-    // visible to the user as a floppy entry that changes shape on save. The
-    // read side keeps the flag, so a CRLF file still displays sensibly and is
-    // normalised to LF on the next save.
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return false;
+    // The bytes are written in the encoding the file was loaded in, so
+    // loading and saving an unedited Latin-1, UTF-8 or plain ASCII source
+    // reproduces it exactly. A document that has since grown a character
+    // Latin-1 cannot represent is written as UTF-8 rather than mangled.
+    // No QIODevice::Text on the write, either: on Windows it would translate
+    // every \n to \r\n, so the bytes on disk would differ from the editor's
+    // content — visible to the user as a floppy entry that changes shape on
+    // save. Line endings are restored instead of translated: the read side
+    // records the file's own style, and this writes that same style back, so a
+    // CRLF source that was not edited round-trips byte for byte.
+    const QString text = toPlainText();
+    QByteArray bytes;
+    if (m_sourceEncoding == SourceEncoding::Latin1 && fitsLatin1(text)) {
+        bytes = text.toLatin1();
+    } else {
+        bytes = text.toUtf8();
+        m_sourceEncoding = SourceEncoding::Utf8;
+    }
+    // After the encoding, so both of them get the style: '\r' and '\n' are one
+    // byte apiece in UTF-8 and in Latin-1 alike.
+    if (m_lineEnding == LineEnding::CrLf)
+        bytes.replace('\n', QByteArrayLiteral("\r\n"));
 
-    QTextStream stream(&file);
-    stream << toPlainText();
-    stream.flush();
+    // An extracted document is saved to a location that does not exist yet, so
+    // a save creates the missing parents instead of failing outright.
+    const QString dir = QFileInfo(path).absolutePath();
+    if (!QDir().mkpath(dir)) {
+        m_lastError = tr("Could not create %1").arg(dir);
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_lastError = file.errorString();
+        return false;
+    }
+    const qint64 written = file.write(bytes);
+    file.close();
     // Without this the document is marked clean even when the write was
     // truncated, which loses the only copy of the user's work.
-    if (stream.status() != QTextStream::Ok || file.error() != QFileDevice::NoError) {
-        m_lastError = file.errorString();
+    if (written != bytes.size() || file.error() != QFileDevice::NoError) {
+        m_lastError = file.errorString().isEmpty()
+            ? tr("Could not write all of %1").arg(path)
+            : file.errorString();
         return false;
     }
 
@@ -1004,7 +1163,7 @@ bool CodeEditor::isModifiedSinceLoad() const
 
 QString CodeEditor::displayName() const
 {
-    return m_filePath.isEmpty() ? QStringLiteral("untitled") : QFileInfo(m_filePath).fileName();
+    return m_filePath.isEmpty() ? tr("untitled") : QFileInfo(m_filePath).fileName();
 }
 
 } // namespace pist

@@ -115,6 +115,10 @@ void BreakpointPanel::refresh()
 {
     m_table->setRowCount(m_breakpoints.size());
 
+    // One palette for the whole rebuild: every row's state colour comes from it,
+    // and it is the same palette for all of them.
+    const appearance::Colors theme = appearance::colors();
+
     for (int row = 0; row < m_breakpoints.size(); ++row) {
         const Breakpoint &bp = m_breakpoints.at(row);
 
@@ -126,7 +130,6 @@ void BreakpointPanel::refresh()
         // starts none of them can be resolved.
         QString state;
         QColor colour;
-        const appearance::Colors theme = appearance::colors();
         if (!bp.enabled) {
             state = tr("disabled");
             colour = theme.muted;
@@ -156,7 +159,7 @@ void BreakpointPanel::refresh()
         const int row = firstWatch + i;
         m_table->setItem(row, kColLocation, new QTableWidgetItem(wp.label()));
         auto *state = new QTableWidgetItem(tr("armed"));
-        state->setForeground(appearance::colors().success);
+        state->setForeground(theme.success);
         m_table->setItem(row, kColState, state);
         m_table->setItem(row, kColCondition, new QTableWidgetItem(wp.command().mid(2)));
     }

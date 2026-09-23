@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "emu/MemoryDump.h"
+
 #include <QByteArray>
 #include <QWidget>
 
@@ -41,8 +43,10 @@ public slots:
     /// the address stays put.
     void refresh();
 
-    /// Parse a `memdump` response and display it.
-    void applyDump(const QString &response);
+    /// Display a parsed `memdump` reply. The rows arrive already parsed (the
+    /// backend that read the text parsed it: MAJ-45), so nothing here reads a
+    /// Hatari transcript.
+    void applyDump(const QList<MemoryRow> &rows);
 
     /// Whether byte cells can be edited. Only meaningful when the machine is
     /// stopped — writes go through the debugger.
@@ -84,7 +88,9 @@ private:
     quint8 m_pendingValue = 0;
     int m_staleDumps = 0;
     static constexpr int kMaxStaleDumps = 12;
-    QString m_lastDump;
+    /// The last dump as parsed, so an appearance change can re-render it
+    /// without going back to the emulator.
+    QList<MemoryRow> m_lastRows;
     /// The displayed bytes in memory order, indexed relative to m_base, so a
     /// cell's click can read the pointer at it without reparsing the table.
     QByteArray m_bytes;

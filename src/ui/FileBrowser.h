@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "build/FloppyTransfer.h"
+
 #include <QWidget>
 
 #include <QStringList>
@@ -50,6 +52,14 @@ public slots:
     /// The directory currently shown, or empty before the first show.
     QString directory() const;
 
+    /// Whether a project root was ever chosen — the path field, Browse…, or the
+    /// first `showFor` seeding it. Until then `directory()` reports the model's
+    /// own default root (the process working directory), which is not a project
+    /// directory anyone asked for; callers that act on the root — git discovery
+    /// in particular — ask this first rather than treating the launch directory
+    /// as the user's project.
+    bool hasProjectDirectory() const { return m_rootChosen; }
+
     /// Inserted floppy images, index 0 => drive A. Empty string = ejected.
     void setFloppyImages(const QStringList &images);
     QStringList floppyImages() const;
@@ -90,8 +100,10 @@ signals:
     /// emits its own fileRenamed; this one covers renames we initiate).
     void pathRenamed(const QString &oldPath, const QString &newPath);
 
-    /// A file or directory is about to be deleted through the browser, so an
-    /// open document on it can be dealt with before it vanishes.
+    /// A file or directory was deleted through the browser. Emitted only
+    /// after the removal actually succeeded — a failed delete is reported as
+    /// a failed operation and emits nothing — so an open document on the
+    /// path can close its tab knowing the file is really gone.
     void pathDeleted(const QString &path);
 
     /// Drive 0 is A:, drive 1 is B:. An empty path means the drive was ejected.
@@ -158,8 +170,17 @@ private:
         Mode mode = None;
         bool fromFloppy = false;   // paths are image-relative entry paths
         int drive = -1;            // source drive when fromFloppy
+        QString imagePath;         // image mounted on `drive` at copy time
         QStringList paths;
     };
+
+    /// Whether the clipboard still has a source to paste from, forgetting it
+    /// when it has none: a floppy clipboard whose disk was ejected (or
+    /// replaced by another image on that drive) addresses entries that no
+    /// longer exist, and a host clipboard whose files are all gone has nothing
+    /// to copy. Without this, Paste stayed enabled forever and a paste onto a
+    /// stale clipboard silently did nothing.
+    bool clipboardUsable();
 
     /// The directory context menu actions apply to: the selected directory,
     /// the selected file's parent, or the root when nothing is selected.
@@ -181,7 +202,9 @@ private:
     bool transferHostPaths(const QStringList &paths, const QString &targetDir, bool move);
 
     /// Host → floppy: add `hostPaths` inside image directory `dirInImage`;
-    /// when `removeSources`, delete the host files afterwards (a move).
+    /// when `removeSources`, delete the host files afterwards (a move). The
+    /// sequencing is floppy::Transfer's; this side asks the questions it
+    /// reports and re-reads the pane.
     bool addHostPathsToFloppy(int drive, const QString &dirInImage,
                               const QStringList &hostPaths, bool removeSources);
 
@@ -193,6 +216,18 @@ private:
     /// Floppy → floppy, possibly the same image (copying within a disk).
     bool copyFloppyToFloppy(int sourceDrive, const QStringList &entryPaths,
                             int targetDrive, const QString &dirInImage, bool removeSource);
+
+    /// Show what `result` says the user must see, then re-read the panes it
+    /// names — in that order, so a failed move's half-done state is on screen
+    /// by the time the message is dismissed. The silent outcomes (a declined
+    /// confirmation, a drive that changed under one, a call that asked for
+    /// nothing) only refresh.
+    void finishTransfer(const floppy::Transfer::Result &result);
+
+    /// The message one `Result` asks for. The controller reports the step and
+    /// the subject, never a sentence: the wording is the browser's, and so is
+    /// its translation.
+    void reportTransferFailure(const floppy::Transfer::Result &result);
 
     void dropOnHardDrive(const QPoint &pos, const QMimeData *mime, Qt::DropAction action,
                          Qt::KeyboardModifiers modifiers);
@@ -215,6 +250,27 @@ private:
         QLabel *diskName = nullptr;
     };
 
+    /// The browser side of floppy::Transfer: the image each drive holds, and
+    /// the rewrite question. A nested class rather than a second base, so
+    /// FileBrowser keeps one QObject inheritance chain.
+    class FloppyHost : public floppy::Transfer::Host
+    {
+    public:
+        explicit FloppyHost(FileBrowser *browser)
+            : m_browser(browser)
+        {
+        }
+
+        QString mountedImage(int drive) const override;
+        bool confirmRewrite(const QString &imagePath) override;
+
+    private:
+        FileBrowser *m_browser = nullptr;
+    };
+
+    FloppyHost m_floppyHost{this};
+    floppy::Transfer m_transfer{&m_floppyHost};
+
     QFileSystemModel *m_model = nullptr;
     QTreeView *m_view = nullptr;
     QLineEdit *m_pathEdit = nullptr;
@@ -228,5 +284,13 @@ private:
     QString m_floppyPath[2];
     Clipboard m_clipboard;
 };
+
+/// File-dialog filter for the disk-image formats PiST reads and writes: the
+/// browser's drive buttons and the settings dialog's floppy rows ask for the
+/// same set. One accessor, so the three copies cannot drift apart — and so
+/// lupdate sees the literal inside a tr() call (the old `tr(kFloppyFilter)`
+/// passed a runtime `const char[]`, which lupdate cannot extract at all,
+/// leaving the filter untranslatable).
+QString floppyImageFilter();
 
 } // namespace pist

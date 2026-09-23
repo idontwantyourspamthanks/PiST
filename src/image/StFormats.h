@@ -44,10 +44,6 @@ bool importNeo(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QString *error);
 bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QString *error);
 
-/// Apply an imported sheet as the document's only frame (replace) or as an
-/// extra frame when the size matches.
-bool applyImport(ImageDocument *doc, const ImportedSheet &sheet, bool append, QString *error);
-
 /// Compose the sheet `sheetIndex` from its placed phases: a single-frame
 /// document of the sheet's size with each phase's frames painted at
 /// [x + k*cellW, y]. Transparency stays transparent; unplaced phases and
@@ -62,9 +58,12 @@ QVector<QVector<int>> sliceSheetCells(const ImportedSheet &sheet, int x, int y,
 /// Re-order the active colours so the sprite never occupies colour 0: the
 /// reserved background slot takes index 0 and every painted colour moves up,
 /// which is what makes an ST still image re-import losslessly when its
-/// colour 0 is treated as transparent. Uses the current frame's pixels; a
-/// sheet that already keeps colour 0 free is returned unchanged. When all
-/// 16 colours are painted there is no slot to reserve: `*error` is set and
+/// colour 0 is treated as transparent. Uses the current frame's pixels, and
+/// carries in every colour they paint — including the ones the active table
+/// does not hold (an import that snapped to more than 16 colours), which would
+/// otherwise fall back onto register 0. A sheet that already keeps colour 0
+/// free and paints nothing outside its table is returned unchanged. When more
+/// than 15 colours are painted there is no slot to reserve: `*error` is set and
 /// the returned document is unspecified.
 ImageDocument spriteSafeDocument(const ImageDocument &doc, QString *error);
 
@@ -75,6 +74,20 @@ QByteArray exportPng(const ImageDocument &doc, int frame, QString *error);
 QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumber, QString *error);
 QByteArray exportAssembler(const ImageDocument &doc, int frame, QString *error);
 QByteArray exportBitplanes(const ImageDocument &doc, int frame, QString *error);
+
+/// Encode `doc` in `format`, the one place the format table lives: `frame` for
+/// the still-image formats, the whole document (every phase, frame and layer)
+/// for `Pim`, and `name` for the formats that record one (NEO). Empty with
+/// `*error` set for `Unknown`, which has no encoder, and for a document the
+/// encoder refuses (a size an ST format cannot hold, say).
+QByteArray encodeStImage(const ImageDocument &doc, StImageFormat format, int frame,
+                         const QString &name, QString *error);
+
+/// Write an encoded image to `path`. Empty bytes are refused — an encoder
+/// that produced nothing must never truncate an existing file into a
+/// zero-byte one, which is exactly what a second exporter accepting empty
+/// output used to do.
+bool writeStImage(const QString &path, const QByteArray &bytes, QString *error);
 
 /// What a raw bitplane data file (the `.dat` a sprite export writes) holds.
 /// The blocks are written in the order listed here; every one is optional.

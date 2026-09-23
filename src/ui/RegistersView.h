@@ -6,6 +6,7 @@
 
 #include "emu/MachineState.h"
 
+#include <QColor>
 #include <QHash>
 #include <QWidget>
 
@@ -45,7 +46,10 @@ signals:
     void registerEdited(const QString &regName, quint32 value);
 
 private:
-    void setValue(int row, int column, quint32 value);
+    /// `changedInk` is the palette's "this value changed" colour, hoisted by the
+    /// caller: this runs once per register cell of every state update, and the
+    /// palette is the same for all of them.
+    void setValue(int row, int column, quint32 value, const QColor &changedInk);
     void onCellEdited(QTableWidgetItem *item);
 
     QTableWidget *m_table = nullptr;

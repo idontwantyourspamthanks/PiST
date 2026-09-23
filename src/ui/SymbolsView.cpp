@@ -5,6 +5,7 @@
 #include "ui/SymbolsView.h"
 
 #include "build/ProgramLineMap.h"
+#include "emu/HexFormat.h"
 #include "ui/Appearance.h"
 
 #include <QFileInfo>
@@ -85,10 +86,7 @@ void SymbolsView::setSymbols(const QVector<SymbolEntry> &symbols, const ProgramL
         const bool resolved = map && positioned
                            && map->addressFor(symbol.file, symbol.line, &address);
         if (resolved) {
-            item->setText(kColAddress,
-                          QStringLiteral("$%1")
-                              .arg(address, 8, 16, QLatin1Char('0'))
-                              .toUpper());
+            item->setText(kColAddress, hex::hexAddr(address));
             item->setForeground(kColAddress, theme.address);
         }
 

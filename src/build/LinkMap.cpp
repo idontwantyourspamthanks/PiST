@@ -4,6 +4,7 @@
 
 #include "build/LinkMap.h"
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -30,7 +31,67 @@ const QRegularExpression &moduleLineRe()
     return re;
 }
 
+/// Whether `name` carries a directory, and so names a file by path rather than
+/// by file name alone. vlink's map and diagnostics write base names only, and a
+/// bare name must never be resolved against the working directory: it would
+/// then coincide with whichever of our paths happened to be there.
+bool namesAPath(const QString &name)
+{
+    return name.contains(QLatin1Char('/')) || name.contains(QLatin1Char('\\'));
+}
+
 } // namespace
+
+QString canonicalModulePath(const QString &path)
+{
+    if (path.isEmpty())
+        return {};
+
+    const QFileInfo info(path);
+    // An object the map still names but the disk no longer has (a cleaned build
+    // tree) has no canonical form; the cleaned absolute path is the best that
+    // comparison can do with it.
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+int matchModuleName(const QStringList &names, const QString &queried, bool *matchedByPath)
+{
+    if (matchedByPath)
+        *matchedByPath = false;
+
+    if (queried.isEmpty())
+        return -1;
+
+    if (namesAPath(queried)) {
+        const QString wanted = canonicalModulePath(queried);
+        for (int i = 0; i < names.size(); ++i) {
+            if (!namesAPath(names.at(i)))
+                continue; // a base name is an identity, not a location
+            if (canonicalModulePath(names.at(i)) != wanted)
+                continue;
+            if (matchedByPath)
+                *matchedByPath = true;
+            return i;
+        }
+    }
+
+    // No path to compare, so fall back to the base name — the only identity the
+    // linker gives us — and only while one entry answers to it.
+    const QString wantedName = QFileInfo(queried).fileName();
+    if (wantedName.isEmpty())
+        return -1;
+
+    int found = -1;
+    for (int i = 0; i < names.size(); ++i) {
+        if (QFileInfo(names.at(i)).fileName() != wantedName)
+            continue;
+        if (found >= 0)
+            return -1; // two entries share it: any answer would be a guess
+        found = i;
+    }
+    return found;
+}
 
 void LinkMap::clear()
 {
@@ -56,7 +117,7 @@ bool LinkMap::parse(const QString &path, QString *error)
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (error)
-            *error = QStringLiteral("cannot read link map '%1': %2")
+            *error = QObject::tr("cannot read link map '%1': %2")
                          .arg(path, file.errorString());
         return false;
     }
@@ -101,8 +162,8 @@ bool LinkMap::parse(const QString &path, QString *error)
 
     if (m_placements.isEmpty()) {
         if (error)
-            *error = QStringLiteral("no module placements found in '%1' — is it a vlink "
-                                    "map file?")
+            *error = QObject::tr("no module placements found in '%1' — is it a vlink "
+                                 "map file?")
                          .arg(path);
         return false;
     }
@@ -111,29 +172,38 @@ bool LinkMap::parse(const QString &path, QString *error)
 }
 
 bool LinkMap::moduleOffset(const QString &objectFile, const QString &sectionType,
-                           quint32 *offset) const
+                           quint32 *offset, bool *matchedByPath) const
 {
-    const QString wanted = QFileInfo(objectFile).fileName();
-
-    for (const LinkPlacement &p : m_placements) {
-        // Match by base name: the map records whatever path was passed to the
-        // linker, which may be absolute.
-        if (QFileInfo(p.objectFile).fileName() != wanted)
+    // Only this section's placements are candidates: a module contributes one
+    // placement per section it appears in, so counting every section's would
+    // make a module with both code and data look ambiguous with itself.
+    QStringList names;
+    QList<int> indices;
+    for (int i = 0; i < m_placements.size(); ++i) {
+        if (m_placements.at(i).sectionType.compare(sectionType, Qt::CaseInsensitive) != 0)
             continue;
-        if (p.sectionType.compare(sectionType, Qt::CaseInsensitive) != 0)
-            continue;
-
-        // Relative to the section, since the section's own load address varies
-        // per run.
-        const quint32 sectionVa = m_sectionVa.value(QStringLiteral(".") + ourSectionFor(sectionType), 0);
-        if (p.start < sectionVa)
-            return false;
-        if (offset)
-            *offset = p.start - sectionVa;
-        return true;
+        names.append(m_placements.at(i).objectFile);
+        indices.append(i);
     }
 
-    return false;
+    const int match = matchModuleName(names, objectFile, matchedByPath);
+    if (match < 0) {
+        // Either the map has no placement for this module, or the only ones it
+        // could be are several that share its name. Answering the latter with
+        // one of them is how a module ends up with another module's addresses.
+        return false;
+    }
+
+    const LinkPlacement &placement = m_placements.at(indices.at(match));
+
+    // Relative to the section, since the section's own load address varies per
+    // run.
+    const quint32 sectionVa = m_sectionVa.value(QStringLiteral(".") + ourSectionFor(sectionType), 0);
+    if (placement.start < sectionVa)
+        return false;
+    if (offset)
+        *offset = placement.start - sectionVa;
+    return true;
 }
 
 } // namespace pist

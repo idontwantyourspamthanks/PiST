@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "emu/Machine.h"
+#include "model/Machine.h"
 
 #include <QList>
 #include <QString>
@@ -93,13 +93,21 @@ struct TosRom
 bool readTosHeader(const QString &path, TosRom *rom);
 
 /// Pick the best ROM for a machine: the **newest** autostart-capable ROM that the
-/// machine can actually run, then an unknown version, and only then anything
-/// else. Returns an invalid entry (empty path) if the list is empty.
+/// machine can actually run, then an unknown version, and then the newest ROM the
+/// machine can still run at all. Returns an invalid entry (empty path) if the list
+/// is empty.
 ///
 /// Newest matters rather than first-in-directory-order: an STe accepts both 1.06
 /// and 1.62, and 1.62 is the later release with bug fixes, so it is the better
 /// default. Likewise an ST must not be handed 1.06 just because it sorts earlier
 /// than the 1.04 it needs.
+///
+/// Compatibility outranks recency in the fallback too: a machine-compatible ROM
+/// that is too old to autostart boots through the AUTO-folder floppy fallback on
+/// the machine the user selected, while an incompatible ROM makes Hatari override
+/// `--machine`. So a 1.02 ST image is preferred over a 4.04 Falcon one when the
+/// machine is an ST. Only when *no* ROM suits the machine is the newest returned —
+/// so the caller's message can name the image that will cause the override.
 TosRom selectPreferredRom(const QList<TosRom> &roms, Machine machine);
 
 /// Scan a directory for ROM images (`.img`, `.rom`). Versions come from each

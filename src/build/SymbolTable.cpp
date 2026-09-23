@@ -142,18 +142,42 @@ const QRegularExpression &tableValueRe()
     return re;
 }
 
+/// A token that is one of the appended tables' own columns rather than a symbol:
+/// the eight hex digits of a value column, or the `SS:HHHHHHHH` section offset a
+/// by-name row carries beside its name. Reading a by-name row with the by-value
+/// shape captures exactly the offset — the row `DEADBEEF…00:00000012` starts with
+/// eight hex digits, so `tableValueRe` takes the offset as a "name" and the
+/// console completes to a symbol that does not exist (finding MIN-39). Such a
+/// token is refused even when a row's shape says it is a name, which is the one
+/// cost of the guard: a symbol whose *only* spelling is eight hex digits and
+/// which the by-name table does not name (a `-D` define, say) is dropped. A name
+/// a source line defines is unaffected — the body carries it with its position.
+bool isTableColumn(const QString &token)
+{
+    static const QRegularExpression re(
+        QStringLiteral(R"(^[0-9A-Fa-f]{1,2}:[0-9A-Fa-f]{8}$|^[0-9A-Fa-f]{8}$)"));
+    return re.match(token).hasMatch();
+}
+
 /// The symbol a line of one of the appended tables names, or an empty string.
+///
+/// A by-name row names itself — `name  SS:HHHHHHHH`, or `name external EXP` — so
+/// its shape is checked first, in *both* tables: the tables' order is the
+/// writer's choice, and a listing that puts `Symbols by value:` first (vasm's own
+/// order is by name then by value) must not have the by-name rows read with the
+/// by-value shape. `section` remains the fallback's gate: a row that only the
+/// value shape fits is a symbol only while the by-value table is the one being
+/// read.
 QString tableSymbolName(const QString &line, int section)
 {
-    if (section == 1) {
-        auto byName = tableNameRe().match(line);
-        if (byName.hasMatch())
-            return byName.captured(1);
-        auto external = tableExternalRe().match(line);
-        if (external.hasMatch())
-            return external.captured(1);
+    auto byName = tableNameRe().match(line);
+    if (byName.hasMatch())
+        return byName.captured(1);
+    auto external = tableExternalRe().match(line);
+    if (external.hasMatch())
+        return external.captured(1);
+    if (section == 1)
         return QString();
-    }
     auto byValue = tableValueRe().match(line);
     return byValue.hasMatch() ? byValue.captured(1) : QString();
 }
@@ -184,14 +208,26 @@ QVector<SymbolEntry> symbolsFromListing(const QString &listingPath, const QStrin
     QTextStream stream(&file);
     while (!stream.atEnd()) {
         const QString raw = stream.readLine();
+        const QString trimmed = raw.trimmed();
+
+        // The two appended tables, in either order: a listing may carry one or
+        // both, and which comes first is the writer's choice, not a contract this
+        // parser can lean on. Recognising a header is what switches the state, so
+        // it is checked before the section dispatch — a by-name table that
+        // follows a by-value one must not be read with the by-value shape, which
+        // turns the offset beside a hex-shaped label into a "name" (MIN-39).
+        if (trimmed == QLatin1String("Symbols by name:")) {
+            section = ByName;
+            continue;
+        }
+        if (trimmed == QLatin1String("Symbols by value:")) {
+            section = ByValue;
+            continue;
+        }
 
         if (section != Body) {
-            if (raw.trimmed() == QLatin1String("Symbols by value:")) {
-                section = ByValue;
-                continue;
-            }
             const QString name = tableSymbolName(raw, section);
-            if (!name.isEmpty() && !tableNames.contains(name)) {
+            if (!name.isEmpty() && !isTableColumn(name) && !tableNames.contains(name)) {
                 tableNames.insert(name);
                 tableOrder.append(name);
             }
@@ -201,18 +237,6 @@ QVector<SymbolEntry> symbolsFromListing(const QString &listingPath, const QStrin
         auto source = sourceRe().match(raw);
         if (source.hasMatch()) {
             currentFile = source.captured(1);
-            continue;
-        }
-
-        // A listing may carry only one of the two tables, so each is recognised
-        // on its own. `Symbols by value:` names are position-less like the
-        // by-name ones, so a body definition still takes precedence.
-        if (raw.trimmed() == QLatin1String("Symbols by name:")) {
-            section = ByName;
-            continue;
-        }
-        if (raw.trimmed() == QLatin1String("Symbols by value:")) {
-            section = ByValue;
             continue;
         }
 

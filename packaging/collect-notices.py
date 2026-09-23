@@ -43,7 +43,6 @@ NOTICES_DIR = Path(__file__).resolve().parent / "notices"
 # from Unix ones (SDL2.dll, zlib1.dll), so each component carries every name
 # its library goes by.
 KNOWN_LIBS = {
-    ("libreadline",): ("readline", ["GPL-3.0.txt"], "GPL v3 or later"),
     ("libSDL2", "SDL2.dll"): ("SDL2", ["SDL2-LICENSE.txt"], "zlib licence"),
     ("libpng",): ("libpng", ["libpng.txt"], "libpng licence"),
     ("libcapstone", "capstone.dll"): ("Capstone", ["BSD-3-Clause-Capstone.txt"], "BSD 3-clause"),
@@ -219,8 +218,8 @@ def main():
     # The known-licence libraries that travel with the artifact, found two
     # ways: the bundled Hatari's direct links (which the deployer will bundle),
     # and every shared library file already staged. Both matter: pre-deploy,
-    # only the first sees SDL2/readline; post-deploy, only the second sees
-    # transitively bundled copies.
+    # only the first sees SDL2; post-deploy, only the second sees transitively
+    # bundled copies.
     found_libs = set()
     if hatari:
         # The bundled emulator may be the hrdb-main fork rather than upstream.

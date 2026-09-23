@@ -51,10 +51,6 @@ public:
     explicit EmulatorHost(QObject *parent = nullptr);
     ~EmulatorHost() override;
 
-    /// Record what the emulator build supports. Consulted when writing the
-    /// bootstrap script, which is version-gated (§5 rule 9).
-    void setCapabilities(const HatariCapabilities &caps) override { m_caps = &caps; }
-
     bool start(const SessionConfig &config, QString *error) override;
     void stop() override;
 
@@ -63,21 +59,23 @@ public:
 
     BackendKind kind() const override { return BackendKind::Native; }
 
-    /// Queue a debugger command. Delivered over stdin, so it works while the
-    /// debugger is stopped. A `commandFinished` signal follows.
+    /// Queue a *free text* debugger command — the user's console and the remote
+    /// `cmd` verb — delivered over stdin, so it works while the debugger is
+    /// stopped. A `commandFinished` signal follows.
     ///
-    /// The dump routing is per-command, not global, so a memory dump and a stack
-    /// dump queued back-to-back each reach the right listener: dumpAddress and
-    /// stackDump identify a `memdump` for routing to memoryDumpReady or
-    /// stackDumpReady rather than commandFinished alone.
-    void command(const QString &command, quint32 dumpAddress = 0, bool stackDump = false,
-                 int dumpTag = 0) override;
+    /// The response is ResponseKind::None: text for the log, never a state read.
+    /// Text that looks like a dump (`m $100 16`, `memdump`) or like a read
+    /// (`r`, `d`) answers through commandFinished alone rather than being
+    /// parsed into the snapshot or published to a pane (MAJ-12). Internal
+    /// requests use the typed intents below instead.
+    void command(const QString &commandText) override;
 
     void step() override;     // `s`
     void stepOver() override; // `n`
     void resume() override;   // `c`
-    /// `hatari-stop` over the control socket — the only channel serviced
-    /// while emulation is running (docs/PLAN.md §3.3).
+    /// Break into a running emulation by arming an always-true one-shot over
+    /// the control socket — the only channel serviced while emulation runs
+    /// (docs/PLAN.md §3.3); see IDebugBackend::pause.
     void pause() override;
     void setFloppyImage(int drive, const QString &path) override;
 
@@ -96,8 +94,13 @@ public:
     /// source lines to addresses first (see debug/Breakpoint.h).
     void armBreakpoint(const QString &condition) override;
 
-    /// Request a memory dump of `length` bytes at `address`. The response arrives
-    /// via commandFinished; the raw text is also parsed into memoryDumpReady.
+    /// Arm a one-shot at `address` (`b pc = $<addr> :once`).
+    void breakAtAddressOnce(quint32 address) override;
+
+    /// Request a memory dump of `length` bytes at `address`. The response
+    /// arrives via commandFinished, and the rows parsed from it on
+    /// memoryDumpReady (MAJ-45) — the panes and the remote verb read those, not
+    /// the transcript.
     ///
     /// `tag` identifies which memory pane asked, so several panes can be open at
     /// once and each dump is routed back to the pane that requested it rather
@@ -112,6 +115,19 @@ public:
     /// Read all registers into the host's cached state.
     void dumpRegisters() override;
 
+    void loadSymbols() override;                            // `symbols prg`
+    void infoSubject(const QString &subject) override;      // `info <subject>`
+    void readBasepage() override;                           // `info basepage`
+    void setDisasmEngine(DisasmEngine engine) override;     // `setopt --disasm ext|uae`
+    void profileOn() override;                              // `profile on`
+    void profileOff() override;                             // `profile off`
+    void profileSave(const QString &path) override;         // `profile save <path>`
+    void writeRegister(const QString &name, quint32 value) override;      // `r <reg>=$<val>`
+    void writeMemoryByte(quint32 address, quint8 value) override;         // `w b $<addr> $<val>`
+    void readDisassembly() override;                        // `d`
+    void readDisassemblyAt(quint32 address) override;       // `d $<addr>`
+    void readHistory(int count) override;                   // `history <count>`
+
     static QString writeBootstrapScript(const QString &directory,
                                         const HatariCapabilities &caps,
                                         QString *error);
@@ -123,13 +139,40 @@ private:
         QString text;
         QString response;
         QByteArray raw;
-        /// For a `memdump` command: the address it dumps, and whether it is a
-        /// stack dump (routed to stackDumpReady) or a memory-view dump. Carried
-        /// per command so a queue of mixed dumps routes each correctly.
+        /// What this request's response *is*, set by the typed intent that
+        /// queued it; a free-text command is None. completeCurrent switches on
+        /// it instead of guessing from the command text (MAJ-12).
+        ResponseKind kind = ResponseKind::None;
+        /// For a dump request: the address it covers, and whether it is a stack
+        /// dump (routed to stackDumpReady) or a memory-view dump. Carried per
+        /// command so a queue of mixed dumps routes each correctly.
         quint32 dumpAddress = 0;
         bool stackDump = false;
-        /// Which memory pane requested a `memdump`, so it can be routed back.
+        /// Which memory pane requested the dump, so it can be routed back.
         int dumpTag = 0;
+
+        /// Set by infoSubject(): the subject the report was asked about, which
+        /// names it on hardwareInfoReady() when the report comes back. Empty means this
+        /// request is not an info report.
+        QString infoSubject;
+
+        /// Set by profileSave(): the file to name on profileSaveFinished() when
+        /// this command completes.
+        QString profilePath;
+
+        /// Set by readDisassemblyAt(): report the text it read on
+        /// disassemblyReady(), for the caller that asked about that one address.
+        bool reportDisassembly = false;
+        quint32 disassemblyAddress = 0;
+
+        /// Set by readHistory(): report the text on historyReady().
+        bool reportHistory = false;
+
+        /// Whether this command must survive a resume(): the caller queued it
+        /// in the same stack frame as the continue, so pruning it would silently
+        /// lose it (see survivesResume). Stated by the typed intent for internal
+        /// callers, and read out of the command's own language for free text.
+        bool keepOnResume = false;
 
         /// Part of a state snapshot queued by refresh(). The responses of a
         /// batch each fill one part of MachineState, so only its last command
@@ -142,16 +185,37 @@ private:
     };
 
     void dispatchNext();
+    /// One dispatch attempt. Called only from dispatchNext()'s single-entry
+    /// wrapper; see the re-entrancy note there.
+    void dispatchNextOnce();
     void completeCurrent();
     void finishContinue();
+
+    /// Re-entrancy guards for the transport state machine. The stderr line
+    /// loop, the prompt handlers and the dispatch path call into each other: a
+    /// stoppedChanged consumer queues commands from inside the banner line, and
+    /// the pre-dispatch drain runs the line loop again. Re-entering the body
+    /// mid-run interleaves the command queue and the stderr buffer (lost entry
+    /// framing, heap corruption). Each entry point defers a nested request to
+    /// the outermost frame instead. Frame-scoped: always cleared on unwind, so
+    /// they cannot leak across sessions.
+    bool m_inStderr = false;
+    bool m_inDispatch = false;
+    bool m_dispatchPending = false;
 
     /// Core of command(): report a missing session, then queue and dispatch.
     /// Split out so a refresh batch shares the same guard and reporting rather
     /// than duplicating it.
     void enqueue(Pending pending);
 
+    /// The one place a typed intent becomes a queue entry: the debugger text for
+    /// it, what its response is, and whether it must survive a resume(). Keeps
+    /// the wire spelling inside this class — and off the callers (MAJ-21).
+    void enqueueIntent(const QString &commandText, ResponseKind kind = ResponseKind::None,
+                       bool keepOnResume = false);
+
     /// Queue one command of a state snapshot. See Pending::batchMember.
-    void enqueueSnapshotCommand(const QString &command, bool last);
+    void enqueueSnapshotCommand(const QString &command, ResponseKind kind, bool last);
 
     /// Reset every per-session framing field. Called from start(), so a second
     /// session on the same host cannot inherit the first one's queue, buffers,
@@ -175,7 +239,6 @@ private:
     /// is a success with no server (the session runs over stdin/stderr only).
     bool openSocketServer(QString *error);
     SessionConfig m_config;
-    const HatariCapabilities *m_caps = nullptr;
 
     QProcess *m_process = nullptr;
     /// The control-socket server (embed size reports + `hatari-debug` lines
@@ -193,7 +256,14 @@ private:
     /// Prompt detection. The debugger prompt is `> ` written before each
     /// blocking read; which stream carries it depends on the build (stdout with
     /// readline, stderr without), so both are counted.
+    ///
+    /// m_promptCount is tallied incrementally as chunks arrive (m_promptCarry is
+    /// the previous chunk's last two characters, so a prompt split across two
+    /// chunks is still seen), never by re-counting the whole buffer: the buffer
+    /// is truncated above 64 KiB, and a count that spans the truncation silently
+    /// lost the prompts it dropped (MAJ-15).
     QString m_stdoutText;
+    QString m_promptCarry;
     int m_stdoutLoggedChars = 0;
     quint64 m_promptCount = 0;
     quint64 m_promptTarget = 0;

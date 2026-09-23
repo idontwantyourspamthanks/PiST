@@ -177,6 +177,9 @@ GitPanel::GitPanel(QWidget *parent)
                                + QLatin1Char('\n') + output);
         if (ok && action == QLatin1String("commit"))
             m_message->clear();
+        // A refused commit finishes without a status refresh, so put the
+        // button back rather than leaving it disabled.
+        updateCommitEnabled();
     });
 
     connect(m_message, &QPlainTextEdit::textChanged, this, &GitPanel::updateCommitEnabled);
@@ -345,6 +348,7 @@ void GitPanel::showStatus(const GitStatus &status)
         item->setFlags(Qt::ItemIsEnabled);
         return item;
     };
+    QTreeWidgetItem *conflicts = nullptr;
     QTreeWidgetItem *staged = nullptr;
     QTreeWidgetItem *unstaged = nullptr;
     QTreeWidgetItem *untracked = nullptr;
@@ -352,7 +356,11 @@ void GitPanel::showStatus(const GitStatus &status)
 
     for (const GitChangeEntry &entry : status.entries) {
         QTreeWidgetItem *parent = nullptr;
-        if (entry.group == GitChange::Staged) {
+        if (entry.conflicted) {
+            if (!conflicts)
+                conflicts = group(tr("Conflicts"));
+            parent = conflicts;
+        } else if (entry.group == GitChange::Staged) {
             if (!staged)
                 staged = group(tr("Staged"));
             parent = staged;
@@ -370,16 +378,23 @@ void GitPanel::showStatus(const GitStatus &status)
         if (!entry.from.isEmpty())
             label = tr("%1  (from %2)").arg(entry.path, entry.from);
         auto *row = new QTreeWidgetItem(parent, {label});
-        row->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable);
+        // A conflict has no half to stage and no half to commit. The row
+        // reports the state and can only be selected, to open the file.
+        Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        if (!entry.conflicted)
+            flags |= Qt::ItemIsUserCheckable;
+        row->setFlags(flags);
         row->setData(0, kPathRole, entry.path);
         row->setData(0, kGroupRole, int(entry.group));
-        const QString key = checkKey(entry.group, entry.path);
-        // Staged rows start checked: they are already the next commit. A
-        // refresh remembers whatever the user changed that to.
-        const bool checked = m_checked.contains(key) ? m_checked.value(key)
-                                                     : entry.group == GitChange::Staged;
-        row->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
-        m_checked.insert(key, checked);
+        if (!entry.conflicted) {
+            const QString key = checkKey(entry.group, entry.path);
+            // Staged rows start checked: they are already the next commit. A
+            // refresh remembers whatever the user changed that to.
+            const bool checked = m_checked.contains(key) ? m_checked.value(key)
+                                                         : entry.group == GitChange::Staged;
+            row->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+            m_checked.insert(key, checked);
+        }
         if (entry.path == m_diffPath && entry.group == m_diffGroup)
             keep = row;
     }

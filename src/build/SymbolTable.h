@@ -35,7 +35,11 @@ struct SymbolEntry
 ///   * the `Symbols by name` / `Symbols by value` tables vasm appends, which
 ///     also carry symbols the source never spells out as a definition —
 ///     command-line defines and macro-generated names. They are position-less,
-///     so a body definition always wins.
+///     so a body definition always wins. The two are read in whichever order
+///     they appear (each row's shape says which table it belongs to), and the
+///     tables' own columns are never taken for names: reading a by-name row with
+///     the by-value shape would otherwise report the `SS:HHHHHHHH` offset beside
+///     a hex-shaped label as a symbol.
 ///
 /// Listing shape:
 ///

@@ -4,14 +4,9 @@
 
 #pragma once
 
-#include "emu/ProfileData.h"
+#include "emu/AttributedProfile.h"
 
-#include "build/SymbolTable.h"
-
-#include <QHash>
-#include <QList>
 #include <QString>
-#include <QVector>
 #include <QWidget>
 
 class QAction;
@@ -24,23 +19,21 @@ class QTreeWidgetItem;
 
 namespace pist {
 
-class ProgramLineMap;
-
 /// The hot spots of a profiling run, as routines and source lines.
 ///
-/// A profiler's raw output is per address; what an assembly developer acts on
-/// is per routine and per line — "clearScreen is 60% of the frame" — so the
-/// addresses are resolved through the same ProgramLineMap the debugger uses,
-/// attributed to the nearest code label, and summed. Lines outside the
-/// current source file are dropped, and the status line says how many samples
-/// were, so a partially-mapped profile does not read as a complete one.
+/// A renderer, and nothing else: the attribution — resolving each address
+/// through the symbol table and the line map, anchoring it to a routine,
+/// separating ROM time — is `attributedProfile()`, which the profiler
+/// controller calls before handing the result here (MAJ-44). This widget used
+/// to do that analysis inside `setProfile` and hold the only copy of it, so the
+/// editor's gutter heat and the remote `profile results` verb both had to read
+/// the numbers back out of a dock.
 ///
-/// Two currencies are shown: execution counts (what the gutter heat scales
-/// from) and cycles (what a 68000 actually spends — a divs is not a moveq).
-/// Time spent inside ROM trap handlers is kept as a TOS/ROM row rather than
-/// discarded as unmapped.
+/// What is shown is two currencies: execution counts (what the gutter heat
+/// scales from) and cycles (what a 68000 actually spends — a divs is not a
+/// moveq). Time spent inside ROM trap handlers keeps its TOS/ROM row.
 ///
-/// Read-only; `setProfile` is called after a `profile save` has been parsed.
+/// Read-only; `setProfile` is called with an already-attributed profile.
 class ProfilerView : public QWidget
 {
     Q_OBJECT
@@ -49,12 +42,9 @@ public:
     explicit ProfilerView(QWidget *parent = nullptr);
 
 public slots:
-    /// Show `profile`, with each address resolved to a line of `sourceFile`
-    /// and attributed to a routine from `symbols`. `map` may be null or
-    /// unresolved, in which case nothing maps and the view says so rather
-    /// than showing an empty table; an empty profile clears it.
-    void setProfile(const ProfileData &profile, const ProgramLineMap *map,
-                    const QString &sourceFile, const QVector<SymbolEntry> &symbols);
+    /// Show `profile`. An empty profile clears the view; one with no resolved
+    /// map says so rather than showing an empty table.
+    void setProfile(const AttributedProfile &profile);
 
     /// Clear the view (no session, or a new run).
     void clear();
@@ -63,11 +53,6 @@ public slots:
     /// same QActions drive the Run menu, so enabled state and tooltips stay
     /// in sync without a second copy.
     void setActions(QAction *start, QAction *stop, QAction *toCursor = nullptr);
-
-    /// Per-source-line execution counts of what is currently shown, for the
-    /// editor's gutter heat. These are the very numbers the tree renders, so
-    /// the heat and the tree cannot disagree about what is hot.
-    QHash<int, quint64> lineCounts() const;
 
     /// Show a transient message in the status line — the feedback for a
     /// profile action that could not run (the console gets it too, but the
@@ -83,25 +68,6 @@ signals:
     void lineActivated(int line);
 
 private:
-    /// One source line's aggregated cost, with its routine.
-    struct LineCost
-    {
-        int line = 0;
-        QString routine;
-        quint64 count = 0;
-        quint64 cycles = 0;
-    };
-
-    /// One routine's aggregate, plus its lines, hottest first within.
-    struct RoutineCost
-    {
-        QString name;
-        int defLine = 0; ///< the label's source line, for activation
-        quint64 count = 0;
-        quint64 cycles = 0;
-        QList<LineCost> lines;
-    };
-
     void populate();
     void applyFilter();
     void setRow(QTreeWidgetItem *item, const QString &name, quint64 count, quint64 cycles) const;
@@ -112,18 +78,11 @@ private:
     QTreeWidget *m_tree = nullptr;
     QLabel *m_status = nullptr;
 
-    /// The routines of the current file, sorted by descending cycles.
-    QList<RoutineCost> m_routines;
-    /// ROM regions with profiled time (ROM_TOS, CARTRIDGE), sorted likewise.
-    QList<RoutineCost> m_rom;
-    /// Samples whose address resolved to neither a line of the current file
-    /// nor a ROM region.
-    int m_unmapped = 0;
-    quint64 m_unmappedCycles = 0;
-
-    quint64 m_totalCount = 0;
-    quint64 m_totalCycles = 0;
-    quint32 m_clockHz = 0;
+    /// What the tree and the status line render. The widget keeps it only so
+    /// that filtering and re-applying the theme can redraw; nothing outside
+    /// reads it — the gutter heat and the remote JSON read the controller's
+    /// copy of the same value.
+    AttributedProfile m_profile;
 
     /// Rows below this share of the run's cycles are noise; hidden unless the
     /// "Show all" box is checked.

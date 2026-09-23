@@ -13,11 +13,12 @@
 
 #include "control/mcp/McpServer.h"
 
+#include "control/mcp/ControlClient.h"
+
 #include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QFile>
 #include <QMetaObject>
-#include <QStandardPaths>
 #include <QThread>
 
 #include <cstdio>
@@ -39,16 +40,10 @@ quint16 controlPort(const QCommandLineParser &parser, const QCommandLineOption &
     // The file is read whenever it exists — its token is needed even when the
     // port came from --port or the environment, or that connection has no
     // auth line and the server drops it.
-    QFile file(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-               + QStringLiteral("/PiST/PiST/control-port"));
-    if (file.open(QIODevice::ReadOnly)) {
-        const QStringList parts = QString::fromUtf8(file.readAll()).trimmed()
-                                      .split(QLatin1Char(' '), Qt::SkipEmptyParts);
-        if (text.isEmpty() && parts.size() >= 2)
-            text = parts.at(1);
-        if (parts.size() >= 3)
-            *discoveryToken = parts.at(2);
-    }
+    const ControlClient::Discovery found = ControlClient::readDiscoveryFile();
+    if (text.isEmpty() && found.port != 0)
+        text = QString::number(found.port);
+    *discoveryToken = found.token;
     if (text.isEmpty()) {
         // Not fatal: the server still completes the MCP handshake, and every
         // tool call reports exactly what to do about it. Refusing to start would
@@ -118,6 +113,34 @@ int main(int argc, char *argv[])
 
     McpServer server(host, port);
     server.setToken(token);
+
+    // The address resolved above is only good until the IDE restarts: every
+    // start mints a new session token, and the control port is whatever the
+    // user passed to that instance. A shim that keeps dialing the old pair is
+    // told "error auth required" once and then goes silent for the rest of the
+    // agent's session, which is indistinguishable from a dead IDE. So the
+    // address is resolved afresh from the discovery file before every dial —
+    // and again when the IDE refuses the token.
+    //
+    // A pinned --port/--host is where the user said the IDE is and is never
+    // overridden; the token is per-session, so the one the file publishes is
+    // taken whenever there is one (--token and PIST_CONTROL_TOKEN are the
+    // fallback for an IDE that publishes no file, not a claim about a session
+    // that has since been replaced).
+    const bool pinned = parser.isSet(portOption) || parser.isSet(hostOption)
+                        || !qEnvironmentVariable("PIST_CONTROL_PORT").isEmpty();
+    server.setDiscoveryResolver([pinned, host, port, token] {
+        ControlClient::Discovery found = ControlClient::readDiscoveryFile();
+        if (found.port == 0)
+            return found; // Nothing published: keep the address in force.
+        if (found.token.isEmpty())
+            found.token = token;
+        if (!pinned)
+            return found;
+        found.host = host;
+        found.port = port;
+        return found;
+    });
 
     // stdout is the MCP transport: exactly one JSON object per line, nothing
     // else. Written through stdio rather than QTextStream so the flush is

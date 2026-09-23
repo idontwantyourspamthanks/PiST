@@ -22,6 +22,7 @@
 #include <QNetworkRequest>
 #include <QSettings>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTemporaryFile>
@@ -360,25 +361,35 @@ void SetupDialog::runWorker(std::function<QString(QString *log, QString *error)>
 {
     setBusy(true);
 
+    // The thread and its result are released by a handler on the thread
+    // itself, not by one on the dialog: reject()/closeEvent() refuse to close
+    // while a worker runs, but the dialog's owner can still destroy it (the
+    // window shutting down, a parent delete), and a handler whose context
+    // object is `this` dies with it — stranding the tuple and the parentless
+    // QThread, which was then never waited on. Delivery to the dialog stays
+    // guarded, so a dialog that is already gone is simply not touched.
     auto *result = new std::tuple<QString, QString, QString>;
     QThread *thread = QThread::create([fn, result] {
         QString log, error;
         const QString installed = fn(&log, &error);
         *result = std::make_tuple(installed, log, error);
     });
-    connect(thread, &QThread::finished, this, [this, thread, result] {
+    QPointer<SetupDialog> self(this);
+    connect(thread, &QThread::finished, thread, [self, thread, result] {
         thread->deleteLater();
         const auto [installed, log, error] = *result;
         delete result;
+        if (!self)
+            return;
         if (!log.trimmed().isEmpty())
-            appendLog(log.trimmed());
+            self->appendLog(log.trimmed());
         if (installed.isEmpty()) {
-            appendLog(tr("Failed: %1").arg(error));
+            self->appendLog(SetupDialog::tr("Failed: %1").arg(error));
         } else {
-            appendLog(tr("Installed: %1").arg(installed));
+            self->appendLog(SetupDialog::tr("Installed: %1").arg(installed));
         }
-        setBusy(false);
-        refresh();
+        self->setBusy(false);
+        self->refresh();
     });
     thread->start();
 }

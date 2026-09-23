@@ -4,6 +4,8 @@
 
 #include "editor/IncludeNav.h"
 
+#include "editor/AsmLex.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -29,37 +31,16 @@ const QRegularExpression &includeRe()
     return re;
 }
 
-/// A defining occurrence of a symbol at the start of the code field: `foo:`,
-/// `foo equ 5`, `foo set 5` or `foo = 5`. Leading whitespace is allowed, which
-/// is how the demos indent local labels. `set` is included with `equ` because
-/// AsmHighlighter lists both among the assignment directives and vasm treats
-/// either as defining the symbol.
-const QRegularExpression &labelRe()
+/// A defining occurrence of a symbol that is not the `name:` form isLabelDefinition
+/// reads: `foo equ 5`, `foo set 5` and `foo = 5`. `set` is listed with `equ`
+/// because vasm treats either as defining the symbol. The identifier alphabet
+/// is the same ASCII one asmlex::isWordChar() accepts.
+const QRegularExpression &assignmentRe()
 {
     static const QRegularExpression re(
-        QStringLiteral("^[ \\t]*([A-Za-z_.][A-Za-z0-9_.$]*)[ \\t]*(?::|=|\\bequ\\b|\\bset\\b)"),
+        QStringLiteral("^([A-Za-z_.][A-Za-z0-9_.$]*)[ \\t]*(?:=|\\bequ\\b|\\bset\\b)"),
         QRegularExpression::CaseInsensitiveOption);
     return re;
-}
-
-/// The assembler's identifier alphabet, kept identical to AsmHighlighter's
-/// label pattern so a token found here is a token that is highlighted there.
-/// `$` is in it because vasm allows it in symbol names.
-bool isWordChar(QChar c)
-{
-    const bool asciiLetter = (c >= QLatin1Char('A') && c <= QLatin1Char('Z'))
-                          || (c >= QLatin1Char('a') && c <= QLatin1Char('z'));
-    const bool asciiDigit = (c >= QLatin1Char('0') && c <= QLatin1Char('9'));
-    return asciiLetter || asciiDigit || c == QLatin1Char('_') || c == QLatin1Char('.')
-        || c == QLatin1Char('$');
-}
-
-/// The code field of a line: everything before a `;` comment. Motorola syntax
-/// starts a comment anywhere, so nothing after the `;` can define anything.
-QString codePart(const QString &line)
-{
-    const int semicolon = line.indexOf(QLatin1Char(';'));
-    return (semicolon >= 0) ? line.left(semicolon) : line;
 }
 
 } // namespace
@@ -105,19 +86,22 @@ int labelLine(const QString &documentText, const QString &word)
     if (word.isEmpty())
         return 0;
 
-    const QRegularExpression &re = labelRe();
     const QStringList lines = documentText.split(QLatin1Char('\n'));
     for (int i = 0; i < lines.size(); ++i) {
-        const QString &line = lines.at(i);
-        // `*` in the first column is a whole-line comment (AsmHighlighter), so a
-        // definition mentioned in one is not a definition.
-        if (line.startsWith(QLatin1Char('*')))
+        // asmlex::codePart drops a `*` whole-line comment and everything after a
+        // `;`, so a definition mentioned in a comment is not a definition.
+        const QString code = asmlex::codePart(lines.at(i));
+        if (code.isEmpty())
             continue;
 
-        const auto match = re.match(codePart(line));
-        if (!match.hasMatch())
-            continue;
-        if (QString::compare(match.captured(1), word, Qt::CaseInsensitive) == 0)
+        QString symbol;
+        if (!asmlex::isLabelDefinition(code, &symbol)) {
+            const auto match = assignmentRe().match(code);
+            if (!match.hasMatch())
+                continue;
+            symbol = match.captured(1);
+        }
+        if (QString::compare(symbol, word, Qt::CaseInsensitive) == 0)
             return i + 1;
     }
     return 0;
@@ -133,12 +117,12 @@ QString wordAtCursor(const QString &lineText, int column)
     const int last = lineText.length() - 1;
     const int at = qMin(column, last);
 
-    if (isWordChar(lineText.at(at))) {
+    if (asmlex::isWordChar(lineText.at(at))) {
         int start = at;
-        while (start > 0 && isWordChar(lineText.at(start - 1)))
+        while (start > 0 && asmlex::isWordChar(lineText.at(start - 1)))
             --start;
         int end = at;
-        while (end < last && isWordChar(lineText.at(end + 1)))
+        while (end < last && asmlex::isWordChar(lineText.at(end + 1)))
             ++end;
         return lineText.mid(start, end - start + 1);
     }
@@ -150,20 +134,20 @@ QString wordAtCursor(const QString &lineText, int column)
     // which is what makes a click on the `#` of `#kMaxX`, on the leading tab of an
     // indented line, or at column 0 work.
     int end = at - 1;
-    if (end < 0 || !isWordChar(lineText.at(end))) {
+    if (end < 0 || !asmlex::isWordChar(lineText.at(end))) {
         int start = at;
-        while (start <= last && !isWordChar(lineText.at(start)))
+        while (start <= last && !asmlex::isWordChar(lineText.at(start)))
             ++start;
         if (start > last)
             return {};
         end = start;
-        while (end < last && isWordChar(lineText.at(end + 1)))
+        while (end < last && asmlex::isWordChar(lineText.at(end + 1)))
             ++end;
         return lineText.mid(start, end - start + 1);
     }
 
     int start = end;
-    while (start > 0 && isWordChar(lineText.at(start - 1)))
+    while (start > 0 && asmlex::isWordChar(lineText.at(start - 1)))
         --start;
     return lineText.mid(start, end - start + 1);
 }

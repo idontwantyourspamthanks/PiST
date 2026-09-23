@@ -4,9 +4,6 @@
 
 #include "ui/ProfilerView.h"
 
-#include "build/LineMap.h"
-#include "build/ProgramLineMap.h"
-#include "build/SymbolTable.h"
 #include "ui/Appearance.h"
 
 #include <QCheckBox>
@@ -18,7 +15,6 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
-#include <algorithm>
 
 namespace pist {
 
@@ -29,15 +25,6 @@ constexpr int kColCount = 1;
 constexpr int kColCycles = 2;
 constexpr int kColCountPct = 3;
 constexpr int kColCyclesPct = 4;
-
-/// A code label with its resolved address: the anchor a hot address's routine
-/// is read from.
-struct Anchor
-{
-    quint32 address = 0;
-    QString name;
-    int defLine = 0;
-};
 
 } // namespace
 
@@ -128,145 +115,31 @@ void ProfilerView::setActions(QAction *start, QAction *stop, QAction *toCursor)
 
 void ProfilerView::clear()
 {
-    m_routines.clear();
-    m_rom.clear();
-    m_unmapped = 0;
-    m_unmappedCycles = 0;
-    m_totalCount = 0;
-    m_totalCycles = 0;
-    m_clockHz = 0;
+    m_profile = AttributedProfile();
     m_tree->clear();
     m_status->setText(tr("Set a breakpoint where measuring ends, Profile Start, "
                          "continue — the hot lines appear here."));
 }
 
-void ProfilerView::setProfile(const ProfileData &profile, const ProgramLineMap *map,
-                              const QString &sourceFile, const QVector<SymbolEntry> &symbols)
+void ProfilerView::setProfile(const AttributedProfile &profile)
 {
-    clear();
-    if (profile.lines.isEmpty()) {
+    // The analysis was done by attributedProfile() before this was called
+    // (MAJ-44); what is left here is showing it. The widget keeps the value so
+    // filtering and a theme change can redraw, and nothing outside reads it.
+    m_profile = profile;
+    m_tree->clear();
+
+    // An empty profile and an unmappable one are different stories for the
+    // user — "the profiler found nothing" against "profiling is not wired up
+    // for this program yet" — and neither shows a table.
+    if (!profile.hasSamples) {
         m_status->setText(tr("no profile"));
         return;
     }
-    m_totalCount = profile.totalCount;
-    m_totalCycles = profile.totalCycles;
-    m_clockHz = profile.clockHz;
-
-    // Without a resolved map there is no address-to-line mapping at all, which
-    // is the normal state before the program has been built and run. Saying so
-    // is the difference between "the profiler found nothing" and "profiling is
-    // not wired up for this program yet".
-    if (!map || map->isEmpty() || !map->isResolved()) {
-        m_status->setText(tr("%1 samples, no source map").arg(m_totalCount));
+    if (!profile.resolved) {
+        m_status->setText(tr("%1 samples, no source map").arg(profile.totalCount));
         return;
     }
-
-    // Routine anchors: the current file's code labels with their resolved
-    // addresses. A label's own line often emits no code, so the anchor is the
-    // first line at or after it that did.
-    QList<Anchor> anchors;
-    for (const SymbolEntry &sym : symbols) {
-        if (sym.file.isEmpty() || !LineMap::sameSource(sym.file, sourceFile))
-            continue;
-        const int codeLine = map->nextCodeLine(sym.file, sym.line);
-        if (codeLine <= 0)
-            continue;
-        quint32 address = 0;
-        if (!map->codeAddressFor(sym.file, codeLine, &address))
-            continue;
-        anchors.append({address, sym.name, sym.line});
-    }
-    std::sort(anchors.begin(), anchors.end(),
-              [](const Anchor &a, const Anchor &b) { return a.address < b.address; });
-
-    const auto routineFor = [&anchors](quint32 address) -> const Anchor * {
-        const Anchor *found = nullptr;
-        for (const Anchor &anchor : anchors) {
-            if (anchor.address > address)
-                break;
-            found = &anchor;
-        }
-        return found;
-    };
-
-    // The ROM areas an address can belong to: time in trap handlers is the
-    // OS's, not any source line's. Name-based, with the well-known ROM floor
-    // as the fallback for a save with no area lines.
-    const auto romRegionFor = [&profile](quint32 address) -> QString {
-        for (const ProfileRegion &region : profile.regions) {
-            if (address >= region.first && address <= region.last
-                && (region.name == QLatin1String("ROM_TOS")
-                    || region.name == QLatin1String("CARTRIDGE")))
-                return region.name;
-        }
-        if (profile.regions.isEmpty() && address >= 0xfa0000)
-            return QStringLiteral("ROM");
-        return QString();
-    };
-
-    QHash<int, int> lineIndex;     // line -> index in its routine's lines
-    QHash<QString, int> routineOf; // routine name -> index in m_routines
-    QHash<QString, int> romOf;     // region name -> index in m_rom
-    for (const ProfileLine &entry : profile.lines) {
-        LineMap::Address where;
-        if (map->lineFor(entry.address, &where) && where.line > 0
-            && LineMap::sameSource(where.file, sourceFile)) {
-            const Anchor *anchor = routineFor(entry.address);
-            const QString routine = anchor ? anchor->name : tr("(no routine)");
-            int ri = routineOf.value(routine, -1);
-            if (ri < 0) {
-                ri = m_routines.size();
-                routineOf.insert(routine, ri);
-                RoutineCost cost;
-                cost.name = routine;
-                cost.defLine = anchor ? anchor->defLine : 0;
-                m_routines.append(cost);
-            }
-            RoutineCost &routine_ = m_routines[ri];
-            routine_.count += entry.count;
-            routine_.cycles += entry.cycles;
-
-            const int li = lineIndex.value(where.line, -1);
-            if (li >= 0) {
-                routine_.lines[li].count += entry.count;
-                routine_.lines[li].cycles += entry.cycles;
-            } else {
-                lineIndex.insert(where.line, routine_.lines.size());
-                routine_.lines.append({where.line, routine, entry.count, entry.cycles});
-            }
-            continue;
-        }
-
-        const QString region = romRegionFor(entry.address);
-        if (!region.isEmpty()) {
-            int ri = romOf.value(region, -1);
-            if (ri < 0) {
-                ri = m_rom.size();
-                romOf.insert(region, ri);
-                RoutineCost cost;
-                cost.name = region;
-                m_rom.append(cost);
-            }
-            m_rom[ri].count += entry.count;
-            m_rom[ri].cycles += entry.cycles;
-            continue;
-        }
-
-        ++m_unmapped;
-        m_unmappedCycles += entry.cycles;
-    }
-
-    for (RoutineCost &routine : m_routines) {
-        std::sort(routine.lines.begin(), routine.lines.end(),
-                  [](const LineCost &a, const LineCost &b) {
-                      return a.cycles != b.cycles ? a.cycles > b.cycles : a.line < b.line;
-                  });
-    }
-    const auto byCyclesDesc = [](const RoutineCost &a, const RoutineCost &b) {
-        return a.cycles != b.cycles ? a.cycles > b.cycles : a.name < b.name;
-    };
-    std::sort(m_routines.begin(), m_routines.end(), byCyclesDesc);
-    std::sort(m_rom.begin(), m_rom.end(), byCyclesDesc);
 
     populate();
 }
@@ -274,16 +147,6 @@ void ProfilerView::setProfile(const ProfileData &profile, const ProgramLineMap *
 void ProfilerView::showMessage(const QString &message)
 {
     m_status->setText(message);
-}
-
-QHash<int, quint64> ProfilerView::lineCounts() const
-{
-    QHash<int, quint64> counts;
-    for (const RoutineCost &routine : m_routines) {
-        for (const LineCost &line : routine.lines)
-            counts.insert(line.line, line.count);
-    }
-    return counts;
 }
 
 void ProfilerView::setRow(QTreeWidgetItem *item, const QString &name, quint64 count,
@@ -294,10 +157,10 @@ void ProfilerView::setRow(QTreeWidgetItem *item, const QString &name, quint64 co
     item->setText(kColCount, locale.toString(count));
     item->setText(kColCycles, locale.toString(cycles));
     item->setText(kColCountPct,
-                  QString::number(m_totalCount ? 100.0 * double(count) / double(m_totalCount) : 0.0,
+                  QString::number(m_profile.totalCount ? 100.0 * double(count) / double(m_profile.totalCount) : 0.0,
                                   'f', 2));
     item->setText(kColCyclesPct,
-                  QString::number(m_totalCycles ? 100.0 * double(cycles) / double(m_totalCycles)
+                  QString::number(m_profile.totalCycles ? 100.0 * double(cycles) / double(m_profile.totalCycles)
                                                 : 0.0,
                                   'f', 2));
     for (int col = kColCount; col <= kColCyclesPct; ++col)
@@ -308,28 +171,28 @@ void ProfilerView::populate()
 {
     m_tree->clear();
 
-    for (const RoutineCost &routine : m_routines) {
+    for (const AttributedRoutine &routine : m_profile.routines) {
         auto *root = new QTreeWidgetItem(m_tree);
         setRow(root, routine.name, routine.count, routine.cycles);
         // A routine row activates to its label's line; a zero stays inert.
         root->setData(kColName, Qt::UserRole, routine.defLine);
-        for (const LineCost &line : routine.lines) {
+        for (const AttributedLine &line : routine.lines) {
             auto *child = new QTreeWidgetItem(root);
             setRow(child, QString::number(line.line), line.count, line.cycles);
             child->setData(kColName, Qt::UserRole, line.line);
         }
     }
 
-    if (!m_rom.isEmpty()) {
+    if (!m_profile.rom.isEmpty()) {
         quint64 romCount = 0, romCycles = 0;
-        for (const RoutineCost &region : m_rom) {
+        for (const AttributedRoutine &region : m_profile.rom) {
             romCount += region.count;
             romCycles += region.cycles;
         }
         auto *root = new QTreeWidgetItem(m_tree);
         setRow(root, tr("TOS/ROM"), romCount, romCycles);
         root->setData(kColName, Qt::UserRole, -1); // no source to go to
-        for (const RoutineCost &region : m_rom) {
+        for (const AttributedRoutine &region : m_profile.rom) {
             auto *child = new QTreeWidgetItem(root);
             setRow(child, region.name, region.count, region.cycles);
             child->setData(kColName, Qt::UserRole, -1);
@@ -349,7 +212,7 @@ void ProfilerView::applyFilter()
     const bool showAll = m_showAll->isChecked();
 
     const auto belowFloor = [this, showAll](const QTreeWidgetItem *item) {
-        if (showAll || m_totalCycles == 0)
+        if (showAll || m_profile.totalCycles == 0)
             return false;
         bool ok = false;
         const double share = item->text(kColCyclesPct).toDouble(&ok) / 100.0;
@@ -379,32 +242,32 @@ void ProfilerView::applyFilter()
     }
 
     QString status;
-    if (m_totalCount == 0) {
-        status = m_unmapped ? tr("%1 addresses, none in this file").arg(m_unmapped)
+    if (m_profile.totalCount == 0) {
+        status = m_profile.unmapped ? tr("%1 addresses, none in this file").arg(m_profile.unmapped)
                             : tr("no profiled instructions in this file");
-    } else if (m_routines.isEmpty() && m_rom.isEmpty()) {
+    } else if (m_profile.routines.isEmpty() && m_profile.rom.isEmpty()) {
         // A profile landed but nothing in it belongs to this source: the tree
         // is empty for a reason, and the user should not read it as broken.
         status = tr("nothing in the run maps to this file");
-        if (m_unmapped)
-            status += tr(" · %1 addresses unmapped").arg(m_unmapped);
+        if (m_profile.unmapped)
+            status += tr(" · %1 addresses unmapped").arg(m_profile.unmapped);
     } else if (shownRoots == 0) {
         status = !needle.isEmpty() ? tr("no routines match the filter")
                                    : tr("everything is under 0.1% — Show all to see it");
     } else {
         const QLocale locale;
         status = tr("%1 instructions, %2 cycles")
-                     .arg(locale.toString(m_totalCount), locale.toString(m_totalCycles));
-        if (m_clockHz) {
-            const double ms = 1000.0 * double(m_totalCycles) / double(m_clockHz);
-            const double frames = 50.0 * double(m_totalCycles) / double(m_clockHz);
+                     .arg(locale.toString(m_profile.totalCount), locale.toString(m_profile.totalCycles));
+        if (m_profile.clockHz) {
+            const double ms = 1000.0 * double(m_profile.totalCycles) / double(m_profile.clockHz);
+            const double frames = 50.0 * double(m_profile.totalCycles) / double(m_profile.clockHz);
             status += tr(" ≈ %1 ms (%2 frames)")
                           .arg(ms, 0, 'f', 1)
                           .arg(frames, 0, 'f', 2);
         }
-        status += tr(" · %1 of %2 routines").arg(shownRoots).arg(m_routines.size() + (m_rom.isEmpty() ? 0 : 1));
-        if (m_unmapped)
-            status += tr(" · %1 addresses unmapped").arg(m_unmapped);
+        status += tr(" · %1 of %2 routines").arg(shownRoots).arg(m_profile.routines.size() + (m_profile.rom.isEmpty() ? 0 : 1));
+        if (m_profile.unmapped)
+            status += tr(" · %1 addresses unmapped").arg(m_profile.unmapped);
     }
     m_status->setText(status);
 }

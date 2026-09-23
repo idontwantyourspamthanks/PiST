@@ -19,8 +19,11 @@ bool ProgramLineMap::addModule(const QString &sourceFile, const QString &objectF
                                const QString &listingPath, QString *error)
 {
     Module module;
-    module.sourceFile = sourceFile;
-    module.objectFile = QFileInfo(objectFile).fileName();
+    // Both paths are kept absolute — the object path is the identity the
+    // linker's map is matched against, and reducing it to a base name is what
+    // made `dir1/util.o` and `dir2/util.o` one module (see LinkMap).
+    module.sourceFile = canonicalModulePath(sourceFile);
+    module.objectFile = canonicalModulePath(objectFile);
 
     if (!module.lines.parseListing(listingPath, error))
         return false;
@@ -57,12 +60,9 @@ void ProgramLineMap::setLiveBases(const LineMap::SectionBases &live)
         quint32 dataOffset = 0;
         quint32 bssOffset = 0;
 
-        const bool hasText =
-            m_linkMap.moduleOffset(module.objectFile, QStringLiteral("CODE"), &textOffset);
-        const bool hasData =
-            m_linkMap.moduleOffset(module.objectFile, QStringLiteral("DATA"), &dataOffset);
-        const bool hasBss =
-            m_linkMap.moduleOffset(module.objectFile, QStringLiteral("BSS"), &bssOffset);
+        const bool hasText = placementOffset(module, QStringLiteral("CODE"), &textOffset);
+        const bool hasData = placementOffset(module, QStringLiteral("DATA"), &dataOffset);
+        const bool hasBss = placementOffset(module, QStringLiteral("BSS"), &bssOffset);
 
         // A module may legitimately contribute to only some sections — a file of
         // pure data, or one with no initialised data. Those sections simply have
@@ -93,28 +93,91 @@ QStringList ProgramLineMap::sourceFiles() const
     return files;
 }
 
+const ProgramLineMap::Module *ProgramLineMap::moduleForSource(const QString &file) const
+{
+    QStringList names;
+    names.reserve(m_modules.size());
+    for (const Module &module : m_modules)
+        names.append(module.sourceFile);
+
+    const int match = matchModuleName(names, file);
+    return match < 0 ? nullptr : &m_modules.at(match);
+}
+
+const ProgramLineMap::Module *ProgramLineMap::moduleForObject(const QString &objectFile) const
+{
+    QStringList names;
+    names.reserve(m_modules.size());
+    for (const Module &module : m_modules)
+        names.append(module.objectFile);
+
+    const int match = matchModuleName(names, objectFile);
+    return match < 0 ? nullptr : &m_modules.at(match);
+}
+
+bool ProgramLineMap::objectNameIsShared(const QString &objectFile) const
+{
+    if (objectFile.isEmpty())
+        return false;
+
+    const QString name = QFileInfo(objectFile).fileName();
+    int sameName = 0;
+    for (const Module &module : m_modules) {
+        if (QFileInfo(module.objectFile).fileName() == name && ++sameName > 1)
+            return true;
+    }
+    return false;
+}
+
+bool ProgramLineMap::placementOffset(const Module &module, const QString &sectionType,
+                                     quint32 *offset) const
+{
+    bool matchedByPath = false;
+    if (!m_linkMap.moduleOffset(module.objectFile, sectionType, offset, &matchedByPath))
+        return false;
+
+    // The map names modules by base name alone (LinkMap), so a name-match answer
+    // is only meaningful while the name belongs to one of ours: with two
+    // `util.o` registered, the placement is one of them and taking it would put
+    // both at one address — the silent wrong-module arming this lookup exists to
+    // stop. A path match needs no such guard; it named the exact file.
+    return matchedByPath || !objectNameIsShared(module.objectFile);
+}
+
 bool ProgramLineMap::lineForObjectOffset(const QString &objectFile, const QString &section,
                                          quint32 offset, LineMap::Address *result) const
 {
-    const QString wanted = QFileInfo(objectFile).fileName();
+    const Module *module = moduleForObject(objectFile);
+    if (!module)
+        return false;
 
-    for (const Module &module : m_modules) {
-        if (module.objectFile != wanted)
-            continue;
-        return module.lines.lineForSectionOffset(section, offset, result);
-    }
-
-    return false;
+    return module->lines.lineForSectionOffset(section, offset, result);
 }
 
 QStringList ProgramLineMap::unplacedModules() const
 {
-    QStringList unplaced;
+    QList<const Module *> unplaced;
     for (const Module &module : m_modules) {
         if (!module.placed)
-            unplaced.append(QFileInfo(module.sourceFile).fileName());
+            unplaced.append(&module);
     }
-    return unplaced;
+
+    // A module is named the way the rest of the IDE refers to it, by file name,
+    // so the log line reads as the user's own file. Two modules left unplaced
+    // because they share that name are the case where it cannot: the log would
+    // say the same name twice and mean two different files, which is exactly the
+    // ambiguity that refused them — so those are named by path, the only thing
+    // that tells them apart.
+    QStringList baseNames;
+    for (const Module *module : unplaced)
+        baseNames.append(QFileInfo(module->sourceFile).fileName());
+
+    QStringList names;
+    for (int i = 0; i < unplaced.size(); ++i) {
+        names.append(baseNames.count(baseNames.at(i)) > 1 ? unplaced.at(i)->sourceFile
+                                                          : baseNames.at(i));
+    }
+    return names;
 }
 
 quint32 ProgramLineMap::textEnd() const
@@ -138,46 +201,37 @@ bool ProgramLineMap::addressFor(const QString &file, int line, quint32 *address)
     if (!m_resolved)
         return false;
 
-    for (const Module &module : m_modules) {
-        if (!module.placed)
-            continue;
-        // Match by path or base name, since the listing records whichever the
-        // build passed and the caller may hold either.
-        if (!LineMap::sameSource(module.sourceFile, file))
-            continue;
-        if (module.lines.addressFor(file, line, module.bases, address))
-            return true;
-    }
+    // One module answers for a source file — the one the path names, or the only
+    // one its base name fits. Anything less certain resolves nothing: the
+    // previous "whichever module comes first" handed the address of one module's
+    // line to an identical line in another, which is exactly what arms a
+    // breakpoint in the wrong one.
+    const Module *module = moduleForSource(file);
+    if (!module || !module->placed)
+        return false;
 
-    return false;
+    return module->lines.addressFor(file, line, module->bases, address);
 }
 
 bool ProgramLineMap::codeAddressFor(const QString &file, int line, quint32 *address) const
 {
     if (!m_resolved)
         return false;
-    for (const Module &module : m_modules) {
-        if (!module.placed)
-            continue;
-        if (!LineMap::sameSource(module.sourceFile, file))
-            continue;
-        if (module.lines.codeAddressFor(file, line, module.bases, address))
-            return true;
-    }
-    return false;
+
+    const Module *module = moduleForSource(file);
+    if (!module || !module->placed)
+        return false;
+
+    return module->lines.codeAddressFor(file, line, module->bases, address);
 }
 
 int ProgramLineMap::nextCodeLine(const QString &file, int line) const
 {
-    int best = 0;
-    for (const Module &module : m_modules) {
-        if (!LineMap::sameSource(module.sourceFile, file))
-            continue;
-        const int candidate = module.lines.nextCodeLine(file, line);
-        if (candidate && (!best || candidate < best))
-            best = candidate;
-    }
-    return best;
+    const Module *module = moduleForSource(file);
+    if (!module)
+        return 0;
+
+    return module->lines.nextCodeLine(file, line);
 }
 
 bool ProgramLineMap::lineFor(quint32 address, LineMap::Address *result) const

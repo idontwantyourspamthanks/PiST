@@ -4,6 +4,7 @@
 
 #include "emu/HrdbBackend.h"
 
+#include "build/ProcessUtil.h"
 #include "emu/EmulatorHost.h"
 #include "emu/HatariTextParse.h"
 #include "emu/MemoryDump.h"
@@ -68,6 +69,12 @@ QByteArray uudecode(const QByteArray &uu, quint32 expectedBytes)
 HrdbBackend::HrdbBackend(QObject *parent)
     : IDebugBackend(parent)
 {
+    // Same contract as the native backend (MAJ-45): the dump rows and the
+    // hardware summary are signal payloads, so they are registered before any
+    // connection can carry them.
+    qRegisterMetaType<QList<MemoryRow>>("QList<MemoryRow>");
+    qRegisterMetaType<HardwareSummary>("HardwareSummary");
+
     m_connectRetry = new QTimer(this);
     m_connectRetry->setInterval(100);
     connect(m_connectRetry, &QTimer::timeout, this, [this] {
@@ -96,15 +103,17 @@ HrdbBackend::HrdbBackend(QObject *parent)
         if (!m_haveCurrent)
             return;
         // The fork never answered: fail the in-flight command so the caller's
-        // commandFinished fires (no upstream 120 s hang), release the slot, and
-        // let the queue proceed.
+        // commandFinished fires (no upstream 120 s hang) and release the slot.
+        // The queue is *not* advanced here: the reply may still be on its way,
+        // and dispatching into it would let the late reply complete the next
+        // command — the stream then runs one reply behind for the rest of the
+        // session. The swallow below owns the release (MIN-2).
         const QString command = m_current.text;
         m_haveCurrent = false;
         m_current = Pending();
         emit errorOccurred(tr("The HRDB debugger did not respond to '%1' in time.").arg(command));
         emit commandFinished(command, QString());
         m_owedReply = true; // a late reply to this failed command must be swallowed
-        dispatchNext();
     });
     // The control socket carries the embedded display's video-size reports on
     // the fork (its debugger channels are HRDB's; the socket is upstream's).
@@ -146,6 +155,16 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
 
     // Same config isolation + embedded-display wiring as the native backend.
     m_process->setProcessEnvironment(makeSessionEnvironment(config));
+
+    // readStderrTail() drains the process's stderr with `bytesAvailable()` and
+    // `waitForReadyRead()`, and both act on the process's *current* read
+    // channel — stdout by default. Pointing it at stderr makes the drain
+    // inspect (and wait on) the pipe the console response actually travels on,
+    // instead of the stdout buffer that is always empty at that moment (and a
+    // full 20 ms timeout every time). All other reads here are channel-specific
+    // (readAllStandardOutput/readAllStandardError, each with its own readyRead
+    // signal connected below), so the switch changes nothing else (MAJ-13).
+    m_process->setReadChannel(QProcess::StandardError);
 
     // The session argv is the stock one, control socket included: the fork
     // keeps the upstream option, and it carries the embedded display's
@@ -270,11 +289,7 @@ void HrdbBackend::stop()
         m_socket = nullptr;
     }
     if (m_process) {
-        m_process->disconnect(this);
-        if (m_process->state() != QProcess::NotRunning) {
-            m_process->kill();
-            m_process->waitForFinished(2000);
-        }
+        killAndRelease(m_process, this);
         m_process->deleteLater();
         m_process = nullptr;
     }
@@ -300,14 +315,24 @@ void HrdbBackend::dispatchNext()
     if (m_haveCurrent || m_queue.isEmpty() || !m_ready || !m_socket)
         return;
 
-    // State reads against a running machine return an arbitrary PC: HRDB
-    // services the socket while emulating, unlike the native transport, whose
-    // starved stdin provides the gating for free. Defer them to the next stop
-    // (the !status handler dispatches) so a snapshot can never capture
-    // mid-run state. Control commands — run, break, bp — go out immediately.
-    // Scan past deferred reads rather than blocking on the queue head: a
-    // deferred read must not starve a `break` or `bp` queued behind it. One
-    // command is outstanding at a time, so the reorder is safe.
+    // A command timed out and its reply is still owed: the next reply that
+    // arrives belongs to it, not to anything sent now, so hold the queue until
+    // the swallow consumes it (mirrors the native transport's m_owedPrompts
+    // guard — MIN-2). Without this, a *missing* reply (the link is silent, not
+    // merely late) makes the next command's reply get swallowed as the owed one
+    // and every command afterwards is answered by its predecessor.
+    if (m_owedReply)
+        return;
+
+    // Commands that run from the fork's remote break loop are held while the
+    // emulator runs: HRDB services the socket either way, unlike the native
+    // transport, whose starved stdin provides the gating for free. Gate them
+    // until the next stop (the !status handler dispatches) so a snapshot can
+    // never capture mid-run state and a debugger command never runs against a
+    // moving machine. Control commands — run, break, bp — go out immediately.
+    // Scan past deferred requests rather than blocking on the queue head: one
+    // must not starve a `break` or `bp` queued behind it. One command is
+    // outstanding at a time, so the reorder is safe.
     int next = -1;
     for (int i = 0; i < m_queue.size(); ++i) {
         if (m_stopped || !m_queue.at(i).needsStop) {
@@ -315,8 +340,21 @@ void HrdbBackend::dispatchNext()
             break;
         }
     }
-    if (next < 0)
+    if (next < 0) {
+        // Nothing can go out yet. A request PiST issued internally stays quiet
+        // (the native transport defers the same reads just as silently, and a
+        // pane refresh is nobody's question); a command the *user* is waiting
+        // on says so, because its answer will not come until the emulator
+        // stops — the message is the visible part of a decision that used to
+        // be taken silently per command text.
+        for (Pending &pending : m_queue) {
+            if (pending.freeText && !pending.deferAnnounced) {
+                pending.deferAnnounced = true;
+                emit logLine(tr("'%1' waits for the emulator to stop.").arg(pending.text));
+            }
+        }
         return;
+    }
 
     m_current = m_queue.takeAt(next);
     m_haveCurrent = true;
@@ -348,8 +386,11 @@ void HrdbBackend::onSocketData()
         if (m_owedReply) {
             // A late reply to a command the watchdog already failed — swallow it
             // so it can't be mis-attributed to the next command (native's
-            // owed-prompts guard, finding 11).
+            // owed-prompts guard, finding 11). The stream is back in step, so
+            // the held queue may advance (MIN-2).
             m_owedReply = false;
+            if (!m_haveCurrent)
+                dispatchNext();
             continue;
         }
         if (m_haveCurrent)
@@ -413,115 +454,145 @@ void HrdbBackend::completeCurrent(const QByteArray &message)
     m_current = Pending();
 
     QString response;
+    // Whether this response fills part of MachineState (drives the one
+    // stateUpdated per batch, below). Set from the carried kind, not the text.
+    bool fillsState = false;
 
     if (fields.first() == "NG") {
         response = tr("NG (error %1)").arg(QString::fromLatin1(fields.value(1)));
         emit errorOccurred(tr("Command '%1' failed: %2").arg(done.text, response));
-    } else if (done.wire.startsWith(QLatin1String("regs"))) {
+    } else if (done.kind == ResponseKind::Registers) {
+        // The typed `regs` reply: key/value pairs, including the live
+        // TEXT/DATA/BSS bases.
         parseRegPairs(fields);
+        fillsState = true;
         response = QString::fromUtf8(message);
-    } else if (done.wire.startsWith(QLatin1String("mem "))) {
+    } else if (done.kind == ResponseKind::MemoryDump) {
         // `OK <addr> <count> <uuencoded payload>` — uuencode never emits 0x01,
-        // so the field split kept the payload whole.
+        // so the field split kept the payload whole. Only a
+        // requestMemoryDump()/requestStackDump() pending carries this kind, so
+        // the dump is always published to the pane that asked, with its tag.
+        //
+        // Decoded once, into the rows every consumer reads (MAJ-45); the text
+        // is rendered from those rows for the log, so the two cannot disagree.
         const QByteArray uu = fields.mid(3).join('\x01');
-        response = formatMemoryDump(done.dumpAddress, done.memBytes, uu);
+        const QList<MemoryRow> rows = memoryRows(done.dumpAddress, done.memBytes, uu);
+        response = renderMemoryDump(rows);
         if (done.stackDump)
-            emit stackDumpReady(done.dumpAddress, response);
+            emit stackDumpReady(done.dumpAddress, rows);
         else
-            emit memoryDumpReady(done.dumpAddress, response, done.dumpTag);
+            emit memoryDumpReady(done.dumpAddress, rows, done.dumpTag);
     } else if (done.captureStderr) {
         response = readStderrTail().trimmed();
-        // A console `d` is parsed into the state snapshot exactly as the
+        // A disassembly read is parsed into the state snapshot exactly as the
         // native backend parses its stderr text — same format, same parser.
-        if (done.text.startsWith(QLatin1Char('d')))
+        // Only a request that asked for it is parsed (the kind travels with the
+        // request): this used to key on the command text, so a `db pc = $X
+        // :once` wiped the cached disassembly that stepOver() reads its
+        // fall-through address from, and a console `memdump` was published as a
+        // pane dump (MAJ-12).
+        if (done.kind == ResponseKind::Disassembly) {
             hataritext::parseDisassembly(response, &m_state);
+            fillsState = true;
+            // A caller that asked about one address wants the text itself as
+            // well (the remote `disasm` verb).
+            if (done.reportDisassembly)
+                emit disassemblyReady(done.disassemblyAddress, response);
+        } else if (!done.infoSubject.isEmpty()) {
+            // A typed `info <subject>` report. It is not part of MachineState:
+            // it is parsed into its summary here and goes to the caller that
+            // asked, named by its subject (MAJ-45).
+            emit hardwareInfoReady(done.infoSubject, hataritext::parseHardwareInfo(response));
+        }
     } else {
         response = QString::fromUtf8(message);
     }
 
     // Batch contract: stateUpdated once per refresh batch, or once for a
-    // standalone state command — identical to the native backend's rule.
-    const bool fillsState = done.wire.startsWith(QLatin1String("regs"))
-        || done.text.startsWith(QLatin1Char('d'));
+    // standalone state command — identical to the native backend's rule. Driven
+    // by the kind the request carried, never by the wire or command text.
     if (fillsState && (!done.batchMember || done.batchEnd))
         emit stateUpdated(m_state);
 
-    // Typed replies that are NOT on the fork's stderr stream need an explicit
-    // log emission so typed console commands produce visible output. The `else`
-    // branch (OK-style acks for bp/break/run/step) is exactly what a typed
-    // command hits; regs and mem already surface through stateUpdated/memoryDumpReady
-    // and their raw field blobs would be noise in the log. captureStderr
-    // commands already stream via readyReadStandardError. Internal control
-    // commands (step/resume from F10/F9) must stay silent — they never log on
-    // the native backend either. A copy keeps the formatted text out of the
-    // commandFinished response, which RemoteControl's cmd also consumes.
-    if (!done.captureStderr && !done.wire.startsWith(QLatin1String("regs"))
-        && !done.wire.startsWith(QLatin1String("mem ")) && !response.isEmpty()
-        && done.consoleOrigin) {
-        emit logLine(QString(response).replace(QLatin1Char('\x01'), QLatin1String(" | ")));
-    }
+    // A profile save is complete whatever the fork answered: the caller reads
+    // the file, and a save that failed reports that there rather than leaving
+    // the UI on "Saving…".
+    if (!done.profilePath.isEmpty())
+        emit profileSaveFinished(done.profilePath);
+
+    // The execution-path read's text, for the pane that asked (a typed request
+    // reports its own answer rather than a caller matching command text).
+    if (done.reportHistory)
+        emit historyReady(response);
+
+    // No ack is logged here: every request that carries a user's text runs
+    // through the console, whose output is already streamed line by line by the
+    // stderr reader (readyReadStandardError), and a typed request's structured
+    // reply would be noise beside the state/ pane signals it already drives.
     emit commandFinished(done.text, response);
     dispatchNext();
 }
-bool HrdbBackend::translateCommand(const QString &commandText, Pending *out)
+
+HrdbBackend::Pending HrdbBackend::consoleRequest(const QString &text, const QString &wireBody,
+                                                 ResponseKind kind, bool keepOnResume)
 {
-    out->text = commandText;
-    if (commandText == QLatin1String("r")) {
-        out->wire = QStringLiteral("regs");
-        out->needsStop = true;
-    } else if (commandText == QLatin1String("s")) {
-        out->wire = QStringLiteral("step");
-    } else if (commandText == QLatin1String("c")) {
-        out->wire = QStringLiteral("run");
-    } else if (commandText.startsWith(QLatin1String("b "))) {
-        // `b <expr>` and the watchpoint form both map to `bp <expr>`; the fork
-        // passes the expression to BreakCond_Command unchanged, so our
-        // breakpoint planning (and the self-inequality watchpoints) port as-is.
-        out->wire = QStringLiteral("bp ") + commandText.mid(2);
-    } else if (commandText.startsWith(QLatin1String("w b $"))) {
-        // `w b $addr $val` → `memset <addr-hex> 1 <val-hex>`: the fork's
-        // memset takes three arguments with a byte *count* in the middle, and
-        // the value must be two hex digits (the parser reads pairs).
-        const QStringList parts = commandText.split(QLatin1Char(' '));
-        if (parts.size() == 4) {
-            bool okAddr = false, okVal = false;
-            const quint32 addr = parts.at(2).mid(1).toUInt(&okAddr, 16);
-            const quint32 val = parts.at(3).mid(1).toUInt(&okVal, 16);
-            if (okAddr && okVal)
-                out->wire = QStringLiteral("memset %1 1 %2")
-                                .arg(addr, 0, 16)
-                                .arg(val, 2, 16, QLatin1Char('0'));
-        }
-        if (out->wire.isEmpty()) {
-            emit errorOccurred(tr("Cannot translate '%1' for the HRDB transport.")
-                                   .arg(commandText));
-            return false;
-        }
-    } else {
-        out->wire = QStringLiteral("console ") + commandText;
-        out->captureStderr = true;
-        out->needsStop = true;
+    Pending p;
+    p.text = text;
+    p.wire = QStringLiteral("console ") + wireBody;
+    p.kind = kind;
+    // The output lands on the process's stderr, flushed before the OK that
+    // completes this command, so the response is the stderr tail since dispatch.
+    p.captureStderr = true;
+    // The fork's console handler runs the debugger's own command set, which
+    // exists only inside its remote break loop: dispatched while the emulator
+    // runs, it would be answered against a moving machine. The queue holds it
+    // for the next stop — the gating is stated here, once, instead of being
+    // guessed per command text.
+    p.needsStop = true;
+    p.keepOnResume = keepOnResume;
+    return p;
+}
+
+HrdbBackend::Pending HrdbBackend::freeTextRequest(const QString &text)
+{
+    Pending p = consoleRequest(text, text);
+    // A user's command: if the queue has to hold it, the caller is told why
+    // rather than left waiting on a deferral nobody announced.
+    p.freeText = true;
+    p.keepOnResume = survivesResume(text);
+    return p;
+}
+
+void HrdbBackend::command(const QString &commandText)
+{
+    // Free text only — the user's console and the remote `cmd` verb. There is
+    // no translation to do: the fork's `console <cmd>` runs any debugui
+    // command, so the user's text reaches the debugger as written. The prefix
+    // table that used to rewrite `r`/`s`/`c`/`b …`/`w b …` here is gone with
+    // the internal callers that needed it, which is what made a command's
+    // meaning depend on its spelling (CRIT-6, MAJ-12).
+    if (commandText.trimmed().isEmpty()) {
+        // Nothing to run: reported, never enqueued (the fork would answer an
+        // empty console line with an OK that means nothing).
+        emit errorOccurred(tr("Cannot run an empty debugger command."));
+        return;
     }
-    return true;
+    enqueue(freeTextRequest(commandText));
 }
 
 void HrdbBackend::consoleCommand(const QString &commandText)
 {
-    Pending p;
-    p.consoleOrigin = true;
-    if (!translateCommand(commandText, &p))
-        return;
-    enqueue(p);
+    command(commandText);
 }
 
 QString HrdbBackend::readStderrTail()
 {
     // The fork flushes the console output before sending the OK we just
     // completed on, so the response is already in the pipe — but Qt may not
-    // have read it out yet. waitForReadyRead on the pipe itself (not
-    // bytesAvailable, which reports Qt's buffer) returns as soon as anything
-    // arrives; for data already written that is immediate. Same reasoning as
-    // the native backend's drainStderr.
+    // have read it out yet. Both of these act on the process's *current* read
+    // channel, which start() points at stderr: `waitForReadyRead` returns as
+    // soon as anything arrives there, which for data already written is
+    // immediate. Same reasoning as the native backend's drainStderr (MAJ-13).
     int guard = 0;
     while (m_process && guard++ < 8) {
         if (m_process->bytesAvailable() > 0) {
@@ -581,39 +652,24 @@ void HrdbBackend::parseRegPairs(const QList<QByteArray> &fields)
     }
 }
 
-QString HrdbBackend::formatMemoryDump(quint32 address, quint32 memBytes,
-                                      const QByteArray &uu)
+QList<MemoryRow> HrdbBackend::memoryRows(quint32 address, quint32 memBytes,
+                                         const QByteArray &uu)
 {
+    // The fork's reply is the payload itself, so the rows are decoded rather
+    // than parsed out of text (MAJ-45): the native transport parses Hatari's
+    // `m` output into the same rows. Rows of 16 bytes, as both print them.
     const QByteArray bytes = uudecode(uu, memBytes);
-    // The character column comes from the shared printable-range renderer (the
-    // memory view uses the same one), so the two cannot drift on what is
-    // printable. Rendered once, then sliced per row.
-    const QVector<quint8> byteVals(bytes.cbegin(), bytes.cend());
-    const QString allChars = renderMemoryChars(byteVals);
-
-    // Render as upstream `m` output — `%08X: HH HH …  chars` rows of 16 — so
-    // parseMemoryDump (and the views) see exactly the native format.
-    QString text;
+    QList<MemoryRow> rows;
     for (int row = 0; row < bytes.size(); row += 16) {
+        MemoryRow parsed;
+        parsed.address = address + quint32(row);
         const int count = qMin(16, bytes.size() - row);
-        QString line = QStringLiteral("%1:").arg(address + row, 8, 16, QLatin1Char('0'));
+        parsed.bytes.reserve(count);
         for (int i = 0; i < count; ++i)
-            line += QStringLiteral(" %1").arg(quint8(bytes[row + i]), 2, 16, QLatin1Char('0'));
-        text += line + QStringLiteral("  ") + allChars.mid(row, count) + QLatin1Char('\n');
+            parsed.bytes.append(quint8(bytes[row + i]));
+        rows.append(parsed);
     }
-    return text;
-}
-
-void HrdbBackend::command(const QString &commandText, quint32 dumpAddress,
-                          bool stackDump, int dumpTag)
-{
-    Pending p;
-    p.dumpAddress = dumpAddress;
-    p.stackDump = stackDump;
-    p.dumpTag = dumpTag;
-    if (!translateCommand(commandText, &p))
-        return;
-    enqueue(p);
+    return rows;
 }
 
 void HrdbBackend::clearBreakpoints()
@@ -621,16 +677,41 @@ void HrdbBackend::clearBreakpoints()
     // No typed clear-all exists, but `b all` is a debugui command and the
     // console runs those. Not stop-gated: arming after a rebuild must not
     // wait for a stop.
-    Pending p;
-    p.text = QStringLiteral("b all");
-    p.wire = QStringLiteral("console b all");
-    p.captureStderr = true;
+    Pending p = consoleRequest(QStringLiteral("b all"), QStringLiteral("b all"));
+    p.needsStop = false;
+    p.keepOnResume = true;
     enqueue(p);
 }
 
 void HrdbBackend::armBreakpoint(const QString &condition)
 {
-    command(condition);
+    // The planner's condition is a Hatari `b …` command (debug/Breakpoint.h,
+    // debug/Watchpoint.h). The fork's typed `bp` takes the expression alone and
+    // hands it to the same BreakCond parser the debugger's own `b` uses, so the
+    // transport difference is just the leading verb — and anything that is not
+    // a `b …` command is reported rather than guessed at.
+    if (!condition.startsWith(QLatin1String("b "))) {
+        emit errorOccurred(tr("Cannot arm '%1': an HRDB breakpoint is a Hatari `b …` "
+                              "condition.")
+                               .arg(condition));
+        return;
+    }
+    Pending p;
+    p.text = condition;
+    p.wire = QStringLiteral("bp ") + condition.mid(2);
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void HrdbBackend::breakAtAddressOnce(quint32 address)
+{
+    // `bp` is the fork's typed breakpoint command; `:once` removes the
+    // breakpoint on the hit, so a fired one needs no delete afterwards.
+    Pending p;
+    p.text = QStringLiteral("b pc = $%1 :once").arg(address, 0, 16);
+    p.wire = QStringLiteral("bp pc = $%1 :once").arg(address, 0, 16);
+    p.keepOnResume = true;
+    enqueue(p);
 }
 
 void HrdbBackend::requestMemoryDump(quint32 address, int length, int tag)
@@ -639,6 +720,7 @@ void HrdbBackend::requestMemoryDump(quint32 address, int length, int tag)
     Pending p;
     p.text = QStringLiteral("m $%1 %2").arg(address, 0, 16).arg(length);
     p.wire = QStringLiteral("mem %1 %2").arg(address, 0, 16).arg(length, 0, 16);
+    p.kind = ResponseKind::MemoryDump;
     p.dumpAddress = address;
     p.memBytes = quint32(length);
     p.dumpTag = tag;
@@ -651,6 +733,7 @@ void HrdbBackend::requestStackDump(quint32 address, int length)
     Pending p;
     p.text = QStringLiteral("m $%1 %2").arg(address, 0, 16).arg(length);
     p.wire = QStringLiteral("mem %1 %2").arg(address, 0, 16).arg(length, 0, 16);
+    p.kind = ResponseKind::MemoryDump;
     p.dumpAddress = address;
     p.memBytes = quint32(length);
     p.stackDump = true;
@@ -660,7 +743,125 @@ void HrdbBackend::requestStackDump(quint32 address, int length)
 
 void HrdbBackend::dumpRegisters()
 {
-    command(QStringLiteral("r"));
+    // The fork answers registers as typed key/value pairs (see parseRegPairs)
+    // rather than as the native transport's register dump text.
+    Pending p;
+    p.text = QStringLiteral("r");
+    p.wire = QStringLiteral("regs");
+    p.kind = ResponseKind::Registers;
+    p.needsStop = true;
+    enqueue(p);
+}
+
+void HrdbBackend::loadSymbols()
+{
+    // `symbols prg` relocates the program's symbols against the live basepage;
+    // only the debugger's own command set can do that, so it goes through the
+    // console (there is no typed symbol-load).
+    enqueue(consoleRequest(QStringLiteral("symbols prg"), QStringLiteral("symbols prg")));
+}
+
+void HrdbBackend::infoSubject(const QString &subject)
+{
+    Pending p = consoleRequest(QStringLiteral("info ") + subject,
+                               QStringLiteral("info ") + subject);
+    p.infoSubject = subject;
+    enqueue(p);
+}
+
+void HrdbBackend::readBasepage()
+{
+    // The fork reports the live TEXT/DATA/BSS bases as register keys in its
+    // typed `regs` reply, so that is what answers this read — the native
+    // spelling stays as the label, so a caller sees the same request name on
+    // both transports.
+    Pending p;
+    p.text = QStringLiteral("info basepage");
+    p.wire = QStringLiteral("regs");
+    p.kind = ResponseKind::Registers;
+    p.needsStop = true;
+    enqueue(p);
+}
+
+void HrdbBackend::setDisasmEngine(DisasmEngine engine)
+{
+    const QString command = engine == DisasmEngine::Ext
+        ? QStringLiteral("setopt --disasm ext")
+        : QStringLiteral("setopt --disasm uae");
+    enqueue(consoleRequest(command, command));
+}
+
+void HrdbBackend::profileOn()
+{
+    // Kept across a resume(): collection starts at the continue itself, so a
+    // pruned `profile on` collects nothing while the UI says "Collecting".
+    Pending p = consoleRequest(QStringLiteral("profile on"), QStringLiteral("profile on"),
+                               ResponseKind::None, true);
+    enqueue(p);
+}
+
+void HrdbBackend::profileOff()
+{
+    enqueue(consoleRequest(QStringLiteral("profile off"), QStringLiteral("profile off"),
+                           ResponseKind::None, true));
+}
+
+void HrdbBackend::profileSave(const QString &path)
+{
+    const QString command = QStringLiteral("profile save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.profilePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::writeRegister(const QString &name, quint32 value)
+{
+    // The debugger's own register-set form (the '=' is mandatory, and a
+    // successful set prints nothing); the console runs it.
+    const QString command = QStringLiteral("r %1=$%2").arg(name).arg(value, 0, 16);
+    enqueue(consoleRequest(command, command));
+}
+
+void HrdbBackend::writeMemoryByte(quint32 address, quint8 value)
+{
+    // The fork's `memset` takes an address, a byte *count* and two hex digits
+    // of data, rather than the debugger's `w b <addr> <value>`.
+    Pending p;
+    p.text = QStringLiteral("w b $%1 $%2").arg(address, 0, 16).arg(value, 0, 16);
+    p.wire = QStringLiteral("memset %1 1 %2")
+                 .arg(address, 0, 16)
+                 .arg(value, 2, 16, QLatin1Char('0'));
+    enqueue(p);
+}
+
+void HrdbBackend::readDisassembly()
+{
+    // At the PC: the entry attach's read and the stop refresh. The fork prints
+    // the disassembly to stderr, so the text comes back as the console tail.
+    enqueue(consoleRequest(QStringLiteral("d"), QStringLiteral("d"), ResponseKind::Disassembly));
+}
+
+void HrdbBackend::readDisassemblyAt(quint32 address)
+{
+    Pending p = consoleRequest(QStringLiteral("d $%1").arg(address, 0, 16),
+                               QStringLiteral("d $%1").arg(address, 0, 16),
+                               ResponseKind::Disassembly);
+    // The caller asked about one address and wants the text back; the snapshot
+    // is filled as for any disassembly read.
+    p.reportDisassembly = true;
+    p.disassemblyAddress = address;
+    enqueue(p);
+}
+
+void HrdbBackend::readHistory(int count)
+{
+    // `history <count>` prints the last count recorded PCs, one per line; the
+    // console runs it, and its output is the stderr tail like any other text
+    // the debugger prints.
+    const QString command = QStringLiteral("history %1").arg(count);
+    Pending p = consoleRequest(command, command);
+    p.reportHistory = true;
+    enqueue(p);
 }
 
 void HrdbBackend::refresh()
@@ -672,9 +873,11 @@ void HrdbBackend::refresh()
 
     // regs fills registers and bases; the disassembly comes back as text via
     // the console. stateUpdated fires once, when the disassembly completes.
+    // Each command carries what its response is (MAJ-12).
     Pending regs;
     regs.text = QStringLiteral("r");
     regs.wire = QStringLiteral("regs");
+    regs.kind = ResponseKind::Registers;
     regs.batchMember = true;
     regs.needsStop = true;
     m_queue.enqueue(regs);
@@ -682,6 +885,7 @@ void HrdbBackend::refresh()
     Pending disasm;
     disasm.text = QStringLiteral("d");
     disasm.wire = QStringLiteral("console d");
+    disasm.kind = ResponseKind::Disassembly;
     disasm.batchMember = true;
     disasm.batchEnd = true;
     disasm.captureStderr = true;
@@ -693,7 +897,11 @@ void HrdbBackend::refresh()
 
 void HrdbBackend::step()
 {
-    command(QStringLiteral("s"));
+    // The fork's typed single-step.
+    Pending p;
+    p.text = QStringLiteral("s");
+    p.wire = QStringLiteral("step");
+    enqueue(p);
 }
 
 void HrdbBackend::stepOver()
@@ -759,9 +967,8 @@ void HrdbBackend::setFloppyImage(int drive, const QString &path)
     }
     // The control socket is SDL-pumped and unread in the remote break loop
     // (the typical session: stopped at entry). `console setopt` is serviced
-    // both there and while running. needsStop is false so a running session
-    // is not deferred until the next breakpoint — translateCommand would
-    // otherwise gate console passthroughs on a stop.
+    // both there and while running, so this request is deliberately not
+    // stop-gated: a running insert must not be held until the next breakpoint.
     const QString cmd =
         floppySetoptCommand(drive, floppyImageForDebugger(m_sessionDir, drive, path));
     if (cmd.isEmpty())
@@ -784,12 +991,16 @@ void HrdbBackend::resume()
     if (!m_stopped)
         return;
 
-    // Keep pending `b` commands (arming after the entry stop); drop dumps.
-    // Writing `run` with those discarded is why a pre-Run breakpoint missed.
+    // Keep the pending arms (arming after the entry stop) and the profile
+    // control commands queued in the same stack frame as this resume; drop
+    // dumps and reads. Writing `run` with those discarded is why a pre-Run
+    // breakpoint missed — and why a `profile on` armed by profileToCursor
+    // collected nothing. Each request states its own keep rule (see
+    // Pending::keepOnResume); a free-text command's comes from its own text.
     QQueue<Pending> kept;
     while (!m_queue.isEmpty()) {
         const Pending p = m_queue.dequeue();
-        if (isBreakpointCommand(p.text))
+        if (p.keepOnResume)
             kept.enqueue(p);
     }
     m_queue = kept;

@@ -59,9 +59,18 @@ void applyFilenameHeuristic(TosRom *rom)
     // The digits are version *hex* bytes by convention, so "TOS v1.62" means
     // version code 0x0162 and "TOS v2.06" means 0x0206. Parsing them as decimal
     // would turn 1.62 into 0x013E.
-    const int major = m.captured(1).toInt(nullptr, 16);
-    const int minor = m.captured(2).toInt(nullptr, 16);
-    rom->versionCode = (major << 8) | (minor & 0xff);
+    //
+    // Checked: without the flags a filename with more digits than an int holds
+    // parses to a silent zero, and 0 is "TOS 0.00" — a *known* version no
+    // machine accepts, so a perfectly good image vanishes from selection. An
+    // unparseable or implausible name is left unknown instead (MIN-5).
+    bool majorOk = false;
+    bool minorOk = false;
+    const int major = m.captured(1).toInt(&majorOk, 16);
+    const int minor = m.captured(2).toInt(&minorOk, 16);
+    if (!majorOk || !minorOk || major > 0xff || minor > 0xff)
+        return;
+    rom->versionCode = (major << 8) | minor;
     rom->versionKnown = true;
     rom->versionFromHeader = false;
 }
@@ -155,8 +164,27 @@ TosRom selectPreferredRom(const QList<TosRom> &roms, Machine machine)
             return rom;
     }
 
-    // Pass 3: nothing suitable. Return the newest rather than the first, so the
-    // caller's error message names something as close to usable as possible.
+    // Pass 3: nothing autostart-capable. Prefer a ROM the machine can actually
+    // run over a newer one it cannot: a machine-compatible ROM — even one too
+    // old to autostart — boots on the requested machine through the AUTO-folder
+    // floppy fallback the launch path already implements, whereas an
+    // incompatible ROM makes Hatari resolve the pairing by overriding
+    // `--machine`, reporting only an ERROR line. So compatible-but-old always
+    // beats incompatible-new. (Newest still wins among the compatible ones, for
+    // the same reason as Pass 1.)
+    best = nullptr;
+    for (const TosRom &rom : roms) {
+        if (!rom.supportsMachine(machine))
+            continue;
+        if (!best || rom.versionCode > best->versionCode)
+            best = &rom;
+    }
+    if (best)
+        return *best;
+
+    // Pass 4: nothing compatible at all. Return the newest rather than the
+    // first, so the caller's error message names something as close to usable as
+    // possible — and the run path can warn that Hatari will override the machine.
     best = nullptr;
     for (const TosRom &rom : roms) {
         if (!best || rom.versionCode > best->versionCode)

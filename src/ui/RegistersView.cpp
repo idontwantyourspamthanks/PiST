@@ -4,6 +4,7 @@
 
 #include "ui/RegistersView.h"
 
+#include "emu/HexFormat.h"
 #include "ui/Appearance.h"
 
 #include <QGridLayout>
@@ -24,7 +25,7 @@ RegistersView::RegistersView(QWidget *parent)
 
     m_table = new QTableWidget(8, 4, this);
     m_table->setHorizontalHeaderLabels(
-        {QStringLiteral("Reg"), QStringLiteral("Value"), QStringLiteral("Reg"), QStringLiteral("Value")});
+        {tr("Reg"), tr("Value"), tr("Reg"), tr("Value")});
     m_table->verticalHeader()->setVisible(false);
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -119,17 +120,16 @@ RegistersView::RegistersView(QWidget *parent)
     connect(m_flags, &QTableWidget::itemChanged, this, &RegistersView::onCellEdited);
 }
 
-void RegistersView::setValue(int row, int column, quint32 value)
+void RegistersView::setValue(int row, int column, quint32 value, const QColor &changedInk)
 {
     auto *item = m_table->item(row, column);
     if (!item)
         return;
-    const QString text = QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
+    const QString text = hex::hex32(value);
     const bool changed = !item->text().isEmpty() && item->text() != text;
     const QSignalBlocker blocker(m_table);
     item->setText(text);
-    item->setForeground(changed ? appearance::colors().changed
-                                : palette().color(QPalette::Text));
+    item->setForeground(changed ? changedInk : palette().color(QPalette::Text));
     m_lastValues[item] = text;
 }
 
@@ -141,12 +141,16 @@ void RegistersView::setState(const MachineState &state)
     m_lastState = state;
     m_haveState = true;
 
+    // One palette for the whole update: every cell and flag below paints from
+    // it, and asking for it per cell rebuilt it (QSettings reads included) for
+    // an answer that cannot change inside one call.
+    const appearance::Colors c = appearance::colors();
+
     for (int i = 0; i < 8; ++i) {
-        setValue(i, 1, state.regs.d[i]);
-        setValue(i, 3, state.regs.a[i]);
+        setValue(i, 1, state.regs.d[i], c.changed);
+        setValue(i, 3, state.regs.a[i], c.changed);
     }
 
-    const appearance::Colors c = appearance::colors();
     const QSignalBlocker flagsBlocker(m_flags);
 
     auto setFlag = [&](int row, const QString &text) {
@@ -159,7 +163,7 @@ void RegistersView::setState(const MachineState &state)
         m_lastValues[item] = text;
     };
 
-    setFlag(0, QStringLiteral("%1").arg(state.pc, 8, 16, QLatin1Char('0')).toUpper());
+    setFlag(0, hex::hex32(state.pc));
     setFlag(1, QStringLiteral("%1").arg(state.regs.sr, 4, 16, QLatin1Char('0')).toUpper());
     const bool flags[5] = {state.regs.flagX, state.regs.flagN, state.regs.flagZ,
                            state.regs.flagV, state.regs.flagC};
@@ -176,8 +180,8 @@ void RegistersView::setState(const MachineState &state)
     m_table->show();
     m_flags->show();
     m_flagRow->show();
-    setFlag(2, QStringLiteral("%1").arg(state.regs.usp, 8, 16, QLatin1Char('0')).toUpper());
-    setFlag(3, QStringLiteral("%1").arg(state.regs.isp, 8, 16, QLatin1Char('0')).toUpper());
+    setFlag(2, hex::hex32(state.regs.usp));
+    setFlag(3, hex::hex32(state.regs.isp));
 
     m_flags->resizeColumnsToContents();
 }

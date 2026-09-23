@@ -42,8 +42,14 @@ public:
     /// `contents` (the editor buffer). A line that differs from HEAD comes
     /// back uncommitted, instead of being attributed to a neighbour.
     void blame(const QString &file, int firstLine, int lastLine, const QByteArray &contents);
-    /// Stage `stage`, unstage `unstage`, then `git commit -F - -- paths`.
-    /// Hooks run. An empty message or an empty path list does not invoke git.
+    /// Stage the ticked `stage` rows, then `git commit -F -` with no pathspec:
+    /// the index — the checked `paths` — is exactly the commit, so a path the
+    /// user staged elsewhere can never ride along and the index is never
+    /// rewritten. `unstage` names the staged rows the panel left unchecked;
+    /// the index is read before committing too, and a staged path outside
+    /// `paths`, or a conflicted path, refuses the commit with an error and
+    /// leaves the index alone. Hooks run. An empty message or an empty path
+    /// list does not invoke git.
     void commit(const QStringList &stage, const QStringList &unstage,
                 const QStringList &paths, const QString &message);
     void pull();
@@ -100,6 +106,9 @@ private:
         QString diffPath;
         int diffGroup = 0;
         QString showHash;
+        /// The checked paths a commit is checked against, once the index has
+        /// been read.
+        QStringList commitSelection;
     };
 
     void refreshBranches();

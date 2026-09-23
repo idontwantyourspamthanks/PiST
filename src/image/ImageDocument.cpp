@@ -251,6 +251,11 @@ void ImageDocument::clampActiveLayer()
         m_activeLayer = 0;
 }
 
+void ImageDocument::clampBackground()
+{
+    m_background = qBound(0, m_background, cubeSize(m_kind) - 1);
+}
+
 int ImageDocument::resolvedLayer(int layer) const
 {
     const int n = phase().frames.at(m_currentFrame).layers.size();
@@ -354,10 +359,17 @@ int ImageDocument::addPhase(const QString &name, int cellW, int cellH)
                                           : name.trimmed();
     phase.cellW = qBound(kMinSize, cellW, kMaxWidth);
     phase.cellH = qBound(kMinSize, cellH, kMaxHeight);
-    phase.frames.append(blankFrame());
+    // Select the new phase *before* building its first frame: blankFrame() sizes
+    // the composite and the layer buffers from pixelCount() -> phase(), so a
+    // frame built while the previous phase was still current came out at the
+    // previous phase's cell — undersized for a phase that grew, oversized for one
+    // that shrank. pixels().size() == cellW*cellH is what ImageCanvas::paintEvent,
+    // the single-frame exporters and resizedPixels index with .at(); breaking it
+    // over-reads in Release.
     m_phases.append(phase);
     m_currentPhase = m_phases.size() - 1;
     m_currentFrame = 0;
+    m_phases.last().frames.append(blankFrame());
     clampActiveLayer();
     touch();
     return m_currentPhase;
@@ -395,8 +407,8 @@ bool ImageDocument::setPhasePlacement(int index, int sheet, int x, int y)
     if (sheet >= m_sheets.size())
         return false;
     m_phases[index].sheet = sheet;
-    m_phases[index].x = x;
-    m_phases[index].y = y;
+    m_phases[index].x = qBound(-kMaxPlacement, x, kMaxPlacement);
+    m_phases[index].y = qBound(-kMaxPlacement, y, kMaxPlacement);
     touch();
     return true;
 }
@@ -553,6 +565,7 @@ bool ImageDocument::setLayerVisible(int index, bool visible)
 void ImageDocument::setActive(const QVector<int> &indices)
 {
     m_active = clampActive(indices, m_kind);
+    clampBackground();
     touch();
 }
 
@@ -560,6 +573,7 @@ bool ImageDocument::toggleActive(int cubeIndex)
 {
     if (cubeIndex < 0 || cubeIndex >= cubeSize(m_kind))
         return false;
+    clampBackground();
     const int pos = m_active.indexOf(cubeIndex);
     if (pos >= 0) {
         if (m_active.size() <= 1)
@@ -577,7 +591,7 @@ bool ImageDocument::toggleActive(int cubeIndex)
 
 void ImageDocument::setBackground(int cubeIndex)
 {
-    m_background = cubeIndex;
+    m_background = qBound(0, cubeIndex, cubeSize(m_kind) - 1);
     touch();
 }
 
@@ -608,6 +622,7 @@ void ImageDocument::setPaletteKind(PaletteKind kind)
     m_kind = kind;
     m_active = clampActive(nextActive, kind);
     m_background = remap(m_background);
+    clampBackground();
     touch();
 }
 
@@ -828,8 +843,13 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
         phase.sheet = obj.value(QStringLiteral("sheet")).toInt(-1);
         if (phase.sheet >= sheets.size())
             phase.sheet = -1;
-        phase.x = obj.value(QStringLiteral("x")).toInt(0);
-        phase.y = obj.value(QStringLiteral("y")).toInt(0);
+        // Bounded like the cell size: composeSheet/sliceSheetCells add the frame
+        // offset to the placement, so an unbounded x/y overflows the int
+        // arithmetic they index the composite with (UB). The bound is the one the
+        // placement panel itself offers, so a value the user could enter survives
+        // the round trip.
+        phase.x = qBound(-kMaxPlacement, obj.value(QStringLiteral("x")).toInt(0), kMaxPlacement);
+        phase.y = qBound(-kMaxPlacement, obj.value(QStringLiteral("y")).toInt(0), kMaxPlacement);
         const QJsonArray frameArray = obj.value(QStringLiteral("frames")).toArray();
         if (frameArray.size() > kMaxFramesPerPhase) {
             return reject(QStringLiteral("phase %1 declares too many frames (%2)")
@@ -876,7 +896,7 @@ bool ImageDocument::fromJson(const QByteArray &json, QString *error)
 
     m_kind = kind;
     m_active = clampActive(active, kind);
-    m_background = root.value(QStringLiteral("background")).toInt(0);
+    m_background = qBound(0, root.value(QStringLiteral("background")).toInt(0), cubeSize(kind) - 1);
     m_sheets = sheets;
     m_phases = phases;
     m_currentPhase = 0;

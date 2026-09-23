@@ -18,78 +18,97 @@ namespace appearance {
 
 namespace {
 
+/// The twelve palette roles both themes fill. Every one is a QColor, so a bare
+/// argument list cannot tell a transposition from a theme; naming each role
+/// where it is chosen is what makes a swap a compile error instead of a wrong
+/// theme shipped.
+struct PaletteScheme
+{
+    QColor window;
+    QColor base;
+    QColor alternate;
+    QColor text;
+    QColor disabled;
+    QColor button;
+    QColor highlight;
+    QColor highlightedText;
+    QColor mid;
+    QColor light;
+    QColor dark;
+    QColor link;
+};
+
 /// GEM-green accent: the ST's desktop colour, tuned so it still works as a
 /// selection highlight rather than a CRT phosphor.
-void fillSharedRoles(QPalette &p, const QColor &window, const QColor &base,
-                     const QColor &alternate, const QColor &text,
-                     const QColor &disabled, const QColor &button,
-                     const QColor &highlight, const QColor &highlightedText,
-                     const QColor &mid, const QColor &light, const QColor &dark,
-                     const QColor &link)
+void fillSharedRoles(QPalette &p, const PaletteScheme &scheme)
 {
-    p.setColor(QPalette::Window, window);
-    p.setColor(QPalette::WindowText, text);
-    p.setColor(QPalette::Disabled, QPalette::WindowText, disabled);
-    p.setColor(QPalette::Base, base);
-    p.setColor(QPalette::AlternateBase, alternate);
-    p.setColor(QPalette::ToolTipBase, button);
-    p.setColor(QPalette::ToolTipText, text);
-    p.setColor(QPalette::Text, text);
-    p.setColor(QPalette::Disabled, QPalette::Text, disabled);
-    p.setColor(QPalette::Button, button);
-    p.setColor(QPalette::ButtonText, text);
-    p.setColor(QPalette::Disabled, QPalette::ButtonText, disabled);
+    p.setColor(QPalette::Window, scheme.window);
+    p.setColor(QPalette::WindowText, scheme.text);
+    p.setColor(QPalette::Disabled, QPalette::WindowText, scheme.disabled);
+    p.setColor(QPalette::Base, scheme.base);
+    p.setColor(QPalette::AlternateBase, scheme.alternate);
+    p.setColor(QPalette::ToolTipBase, scheme.button);
+    p.setColor(QPalette::ToolTipText, scheme.text);
+    p.setColor(QPalette::Text, scheme.text);
+    p.setColor(QPalette::Disabled, QPalette::Text, scheme.disabled);
+    p.setColor(QPalette::Button, scheme.button);
+    p.setColor(QPalette::ButtonText, scheme.text);
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, scheme.disabled);
     p.setColor(QPalette::BrightText, QColor(0xe8, 0x5a, 0x4a));
-    p.setColor(QPalette::Link, link);
-    p.setColor(QPalette::Highlight, highlight);
-    p.setColor(QPalette::HighlightedText, highlightedText);
-    p.setColor(QPalette::Disabled, QPalette::HighlightedText, disabled);
-    p.setColor(QPalette::PlaceholderText, disabled);
-    p.setColor(QPalette::Light, light);
-    p.setColor(QPalette::Midlight, button);
-    p.setColor(QPalette::Mid, mid);
-    p.setColor(QPalette::Dark, dark);
-    p.setColor(QPalette::Shadow, dark);
+    p.setColor(QPalette::Link, scheme.link);
+    p.setColor(QPalette::Highlight, scheme.highlight);
+    p.setColor(QPalette::HighlightedText, scheme.highlightedText);
+    p.setColor(QPalette::Disabled, QPalette::HighlightedText, scheme.disabled);
+    p.setColor(QPalette::PlaceholderText, scheme.disabled);
+    p.setColor(QPalette::Light, scheme.light);
+    p.setColor(QPalette::Midlight, scheme.button);
+    p.setColor(QPalette::Mid, scheme.mid);
+    p.setColor(QPalette::Dark, scheme.dark);
+    p.setColor(QPalette::Shadow, scheme.dark);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
-    p.setColor(QPalette::Accent, highlight);
+    p.setColor(QPalette::Accent, scheme.highlight);
 #endif
 }
 
 QPalette darkPalette()
 {
+    PaletteScheme scheme;
+    scheme.window = QColor(0x1a, 0x1d, 0x1a);
+    scheme.base = QColor(0x10, 0x13, 0x10); // the editor
+    scheme.alternate = QColor(0x22, 0x27, 0x22);
+    scheme.text = QColor(0xe6, 0xea, 0xe4);
+    scheme.disabled = QColor(0x7a, 0x82, 0x7a);
+    scheme.button = QColor(0x24, 0x28, 0x24);
+    scheme.highlight = QColor(0x2f, 0xa0, 0x4c); // GEM green
+    scheme.highlightedText = QColor(0x07, 0x14, 0x0a);
+    scheme.mid = QColor(0x3a, 0x42, 0x3a);
+    scheme.light = QColor(0x40, 0x48, 0x40);
+    scheme.dark = QColor(0x0c, 0x0e, 0x0c);
+    scheme.link = QColor(0x5e, 0xd4, 0x74);
+
     QPalette p;
-    fillSharedRoles(p,
-                    QColor(0x1a, 0x1d, 0x1a), // window
-                    QColor(0x10, 0x13, 0x10), // base (editor)
-                    QColor(0x22, 0x27, 0x22), // alternate
-                    QColor(0xe6, 0xea, 0xe4), // text
-                    QColor(0x7a, 0x82, 0x7a), // disabled
-                    QColor(0x24, 0x28, 0x24), // button
-                    QColor(0x2f, 0xa0, 0x4c), // highlight (GEM green)
-                    QColor(0x07, 0x14, 0x0a), // highlighted text
-                    QColor(0x3a, 0x42, 0x3a), // mid
-                    QColor(0x40, 0x48, 0x40), // light
-                    QColor(0x0c, 0x0e, 0x0c), // dark
-                    QColor(0x5e, 0xd4, 0x74)); // link
+    fillSharedRoles(p, scheme);
     return p;
 }
 
 QPalette lightPalette()
 {
+    PaletteScheme scheme;
+    scheme.window = QColor(0xf2, 0xf4, 0xf0);
+    scheme.base = QColor(0xfc, 0xfd, 0xfb);
+    scheme.alternate = QColor(0xe8, 0xec, 0xe6);
+    scheme.text = QColor(0x1a, 0x1e, 0x1a);
+    scheme.disabled = QColor(0x86, 0x8c, 0x86);
+    scheme.button = QColor(0xe6, 0xea, 0xe4);
+    scheme.highlight = QColor(0x1e, 0x7a, 0x38);
+    scheme.highlightedText = QColor(0xff, 0xff, 0xff);
+    scheme.mid = QColor(0xc4, 0xcc, 0xc2);
+    scheme.light = QColor(0xff, 0xff, 0xff);
+    scheme.dark = QColor(0x8a, 0x92, 0x88);
+    scheme.link = QColor(0x1a, 0x6e, 0x32);
+
     QPalette p;
-    fillSharedRoles(p,
-                    QColor(0xf2, 0xf4, 0xf0),
-                    QColor(0xfc, 0xfd, 0xfb),
-                    QColor(0xe8, 0xec, 0xe6),
-                    QColor(0x1a, 0x1e, 0x1a),
-                    QColor(0x86, 0x8c, 0x86),
-                    QColor(0xe6, 0xea, 0xe4),
-                    QColor(0x1e, 0x7a, 0x38),
-                    QColor(0xff, 0xff, 0xff),
-                    QColor(0xc4, 0xcc, 0xc2),
-                    QColor(0xff, 0xff, 0xff),
-                    QColor(0x8a, 0x92, 0x88),
-                    QColor(0x1a, 0x6e, 0x32));
+    fillSharedRoles(p, scheme);
     return p;
 }
 
@@ -252,7 +271,7 @@ QGroupBox {
     margin-top: 1.2em;
     padding: 8px;
 }
-QGroupBox::title {
+    QGroupBox::title {
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
@@ -260,31 +279,82 @@ QGroupBox::title {
 )");
 }
 
+/// The palette colors() serves from. colors() runs per table cell, per row, per
+/// keystroke and per paint frame, and every call used to build a QSettings (which
+/// re-reads the settings file: ~13 µs measured on this machine) inside
+/// darkModeActive, then rebuild 25 QColors, for an answer that cannot change in
+/// between. Two things can change it, and neither is looked up per call:
+///
+///  - the stored theme, whose only entry point is applyTheme() — that is where
+///    this cache is dropped;
+///  - the application palette, which "system" resolves its darkness from and
+///    which QApplication can restyle without applyTheme() being involved (a
+///    desktop theme change arrives that way). QPalette::cacheKey() identifies
+///    its state in an O(1) compare, so that case stays live.
+struct PaletteCache
+{
+    bool valid = false;
+    qint64 paletteKey = 0;
+    Colors palette;
+};
+
+PaletteCache &paletteCache()
+{
+    static PaletteCache cache;
+    return cache;
+}
+
 } // namespace
+
+// One accessor per persisted key, beside the reader that consumes it. The
+// writer in SettingsDialog reads the same key through these, so the two halves
+// of a preference cannot drift — a typo on one side used to reset the setting to
+// its default with nothing to point at (MIN-53). Same shape as
+// SetupDialog::dismissalKey() and ProjectSettings' accessors.
+const QString &themeKey()
+{
+    static const QString key = QStringLiteral("appearance/theme");
+    return key;
+}
+
+const QString &shortcutSchemeKey()
+{
+    static const QString key = QStringLiteral("appearance/shortcuts");
+    return key;
+}
+
+const QString &fontSizeKey()
+{
+    static const QString key = QStringLiteral("appearance/fontSize");
+    return key;
+}
+
+const QString &fontFamilyKey()
+{
+    static const QString key = QStringLiteral("appearance/fontFamily");
+    return key;
+}
 
 QString theme()
 {
-    return QSettings().value(QStringLiteral("appearance/theme"),
-                             QStringLiteral("dark"))
-        .toString();
+    return QSettings().value(themeKey(), QStringLiteral("dark")).toString();
 }
 
 QString shortcutScheme()
 {
-    const QString scheme = QSettings().value(QStringLiteral("appearance/shortcuts"),
-                                             QStringLiteral("pist"))
+    const QString scheme = QSettings().value(shortcutSchemeKey(), QStringLiteral("pist"))
                                .toString();
     return scheme == QLatin1String("common") ? scheme : QStringLiteral("pist");
 }
 
 int editorPointSize()
 {
-    return QSettings().value(QStringLiteral("appearance/fontSize"), 0).toInt();
+    return QSettings().value(fontSizeKey(), 0).toInt();
 }
 
 QString editorFontFamily()
 {
-    return QSettings().value(QStringLiteral("appearance/fontFamily")).toString();
+    return QSettings().value(fontFamilyKey()).toString();
 }
 
 QStringList editorFontChoices()
@@ -371,6 +441,10 @@ void applyTheme()
     static const QString initialStyle = QApplication::style()->objectName();
     static const QPalette initialPalette = QApplication::palette();
 
+    // Whatever the widgets paint with is derived from the theme set here, so the
+    // cache colors() serves from is dropped with it.
+    paletteCache().valid = false;
+
     const QString t = theme();
     if (t == QLatin1String("dark")) {
         QApplication::setStyle(QStyleFactory::create(QStringLiteral("fusion")));
@@ -397,10 +471,14 @@ bool darkModeActive()
     return QApplication::palette().color(QPalette::Window).lightness() < 128;
 }
 
-Colors colors()
+namespace {
+
+/// The colours for an effective darkness. Literals only — nothing here reads a
+/// setting — so darkness is the cache's whole key.
+Colors buildColors(bool dark)
 {
     Colors c;
-    if (darkModeActive()) {
+    if (dark) {
         c.gutter = QColor(0x16, 0x19, 0x16);
         // Quiet text has to clear 4.5:1 on the surface it is painted on.
         // Comments and gutter numerals share this ink; zero bytes stay a
@@ -455,6 +533,48 @@ Colors colors()
         c.comment = QColor(0x6a, 0x70, 0x68);
     }
     return c;
+}
+
+} // namespace
+
+Colors colors()
+{
+    PaletteCache &cache = paletteCache();
+    const qint64 key = QApplication::palette().cacheKey();
+    if (!cache.valid || cache.paletteKey != key) {
+        cache.palette = buildColors(darkModeActive());
+        cache.paletteKey = key;
+        cache.valid = true;
+    }
+    return cache.palette;
+}
+
+EditorTheme editorTheme()
+{
+    const Colors c = colors();
+    EditorTheme theme;
+    theme.font = editorFont();
+    theme.dark = darkModeActive();
+
+    theme.keyword = c.keyword;
+    theme.registerName = c.registerName;
+    theme.number = c.number;
+    theme.string = c.string;
+    theme.directive = c.directive;
+    theme.label = c.label;
+    theme.comment = c.comment;
+
+    theme.currentLine = c.currentLine;
+    theme.executionLine = c.executionLine;
+    theme.searchMatch = c.searchMatch;
+    theme.error = c.error;
+    theme.gutter = c.gutter;
+    theme.gutterText = c.gutterText;
+    theme.gutterPc = c.gutterPc;
+    theme.breakpoint = c.breakpoint;
+    theme.muted = c.muted;
+    theme.warning = c.warning;
+    return theme;
 }
 
 void markMono(QWidget *widget)

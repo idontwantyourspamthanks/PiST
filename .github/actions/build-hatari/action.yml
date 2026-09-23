@@ -125,26 +125,41 @@ runs:
         set -euo pipefail
         if [ "${{ runner.os }}" = "Linux" ]; then
           sudo apt-get update -qq
-          # libreadline-dev matters: with it, Hatari's debugger reads commands
-          # through readline and prints its prompt to stdout. Without it, the
-          # build falls back to fgets and prints the prompt to stderr, which is
-          # a different transport path entirely — so the dependency is part of
-          # what is being tested, not an incidental.
-          sudo apt-get install -y -qq libsdl2-dev libpng-dev zlib1g-dev libreadline-dev
+          # readline is deliberately NOT installed here, and the configure step
+          # below disables Hatari's readline detection outright. Two reasons,
+          # the first of which is a hard constraint:
+          #
+          #   - Linking readline into this Hatari is not permitted. Three files
+          #     Hatari compiles in — src/cpu/uae/{attributes,types,vm}.h — grant
+          #     GPL version 2 alone, with no "or later", so the binary built
+          #     here can only be conveyed under GPLv2; readline is GPL version 3
+          #     or later, and v3 code does not join a v2-capped work. That is
+          #     the whole of MAJ-58, and NOTICE carries the detail.
+          #   - The disabled find is also what makes the build deterministic:
+          #     with the flag, it does not matter whether the runner image
+          #     happens to ship readline, so a build cannot silently become a
+          #     configuration we are not allowed to ship.
+          #
+          # Functionally this loses nothing: without readline the debugger
+          # prints its prompt to stderr (src/debug/debugui.c, the fgets
+          # fallback) instead of stdout, and PiST frames a command on the `> `
+          # prompt on either stream. The tests run against that configuration.
+          sudo apt-get install -y -qq libsdl2-dev libpng-dev zlib1g-dev
         else
-          # readline matters as much here as on Linux (above): without it the
-          # debugger prints its prompt to stderr and PiST's stdin transport
-          # starves — every command times out. Homebrew's is keg-only, so the
-          # prefix below names it explicitly.
-          brew install sdl2 libpng pkg-config readline
+          # readline is left out here for the licence reason above, and the
+          # configure step disables its detection on every platform — so the
+          # Homebrew keg-only prefix that used to be named explicitly for it is
+          # gone as well.
+          brew install sdl2 libpng pkg-config
         fi
 
     # Windows builds with MSYS2 ucrt64. The `msys2` shell is not a runner
     # built-in — it is registered by setup-msys2, which must run first (here in
     # the action, so every caller gets it) and also installs the dependencies.
-    # No readline: the only Windows build we make is the hrdb fork, whose
-    # debugger channels are HRDB's TCP socket — its stdin is never read, so the
-    # readline/fgets prompt difference does not apply to it.
+    # No readline here either, for the licence reason given above; Windows
+    # would not need it in any case, because the only Windows build we make is
+    # the hrdb fork, whose debugger channels are HRDB's TCP socket — its stdin
+    # is never read, so the readline/fgets prompt difference does not apply.
     - name: Set up MSYS2 (Windows)
       if: runner.os == 'Windows'
       uses: msys2/setup-msys2@v2
@@ -187,11 +202,27 @@ runs:
           # @executable_path rpath and a ../Resources data dir) — useless to a
           # subprocess-driven debugger. Homebrew's own formula disables it the
           # same way, and its `hatari -v` test proves the result standalone.
-          # The readline keg is named explicitly: keg-only formulae are not in
-          # the default prefix search.
-          PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$BREW_PREFIX;$BREW_PREFIX/opt/readline -DCMAKE_OSX_ARCHITECTURES=$ARCH -DENABLE_OSX_BUNDLE=OFF"
+          PREFIX_ARGS="-DCMAKE_PREFIX_PATH=$BREW_PREFIX -DCMAKE_OSX_ARCHITECTURES=$ARCH -DENABLE_OSX_BUNDLE=OFF"
         fi
-        cmake -S "hatari-src-${{ inputs.variant }}" -B "hatari-build-${{ inputs.variant }}" -DCMAKE_BUILD_TYPE=Release $PREFIX_ARGS
+        # Pin the build to Hatari *without* readline. The flag below covers
+        # Linux and macOS; the Windows step needs no flag, since MSYS2 ucrt64
+        # has no readline installed and its build cannot find one.
+        # CMAKE_DISABLE_FIND_PACKAGE_Readline is CMake's own way of making a
+        # find_package() call report not-found without touching the project's
+        # source: Hatari's CMakeLists.txt then leaves HAVE_LIBREADLINE unset,
+        # src/debug/CMakeLists.txt does not add the readline include
+        # directory, and src/CMakeLists.txt does not link the library. The
+        # debugger takes its `fgets` fallback instead. The reason is licensing
+        # (see the dependency step above): readline is GPLv3-or-later and the
+        # binary this produces is capped at GPLv2 by three GPL-2.0-only files
+        # in src/cpu/uae/. The flag, not the runner's package set, is what
+        # decides — so the configuration cannot drift with the image.
+        #
+        # macOS used to arrive at the same place by accident: Hatari's CMake
+        # finds brew's readline but its rl_filename_completion_function link
+        # probe fails, so HAVE_LIBREADLINE stayed off there. Stating the
+        # intent turns that accident into the configuration.
+        cmake -S "hatari-src-${{ inputs.variant }}" -B "hatari-build-${{ inputs.variant }}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON $PREFIX_ARGS
         cmake --build "hatari-build-${{ inputs.variant }}" --parallel
 
     - name: Configure and build Hatari (Windows)

@@ -1,5 +1,6 @@
-#include "build/FloppyImage.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
+//
+// PiST - an IDE for Atari ST assembly development
 //
 // Regression tests for the parsers whose correctness the IDE depends on: vasm
 // and vlink diagnostics and the listing line map. The formats were captured from
@@ -7,14 +8,18 @@
 
 #include "build/BuildService.h"
 #include "build/Diagnostic.h"
+#include "build/FloppyImage.h"
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
+#include "build/SymbolTable.h"
 
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QtTest>
+
+#include <algorithm>
 
 using namespace pist;
 
@@ -36,6 +41,9 @@ private slots:
     void lineMapRejectsUnparseableListing();
     void lineMapMatchesAbsoluteListingPaths();
     void buildServiceFlushesFinalUnterminatedLine();
+    void buildServiceWithoutALinkerSaysSo();
+    void buildServiceRefusesCollidingObjectPaths();
+    void symbolTableReadsTheTablesInEitherOrder();
     void floppyImageGeometry();
     void floppyListsAutoFolder();
     void floppyWritesAndListsFiles();
@@ -43,12 +51,17 @@ private slots:
     void floppyReadsFilesFromImage();
     void floppyUpdateAddsAndRemoves();
     void floppyUpdatePreservesDuplicateNames();
+    void floppyNestedDirectoriesPointAtTheirParent();
+    void floppyUpdateKeepsForeignNamesByteIdentical();
     void floppyUpdateRefusesDim();
     void floppyRejectsOversizedExport();
     void floppyRejectsOversizedAutoFolderProgram();
+    void floppyAutoFolderImageToleratesNoErrorSink();
     void floppyListingSurvivesDirectoryCycles();
     void floppyNamesAreSanitizedForHostPaths();
     void floppyRejectsAbsurdGeometry();
+    void floppyReadRefusesADamagedChain();
+    void floppyUpdateRefusesADamagedImage();
     void floppyCanonicalLayoutIsRecognised();
     void floppyReadsAForeignMkfsImage();
     void floppyReadsAForeignSpecMsa();
@@ -442,6 +455,194 @@ void TstParsers::buildServiceFlushesFinalUnterminatedLine()
         if (args.at(0).toString().contains(QStringLiteral("boom")))
             sawBoom = true;
     QVERIFY2(sawBoom, "the final unterminated diagnostic line must be flushed and surfaced");
+}
+
+// A linked build with no linker configured has no step that can run. The plan
+// used to append the link step anyway, so the failure surfaced from
+// `QProcess::start("")` as "Could not run ''. Is it installed?" and the
+// diagnostic written for exactly this case — the `m_steps.isEmpty()` guard — was
+// unreachable (finding MIN-36).
+void TstParsers::buildServiceWithoutALinkerSaysSo()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString main = dir.filePath(QStringLiteral("main.s"));
+    const QString helper = dir.filePath(QStringLiteral("helper.s"));
+    for (const QString &src : {main, helper}) {
+        QFile f(src);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\n");
+    }
+
+    BuildService bs;
+    bs.setSourceFile(main);
+    bs.setAdditionalSources({helper});
+    bs.setOutputFile(dir.filePath(QStringLiteral("out.prg")));
+    QVERIFY(bs.usesLinker());
+    QVERIFY(bs.linkerPath().isEmpty());
+
+    QSignalSpy done(&bs, &BuildService::finished);
+    QStringList messages;
+    bool succeeded = true;
+    connect(&bs, &BuildService::finished, &bs,
+            [&](bool success, const QList<Diagnostic> &diags) {
+                succeeded = success;
+                for (const Diagnostic &d : diags)
+                    messages.append(d.message);
+            });
+    bs.build();
+    if (done.isEmpty())
+        QVERIFY(done.wait(5000));
+
+    QCOMPARE(done.count(), 1);
+    QVERIFY(!succeeded);
+    QVERIFY2(messages.contains(
+                 QStringLiteral("More than one source needs a linker, and none is configured.")),
+             qPrintable(messages.join(QStringLiteral(" | "))));
+    // The empty-program start must not happen at all: its message is what the
+    // caller used to see instead.
+    QVERIFY2(!messages.join(QLatin1Char(' ')).contains(QStringLiteral("Could not run")),
+             qPrintable(messages.join(QStringLiteral(" | "))));
+    QVERIFY(bs.objectFiles().isEmpty());
+    QVERIFY(bs.listingFiles().isEmpty());
+    QVERIFY(!bs.isRunning());
+}
+
+// `a.s` and `a.asm` in one directory both derive `a.o`/`a.lst`: the second
+// assembly overwrote the first's object and the link received the same path
+// twice, so one module was linked twice, the other was missing, and no
+// diagnostic said anything (finding MIN-40).
+void TstParsers::buildServiceRefusesCollidingObjectPaths()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString first = dir.filePath(QStringLiteral("a.s"));
+    const QString second = dir.filePath(QStringLiteral("a.asm"));
+    const QString other = dir.filePath(QStringLiteral("b.s"));
+    for (const QString &src : {first, second, other}) {
+        QFile f(src);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\n");
+    }
+
+    BuildService bs;
+    bs.setSourceFile(first);
+    bs.setAdditionalSources({second, other});
+    bs.setOutputFile(dir.filePath(QStringLiteral("out.prg")));
+    // Steps that cannot fail on their own, so a build that runs them instead of
+    // refusing is visible as a success rather than as an unrelated error.
+    bs.setAssemblerPath(QStringLiteral("/bin/true"));
+    bs.setLinkerPath(QStringLiteral("/bin/true"));
+
+    QSignalSpy done(&bs, &BuildService::finished);
+    QStringList messages;
+    bool succeeded = true;
+    connect(&bs, &BuildService::finished, &bs,
+            [&](bool success, const QList<Diagnostic> &diags) {
+                succeeded = success;
+                for (const Diagnostic &d : diags)
+                    messages.append(d.message);
+            });
+    bs.build();
+    if (done.isEmpty())
+        QVERIFY(done.wait(5000));
+
+    QCOMPARE(done.count(), 1);
+    // Pre-fix this "succeeded": `a.o` was planned twice and the link was handed
+    // the same path for both modules.
+    QVERIFY2(!succeeded,
+             qPrintable(QStringLiteral("planned object files: %1")
+                            .arg(bs.objectFiles().join(QLatin1Char(' ')))));
+    const QString message = messages.join(QStringLiteral(" | "));
+    QVERIFY2(message.contains(QStringLiteral("a.s")) && message.contains(QStringLiteral("a.asm")),
+             qPrintable(message));
+    QVERIFY2(message.contains(QStringLiteral("a.o")), qPrintable(message));
+    // A refused plan leaves nothing behind for the caller to read back.
+    QVERIFY(bs.objectFiles().isEmpty());
+    QVERIFY(bs.listingFiles().isEmpty());
+
+    // The same two sources through different spellings of one directory are one
+    // module, not two: the collision is on the resolved object path.
+    BuildService spelled;
+    spelled.setSourceFile(first);
+    spelled.setAdditionalSources({dir.path() + QStringLiteral("/./a.s")});
+    spelled.setOutputFile(dir.filePath(QStringLiteral("out.prg")));
+    spelled.setAssemblerPath(QStringLiteral("/bin/true"));
+    spelled.setLinkerPath(QStringLiteral("/bin/true"));
+    QSignalSpy spelledDone(&spelled, &BuildService::finished);
+    QStringList spelledMessages;
+    connect(&spelled, &BuildService::finished, &spelled,
+            [&](bool, const QList<Diagnostic> &diags) {
+                for (const Diagnostic &d : diags)
+                    spelledMessages.append(d.message);
+            });
+    spelled.build();
+    if (spelledDone.isEmpty())
+        QVERIFY(spelledDone.wait(5000));
+    QCOMPARE(spelledDone.count(), 1);
+    QVERIFY2(spelledMessages.join(QLatin1Char(' ')).contains(QStringLiteral("a.o")),
+             qPrintable(spelledMessages.join(QStringLiteral(" | "))));
+}
+
+// vasm appends `Symbols by name` then `Symbols by value`, and the parser used to
+// depend on that order: the `section != Body` branch recognised only the
+// by-value header, so a listing carrying the tables the other way round kept
+// reading the by-name rows with the by-value shape. A by-name row whose label is
+// hex-shaped (`DEADBEEF` — a plausible ST label) starts with eight hex digits, so
+// the offset beside it was recorded as a symbol and reached console completion
+// (finding MIN-39).
+void TstParsers::symbolTableReadsTheTablesInEitherOrder()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("value-first.lst"));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream out(&f);
+    out << "Sections:\n"
+           "00: \"text\" (0-2)\n"
+           "\n\n"
+           "Source: \"sym.s\"\n"
+           "                            \t     1: \ttext\n"
+           "00:00000000 4E71            \t     2: DEADBEEF:\tnop\n"
+           "                            \t     3: \tcount\tequ\t2\n"
+           "\n"
+           "Symbols by value:\n"
+           "00000000 DEADBEEF\n"
+           "00000002 count\n"
+           "0000000A CLI_DEFINE\n"
+           "Symbols by name:\n"
+           "CLI_DEFINE                      external EXP\n"
+           "DEADBEEF                        00:00000000\n"
+           "count                           E:00000002\n";
+    out.flush();
+    f.close();
+
+    const QVector<SymbolEntry> symbols = symbolsFromListing(path, QString());
+    QStringList names;
+    for (const SymbolEntry &s : symbols)
+        names.append(s.name);
+
+    // The by-name table's rows are read as by-name rows wherever they appear:
+    // no column of either table is ever reported as a symbol.
+    QVERIFY2(!names.contains(QStringLiteral("00:00000000")),
+             qPrintable(names.join(QStringLiteral(" | "))));
+    QVERIFY2(!names.contains(QStringLiteral("E:00000002")),
+             qPrintable(names.join(QStringLiteral(" | "))));
+
+    // Both tables' names are reported, the hex-shaped one once, at its body
+    // definition: its own value-table row reads exactly like the offset column
+    // beside a by-name row, so the guard refuses that capture rather than
+    // duplicating the symbol.
+    QCOMPARE(names.count(QStringLiteral("DEADBEEF")), 1);
+    QVERIFY(names.contains(QStringLiteral("count")));
+    QVERIFY(names.contains(QStringLiteral("CLI_DEFINE")));
+    for (const SymbolEntry &s : symbols) {
+        if (s.name == QLatin1String("DEADBEEF")) {
+            QCOMPARE(s.file, QStringLiteral("sym.s"));
+            QCOMPARE(s.line, 2);
+        }
+    }
 }
 // The AUTO-folder image must match mkfs.vfat's canonical 720 KiB layout
 // exactly — pinned against a real image so a geometry mistake fails here
@@ -872,6 +1073,37 @@ void TstParsers::floppyRejectsOversizedAutoFolderProgram()
     QVERIFY(!QFile::exists(hugeImg));
 }
 
+// `error` is optional across this namespace — every sibling diagnostic goes
+// through the null-safe `setError` — and writeAutoFolderImage was the one place
+// that dereferenced the pointer unconditionally, on all three of its failure
+// paths. A caller with no error sink got a crash instead of false (finding
+// MIN-37).
+void TstParsers::floppyAutoFolderImageToleratesNoErrorSink()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString prg = tmp.path() + QStringLiteral("/hello.prg");
+    {
+        QFile f(prg);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QCOMPARE(f.write(QByteArray(64, 'A')), qint64(64));
+    }
+
+    // The program cannot be read, and the image cannot be written (no such
+    // directory): both must report failure without an error sink.
+    QVERIFY(!floppy::writeAutoFolderImage(tmp.path() + QStringLiteral("/out.st"),
+                                          tmp.path() + QStringLiteral("/missing.prg"), nullptr));
+    QVERIFY(!floppy::writeAutoFolderImage(tmp.path() + QStringLiteral("/nodir/out.st"), prg,
+                                          nullptr));
+    QVERIFY(!QFile::exists(tmp.path() + QStringLiteral("/out.st")));
+
+    // The same calls with a sink still report the reason.
+    QString error;
+    QVERIFY(!floppy::writeAutoFolderImage(tmp.path() + QStringLiteral("/out.st"),
+                                          tmp.path() + QStringLiteral("/missing.prg"), &error));
+    QVERIFY(error.contains(QLatin1String("missing.prg")));
+}
+
 
 namespace {
 /// Patch a 32-byte directory entry into the image at `at` (canonical 720 KiB
@@ -892,6 +1124,40 @@ void putDirEntry(QFile &f, int at, const QByteArray &name11, quint8 attr, quint1
     QVERIFY(f.write(e) == 32);
 }
 
+/// Rewrite one entry of the image's first FAT copy — the one the readers
+/// follow (FAT 1, sector 1 of the canonical 720 KiB geometry). A FAT12 entry is
+/// 12 bits packed two to three bytes with the entry's parity choosing the
+/// halves, so the byte pair is read, masked and written back rather than
+/// stamped, leaving the neighbouring entry alone.
+void patchFat12(QFile &f, int cluster, quint16 value)
+{
+    const int at = 512 + cluster + cluster / 2;
+    QVERIFY(f.seek(at));
+    const QByteArray pair = f.read(2);
+    QVERIFY(pair.size() == 2);
+    const quint16 packed = quint16(quint8(pair.at(0)) | (quint16(quint8(pair.at(1))) << 8));
+    const quint16 patched = cluster & 1
+        ? quint16((packed & 0x000f) | ((value << 4) & 0xfff0))
+        : quint16((packed & 0xf000) | (value & 0x0fff));
+    QByteArray out(2, '\0');
+    out[0] = char(patched & 0xff);
+    out[1] = char((patched >> 8) & 0xff);
+    QVERIFY(f.seek(at));
+    QVERIFY(f.write(out) == 2);
+}
+
+/// The listed entry's own first cluster: `Entry::cluster` is what a reader keys
+/// the chain off, not a re-resolved name (finding B9), and damaging a chain
+/// means damaging that cluster's FAT link.
+quint16 clusterOfEntry(const QVector<floppy::Entry> &entries, const QString &path, bool isDir)
+{
+    for (const floppy::Entry &e : entries) {
+        if (e.path.compare(path, Qt::CaseInsensitive) == 0 && e.isDirectory == isDir)
+            return e.cluster;
+    }
+    return 0;
+}
+
 /// A committed image written by foreign tools — `mkfs.fat 4.2` plus mtools,
 /// carrying a volume label, an empty file, a subdirectory and a two-cluster
 /// file. Stored under Qt's compression framing (`qUncompress`) so 720 KiB of
@@ -903,7 +1169,177 @@ QByteArray foreignMkfsImage()
         return {};
     return qUncompress(f.readAll());
 }
+
+/// An 8.3 name field: both columns padded to their fixed width with `pad` —
+/// space for the padding a disk normally carries, NUL for the padding a
+/// third-party imaging tool writes.
+QByteArray name83(const QByteArray &base, const QByteArray &ext = QByteArray(), char pad = ' ')
+{
+    return base.leftJustified(8, pad) + ext.leftJustified(3, pad);
+}
+
+/// Rewrite the 11-byte name field `oldName` into `newName` wherever the image
+/// holds it as a directory entry. Directories start on sector boundaries and
+/// their slots are 32 bytes apart, so a match at a 32-byte-aligned offset is an
+/// entry. `writeImage` alone can never produce the crafted fields these tests
+/// need — it upper-cases, and it pads with spaces — so they are patched in.
+void renameEntry(QFile &f, const QByteArray &oldName, const QByteArray &newName)
+{
+    QCOMPARE(oldName.size(), 11);
+    QCOMPARE(newName.size(), 11);
+    QVERIFY(f.seek(0));
+    const QByteArray raw = f.readAll();
+    const int at = raw.indexOf(oldName);
+    QVERIFY2(at >= 0 && at % 32 == 0, qPrintable(QString::fromLatin1(oldName)));
+    QVERIFY(f.seek(at));
+    QCOMPARE(f.write(newName), qint64(11));
+}
 } // namespace
+
+// A written subdirectory's `..` entry must hold the start cluster of the
+// directory that *contains* it; 0 is correct only for a child of the root, which
+// owns no cluster. Every subdirectory used to claim the root as its parent, so a
+// depth-2 tree exported from the project files (SUB/INNER) sent TOS's "open
+// parent" straight to the root. PiST's own reader never noticed — it skips `.`
+// and `..` and resolves top-down — which is why this reads the raw entries
+// (finding MAJ-39).
+void TstParsers::floppyNestedDirectoriesPointAtTheirParent()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item sub;
+    sub.destPath = QStringLiteral("SUB");
+    sub.isDirectory = true;
+    items.append(sub);
+    floppy::Item inner;
+    inner.destPath = QStringLiteral("SUB/INNER");
+    inner.isDirectory = true;
+    items.append(inner);
+    floppy::Item file;
+    file.destPath = QStringLiteral("SUB/INNER/DEEP.TXT");
+    file.data = QByteArrayLiteral("deep");
+    items.append(file);
+
+    const QString st = tmp.path() + QStringLiteral("/nested.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(st, &raw, &error), qPrintable(error));
+    const QVector<floppy::Entry> entries = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+
+    const quint16 subCluster = clusterOfEntry(entries, QStringLiteral("SUB"), true);
+    const quint16 innerCluster = clusterOfEntry(entries, QStringLiteral("SUB/INNER"), true);
+    QVERIFY(subCluster >= 2);
+    QVERIFY(innerCluster >= 2);
+    QVERIFY(subCluster != innerCluster);
+
+    // Canonical 720 KiB geometry: the first data cluster (2) starts at sector
+    // 14 and holds two sectors, so a directory's own bytes start here. Slot 0 is
+    // ".", slot 1 "..", and both record a start cluster at offset 26.
+    const auto dirOffset = [](quint16 cluster) {
+        return (14 + (int(cluster) - 2) * 2) * 512;
+    };
+    const auto startClusterOf = [&raw, &dirOffset](quint16 cluster, int slot) -> quint16 {
+        const int at = dirOffset(cluster) + slot * 32 + 26;
+        return quint16(quint8(raw.at(at)) | (quint8(raw.at(at + 1)) << 8));
+    };
+
+    QCOMPARE(raw.mid(dirOffset(subCluster) + 32, 11), QByteArrayLiteral("..         "));
+    QCOMPARE(raw.mid(dirOffset(innerCluster) + 32, 11), QByteArrayLiteral("..         "));
+
+    // "." names the directory itself...
+    QCOMPARE(startClusterOf(subCluster, 0), subCluster);
+    QCOMPARE(startClusterOf(innerCluster, 0), innerCluster);
+    // ...and ".." names the directory that contains it: INNER lives inside SUB...
+    QCOMPARE(startClusterOf(innerCluster, 1), subCluster);
+    // ...while SUB's `..` is 0, the root directory having no cluster to name.
+    QCOMPARE(startClusterOf(subCluster, 1), quint16(0));
+
+    // The tree itself still reads: the `..` fix must not disturb the entries.
+    QByteArray deep;
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("SUB/INNER/DEEP.TXT"), &deep, &error),
+             qPrintable(error));
+    QCOMPARE(deep, QByteArrayLiteral("deep"));
+}
+
+// A disk's 8.3 name fields are not ours to rewrite. `updateImage` re-derived
+// every carried entry's name from its listed path, so copying one file onto a
+// disk rewrote the names beside it: lower-case names came back upper-cased,
+// Latin-1 accents were mangled (`0xE9` → `0xC9`) and a field a third-party tool
+// padded with NULs became literal underscores. The fields must come back byte
+// for byte (finding MIN-38).
+void TstParsers::floppyUpdateKeepsForeignNamesByteIdentical()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item dir;
+    dir.destPath = QStringLiteral("SUB");
+    dir.isDirectory = true;
+    items.append(dir);
+    floppy::Item nested;
+    nested.destPath = QStringLiteral("SUB/KEEP.TXT");
+    nested.data = QByteArrayLiteral("kept");
+    items.append(nested);
+    for (const char *name : {"LOWER.TXT", "CAFE.TXT", "PADDED.TXT"}) {
+        floppy::Item file;
+        file.destPath = QLatin1String(name);
+        file.data = QByteArrayLiteral("data");
+        items.append(file);
+    }
+
+    const QString st = tmp.path() + QStringLiteral("/foreign-names.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(st, items, &error), qPrintable(error));
+
+    // What a real disk may hold and our own writer cannot produce: lower case,
+    // a Latin-1 accent, and NUL padding.
+    {
+        QFile f(st);
+        QVERIFY(f.open(QIODevice::ReadWrite));
+        renameEntry(f, name83("LOWER", "TXT"), name83("lower", "txt"));
+        renameEntry(f, name83("CAFE", "TXT"), name83("caf\xE9", "txt"));
+        renameEntry(f, name83("PADDED", "TXT"), name83("PADDED", "TXT", '\0'));
+        renameEntry(f, name83("SUB"), name83("sub"));
+        renameEntry(f, name83("KEEP", "TXT"), name83("keep", "txt"));
+    }
+
+    const QVector<floppy::Entry> before = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(entryNamed(before, QStringLiteral("lower.txt"), false),
+             "a lower-case field must list as it reads");
+    QVERIFY2(entryNamed(before, QStringLiteral("caf\xE9.txt"), false),
+             "a Latin-1 field must list as one accented character");
+    QVERIFY2(entryNamed(before, QStringLiteral("PADDED.TXT"), false),
+             "NUL padding must be padding, not name characters");
+    QVERIFY(entryNamed(before, QStringLiteral("sub/keep.txt"), false));
+
+    // One unrelated file onto the disk, nothing removed.
+    floppy::Item added;
+    added.destPath = QStringLiteral("NEW.BIN");
+    added.data = QByteArrayLiteral("new");
+    QVERIFY2(floppy::updateImage(st, {added}, {}, &error), qPrintable(error));
+
+    const QVector<floppy::Entry> after = floppy::listImage(st, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    const auto name11Of = [&after](const QString &path) {
+        for (const floppy::Entry &e : after) {
+            if (e.path == path)
+                return e.name11;
+        }
+        return QByteArray();
+    };
+    QCOMPARE(name11Of(QStringLiteral("LOWER.TXT")), QByteArray());   // never re-emitted upper-cased
+    QCOMPARE(name11Of(QStringLiteral("lower.txt")), name83("lower", "txt"));
+    QCOMPARE(name11Of(QStringLiteral("caf\xE9.txt")), name83("caf\xE9", "txt"));
+    QCOMPARE(name11Of(QStringLiteral("PADDED.TXT")), name83("PADDED", "TXT", '\0'));
+    QCOMPARE(name11Of(QStringLiteral("sub")), name83("sub"));
+    QCOMPARE(name11Of(QStringLiteral("sub/keep.txt")), name83("keep", "txt"));
+    // The name the operation added is the one it derives from the host name.
+    QCOMPARE(name11Of(QStringLiteral("NEW.BIN")), name83("NEW", "BIN"));
+}
 
 void TstParsers::floppyListingSurvivesDirectoryCycles()
 {
@@ -1003,6 +1439,146 @@ void TstParsers::floppyRejectsAbsurdGeometry()
     QByteArray data;
     QVERIFY(!floppy::readFileRaw(img, QStringLiteral("A.TXT"), &data, &error));
     QVERIFY2(!error.isEmpty(), "the reader must refuse it too");
+}
+
+// A cluster chain that cannot deliver what its directory entry declares — an
+// early end-of-chain, a loop back onto its own cluster, a link past the end of
+// the image — used to read as a short buffer reported as success, so copying
+// the file out silently truncated it. Each shape must be refused with an error
+// instead (finding CRIT-3).
+void TstParsers::floppyReadRefusesADamagedChain()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("PIECE.BIN");
+    // 1500 bytes: two 1 KiB clusters, so the chain has a real link to damage.
+    file.data = QByteArray(1500, '\x5a');
+    items.append(file);
+
+    QString error;
+    const QString base = tmp.path() + QStringLiteral("/intact.st");
+    QVERIFY2(floppy::writeImage(base, items, &error), qPrintable(error));
+    const quint16 start =
+        clusterOfEntry(floppy::listImage(base, &error), QStringLiteral("PIECE.BIN"), false);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(start >= 2);
+
+    struct Damage { const char *name; quint16 fatValue; };
+    const Damage damages[] = {
+        {"truncated", 0xfff},  // end-of-chain after the first of two clusters
+        {"cyclic", start},     // the link loops back onto its own cluster
+        {"outside", 0xfe0},    // a cluster far past the end of the image
+    };
+    for (const Damage &d : damages) {
+        const QString path = tmp.path() + QStringLiteral("/%1.st").arg(QLatin1String(d.name));
+        QVERIFY2(QFile::copy(base, path), qPrintable(path));
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            patchFat12(f, start, d.fatValue);
+        }
+        QByteArray raw;
+        QVERIFY2(floppy::loadRaw(path, &raw, &error), qPrintable(error));
+        QByteArray data;
+        error.clear();
+        QVERIFY2(!floppy::readFileRaw(raw, QStringLiteral("PIECE.BIN"), &data, &error),
+                 qPrintable(QStringLiteral("a %1 chain was reported as a successful read")
+                                .arg(QLatin1String(d.name))));
+        QVERIFY2(!error.isEmpty(), "the refusal must say what is damaged");
+    }
+
+    // The intact image still reads back whole: the guard refuses damage, not
+    // chained files.
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(base, &raw, &error), qPrintable(error));
+    QByteArray data;
+    QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("PIECE.BIN"), &data, &error),
+             qPrintable(error));
+    QCOMPARE(data, QByteArray(1500, '\x5a'));
+}
+
+// updateImage reads every entry back and renames the rebuilt image over the
+// user's original, so a source whose chains cannot deliver what its entries
+// declare must be refused before anything is staged. Carrying a truncation (or
+// a folder the walk could not expand) into the replacement image would destroy
+// exactly the clusters a repair needs, which is the hazard the MSA reader
+// already fails closed on (finding CRIT-3).
+void TstParsers::floppyUpdateRefusesADamagedImage()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("KEEP.BIN");
+    file.data = QByteArray(1500, '\x33');
+    items.append(file);
+    floppy::Item folder;
+    folder.destPath = QStringLiteral("DATA");
+    folder.isDirectory = true;
+    items.append(folder);
+    floppy::Item inner;
+    inner.destPath = QStringLiteral("DATA/INNER.TXT");
+    inner.data = QByteArrayLiteral("inner");
+    items.append(inner);
+
+    QString error;
+    const QString image = tmp.path() + QStringLiteral("/work.st");
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+    const QVector<floppy::Entry> listed = floppy::listImage(image, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    const quint16 fileCluster = clusterOfEntry(listed, QStringLiteral("KEEP.BIN"), false);
+    const quint16 dirCluster = clusterOfEntry(listed, QStringLiteral("DATA"), true);
+    QVERIFY(fileCluster >= 2 && dirCluster >= 2);
+
+    const auto imageBytes = [](const QString &path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+    };
+    floppy::Item added;
+    added.destPath = QStringLiteral("NEW.TXT");
+    added.data = QByteArrayLiteral("new");
+
+    // The file's chain ends after its first cluster: the second cluster is
+    // still on the disk, but the entry still declares 1500 bytes.
+    {
+        QFile f(image);
+        QVERIFY(f.open(QIODevice::ReadWrite));
+        patchFat12(f, fileCluster, 0xfff);
+    }
+    const QByteArray beforeFile = imageBytes(image);
+    error.clear();
+    QVERIFY2(!floppy::updateImage(image, {added}, {}, &error),
+             "an image whose file chain cannot yield the declared size must not be rewritten");
+    QVERIFY2(!error.isEmpty(), "the refusal must say what is damaged");
+    QCOMPARE(imageBytes(image), beforeFile);
+
+    // The same hazard one level up: the listing tolerates a folder with a
+    // damaged chain by leaving it unexpanded, so a rewrite that carried the
+    // listing at face value would drop the folder's whole subtree.
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+    error.clear();
+    const quint16 damagedDir =
+        clusterOfEntry(floppy::listImage(image, &error), QStringLiteral("DATA"), true);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(damagedDir >= 2);
+    {
+        QFile f(image);
+        QVERIFY(f.open(QIODevice::ReadWrite));
+        patchFat12(f, damagedDir, 0xfe0);
+    }
+    const QByteArray beforeFolder = imageBytes(image);
+    error.clear();
+    QVERIFY2(!floppy::updateImage(image, {added}, {}, &error),
+             "an image whose folder chain leaves the image must not be rewritten");
+    QVERIFY2(!error.isEmpty(), "the refusal must say what is damaged");
+    QCOMPARE(imageBytes(image), beforeFolder);
+
+    // A refusal must not leave a staged or backup image beside the original.
+    QCOMPARE(QDir(tmp.path()).entryList({QStringLiteral(".pist-*")}, QDir::Hidden | QDir::Files)
+                 .size(),
+             0);
 }
 
 void TstParsers::floppyCanonicalLayoutIsRecognised()

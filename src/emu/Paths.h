@@ -70,6 +70,24 @@ QString suggestedRomDir();
 /// has no such limit.
 QString sessionBaseDir();
 
+/// Directory holding documents extracted from floppy images for editing: one
+/// subdirectory per image, created on demand.
+///
+/// Deliberately *not* under sessionBaseDir(). A session directory is deleted
+/// once it looks old — that is what `pruneStaleSessions` is for — but an
+/// extracted document is the file behind an open, editable tab, and saving that
+/// tab writes the bytes back into the floppy image. A debugging or editing
+/// session that sees no other activity for a few hours must not have that file
+/// deleted from under the editor.
+///
+/// Sits under the per-user cache location, next to the data directory
+/// `suggestedRomDir()` uses: the files are regenerable from the image, so they
+/// may be cleaned up like any cache, but they outlive a single session.
+///
+/// Created (with its parents) on first use; the returned path is empty only if
+/// the platform has no cache location at all.
+QString documentExtractDir();
+
 /// Create a directory, reporting failure. Used for session directories and for
 /// the location of the generated bootstrap script, which are the same thing at
 /// different points in the launch.
@@ -86,9 +104,43 @@ void removeSessionDir(const QString &dir);
 /// control socket and an isolated Hatari config tree, so without this the temp
 /// location grows by one directory per run, indefinitely.
 ///
-/// Age-based rather than "delete everything" because another PiST instance may be
-/// running, and its live session must not be removed from under it.
+/// Age alone cannot tell debris from live data: a session directory keeps the
+/// modification time it got at launch (nothing writes to it afterwards), so a
+/// debugger left stopped for hours looks exactly like a crashed run, and
+/// deleting it unlinks the control socket and the HOME tree Hatari is running
+/// from. Directories are therefore named `<pid>-<counter>` (see
+/// `MainWindow::makeSessionDir`), and a directory whose pid still names a running
+/// process is skipped whatever its age. Names that do not parse that way fall
+/// back to plain age-based pruning.
+///
+/// This is the implementation of the invariant that the age heuristic exists
+/// for at all: **another PiST instance may be running, and its live session must
+/// not be removed from under it**. Age-based pruning alone did not honour that
+/// guarantee — it could not tell a quiet session from a dead one.
+///
+/// Also sweeps the extracted-document tree, so the one startup call covers
+/// everything PiST leaves behind in user-writable locations.
 void pruneStaleSessions(int maxAgeMinutes = 120);
+
+/// Delete extracted floppy documents older than `maxAgeMinutes`, keeping the
+/// directory itself.
+///
+/// `documentExtractDir()` needs a lifetime rule of its own now that it sits
+/// outside sessionBaseDir(): staying under the session tree is what used to
+/// collect it, and moving it out would otherwise let orphaned copies accumulate
+/// for good.
+///
+/// A startup sweep rather than deletion when the document or its tab closes:
+/// the documents are regenerated from the image and only meaningful to the
+/// instance that extracted them, so a generous age bound is enough to stop them
+/// accumulating, and it needs no bookkeeping in the UI. Called by
+/// `pruneStaleSessions()`, which every instance already runs once at startup.
+///
+/// Each per-image directory is aged by the newest document *inside* it, not by
+/// its own timestamp: a directory's mtime moves only when an entry is added or
+/// removed, so a document being edited every day would otherwise be swept out
+/// from under its open tab after a week.
+void pruneExtractedDocuments(int maxAgeMinutes = 7 * 24 * 60);
 
 } // namespace paths
 

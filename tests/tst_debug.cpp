@@ -9,6 +9,7 @@
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
 #include "build/LineMap.h"
+#include "build/LinkMap.h"
 #include "emu/MemoryDump.h"
 #include "project/ProjectSettings.h"
 
@@ -57,6 +58,62 @@ LineMap::SectionBases liveBases()
     return b;
 }
 
+/// A per-module vasm listing, with the source path written as vasm writes it.
+/// Each module's offsets restart at zero, so mapping a linked program's lines
+/// needs the linker's own placement for each of them. The section is named the
+/// way `-Fvobj` names it, the format a linked module is assembled in.
+QString writeModuleListing(QTemporaryDir &dir, const QString &name, const QString &sourceFile,
+                           const QList<QPair<int, quint32>> &linesAndOffsets)
+{
+    const QString path = dir.filePath(name);
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return {};
+    QTextStream out(&f);
+
+    // Each listing reports its own extent, so the modules do not overlap.
+    quint32 extent = 1;
+    for (const auto &entry : linesAndOffsets)
+        extent = qMax(extent, entry.second + 2);
+
+    out << "Sections:\n"
+        << QStringLiteral("00: \"CODE\" (0-%1)\n").arg(extent, 1, 16).toUpper()
+        << "\n"
+           "Source: \"" << sourceFile << "\"\n";
+    for (const auto &entry : linesAndOffsets) {
+        out << QStringLiteral("00:%1 0000            \t%2: \tinstruction\n")
+                   .arg(entry.second, 8, 16, QLatin1Char('0'))
+                   .arg(entry.first);
+    }
+    out.flush();
+    f.close();
+    return path;
+}
+
+/// A two-module map naming its modules exactly as given. A path keeps the two
+/// distinguishable; bare base names do not, which is all vlink itself writes.
+QString writeTwoModuleLinkMap(QTemporaryDir &dir, const QString &module1,
+                              const QString &module2)
+{
+    const QString path = dir.filePath(QStringLiteral("prog.map"));
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return {};
+    QTextStream out(&f);
+    out << "\nFiles:\n"
+        << QStringLiteral("  %1:  CODE 0(6) hex\n").arg(QFileInfo(module1).fileName())
+        << QStringLiteral("  %1:  CODE a(22) hex\n").arg(QFileInfo(module2).fileName())
+        << "\n"
+           "Section mapping (numbers in hex):\n"
+           "------------------------------\n"
+           "  00000000 .text  (size 2c)\n"
+        << QStringLiteral("           00000000 - 00000006 %1(CODE)\n").arg(module1)
+        << QStringLiteral("           0000000a - 0000002c %1(CODE)\n").arg(module2);
+    out.flush();
+    f.close();
+    return path;
+}
+
 } // namespace
 
 class TstDebug : public QObject
@@ -70,15 +127,20 @@ private slots:
     void breakpointOnDataLineIsUnresolved();
     void emitsConditionExpressionNotBareAddress();
     void appendsUserCondition();
+    void refusesAConditionHatariCannotParse();
     void reportsLinesWithNoCode();
     void skipsDisabledBreakpoints();
     void refusesToResolveWithoutBases();
     void refusesAddressPastTheEndOfItsSection();
 
+    /// Several modules: a line must arm in the module that owns it.
+    void sameNamedModulesArmInTheirOwnModule();
+
     // --- memory dump parsing ---------------------------------------------
 
     void parsesByteDump();
     void parsesWordDump();
+    void parsesConsecutiveWordRowsWithoutCrossingLines();
     void parsesLongDump();
     void ignoresNonDumpText();
     void ignoresAHexLookingCharacterColumn();
@@ -186,6 +248,62 @@ void TstDebug::appendsUserCondition()
     QVERIFY(cmd.startsWith(QLatin1String("b pc = ")));
 }
 
+// Hatari's breakpoint grammar takes comparisons joined by `&&` and rejects every
+// other character: a `|` is an "invalid character", so `a || b` makes the `b`
+// command fail — the breakpoint silently never arms while the panel still shows
+// it. Such a condition must be reported unresolved, with a reason.
+void TstDebug::refusesAConditionHatariCannotParse()
+{
+    QTemporaryDir dir;
+    ProgramLineMap map;
+    QString error;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(dir), &error));
+    map.setLiveBases(liveBases());
+
+    QList<Breakpoint> bps;
+    bps.append(Breakpoint{QStringLiteral("prog.s"), 4, QStringLiteral("d0 = 1 || d1 = 2"),
+                          true, 0, false});
+    const ArmPlan plan = planBreakpoints(bps, map);
+    QVERIFY2(plan.commands.isEmpty(), "a condition Hatari refuses must not be armed");
+    QCOMPARE(plan.unresolved.size(), 1);
+    QCOMPARE(plan.unresolved.first(), QStringLiteral("prog.s:4"));
+    QCOMPARE(plan.unresolvedReasons.size(), 1);
+    QVERIFY2(plan.unresolvedReasons.first().contains(QLatin1String("'|'")),
+             qPrintable(plan.unresolvedReasons.first()));
+
+    // A comparison-less condition ("condition comparison missing" in Hatari)
+    // and a dangling `&&` are refused the same way.
+    QList<Breakpoint> bare;
+    bare.append(Breakpoint{QStringLiteral("prog.s"), 4, QStringLiteral("d0"), true, 0, false});
+    const ArmPlan barePlan = planBreakpoints(bare, map);
+    QVERIFY(barePlan.commands.isEmpty());
+    QCOMPARE(barePlan.unresolvedReasons.size(), 1);
+    QVERIFY2(barePlan.unresolvedReasons.first().contains(QLatin1String("no comparison")),
+             qPrintable(barePlan.unresolvedReasons.first()));
+
+    QList<Breakpoint> dangling;
+    dangling.append(Breakpoint{QStringLiteral("prog.s"), 4, QStringLiteral("d0 = 1 && "),
+                               true, 0, false});
+    const ArmPlan danglingPlan = planBreakpoints(dangling, map);
+    QVERIFY(danglingPlan.commands.isEmpty());
+    QCOMPARE(danglingPlan.unresolved.size(), 1);
+
+    // A legal chain still arms, however long: BreakCond_ParseCondition recurses
+    // on every `&&`, so the finding's ">3 terms violates the grammar" did not
+    // reproduce against Hatari 2.6.1.
+    QList<Breakpoint> longChain;
+    longChain.append(Breakpoint{QStringLiteral("prog.s"), 4,
+                                QStringLiteral("d0 = 1 && d1 = 2 && d2 = 3 && d3 = 4"),
+                                true, 0, false});
+    const ArmPlan chained = planBreakpoints(longChain, map);
+    QCOMPARE(chained.commands.size(), 1);
+    QVERIFY2(chained.unresolved.isEmpty(), qPrintable(chained.unresolved.join(QLatin1String(", "))));
+    QVERIFY2(chained.commands.first().contains(
+                 QStringLiteral("&& d0 = 1 && d1 = 2 && d2 = 3 && d3 = 4")),
+             qPrintable(chained.commands.first()));
+}
+
 void TstDebug::reportsLinesWithNoCode()
 {
     QTemporaryDir dir;
@@ -270,6 +388,78 @@ void TstDebug::refusesAddressPastTheEndOfItsSection()
     QCOMPARE(a.line, 8);
 }
 
+// Two modules built from same-named sources in different directories, and a
+// breakpoint in the second. `ProgramLineMap` used to record both modules as
+// `util.o` and answer both from the first matching placement, so the second
+// module's lines resolved into the first module's address range: the breakpoint
+// reported itself armed, carried an address, appeared in the panel — and could
+// never fire where the user put it.
+void TstDebug::sameNamedModulesArmInTheirOwnModule()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("dir1")));
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("dir2")));
+
+    const QString source1 = dir.filePath(QStringLiteral("dir1/util.s"));
+    const QString source2 = dir.filePath(QStringLiteral("dir2/util.s"));
+    const QString object1 = dir.filePath(QStringLiteral("dir1/util.o"));
+    const QString object2 = dir.filePath(QStringLiteral("dir2/util.o"));
+
+    for (const QString &file : {source1, source2, object1, object2}) {
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("x");
+        f.close();
+    }
+
+    // dir1/util.s: line 3 at offset 0, line 6 at 4. dir2/util.s: line 5 at 0.
+    const QString listing1 =
+        writeModuleListing(dir, QStringLiteral("util1.lst"), source1, { {3, 0x0}, {6, 0x4} });
+    const QString listing2 =
+        writeModuleListing(dir, QStringLiteral("util2.lst"), source2, { {5, 0x0} });
+    QVERIFY(!listing1.isEmpty() && !listing2.isEmpty());
+
+    ProgramLineMap map;
+    QString error;
+    QVERIFY2(map.addModule(source1, object1, listing1, &error), qPrintable(error));
+    QVERIFY2(map.addModule(source2, object2, listing2, &error), qPrintable(error));
+
+    LinkMap linkMap;
+    QVERIFY2(linkMap.parse(writeTwoModuleLinkMap(dir, object1, object2), &error),
+             qPrintable(error));
+    map.setLinkMap(linkMap);
+    map.setLiveBases(liveBases());
+    QVERIFY(map.isResolved());
+    QVERIFY2(map.unplacedModules().isEmpty(), "both modules are named in the map");
+
+    // The breakpoint set in the second module's editor, which the panel holds
+    // with the file it was made in.
+    QList<Breakpoint> bps;
+    bps.append(Breakpoint{source2, 5, QString(), true, 0, false});
+
+    const ArmPlan plan = planBreakpoints(bps, map);
+    QCOMPARE(plan.commands.size(), 1);
+    QVERIFY2(plan.unresolved.isEmpty(), qPrintable(plan.unresolved.join(QLatin1String(", "))));
+    QCOMPARE(plan.armed.first().address, 0x12596u + 0x0au); // module two's placement
+    QVERIFY2(plan.commands.first().contains(QStringLiteral("125a0"), Qt::CaseInsensitive),
+             qPrintable(plan.commands.first()));
+
+    // The panel keys breakpoints by base name, so a breakpoint made in either
+    // `util.s` arrives here indistinguishable. The map cannot place it in one
+    // module and neither can anything else, so it is reported unresolved —
+    // which is the honest replacement for arming it in whichever module came
+    // first, and the only answer that cannot fire somewhere the user did not ask
+    // for.
+    QList<Breakpoint> ambiguous;
+    ambiguous.append(Breakpoint{QStringLiteral("util.s"), 5, QString(), true, 0, false});
+
+    const ArmPlan guarded = planBreakpoints(ambiguous, map);
+    QVERIFY2(guarded.commands.isEmpty(), "an ambiguous file name must not be armed");
+    QCOMPARE(guarded.unresolved.size(), 1);
+    QCOMPARE(guarded.unresolved.first(), QStringLiteral("util.s:5"));
+}
+
 // --- paths --------------------------------------------------------------
 
 // The build writes <base>.prg and the launch runs it. Deriving those twice was a
@@ -336,6 +526,27 @@ void TstDebug::parsesWordDump()
     QCOMPARE(rows[0].bytes[1], quint8(0x7a));
     QCOMPARE(rows[0].bytes[2], quint8(0x00));
     QCOMPARE(rows[0].bytes[3], quint8(0x0c));
+}
+
+// The `\s+` between hex groups also matches the newline that ends the row, so
+// the group run walked into the *next* row's address, claimed it as data and
+// consumed it: a two-row word dump came back as one row four bytes too long
+// with the second row lost. Whitespace is horizontal only.
+void TstDebug::parsesConsecutiveWordRowsWithoutCrossingLines()
+{
+    const QString dump =
+        QStringLiteral("00012596: 487a 000c 3f3c 0009 4e41 5c8f 60fe 4f4b\n"
+                       "000125a6: 0000 0001 0002 0003 0004 0005 0006 0007\n");
+    const QList<MemoryRow> rows = parseMemoryDump(dump);
+    QCOMPARE(rows.size(), 2);
+    QCOMPARE(rows[0].address, 0x12596u);
+    QCOMPARE(rows[0].bytes.size(), 16);
+    QCOMPARE(rows[0].bytes[0], quint8(0x48));
+    QCOMPARE(rows[0].bytes[15], quint8(0x4b));
+    QCOMPARE(rows[1].address, 0x125a6u);
+    QCOMPARE(rows[1].bytes.size(), 16);
+    QCOMPARE(rows[1].bytes[0], quint8(0x00));
+    QCOMPARE(rows[1].bytes[15], quint8(0x07));
 }
 
 void TstDebug::parsesLongDump()

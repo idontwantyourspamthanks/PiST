@@ -4,6 +4,7 @@
 
 #include "editor/OsCallScan.h"
 
+#include "editor/AsmLex.h"
 #include "editor/OsCallRef.h"
 
 #include <QRegularExpression>
@@ -18,28 +19,6 @@ namespace {
 // enough for the widest documented call: Flopfmt takes nine arguments, ten
 // consecutive push lines before its trap.
 constexpr int kScanBound = 16;
-
-/// The line with its comment removed: `;` starts a comment anywhere, `*` only
-/// in the first column (Motorola convention, same as AsmHighlighter).
-QString codePart(const QString &line)
-{
-    if (line.startsWith(QLatin1Char('*')))
-        return QString();
-    const int semi = line.indexOf(QLatin1Char(';'));
-    return (semi < 0 ? line : line.left(semi)).trimmed();
-}
-
-/// The instruction part of a line: comment stripped, and a `label:` prefix
-/// removed when one is present — vasm lets a label share its line with an
-/// instruction (`start: move.l #msg,-(a7)`), and the push still counts as
-/// part of the call sequence. A line holding only a label returns empty,
-/// which is how the scans tell a sequence boundary from a blank.
-QString instructionPart(const QString &line)
-{
-    static const QRegularExpression labelRe(QStringLiteral("^[A-Za-z_.$][\\w.$]*:\\s*"));
-    QString code = codePart(line);
-    return code.remove(labelRe).trimmed();
-}
 
 const QRegularExpression &trapRe()
 {
@@ -155,10 +134,10 @@ OsCallMatch resolveTrap(const QStringList &lines, int trapIndex, int trap)
     QString fnOperand;
     for (int i = trapIndex - 1, scanned = 0; i >= 0 && scanned < kScanBound; --i) {
         const QString raw = lines.at(i);
-        if (codePart(raw).isEmpty())
+        if (asmlex::codePart(raw).isEmpty())
             continue; // blanks and comments ride inside a sequence, uncounted
         ++scanned;
-        const QString code = instructionPart(raw);
+        const QString code = asmlex::instructionPart(raw);
         if (code.isEmpty())
             break; // a line holding only a label: the sequence is over
         if (osTrap(code))
@@ -191,10 +170,10 @@ OsCallMatch resolveTrap(const QStringList &lines, int trapIndex, int trap)
     QStringList reversed;
     for (int i = fnIndex - 1, scanned = 0; i >= 0 && scanned < kScanBound; --i) {
         const QString raw = lines.at(i);
-        if (codePart(raw).isEmpty())
+        if (asmlex::codePart(raw).isEmpty())
             continue; // blanks and comments do not count against the bound
         ++scanned;
-        const QString code = instructionPart(raw);
+        const QString code = asmlex::instructionPart(raw);
         if (code.isEmpty())
             break; // a line holding only a label
         QString operand;
@@ -216,7 +195,7 @@ OsCallMatch osCallAt(const QStringList &lines, int lineIndex)
     if (lineIndex < 0 || lineIndex >= lines.size())
         return none;
 
-    const QString code = instructionPart(lines.at(lineIndex));
+    const QString code = asmlex::instructionPart(lines.at(lineIndex));
     if (code.isEmpty())
         return none;
 
@@ -229,10 +208,10 @@ OsCallMatch osCallAt(const QStringList &lines, int lineIndex)
         return none;
     for (int i = lineIndex + 1, scanned = 0; i < lines.size() && scanned < kScanBound; ++i) {
         const QString raw = lines.at(i);
-        if (codePart(raw).isEmpty())
+        if (asmlex::codePart(raw).isEmpty())
             continue; // blanks and comments do not count against the bound
         ++scanned;
-        const QString below = instructionPart(raw);
+        const QString below = asmlex::instructionPart(raw);
         if (below.isEmpty())
             break; // a line holding only a label
         if (const int trap = osTrap(below))

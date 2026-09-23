@@ -4,7 +4,8 @@
 
 #include "emu/HatariProbe.h"
 
-#include <QProcess>
+#include "build/ProcessUtil.h"
+
 #include <QFile>
 #include <QRegularExpression>
 
@@ -93,12 +94,16 @@ HatariCapabilities probeHatari(const QString &hatariPath)
     return caps;
 #else
     {
-        QProcess p;
-        p.start(hatariPath, {QStringLiteral("--version")});
-        if (!p.waitForStarted(3000) || !p.waitForFinished(5000))
+        // A probe answers immediately or not at all: the two timeouts are what
+        // bound "a distro's hatari may answer -h slowly", not a real workload.
+        RunOptions options;
+        options.startTimeoutMs = 3000;
+        options.finishTimeoutMs = 5000;
+        const SyncRun version =
+            runSync(hatariPath, {QStringLiteral("--version")}, options);
+        if (!version.started || !version.finished)
             return caps;
-        const QString out = QString::fromUtf8(p.readAllStandardOutput())
-                          + QString::fromUtf8(p.readAllStandardError());
+        const QString out = version.output;
         caps.valid = true;
 
         static const QRegularExpression re(QStringLiteral(R"(v(\d+)\.(\d+)(?:\.(\d+))?)"));
@@ -115,12 +120,15 @@ HatariCapabilities probeHatari(const QString &hatariPath)
     }
 
     {
-        QProcess p;
-        p.start(hatariPath, {QStringLiteral("-h")});
-        if (!p.waitForStarted(3000) || !p.waitForFinished(8000))
+        // The option table is a longer answer than --version, so it gets a
+        // longer budget; nothing else differs.
+        RunOptions options;
+        options.startTimeoutMs = 3000;
+        options.finishTimeoutMs = 8000;
+        const SyncRun run = runSync(hatariPath, {QStringLiteral("-h")}, options);
+        if (!run.started || !run.finished)
             return caps;
-        const QString help = QString::fromUtf8(p.readAllStandardOutput())
-                           + QString::fromUtf8(p.readAllStandardError());
+        const QString help = run.output;
 
         // Probe by option name rather than by version number: distro builds and
         // forks do not track upstream's versioning exactly.

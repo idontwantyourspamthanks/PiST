@@ -7,6 +7,8 @@
 #include "image/Palette.h"
 
 #include <QBuffer>
+#include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QImage>
@@ -63,32 +65,82 @@ QVector<int> decodeStBitplanes(const uchar *data, int width, int height)
     return pixels;
 }
 
-void encodeStBitplanes(const QVector<int> &pixels, int srcW, int srcH,
-                       const QVector<int> &active, uchar *out, int outW, int outH)
+/// The cube index at [row, col] of a frame buffer, or `kTransparent` when the
+/// pixel lies outside the picture — before column 0, past `srcW`/`srcH`, or past
+/// the end of a buffer sized from the wrong cell. One bounds rule for every
+/// encoder, so a short frame renders blank everywhere instead of reading past the
+/// end in whichever packer forgot to check.
+int pixelAt(const QVector<int> &src, int srcW, int srcH, int row, int col)
+{
+    if (row < 0 || row >= srcH || col < 0 || col >= srcW)
+        return kTransparent;
+    const int at = row * srcW + col;
+    return at < src.size() ? src.at(at) : kTransparent;
+}
+
+/// Where a packed group's mask word goes.
+enum class MaskPlacement {
+    /// No mask word at all (a still image, a plain sprite block, a bitplane blob).
+    None,
+    /// `mask,plane0,plane1,plane2,plane3` per group, one 10-byte run — the
+    /// layout the sprite blocks and the generated blitter read.
+    Interleaved,
+    /// The frame's mask words after its plane data (a STOS bank frame:
+    /// "monoplanar mask data follows image data for each frame"), each run
+    /// contiguous.
+    Separate,
+};
+
+/// The one packer: `rows` rows of `outW`-wide 16-pixel groups in ST screen
+/// format (four plane words per group, plane 0 first), read from the `srcW`×`srcH`
+/// cube-index frame `src`, whose picture sits `shift` pixels in from each row's
+/// left edge. Pixels outside the picture and pixels whose register is
+/// `transparent` (>= 0 nominates one; -1 leaves every painted colour opaque) set
+/// the group's mask bit and no plane bit — the blitter keeps the screen under
+/// both. Where the mask word goes is `placement`; `out` is the group's first
+/// plane word (the second word of the group for `Interleaved`) and `maskBase` the
+/// mask run (null when there is none).
+///
+/// The buffers callers reserve come from `planeRowBytes()`/`planeRowWidth()`, the
+/// same two expressions this walk uses, so a size and the words written cannot
+/// drift apart.
+void packStPlanes(const QVector<int> &src, int srcW, int srcH, int rows, int outW,
+                  const QVector<int> &active, int transparent, int shift,
+                  MaskPlacement placement, uchar *out, uchar *maskBase)
 {
     const int groups = outW / 16;
-    uchar *p = out;
-    for (int row = 0; row < outH; ++row) {
+    // Interleaved shares one run: the mask cursor steps the whole ten-byte group,
+    // so it lands on the next group's mask word, past the planes written here.
+    const int maskStep = placement == MaskPlacement::Interleaved ? 10 : 2;
+    for (int row = 0; row < rows; ++row) {
         for (int group = 0; group < groups; ++group) {
             quint16 bp[4] = {0, 0, 0, 0};
+            quint16 mask = 0;
             for (int px = 0; px < 16; ++px) {
-                const int col = group * 16 + px;
-                int ci = 0;
-                if (row < srcH && col < srcW) {
-                    const int idx = row * srcW + col;
-                    if (idx >= 0 && idx < pixels.size())
-                        ci = stColourIndex(pixels.at(idx), active);
-                }
                 const int bit = 15 - px;
+                const int value = pixelAt(src, srcW, srcH, row, group * 16 + px - shift);
+                const int colour = stColourIndex(value, active);
+                if (value < 0 || (transparent >= 0 && colour == transparent)) {
+                    mask |= quint16(1u << bit);
+                    continue;
+                }
                 for (int plane = 0; plane < 4; ++plane) {
-                    if (ci & (1 << plane))
+                    if (colour & (1 << plane))
                         bp[plane] |= quint16(1u << bit);
                 }
             }
-            for (quint16 word : bp) {
-                putBe16(p, word);
-                p += 2;
+            if (maskBase && placement != MaskPlacement::None) {
+                putBe16(maskBase, mask);
+                maskBase += maskStep;
             }
+            for (quint16 word : bp) {
+                putBe16(out, word);
+                out += 2;
+            }
+            // Sharing one run, the plane cursor skips the next group's mask word —
+            // which already sits two bytes past the planes just written.
+            if (placement == MaskPlacement::Interleaved)
+                out += 2;
         }
     }
 }
@@ -140,13 +192,13 @@ bool stosSizeOk(int width, int height, QString *error)
     const int wu = width / 16;
     if (width % 16 != 0 || wu < 1 || wu > 4) {
         if (error)
-            *error = QStringLiteral("STOS width must be 16–64 and a multiple of 16 (got %1)")
+            *error = QObject::tr("STOS width must be 16–64 and a multiple of 16 (got %1)")
                          .arg(width);
         return false;
     }
     if (height < 2 || height > 64) {
         if (error)
-            *error = QStringLiteral("STOS height must be 2–64 (got %1)").arg(height);
+            *error = QObject::tr("STOS height must be 2–64 (got %1)").arg(height);
         return false;
     }
     return true;
@@ -181,53 +233,6 @@ int planeRowBytes(int width, bool shifted, bool masked)
 bool isPreShiftCount(int count)
 {
     return count == 2 || count == 4 || count == 8;
-}
-
-/// Write `srcW`×`srcH` cube-index pixels into `out` as `outW`-wide rows of
-/// 16-pixel groups: four plane words each, preceded by the group's mask word
-/// when `masked`. The picture sits `shift` pixels in from the left, and
-/// everything else — including the pixels a shift pushes past the frame's
-/// right edge — is not drawn.
-void encodeSpritePlanes(const QVector<int> &src, int srcW, int srcH,
-                        const QVector<int> &active, int transparent, int shift, bool masked,
-                        uchar *out, int outW)
-{
-    const int groups = outW / 16;
-    uchar *p = out;
-    for (int row = 0; row < srcH; ++row) {
-        for (int group = 0; group < groups; ++group) {
-            quint16 bp[4] = {0, 0, 0, 0};
-            quint16 mask = 0;
-            for (int px = 0; px < 16; ++px) {
-                const int bit = 15 - px;
-                const int col = group * 16 + px - shift;
-                const int at = row * srcW + col;
-                const int value = (col >= 0 && col < srcW && at < src.size())
-                                      ? src.at(at)
-                                      : kTransparent;
-                const int colour = stColourIndex(value, active);
-                // A pixel the blitter must keep the screen under: one that is
-                // not painted at all, or the palette colour the export was told
-                // to leave out (the background register, unless changed).
-                if (value < 0 || (transparent >= 0 && colour == transparent)) {
-                    mask |= quint16(1u << bit);
-                    continue;
-                }
-                for (int plane = 0; plane < 4; ++plane) {
-                    if (colour & (1 << plane))
-                        bp[plane] |= quint16(1u << bit);
-                }
-            }
-            if (masked) {
-                putBe16(p, mask);
-                p += 2;
-            }
-            for (quint16 word : bp) {
-                putBe16(p, word);
-                p += 2;
-            }
-        }
-    }
 }
 
 } // namespace
@@ -276,13 +281,16 @@ bool importPi1(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 {
     if (bytes.size() < 32034) {
         if (error)
-            *error = QStringLiteral("file too small to be a valid PI1");
+            *error = QObject::tr("file too small to be a valid PI1");
         return false;
     }
     const auto *data = reinterpret_cast<const uchar *>(bytes.constData());
+    // A PI1's 16 registers are STfm words (0x0rgb): the format predates the STe,
+    // so each channel has three bits. Decoding them with the STe layout doubled
+    // every channel — a real file's white 0x0777 came in as {238,238,238}.
     QVector<Rgb> palette;
     for (int i = 0; i < kMaxActive; ++i)
-        palette.append(rgbFromSteWord(be16(data + 2 + i * 2)));
+        palette.append(rgbFromStfmWord(be16(data + 2 + i * 2)));
     const QVector<int> indices = decodeStBitplanes(data + 34, kStScreenWidth, kStScreenHeight);
     *out = sheetFromIndexed(kStScreenWidth, kStScreenHeight, indices, palette, kind);
     return true;
@@ -292,13 +300,23 @@ bool importNeo(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 {
     if (bytes.size() < 32128) {
         if (error)
-            *error = QStringLiteral("file too small to be a valid NEO");
+            *error = QObject::tr("file too small to be a valid NEO");
         return false;
     }
     const auto *data = reinterpret_cast<const uchar *>(bytes.constData());
+    // Offset 2 is the resolution word. A medium-resolution NEO is the same 32128
+    // bytes as a low-resolution one — the size check alone let it through to
+    // decode as low-res garbage — so refuse anything but low resolution here.
+    if (be16(data + 2) != 0) {
+        if (error)
+            *error = QObject::tr("NEO image is not low resolution (resolution word %1)")
+                         .arg(be16(data + 2));
+        return false;
+    }
+    // 3-bit STfm words, like the PI1's (see importPi1).
     QVector<Rgb> palette;
     for (int i = 0; i < kMaxActive; ++i)
-        palette.append(rgbFromSteWord(be16(data + 4 + i * 2)));
+        palette.append(rgbFromStfmWord(be16(data + 4 + i * 2)));
     const QVector<int> indices = decodeStBitplanes(data + 128, kStScreenWidth, kStScreenHeight);
     *out = sheetFromIndexed(kStScreenWidth, kStScreenHeight, indices, palette, kind);
     return true;
@@ -313,11 +331,11 @@ bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     };
     if (len < 12 || four(0) != "FORM" || four(8) != "ILBM") {
         if (error)
-            *error = QStringLiteral("not a valid ILBM IFF file");
+            *error = QObject::tr("not a valid ILBM IFF file");
         return false;
     }
 
-    int width = 0, height = 0, nPlanes = 4, compression = 0;
+    int width = 0, height = 0, nPlanes = 4, compression = 0, masking = 0;
     QVector<Rgb> cmap;
     int bodyOffset = -1, bodySize = 0;
     int pos = 12;
@@ -331,6 +349,7 @@ bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
             width = be16(data + dataStart);
             height = be16(data + dataStart + 2);
             nPlanes = data[dataStart + 8];
+            masking = data[dataStart + 9];
             compression = data[dataStart + 10];
         } else if (chunkId == "CMAP") {
             const int entries = int(chunkSize / 3);
@@ -347,12 +366,12 @@ bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 
     if (bodyOffset < 0 || width <= 0 || height <= 0) {
         if (error)
-            *error = QStringLiteral("IFF file is missing a bitmap body");
+            *error = QObject::tr("IFF file is missing a bitmap body");
         return false;
     }
     if (width > kStScreenWidth || height > kStScreenHeight) {
         if (error)
-            *error = QStringLiteral("IFF image is larger than ST low-res (%1×%2)")
+            *error = QObject::tr("IFF image is larger than ST low-res (%1×%2)")
                          .arg(kStScreenWidth)
                          .arg(kStScreenHeight);
         return false;
@@ -362,7 +381,17 @@ bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     // plane >= 31. Reject before the decode rather than rely on the shift wrapping.
     if (nPlanes < 1 || nPlanes > 4) {
         if (error)
-            *error = QStringLiteral("IFF image has %1 planes (ST ILBM supports 1-4)").arg(nPlanes);
+            *error = QObject::tr("IFF image has %1 planes (ST ILBM supports 1-4)").arg(nPlanes);
+        return false;
+    }
+    // A mask plane (masking 1 or 2) is stored before each row's image planes, so
+    // reading the body as if it were absent shifts every following bit and the
+    // rest of the picture mis-decodes progressively. Refused like an unsupported
+    // plane count rather than imported wrong.
+    if (masking != 0) {
+        if (error)
+            *error = QObject::tr("IFF image carries a mask plane (masking %1), which this "
+                                 "reader does not decode").arg(masking);
         return false;
     }
 
@@ -406,7 +435,7 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     QImage image;
     if (!image.loadFromData(bytes, "PNG")) {
         if (error)
-            *error = QStringLiteral("not a valid PNG image");
+            *error = QObject::tr("not a valid PNG image");
         return false;
     }
     image = image.convertToFormat(QImage::Format_ARGB32);
@@ -416,7 +445,7 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     }
     if (image.width() < 1 || image.height() < 1) {
         if (error)
-            *error = QStringLiteral("PNG image is empty");
+            *error = QObject::tr("PNG image is empty");
         return false;
     }
 
@@ -446,8 +475,14 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     ranked.reserve(counts.size());
     for (auto it = counts.begin(); it != counts.end(); ++it)
         ranked.append(qMakePair(it.value(), it.key()));
+    // Most-painted colour first, and the lowest cube index when two are painted
+    // equally often. The order is the palette register assignment every export
+    // uses, and QHash iterates its buckets in a per-process salted order — so a
+    // hash-broken tie made two runs of the same import write different registers.
     std::sort(ranked.begin(), ranked.end(), [](const QPair<int, int> &a, const QPair<int, int> &b) {
-        return a.first > b.first;
+        if (a.first != b.first)
+            return a.first > b.first;
+        return a.second < b.second;
     });
     for (int i = 0; i < ranked.size() && sheet.active.size() < kMaxActive; ++i)
         sheet.active.append(ranked.at(i).second);
@@ -460,40 +495,58 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 ImageDocument spriteSafeDocument(const ImageDocument &doc, QString *error)
 {
     const QVector<int> composite = doc.pixels();
-    // Painted colour words, in the palette's own order.
+    const int cube = cubeSize(doc.paletteKind());
+    // Every colour the sprite actually paints, the palette's own order first (so
+    // a plain document keeps the register assignment it had) and then whatever
+    // colours the active table does not hold, in cube order. An exported pixel
+    // whose colour is missing from the table lands on `stColourIndex`'s fallback
+    // 0 — the slot this promises to keep free — so the overspill a >16-colour PNG
+    // import leaves behind has to be carried into the table, not assumed away.
     QVector<int> used;
-    for (int word : doc.active()) {
-        if (word >= 0 && !used.contains(word) && composite.contains(word))
-            used.append(word);
+    QVector<int> spilled;
+    for (int index : doc.active()) {
+        if (index >= 0 && !used.contains(index) && composite.contains(index))
+            used.append(index);
     }
-    // Colour 0 carrying no sprite pixels is already sprite-safe.
-    if (used.isEmpty() || used.first() != doc.active().first())
+    for (int pixel : composite) {
+        if (pixel >= 0 && !used.contains(pixel) && !spilled.contains(pixel))
+            spilled.append(pixel);
+    }
+    std::sort(spilled.begin(), spilled.end());
+    used += spilled;
+
+    if (used.isEmpty())
+        return doc; // nothing painted: no colour to protect
+    // Already sprite-safe: the first table entry paints nothing *and* the table
+    // holds every painted colour.
+    if (spilled.isEmpty() && used.first() != doc.active().first())
         return doc;
 
-    if (used.size() > 15) {
+    if (used.size() > kMaxActive - 1) {
         if (error)
-            *error = QStringLiteral("the sprite uses all 16 colours; sprite-safe export "
-                                    "needs a free slot for the background");
+            *error = QObject::tr("the sprite paints %1 colours; sprite-safe export needs a "
+                                 "free slot for the background")
+                         .arg(used.size());
         return {};
     }
 
-    // The reserved slot prefers the sheet's own background colour, then
-    // black, then the first free word at all.
+    // The reserved slot is a cube index the sprite does not paint at all, so
+    // nothing the export writes can land on register 0: the sheet's own
+    // background colour, then black (index 0), then the first free cube index.
     int reserved = -1;
     const int background = doc.background();
-    if (background != doc.active().first() && !used.contains(background))
+    if (background != doc.active().first() && background >= 0 && background < cube
+        && !used.contains(background))
         reserved = background;
-    if (reserved < 0 && !used.contains(0))
-        reserved = 0;
-    for (int word = 0; reserved < 0 && word <= 0x777; ++word) {
-        if (!used.contains(word))
-            reserved = word;
+    for (int index = 0; reserved < 0 && index < cube; ++index) {
+        if (!used.contains(index))
+            reserved = index;
     }
 
     QVector<int> active;
     active.append(reserved);
-    for (int word : used)
-        active.append(word);
+    for (int index : used)
+        active.append(index);
 
     ImageDocument out = ImageDocument::create(doc.width(), doc.height(), doc.paletteKind());
     out.setActive(active);
@@ -521,45 +574,9 @@ bool importStImage(const QByteArray &bytes, StImageFormat format, PaletteKind ki
         return importPng(bytes, kind, out, error);
     default:
         if (error)
-            *error = QStringLiteral("unsupported import format");
+            *error = QObject::tr("unsupported import format");
         return false;
     }
-}
-
-bool applyImport(ImageDocument *doc, const ImportedSheet &sheet, bool append, QString *error)
-{
-    if (!doc)
-        return false;
-    if (append) {
-        if (sheet.width != doc->width() || sheet.height != doc->height()) {
-            if (error)
-                *error = QStringLiteral("imported image is %1×%2, but the document is %3×%4")
-                             .arg(sheet.width)
-                             .arg(sheet.height)
-                             .arg(doc->width())
-                             .arg(doc->height());
-            return false;
-        }
-        const int index = doc->addFrame();
-        doc->setCurrentFrame(index);
-        QVector<int> indices;
-        indices.reserve(sheet.pixels.size());
-        for (int i = 0; i < sheet.pixels.size(); ++i)
-            indices.append(i);
-        doc->restoreIndices(indices, sheet.pixels);
-        return true;
-    }
-
-    ImageDocument next = ImageDocument::create(sheet.width, sheet.height, sheet.kind);
-    next.setActive(sheet.active);
-    QVector<int> indices;
-    indices.reserve(sheet.pixels.size());
-    for (int i = 0; i < sheet.pixels.size(); ++i)
-        indices.append(i);
-    next.restoreIndices(indices, sheet.pixels);
-    next.setModified(true);
-    doc->replaceWith(next);
-    return true;
 }
 
 QByteArray exportPi1(const ImageDocument &doc, int frame, QString *error)
@@ -568,11 +585,11 @@ QByteArray exportPi1(const ImageDocument &doc, int frame, QString *error)
     QByteArray out(32034, '\0');
     auto *data = reinterpret_cast<uchar *>(out.data());
     putBe16(data, 0);
-    const QVector<quint16> table = stColourTable(doc.paletteKind(), doc.active());
+    const QVector<quint16> table = stfmColourTable(doc.paletteKind(), doc.active());
     for (int i = 0; i < kMaxActive; ++i)
         putBe16(data + 2 + i * 2, table.at(i));
-    encodeStBitplanes(doc.frame(frame), doc.width(), doc.height(), doc.active(), data + 34,
-                      kStScreenWidth, kStScreenHeight);
+    packStPlanes(doc.frame(frame), doc.width(), doc.height(), kStScreenHeight, kStScreenWidth,
+                 doc.active(), -1, 0, MaskPlacement::None, data + 34, nullptr);
     return out;
 }
 
@@ -582,18 +599,23 @@ QByteArray exportNeo(const ImageDocument &doc, int frame, const QString &name, Q
     QByteArray out(32128, '\0');
     auto *data = reinterpret_cast<uchar *>(out.data());
     putBe16(data, 0);
-    putBe16(data + 2, 0);
-    const QVector<quint16> table = stColourTable(doc.paletteKind(), doc.active());
+    putBe16(data + 2, 0); // low resolution: importNeo refuses anything else
+    const QVector<quint16> table = stfmColourTable(doc.paletteKind(), doc.active());
     for (int i = 0; i < kMaxActive; ++i)
         putBe16(data + 4 + i * 2, table.at(i));
     const QByteArray name8 = name.left(8).toLatin1();
     memcpy(data + 36, name8.constData(), size_t(name8.size()));
     putBe16(data + 50, 0);
     putBe16(data + 52, 0);
-    putBe16(data + 54, quint16(qMin(doc.width(), kStScreenWidth)));
-    putBe16(data + 56, quint16(qMin(doc.height(), kStScreenHeight)));
-    encodeStBitplanes(doc.frame(frame), doc.width(), doc.height(), doc.active(), data + 128,
-                      kStScreenWidth, kStScreenHeight);
+    // 54/56 are the x/y offset fields (canonical 0, and a reader that took a size
+    // from them saw a zero-size image); the dimensions the format records are at
+    // 58/60.
+    putBe16(data + 54, 0);
+    putBe16(data + 56, 0);
+    putBe16(data + 58, quint16(qMin(doc.width(), kStScreenWidth)));
+    putBe16(data + 60, quint16(qMin(doc.height(), kStScreenHeight)));
+    packStPlanes(doc.frame(frame), doc.width(), doc.height(), kStScreenHeight, kStScreenWidth,
+                 doc.active(), -1, 0, MaskPlacement::None, data + 128, nullptr);
     return out;
 }
 
@@ -620,10 +642,13 @@ QByteArray exportIff(const ImageDocument &doc, int frame, QString *error)
             for (int byte = 0; byte < rowbytes; ++byte) {
                 uchar b = 0;
                 for (int bit = 0; bit < 8; ++bit) {
+                    // IFF body rows are plane-major bytes, not the screen's word
+                    // groups, so this packer is its own — but the pixel lookup is
+                    // the shared one: out of the picture or past a short buffer
+                    // reads as not painted.
                     const int col = byte * 8 + bit;
-                    int ci = 0;
-                    if (row < doc.height() && col < doc.width())
-                        ci = stColourIndex(pixels.at(row * doc.width() + col), doc.active());
+                    const int ci = stColourIndex(
+                        pixelAt(pixels, doc.width(), doc.height(), row, col), doc.active());
                     if (ci & (1 << plane))
                         b |= uchar(1 << (7 - bit));
                 }
@@ -676,27 +701,16 @@ QByteArray exportIff(const ImageDocument &doc, int frame, QString *error)
 
 QByteArray exportPng(const ImageDocument &doc, int frame, QString *error)
 {
-    QImage image(doc.width(), doc.height(), QImage::Format_ARGB32);
-    image.fill(Qt::transparent);
-    const QVector<int> &pixels = doc.frame(frame);
-    for (int y = 0; y < doc.height(); ++y) {
-        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
-        for (int x = 0; x < doc.width(); ++x) {
-            const int cube = pixels.at(y * doc.width() + x);
-            if (cube < 0) {
-                line[x] = 0;
-                continue;
-            }
-            const Rgb rgb = cubeRgb(doc.paletteKind(), cube);
-            line[x] = qRgba(rgb.r, rgb.g, rgb.b, 255);
-        }
-    }
+    // The same cube-index -> image conversion the editor shows, transparent so
+    // an unpainted cell stays unpainted in the file.
+    const QImage image = indicesToImage(doc.frame(frame), doc.width(), doc.height(),
+                                        doc.paletteKind(), EmptyStyle::Transparent);
     QByteArray out;
     QBuffer buffer(&out);
     buffer.open(QIODevice::WriteOnly);
     if (!image.save(&buffer, "PNG")) {
         if (error)
-            *error = QStringLiteral("could not encode PNG");
+            *error = QObject::tr("could not encode PNG");
         return {};
     }
     return out;
@@ -708,7 +722,7 @@ QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumbe
         return {};
     if (bankNumber < 1 || bankNumber > 16) {
         if (error)
-            *error = QStringLiteral("STOS bank number must be 1–16 (got %1)").arg(bankNumber);
+            *error = QObject::tr("STOS bank number must be 1–16 (got %1)").arg(bankNumber);
         return {};
     }
 
@@ -716,7 +730,7 @@ QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumbe
     const int h = doc.height();
     const int wu = w / 16;
     const int count = doc.frameCount();
-    const int spriteLen = wu * h * 10;
+    const int spriteLen = planeRowBytes(w, false, true) * h;
     const int bodyLen = 0x16 + count * 8 + 36 + count * spriteLen;
     const int alloc = ((bodyLen + 255) / 256) * 256;
     QByteArray out(0x12 + bodyLen, '\0');
@@ -759,40 +773,22 @@ QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumbe
     }
 
     bytes("PALT", 4);
-    const QVector<quint16> table = stColourTable(doc.paletteKind(), doc.active());
+    const QVector<quint16> table = stfmColourTable(doc.paletteKind(), doc.active());
     for (quint16 word : table)
         u16(word);
 
+    // Each frame is its image data and then its mask data — "Monoplanar mask data
+    // follows image data for each frame" (the MBK reference this encoder copies:
+    // header, frame descriptors, PALT, then the frames). The mask used to come
+    // first, which STOS loads swapped: the bank drew as garbage.
+    uchar *frameData = data + pos;
+    const int planeBytes = planeRowBytes(w, false, false) * h;
     for (int fi = 0; fi < count; ++fi) {
-        const QVector<int> &frame = doc.frame(fi);
-        for (int row = 0; row < h; ++row) {
-            for (int unit = 0; unit < wu; ++unit) {
-                quint16 mw = 0;
-                for (int px = 0; px < 16; ++px) {
-                    const int x = unit * 16 + px;
-                    const int raw = frame.at(row * w + x);
-                    if (raw < 0 || stColourIndex(raw, doc.active()) == maskColour)
-                        mw |= quint16(1u << (15 - px));
-                }
-                u16(mw);
-            }
-        }
-        for (int row = 0; row < h; ++row) {
-            for (int unit = 0; unit < wu; ++unit) {
-                quint16 bp[4] = {0, 0, 0, 0};
-                for (int px = 0; px < 16; ++px) {
-                    const int x = unit * 16 + px;
-                    const int ci = stColourIndex(frame.at(row * w + x), doc.active());
-                    const int bit = 15 - px;
-                    for (int plane = 0; plane < 4; ++plane) {
-                        if (ci & (1 << plane))
-                            bp[plane] |= quint16(1u << bit);
-                    }
-                }
-                for (quint16 word : bp)
-                    u16(word);
-            }
-        }
+        uchar *planes = frameData;
+        uchar *masks = frameData + planeBytes;
+        packStPlanes(doc.frame(fi), w, h, h, w, doc.active(), maskColour, 0,
+                     MaskPlacement::Separate, planes, masks);
+        frameData += spriteLen;
     }
     return out;
 }
@@ -800,11 +796,12 @@ QByteArray exportStosMbk(const ImageDocument &doc, int maskColour, int bankNumbe
 QByteArray exportBitplanes(const ImageDocument &doc, int frame, QString *error)
 {
     Q_UNUSED(error);
-    const int outW = paddedWidth(doc.width());
-    const int bytes = (outW / 16) * doc.height() * 8;
-    QByteArray out(bytes, '\0');
-    encodeStBitplanes(doc.frame(frame), doc.width(), doc.height(), doc.active(),
-                      reinterpret_cast<uchar *>(out.data()), outW, doc.height());
+    // The row stride comes from planeRowBytes(), the same expression every other
+    // export sizes its blocks with, rather than a second hand-rolled copy.
+    QByteArray out(planeRowBytes(doc.width(), false, false) * doc.height(), '\0');
+    packStPlanes(doc.frame(frame), doc.width(), doc.height(), doc.height(),
+                 paddedWidth(doc.width()), doc.active(), -1, 0, MaskPlacement::None,
+                 reinterpret_cast<uchar *>(out.data()), nullptr);
     return out;
 }
 
@@ -911,12 +908,12 @@ bool checkBitplaneOptions(const BitplaneDataOptions &options, QString *error)
     const bool shifts = options.shifted || options.shiftedMasked;
     if (!options.palette && !options.sprite && !options.masked && !shifts) {
         if (error)
-            *error = QStringLiteral("select at least one block to export");
+            *error = QObject::tr("select at least one block to export");
         return false;
     }
     if (shifts && !isPreShiftCount(options.preShifts)) {
         if (error)
-            *error = QStringLiteral("pre-shift count must be 2, 4 or 8 (got %1)")
+            *error = QObject::tr("pre-shift count must be 2, 4 or 8 (got %1)")
                          .arg(options.preShifts);
         return false;
     }
@@ -928,7 +925,7 @@ const ImagePhase *checkedPhase(const ImageDocument &doc, int phase, QString *err
 {
     if (phase < 0 || phase >= doc.phaseCount()) {
         if (error)
-            *error = QStringLiteral("no such phase");
+            *error = QObject::tr("no such phase");
         return nullptr;
     }
     return &doc.phases().at(phase);
@@ -965,20 +962,23 @@ QByteArray exportBitplaneData(const ImageDocument &doc, int phase,
             break;
         }
         case BitplaneBlock::Kind::Sprite:
-            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent, 0, false, p,
-                               planeRowWidth(w, false));
+            packStPlanes(pixels, w, h, h, planeRowWidth(w, false), doc.active(),
+                         options.transparent, 0, MaskPlacement::None, p, nullptr);
             break;
         case BitplaneBlock::Kind::Masked:
-            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent, 0, true, p,
-                               planeRowWidth(w, false));
+            // The blitter's layout: mask word first, then the four plane words.
+            packStPlanes(pixels, w, h, h, planeRowWidth(w, false), doc.active(),
+                         options.transparent, 0, MaskPlacement::Interleaved, p + 2, p);
             break;
         case BitplaneBlock::Kind::Shifted:
-            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent,
-                               block.shift * step, false, p, planeRowWidth(w, true));
+            packStPlanes(pixels, w, h, h, planeRowWidth(w, true), doc.active(),
+                         options.transparent, block.shift * step, MaskPlacement::None, p,
+                         nullptr);
             break;
         case BitplaneBlock::Kind::ShiftedMasked:
-            encodeSpritePlanes(pixels, w, h, doc.active(), options.transparent,
-                               block.shift * step, true, p, planeRowWidth(w, true));
+            packStPlanes(pixels, w, h, h, planeRowWidth(w, true), doc.active(),
+                         options.transparent, block.shift * step, MaskPlacement::Interleaved,
+                         p + 2, p);
             break;
         }
     }
@@ -1034,8 +1034,8 @@ QByteArray exportScrollDemo(const ImageDocument &doc, int phase,
     const BitplaneBlock *block = scrollDemoBlock(blocks, &masked, &shifted);
     if (!block) {
         if (error)
-            *error = QStringLiteral("the scroll demo needs a sprite block — tick Sprite, "
-                                    "Sprite + mask or a pre-shifted block");
+            *error = QObject::tr("the scroll demo needs a sprite block — tick Sprite, "
+                                 "Sprite + mask or a pre-shifted block");
         return {};
     }
     const bool hasPalette = options.palette;
@@ -1391,11 +1391,61 @@ QByteArray exportScrollDemo(const ImageDocument &doc, int phase,
     return text;
 }
 
+QByteArray encodeStImage(const ImageDocument &doc, StImageFormat format, int frame,
+                         const QString &name, QString *error)
+{
+    switch (format) {
+    case StImageFormat::Pim:
+        // PiST's own format: the whole document, not one frame of it.
+        return doc.toJson();
+    case StImageFormat::Pi1:
+        return exportPi1(doc, frame, error);
+    case StImageFormat::Neo:
+        return exportNeo(doc, frame, name, error);
+    case StImageFormat::Iff:
+        return exportIff(doc, frame, error);
+    case StImageFormat::Png:
+        return exportPng(doc, frame, error);
+    case StImageFormat::Mbk:
+        return exportStosMbk(doc, 0, 1, error);
+    case StImageFormat::Assembler:
+        return exportAssembler(doc, frame, error);
+    case StImageFormat::BitplaneBin:
+        return exportBitplanes(doc, frame, error);
+    case StImageFormat::Unknown:
+        break;
+    }
+    if (error)
+        *error = QObject::tr("unsupported export format");
+    return {};
+}
+
+bool writeStImage(const QString &path, const QByteArray &bytes, QString *error)
+{
+    if (bytes.isEmpty()) {
+        if (error)
+            *error = QObject::tr("the encoder produced no data");
+        return false;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (error)
+            *error = file.errorString();
+        return false;
+    }
+    if (file.write(bytes) != bytes.size()) {
+        if (error)
+            *error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
 ImageDocument composeSheet(const ImageDocument &doc, int sheetIndex, QString *error)
 {
     if (sheetIndex < 0 || sheetIndex >= doc.sheets().size()) {
         if (error)
-            *error = QStringLiteral("no such sprite sheet");
+            *error = QObject::tr("no such sprite sheet");
         return {};
     }
     const ImageSheet &sheet = doc.sheets().at(sheetIndex);

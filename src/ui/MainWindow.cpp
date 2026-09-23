@@ -3,6 +3,14 @@
 // PiST - an IDE for Atari ST assembly development
 
 #include "ui/MainWindow.h"
+#include "emu/HexFormat.h"
+
+#include "ui/BreakpointWatchpointModel.h"
+#include "ui/DebugSessionController.h"
+#include "ui/ProfilerController.h"
+#include "ui/RemoteStateAdapter.h"
+#include "ui/SessionLauncher.h"
+#include "ui/UiText.h"
 
 #include "build/BuildService.h"
 #include "editor/CodeEditor.h"
@@ -131,6 +139,30 @@ void markProblemSeverity(QTreeWidgetItem *item, bool error)
     item->setForeground(2, ink);
 }
 
+/// Item data role holding a Problems row's index into m_problemEntries. Not
+/// Qt::DisplayRole: what the row shows is formatted for the eye (a translated
+/// placeholder for a file-less note, a line number as text), which is exactly
+/// what the pane must not read its own model back through.
+constexpr int kProblemEntryRole = Qt::UserRole;
+
+/// Whether a dock belongs to the debug set: the docks the first-run Editing
+/// arrangement keeps off screen and the Debugging preset turns on. One list,
+/// because both users must agree — a debug dock added to one and not the other
+/// would be hidden by Reset layout and never be shown by Debugging.
+bool isDebugDockName(const QString &name)
+{
+    return name == QLatin1String("registersDock")
+        || name == QLatin1String("disassemblyDock")
+        || name == QLatin1String("stackDock")
+        || name == QLatin1String("hardwareDock")
+        || name == QLatin1String("pcHistoryDock")
+        || name == QLatin1String("breakpointsDock")
+        || name == QLatin1String("instructionRefDock")
+        || name == QLatin1String("symbolsDock")
+        || name == QLatin1String("profilerDock")
+        || name.startsWith(QLatin1String("memoryDock"));
+}
+
 bool fileInsideRepo(const QString &root, const QString &file)
 {
     if (root.isEmpty() || file.isEmpty())
@@ -165,11 +197,238 @@ bool suffixIsKnownBinary(const QString &suffix)
     return binary.contains(suffix);
 }
 
+/// The QSettings keys this window persists, one accessor per key beside the
+/// place that reads it (MIN-53). Every read and every write goes through these,
+/// so a key is spelled exactly once in the file — a typo in the literal pair
+/// used to lose a preference with nothing to point at. The window-state keys
+/// keep their historical names: they are what an existing installation's
+/// persisted layout lives under.
+const QString &embeddedDisplayKey()
+{
+    static const QString key = QStringLiteral("display/embedded");
+    return key;
+}
+
+const QString &gitBlameKey()
+{
+    static const QString key = QStringLiteral("git/blame");
+    return key;
+}
+
+/// The one-shot "you can drag phases onto the sheet" hint.
+const QString &offeredSpriteKey()
+{
+    static const QString key = QStringLiteral("layout/offeredSprite");
+    return key;
+}
+
+const QString &offeredDebuggingKey()
+{
+    static const QString key = QStringLiteral("layout/offeredDebugging");
+    return key;
+}
+
+const QString &layoutStateKey()
+{
+    static const QString key = QStringLiteral("layout/state");
+    return key;
+}
+
+const QString &layoutGeometryKey()
+{
+    static const QString key = QStringLiteral("layout/geometry");
+    return key;
+}
+
+const QString &layoutWidthKey()
+{
+    static const QString key = QStringLiteral("layout/width");
+    return key;
+}
+
+const QString &layoutHeightKey()
+{
+    static const QString key = QStringLiteral("layout/height");
+    return key;
+}
+
+/// The layout stashed for the duration of a preset (see applyLayoutPreset).
+const QString &layoutPreviousKey()
+{
+    static const QString key = QStringLiteral("layout/previous");
+    return key;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    // The MAJ-41 seams, before anything they own: the session controller holds
+    // the lifecycle flags, the launcher the run path, the models the
+    // breakpoint/watchpoint lists, the profiler its collecting mode and the
+    // adapter the remote-control verbs. Qt parent-child owns all five.
+    //
+    // Each is handed a Host — the operations it performs on this window — rather
+    // than a pointer back into the class (MIN-89; the friend declarations that
+    // stood in for this are gone). The aggregates below are therefore the whole
+    // of what a seam can reach, in one place. They are built out of lambdas
+    // because the members they read are assigned later in this constructor: a
+    // Host is only ever *called* once the window is up.
+    const auto backendNow = [this]() -> IDebugBackend * { return m_host; };
+    const auto sessionNow = [this]() -> DebugSessionController * { return m_session; };
+    const auto editorNow = [this]() -> CodeEditor * { return m_editor; };
+    const auto programMapNow = [this]() -> const ProgramLineMap & { return m_programMap; };
+    const auto symbolsNow = [this]() -> const QVector<SymbolEntry> & { return m_symbols; };
+    const auto logLine = [this](const QString &line) { m_log->appendPlainText(line); };
+
+    // Showing the breakpoint models in the dock's panel. Each is a no-op before
+    // the panel exists, which is how the seams can call them unconditionally.
+    const auto showBreakpoints = [this](const QList<Breakpoint> &breakpoints) {
+        if (m_breakpointPanel)
+            m_breakpointPanel->setBreakpoints(breakpoints);
+    };
+    const auto showWatchpoints = [this](const QList<Watchpoint> &watchpoints) {
+        if (m_breakpointPanel)
+            m_breakpointPanel->setWatchpoints(watchpoints);
+    };
+    const auto showArmedBreakpoints = [this](const QList<Breakpoint> &breakpoints,
+                                             const QList<Watchpoint> &watchpoints) {
+        if (!m_breakpointPanel)
+            return;
+        m_breakpointPanel->setResolvable(true);
+        m_breakpointPanel->setBreakpoints(breakpoints);
+        m_breakpointPanel->setWatchpoints(watchpoints);
+    };
+
+    // The window's half of a session's end (the controller's resetSessionState):
+    // what the last session left on screen. The PC bar goes with it — it was
+    // painted from that stop's PC and nothing else cleared it (only
+    // locationFromPc's failure paths did), so after Stop it stayed on a line the
+    // session no longer runs at, and a wait for "the program counter moved to
+    // line N" matched the stale highlight instantly instead of the new
+    // session's stop. Same shape as the session-end teardown's setLineHeat({})
+    // for the profiler heat.
+    const auto clearSessionViews = [this] {
+        m_stoppedFile.clear();
+        m_stoppedLine = 0;
+        m_bases = LineMap::SectionBases();
+        m_lastState = MachineState();
+        m_pendingDebugCommand.clear();
+        for (CodeEditor *editor : openEditors())
+            editor->clearCurrentExecutionLine();
+    };
+
+    DebugSessionController::Host sessionHost;
+    sessionHost.backend = backendNow;
+    sessionHost.profiler = [this] { return m_profiling; };
+    sessionHost.breakpoints = [this] { return m_bpModel; };
+    sessionHost.programMap = programMapNow;
+    sessionHost.bases = [this]() -> const LineMap::SectionBases & { return m_bases; };
+    sessionHost.lastState = [this]() -> const MachineState & { return m_lastState; };
+    sessionHost.log = logLine;
+    sessionHost.showWatchpoints = showWatchpoints;
+    sessionHost.showArmedBreakpoints = showArmedBreakpoints;
+    sessionHost.clearSessionViews = clearSessionViews;
+    m_session = new DebugSessionController(sessionHost, this);
+
+    SessionLauncher::Host launcherHost;
+    launcherHost.settings = [this]() -> const ProjectSettings & { return m_settings; };
+    launcherHost.buildSourcePath = [this] { return buildSourcePath(); };
+    launcherHost.makeSessionDir = [this] { return makeSessionDir(); };
+    launcherHost.backend = backendNow;
+    // The transport switch a launch may need. It used to be the launcher
+    // reaching in and re-wiring m_host by hand — the leaky half of the
+    // shell/launcher boundary (MIN-89); the window owns its backend, so the
+    // window performs the swap.
+    launcherHost.selectBackend = [this](BackendKind wanted) {
+        if (m_host->kind() == wanted)
+            return;
+        m_host->stop();
+        delete m_host;
+        m_host = createBackend(wanted, this);
+        wireBackend();
+    };
+    // The embedded display container, realized and shown only once the session
+    // is known to be able to embed one: winId() has to be a live X11 window
+    // before Hatari starts, or there is nothing to reparent into.
+    launcherHost.embedDisplayWindowId = [this](const HatariCapabilities &caps) -> QString {
+        if (!(m_embeddedDisplay && canEmbedDisplay(caps) && m_display))
+            return QString();
+        m_displayDock->setVisible(true);
+        m_display->setVisible(true);
+        return QString::number(m_display->winId());
+    };
+    launcherHost.quiet = [this] { return m_quietDialogs; };
+    launcherHost.refuseRun = [this](const QString &title, const QString &reason, bool critical) {
+        refuseRun(title, reason, critical);
+    };
+    launcherHost.log = logLine;
+    launcherHost.showStatus = [this](const QString &text, int milliseconds) {
+        statusBar()->showMessage(text, milliseconds);
+    };
+    launcherHost.session = sessionNow;
+    m_launcher = new SessionLauncher(launcherHost, this);
+
+    BreakpointWatchpointModel::Host breakpointHost;
+    breakpointHost.session = sessionNow;
+    breakpointHost.programMap = programMapNow;
+    breakpointHost.symbols = symbolsNow;
+    breakpointHost.editor = editorNow;
+    breakpointHost.editors = [this] { return openEditors(); };
+    breakpointHost.backend = backendNow;
+    breakpointHost.log = logLine;
+    breakpointHost.showBreakpoints = showBreakpoints;
+    breakpointHost.showWatchpoints = showWatchpoints;
+    m_bpModel = new BreakpointWatchpointModel(breakpointHost, this);
+
+    ProfilerController::Host profilerHost;
+    profilerHost.backend = backendNow;
+    profilerHost.session = sessionNow;
+    profilerHost.editor = editorNow;
+    profilerHost.programMap = programMapNow;
+    profilerHost.symbols = symbolsNow;
+    profilerHost.sessionDir = [this] { return m_currentSessionDir; };
+    profilerHost.log = logLine;
+    profilerHost.showMessage = [this](const QString &hint) { m_profiler->showMessage(hint); };
+    // One attributed value, three presentations (MAJ-44): the dock's table, the
+    // dock brought forward, and the current editor's gutter heat.
+    profilerHost.showResults = [this](const AttributedProfile &profile) {
+        m_profiler->setProfile(profile);
+        if (m_profilerDock) {
+            m_profilerDock->show();
+            m_profilerDock->raise();
+        }
+        if (m_editor)
+            m_editor->setLineHeat(lineCounts(profile));
+    };
+    profilerHost.resultsReady = [this](bool ok) { emit profileResultsReady(ok); };
+    profilerHost.setProfileAction = [this](ProfilerController::ProfileAction action, bool enabled,
+                                           const QString &tooltip) {
+        QAction *const target = action == ProfilerController::ProfileAction::Start
+            ? m_actProfileStart
+            : action == ProfilerController::ProfileAction::Stop ? m_actProfileStop
+                                                                : m_actProfileToCursor;
+        if (!target)
+            return;
+        target->setEnabled(enabled);
+        target->setToolTip(tooltip);
+    };
+    m_profiling = new ProfilerController(profilerHost, this);
+
+    RemoteStateAdapter::Host stateHost;
+    stateHost.editor = [this]() -> const CodeEditor * { return m_editor; };
+    stateHost.backend = [this]() -> const IDebugBackend * { return m_host; };
+    stateHost.lastState = [this]() -> const MachineState & { return m_lastState; };
+    stateHost.problems = [this]() -> const QList<RemoteStateAdapter::ProblemRow> & {
+        return m_problemEntries;
+    };
+    stateHost.tabs = [this] { return m_tabs; };
+    stateHost.symbols = symbolsNow;
+    stateHost.programMap = programMapNow;
+    stateHost.profile = [this]() -> const AttributedProfile & { return m_profiling->results(); };
+    m_remoteState = new RemoteStateAdapter(stateHost, this);
+
     // Documents live in tabs. openPath() dispatches `.pim` / ST still-images
     // to addImageTab() and everything else to addEditorTab(). m_editor tracks
     // the current *text* editor and is null on an image tab; m_image is the
@@ -222,7 +481,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Restore the display preference before any dock is created, so the dock's
     // initial visibility matches it.
-    m_embeddedDisplay = QSettings().value(QStringLiteral("display/embedded"), false).toBool();
+    m_embeddedDisplay = QSettings().value(embeddedDisplayKey(), false).toBool();
 
     createActions();
     createMenus();
@@ -269,7 +528,7 @@ CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
         }
     }
 
-    auto *editor = new CodeEditor(this);
+    auto *editor = new CodeEditor(appearance::editorTheme(), this);
     wireEditor(editor);
     if (!path.isEmpty() && !editor->loadFile(path)) {
         if (!quiet)
@@ -349,8 +608,9 @@ void MainWindow::wireEditor(CodeEditor *editor)
     connect(editor, &CodeEditor::gutterContextMenuRequested, this,
             [this, editor](int line, const QPoint &pos) {
                 QMenu menu;
+                const QList<Breakpoint> &breakpoints = m_bpModel->breakpoints();
                 const bool hasBreakpoint = std::any_of(
-                    m_breakpoints.cbegin(), m_breakpoints.cend(),
+                    breakpoints.cbegin(), breakpoints.cend(),
                     [editor, line](const Breakpoint &bp) {
                         return bp.line == line
                             && bp.file == QFileInfo(editor->filePath()).fileName();
@@ -378,9 +638,12 @@ void MainWindow::wireImage(ImageEditor *editor)
 void MainWindow::wireImageReExport(ImageEditor *editor)
 {
     // A re-export repeats the block map in the console, same as the explicit
-    // export leaves it.
+    // export leaves it. The block map comes from the editor that emitted:
+    // an export can finish after the user switched tabs, and reading the
+    // recipe back through m_image would then describe a different document
+    // (or dereference null with no image tab open at all).
     connect(editor, &ImageEditor::bitplaneReExported, this,
-            [this](const QString &path, const QString &scroller, const QString &error) {
+            [this, editor](const QString &path, const QString &scroller, const QString &error) {
                 if (!m_log)
                     return;
                 if (!error.isEmpty()) {
@@ -389,12 +652,13 @@ void MainWindow::wireImageReExport(ImageEditor *editor)
                 }
                 m_log->appendPlainText(tr("--- bitplane data (re-export): %1 ---")
                                            .arg(QFileInfo(path).fileName()));
-                const ImageDocument &doc = m_image->document();
+                const ImageDocument &doc = editor->document();
+                const int phase = editor->lastBitplaneExportPhase();
                 const QVector<BitplaneBlock> blocks = bitplaneLayout(
-                    doc.phases().at(m_image->lastBitplaneExportPhase()).cellW,
-                    doc.phases().at(m_image->lastBitplaneExportPhase()).cellH,
-                    doc.phases().at(m_image->lastBitplaneExportPhase()).frames.size(),
-                    m_image->lastBitplaneExportOptions());
+                    doc.phases().at(phase).cellW,
+                    doc.phases().at(phase).cellH,
+                    doc.phases().at(phase).frames.size(),
+                    editor->lastBitplaneExportOptions());
                 for (const BitplaneBlock &block : blocks)
                     m_log->appendPlainText(QStringLiteral("%1 equ $%2")
                                                .arg(block.name, -20)
@@ -490,17 +754,17 @@ void MainWindow::onTabChanged(int index)
     if (!path.isEmpty() && m_fileBrowser)
         m_fileBrowser->showFor(path);
     if (m_editor)
-        refreshBreakpointMarkers();
+        m_bpModel->refreshMarkers();
     updateModifiedState();
     updateCaretChip();
     // Deferred so a following "Opened …" status line does not eat the offer.
     // A modal would hang the offscreen image tests.
-    if (m_image && !QSettings().value(QStringLiteral("layout/offeredSprite")).toBool()) {
+    if (m_image && !QSettings().value(offeredSpriteKey()).toBool()) {
         QTimer::singleShot(0, this, [this] {
             if (!m_image
-                || QSettings().value(QStringLiteral("layout/offeredSprite")).toBool())
+                || QSettings().value(offeredSpriteKey()).toBool())
                 return;
-            QSettings().setValue(QStringLiteral("layout/offeredSprite"), true);
+            QSettings().setValue(offeredSpriteKey(), true);
             if (statusBar())
                 statusBar()->showMessage(
                     tr("View → Layout → Sprite gives the canvas the window."), 8000);
@@ -517,10 +781,13 @@ void MainWindow::onTabChanged(int index)
 void MainWindow::onTabCloseRequested(int index)
 {
     QWidget *widget = m_tabs->widget(index);
+    QString closedPath;
     if (auto *editor = qobject_cast<CodeEditor *>(widget)) {
+        closedPath = editor->filePath();
         if (!maybeSaveEditor(editor))
             return;
     } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
+        closedPath = image->filePath();
         if (!maybeSaveImage(image))
             return;
     }
@@ -528,6 +795,15 @@ void MainWindow::onTabCloseRequested(int index)
     m_tabs->removeTab(index);
     if (widget)
         widget->deleteLater();
+
+    // The extracted-document mapping is a per-tab registry — keyed by the path
+    // the closed tab held, which is the path that tab's saves wrote back
+    // through (writeBackFloppyDoc). It goes with the tab: kept forever, the map
+    // grew one entry per extracted file ever opened, and a save of a path
+    // nothing on screen describes any more (reopened through Open rather than
+    // the disk pane) still wrote itself into that image.
+    if (!closedPath.isEmpty())
+        m_floppyDocs.remove(QFileInfo(closedPath).absoluteFilePath());
 
     // There is always at least one tab: closing the last document leaves a
     // pristine editor rather than an empty central widget.
@@ -554,7 +830,21 @@ void MainWindow::refreshToolchain()
     updateSessionChip();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow()
+{
+    // A live session has to be stopped while the window is still whole. stop()
+    // announces the session end (EmulatorHost does it from its own destructor
+    // too) and that handler touches sibling widgets — the hardware and PC
+    // history transcripts, the profiler, every open editor's gutter heat — which
+    // QObject::deleteChildren is by then taking down in its own order, so a
+    // window destroyed with an emulator running reads freed widgets: measured
+    // as a SIGSEGV/SIGABRT inside the session-end handler, with a real Hatari
+    // left behind because the teardown never finished. closeEvent stops the
+    // session for the ordinary quit; this is the same guarantee for every other
+    // way the window dies (a test's early return, a delete, a crash path).
+    if (m_host->isRunning())
+        m_host->stop();
+}
 
 void MainWindow::createActions()
 {
@@ -638,7 +928,7 @@ void MainWindow::createActions()
     connect(m_actProfileToCursor, &QAction::triggered, this, &MainWindow::profileToCursor);
     // No session at startup: everything is disabled until stoppedChanged or a
     // state change says otherwise (QActions default to enabled).
-    syncProfileActions();
+    m_profiling->syncActions();
     connect(m_actPrevDiagnostic, &QAction::triggered, this, &MainWindow::previousDiagnostic);
     connect(m_actFind, &QAction::triggered, this, &MainWindow::showFindBar);
 
@@ -685,12 +975,12 @@ void MainWindow::createActions()
 
     m_actBuild = new QAction(tr("&Build"), this);
     m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
-    connect(m_actBuild, &QAction::triggered, this, &MainWindow::build);
+    connect(m_actBuild, &QAction::triggered, this, &MainWindow::buildInteractive);
 
     m_actRun = new QAction(tr("&Run"), this);
     m_actRun->setObjectName(QStringLiteral("runAction"));
     m_actRun->setShortcut(QKeySequence(Qt::Key_F5));
-    connect(m_actRun, &QAction::triggered, this, &MainWindow::run);
+    connect(m_actRun, &QAction::triggered, this, &MainWindow::runInteractive);
 
     m_actStop = new QAction(tr("&Stop"), this);
     m_actStop->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F5));
@@ -755,9 +1045,9 @@ void MainWindow::createActions()
     m_actGitBlame = new QAction(tr("Git &blame"), this);
     m_actGitBlame->setObjectName(QStringLiteral("gitBlameAction"));
     m_actGitBlame->setCheckable(true);
-    m_actGitBlame->setChecked(QSettings().value(QStringLiteral("git/blame"), false).toBool());
+    m_actGitBlame->setChecked(QSettings().value(gitBlameKey(), false).toBool());
     connect(m_actGitBlame, &QAction::toggled, this, [this](bool on) {
-        QSettings().setValue(QStringLiteral("git/blame"), on);
+        QSettings().setValue(gitBlameKey(), on);
         applyGitBlame();
     });
 }
@@ -793,7 +1083,7 @@ void MainWindow::wireBackend()
         updateSessionChip();
         if (m_actPause)
             m_actPause->setEnabled(false);
-        if (m_sessionArmed) {
+        if (m_session->sessionArmed()) {
             if (m_actStep) m_actStep->setEnabled(false);
             if (m_actStepOver) m_actStepOver->setEnabled(false);
             if (m_actStepOut) m_actStepOut->setEnabled(false);
@@ -805,8 +1095,15 @@ void MainWindow::wireBackend()
         // reset the next launch performs, so stale arming state, bases, the
         // cached machine state and a pending remote command cannot survive
         // into whatever happens next.
-        resetSessionState();
+        m_session->resetSessionState();
         updateRegisterStrip();
+        // Both transcripts describe the session that just ended, and neither is
+        // re-requested without one: left on screen they read as the hardware's
+        // current state. The views' own `clear()` documents the no-session state.
+        if (m_hardware)
+            m_hardware->clear();
+        if (m_pcHistory)
+            m_pcHistory->clear();
         // A session's profile and its gutter heat belong to that session.
         if (m_profiler)
             m_profiler->clear();
@@ -814,24 +1111,54 @@ void MainWindow::wireBackend()
             editor->setLineHeat({});
     });
     connect(m_host, &IDebugBackend::memoryDumpReady, this,
-            [this](quint32, const QString &response, int tag) {
-                // Route the dump to the pane that asked for it, by tag.
+            [this](quint32 address, const QList<MemoryRow> &rows, int tag) {
+                // The remote `readmem` verb's dump carries a tag no pane owns
+                // (kRemoteReadTag) and belongs to the waiting verb, not to a
+                // view. Otherwise: route the dump to the pane that asked for it.
+                // Either way the rows are already parsed (MAJ-45) — the verb
+                // renders its JSON from them and no one re-reads the dump text.
+                if (tag == kRemoteReadTag) {
+                    emit debugReadMemoryFinished(address, rows);
+                    return;
+                }
                 if (auto *view = m_memoryPanes.value(tag, nullptr))
-                    view->applyDump(response);
+                    view->applyDump(rows);
             });
-    // `info <subject>` responses feed the hardware view. Routed by command text:
-    // `info basepage` is part of the normal refresh and must not land here.
+    connect(m_host, &IDebugBackend::disassemblyReady, this,
+            [this](quint32 address, const QString &response) {
+                // Only the remote `disasm` verb reads the disassembly at a given
+                // address: the snapshot's own read is readDisassembly() at the
+                // PC, which reports no text.
+                emit debugReadFinished(address, response);
+            });
+    // The hardware view's `info <subject>` reports, named by the subject that
+    // was asked for — the pane is the only consumer, and only for the subject it
+    // is showing. The report is parsed in the backend (MAJ-45), so the pane
+    // renders a summary rather than a transcript it reads meaning out of.
+    // Nothing else internal matches on a command's text.
+    connect(m_host, &IDebugBackend::hardwareInfoReady, this,
+            [this](const QString &subject, const HardwareSummary &summary) {
+                if (m_hardware && subject == m_hardware->subject())
+                    m_hardware->setInfo(summary);
+            });
+    connect(m_host, &IDebugBackend::historyReady, this,
+            [this](const QString &response) {
+                if (m_pcHistory)
+                    m_pcHistory->setHistory(response);
+            });
+    connect(m_host, &IDebugBackend::profileSaveFinished, this,
+            [this](const QString &) {
+                // The save's file is what was asked for; showProfileResults
+                // parses it and reports a failure in the console itself.
+                if (!m_session->consumeProfileSavePending())
+                    return;
+                showProfileResults();
+            });
     connect(m_host, &IDebugBackend::commandFinished, this,
             [this](const QString &command, const QString &response) {
-                if (m_hardware && command == QLatin1String("info ") + m_hardware->subject())
-                    m_hardware->setInfo(response);
-                else if (m_pcHistory && command.startsWith(QLatin1String("history ")))
-                    m_pcHistory->setHistory(response);
-                else if (m_profileSavePending
-                         && command.startsWith(QLatin1String("profile save"))) {
-                    m_profileSavePending = false;
-                    showProfileResults();
-                }
+                // Only the remote `cmd` verb's own text is matched here: it is
+                // the user's command, echoed back so its response can be
+                // delivered to the client waiting on it.
                 if (!m_pendingDebugCommand.isEmpty() && command == m_pendingDebugCommand) {
                     m_pendingDebugCommand.clear();
                     emit debugCommandFinished(command, response);
@@ -855,13 +1182,12 @@ void MainWindow::wireBackend()
         // PC worth reporting.
         if (m_eventSink) {
             if (stopped) {
-                m_stopEventPending = true;
+                m_session->setStopEventPending(true);
             } else {
                 // A stop whose state never became valid (no register batch
                 // followed) must not leave a watcher hanging: publish it
                 // without the pc detail rather than drop it.
-                if (m_stopEventPending) {
-                    m_stopEventPending = false;
+                if (m_session->consumeStopEventPending()) {
                     m_eventSink->publishEvent(QStringLiteral("stopped"));
                 }
                 m_eventSink->publishEvent(QStringLiteral("running"));
@@ -886,13 +1212,13 @@ void MainWindow::wireBackend()
             m_registers->setEditingEnabled(stopped);
         if (m_memory)
             m_memory->setEditingEnabled(stopped);
-        syncProfileActions();
+        m_profiling->syncActions();
         if (stopped) {
-            onDebuggerStopped();
+            m_session->onDebuggerStopped();
             // A status line, not a dialog: a modal here hangs the offscreen
             // stop tests. The key makes the offer once per settings store.
-            if (!QSettings().value(QStringLiteral("layout/offeredDebugging")).toBool()) {
-                QSettings().setValue(QStringLiteral("layout/offeredDebugging"), true);
+            if (!QSettings().value(offeredDebuggingKey()).toBool()) {
+                QSettings().setValue(offeredDebuggingKey(), true);
                 statusBar()->showMessage(
                     tr("View → Layout → Debugging arranges the panels around a stop."),
                     8000);
@@ -901,34 +1227,15 @@ void MainWindow::wireBackend()
     });
 
     connect(m_host, &IDebugBackend::stackDumpReady, this,
-            [this](quint32 sp, const QString &response) {
-                // A step-out dump is consumed here regardless of the stack
-                // view: any stack response is at the same SP with the return
-                // address on top.
-                if (m_stepOutPending) {
-                    m_stepOutPending = false;
-                    const QList<MemoryRow> rows = parseMemoryDump(response);
-                    const quint32 returnAddress =
-                        (!rows.isEmpty() && rows.first().bytes.size() >= 4)
-                        ? readLongBE(QByteArray::fromRawData(
-                                         reinterpret_cast<const char *>(
-                                             rows.first().bytes.constData()),
-                                         rows.first().bytes.size()),
-                                     0)
-                        : 0;
-                    if (!looksLikeAddress(returnAddress)) {
-                        m_log->appendPlainText(
-                            tr("[step out] no plausible return address at A7 "
-                               "(0x%1) — not inside a subroutine?")
-                                .arg(returnAddress, 0, 16));
-                        return;
-                    }
-                    m_log->appendPlainText(tr("[step out] to 0x%1")
-                                               .arg(returnAddress, 0, 16));
-                    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once")
-                                              .arg(returnAddress, 0, 16));
-                    m_host->resume();
-                }
+            [this](quint32 sp, const QList<MemoryRow> &rows) {
+                // A step-out dump is consumed regardless of the stack view: any
+                // stack response is at the same SP with the return address on
+                // top. Those rows are the dump, parsed once in the backend
+                // (MAJ-45) — the controller reads the return address out of
+                // them and the view below renders the same ones, instead of
+                // both parsing the transcript.
+                if (!m_session->handleStackDumpForStepOut(rows))
+                    return;
                 if (!m_stack)
                     return;
                 // The annotation needs the *text* extent, not the data base.
@@ -938,11 +1245,10 @@ void MainWindow::wireBackend()
                 // listings and fall back to the old bound when the map has
                 // none (docs/code-review-glm-001.md, P3).
                 const quint32 textEnd = m_programMap.textEnd();
-                m_stack->setStackDump(sp, response, m_lastState.textBase,
+                m_stack->setStackDump(sp, rows, m_lastState.textBase,
                                       textEnd ? textEnd : m_lastState.dataBase);
             });
 }
-
 
 void MainWindow::createMenus()
 {
@@ -1269,6 +1575,20 @@ void MainWindow::createDocks()
     // Photoshop-style panels: any dock can be nested beside another in an area,
     // and any dock can be dragged onto another to tab them together. The default
     // arrangement below groups the debug views, and the whole arrangement is
+    // persisted and restored across runs. Three passes, because the order
+    // *within* each is free while the order between them is not: every panel has
+    // to exist before anything is wired to it, and the View menu is built from
+    // the docks that exist.
+    buildPanels();
+    wirePanels();
+    buildViewMenu();
+}
+
+void MainWindow::buildPanels()
+{
+    // Photoshop-style panels: any dock can be nested beside another in an area,
+    // and any dock can be dragged onto another to tab them together. The default
+    // arrangement below groups the debug views, and the whole arrangement is
     // persisted and restored across runs.
     setDockNestingEnabled(true);
     qApp->installEventFilter(this);
@@ -1280,6 +1600,120 @@ void MainWindow::createDocks()
     m_fileBrowser = new FileBrowser(this);
     addDockWidget(Qt::LeftDockWidgetArea,
                   makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
+
+    // Tabbed with Project files, and not raised: tabify would put Git on top,
+    // and a first run is the project-files picture. Not a debug dock, so the
+    // factory hide loop leaves it here. Sprite hides it with the project pane.
+    m_gitPanel = new GitPanel(this);
+    auto *projectDock = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    m_gitDock = makeDock(tr("Git"), QStringLiteral("gitDock"), m_gitPanel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_gitDock);
+    if (projectDock) {
+        tabifyDockWidget(projectDock, m_gitDock);
+        projectDock->raise();
+    }
+
+    // --- right, top: the emulator display, which wants to be prominent --------
+    // It lives in a dock shown only when the embedded-display option is on; in
+    // separate-window mode it is hidden and the widget is unused.
+    m_display = new EmulatorDisplayWidget(this);
+    m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
+    m_displayDock->setVisible(m_embeddedDisplay);
+    m_profiler = new ProfilerView(this);
+    m_profiler->setActions(m_actProfileStart, m_actProfileStop, m_actProfileToCursor);
+    addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
+
+    // --- right, below the display: the debug views, tabbed together -----------
+    m_registers = new RegistersView(this);
+    m_disassembly = new DisassemblyView(this);
+    m_stack = new StackView(this);
+    m_hardware = new HardwareView(this);
+    m_breakpointPanel = new BreakpointPanel(this);
+
+    m_pcHistory = new PcHistoryView(this);
+    m_instrRef = new InstructionRefView(this);
+    m_symbolsView = new SymbolsView(this);
+    debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
+              << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
+              << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
+              << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
+              << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
+              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
+              << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
+              << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
+              << (m_profilerDock = makeDock(tr("Profiler"), QStringLiteral("profilerDock"),
+                                            m_profiler));
+
+    addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
+    for (int i = 1; i < debugTabs.size(); ++i)
+        tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
+    // tabifyDockWidget leaves the last dock on top, which made a first run
+    // open on Profiler. Registers is the tab the debug group should show.
+    debugTabs.first()->raise();
+    if (m_embeddedDisplay) {
+        // Vertical split: the first dock goes on top, the second underneath.
+        splitDockWidget(m_displayDock, debugTabs.first(), Qt::Vertical);
+        m_displayDock->raise();
+        debugTabs.first()->raise();
+    }
+
+    // --- bottom: problems, console and memory, tabbed -------------------------
+    // Problems and the console are ordinary docks rather than tabs in a
+    // QTabWidget inside one dock, so the bottom area is a normal tab group: you
+    // can drag panels into it and out of it like any other, and the Move-to
+    // menu works on their tabs.
+    m_problems = new QTreeWidget(this);
+    m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message")});
+    m_problems->header()->setStretchLastSection(true);
+
+    m_log = new QPlainTextEdit(this);
+    m_log->setReadOnly(true);
+    appearance::markMono(m_log);
+
+    m_problemsDock = makeDock(tr("Problems"), QStringLiteral("problemsDock"), m_problems);
+    addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
+
+    // A command entry under the log turns the console into a live debugger
+    // console: commands go through the backend's normal queue and the response
+    // is appended when it arrives (matched by command text in the
+    // commandFinished handler in wireBackend).
+    m_consoleInput = new ConsoleInput(this);
+    m_consoleInput->setObjectName(QStringLiteral("consoleInput"));
+    appearance::markMono(m_consoleInput);
+    m_consoleInput->setPlaceholderText(
+        tr("Debugger command (e.g. r, d, m $12596 20)"));
+    m_consoleInput->setToolTip(
+        tr("r registers, d disassemble, m address length, b breakpoint."));
+    m_consoleInput->setEnabled(false);
+    // The command verbs are always completable; symbol names join the
+    // candidate list when a build's listings are parsed (rebuildProgramMap).
+    m_consoleVerbs = {QStringLiteral("r"), QStringLiteral("d"), QStringLiteral("m"),
+                      QStringLiteral("w"), QStringLiteral("l"), QStringLiteral("s"),
+                      QStringLiteral("n"), QStringLiteral("c"), QStringLiteral("b"),
+                      QStringLiteral("info"), QStringLiteral("symbols"),
+                      QStringLiteral("profile"), QStringLiteral("setopt"),
+                      QStringLiteral("help"), QStringLiteral("quit")};
+    m_consoleInput->setCompletions(m_consoleVerbs);
+
+    auto *consoleWidget = new QWidget(this);
+    auto *consoleLayout = new QVBoxLayout(consoleWidget);
+    consoleLayout->setContentsMargins(0, 0, 0, 0);
+    consoleLayout->setSpacing(0);
+    consoleLayout->addWidget(m_log);
+    consoleLayout->addWidget(m_consoleInput);
+
+    auto *consoleDock =
+        makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), consoleWidget);
+    addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
+    tabifyDockWidget(m_problemsDock, consoleDock);
+
+    // The first memory pane (tag 0) tabs onto this group; more can be added
+    // from its "+" button.
+    addMemoryPane();
+}
+
+void MainWindow::wirePanels()
+{
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
     connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
             [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });
@@ -1342,17 +1776,6 @@ void MainWindow::createDocks()
                 }
             });
 
-    // Tabbed with Project files, and not raised: tabify would put Git on top,
-    // and a first run is the project-files picture. Not a debug dock, so the
-    // factory hide loop leaves it here. Sprite hides it with the project pane.
-    m_gitPanel = new GitPanel(this);
-    auto *projectDock = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
-    m_gitDock = makeDock(tr("Git"), QStringLiteral("gitDock"), m_gitPanel);
-    addDockWidget(Qt::LeftDockWidgetArea, m_gitDock);
-    if (projectDock) {
-        tabifyDockWidget(projectDock, m_gitDock);
-        projectDock->raise();
-    }
     connect(m_gitDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         if (visible && m_gitPanel)
             m_gitPanel->refresh();
@@ -1367,50 +1790,6 @@ void MainWindow::createDocks()
                         editor->setBlame(lines);
                 }
             });
-
-    // --- right, top: the emulator display, which wants to be prominent --------
-    // It lives in a dock shown only when the embedded-display option is on; in
-    // separate-window mode it is hidden and the widget is unused.
-    m_display = new EmulatorDisplayWidget(this);
-    m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
-    m_displayDock->setVisible(m_embeddedDisplay);
-    m_profiler = new ProfilerView(this);
-    m_profiler->setActions(m_actProfileStart, m_actProfileStop, m_actProfileToCursor);
-    addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
-
-    // --- right, below the display: the debug views, tabbed together -----------
-    m_registers = new RegistersView(this);
-    m_disassembly = new DisassemblyView(this);
-    m_stack = new StackView(this);
-    m_hardware = new HardwareView(this);
-    m_breakpointPanel = new BreakpointPanel(this);
-
-    m_pcHistory = new PcHistoryView(this);
-    m_instrRef = new InstructionRefView(this);
-    m_symbolsView = new SymbolsView(this);
-    debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
-              << makeDock(tr("Disassembly"), QStringLiteral("disassemblyDock"), m_disassembly)
-              << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
-              << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
-              << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
-              << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
-              << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
-              << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
-              << (m_profilerDock = makeDock(tr("Profiler"), QStringLiteral("profilerDock"),
-                                            m_profiler));
-
-    addDockWidget(Qt::RightDockWidgetArea, debugTabs.first());
-    for (int i = 1; i < debugTabs.size(); ++i)
-        tabifyDockWidget(debugTabs.first(), debugTabs.at(i));
-    // tabifyDockWidget leaves the last dock on top, which made a first run
-    // open on Profiler. Registers is the tab the debug group should show.
-    debugTabs.first()->raise();
-    if (m_embeddedDisplay) {
-        // Vertical split: the first dock goes on top, the second underneath.
-        splitDockWidget(m_displayDock, debugTabs.first(), Qt::Vertical);
-        m_displayDock->raise();
-        debugTabs.first()->raise();
-    }
 
     // The reference dock's "insert binding" gesture drops the call's
     // canonical binding into the current source, above the cursor's line, as
@@ -1498,7 +1877,7 @@ void MainWindow::createDocks()
     connect(m_hardware, &HardwareView::subjectChanged, this,
             [this](const QString &subject) {
                 if (m_host->isRunning())
-                    m_host->command(QStringLiteral("info ") + subject);
+                    m_host->infoSubject(subject);
             });
 
     // A register edit becomes a debugger write: `r <reg>=<value>` (the '=' is
@@ -1509,45 +1888,11 @@ void MainWindow::createDocks()
                 setRegister(regName, value);
             });
 
-    // --- bottom: problems, console and memory, tabbed -------------------------
-    // Problems and the console are ordinary docks rather than tabs in a
-    // QTabWidget inside one dock, so the bottom area is a normal tab group: you
-    // can drag panels into it and out of it like any other, and the Move-to
-    // menu works on their tabs.
-    m_problems = new QTreeWidget(this);
-    m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message")});
-    m_problems->header()->setStretchLastSection(true);
     connect(m_problems, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *item, int) {
-        navigateToSourceLine(item->text(0), item->text(1).toInt());
+        if (const RemoteStateAdapter::ProblemRow *entry = problemEntryFor(item))
+            navigateToSourceLine(entry->file, entry->line);
     });
 
-    m_log = new QPlainTextEdit(this);
-    m_log->setReadOnly(true);
-    appearance::markMono(m_log);
-
-    m_problemsDock = makeDock(tr("Problems"), QStringLiteral("problemsDock"), m_problems);
-    addDockWidget(Qt::BottomDockWidgetArea, m_problemsDock);
-    // A command entry under the log turns the console into a live debugger
-    // console: commands go through the backend's normal queue and the response
-    // is appended when it arrives (matched by command text in the
-    // commandFinished handler in wireBackend).
-    m_consoleInput = new ConsoleInput(this);
-    m_consoleInput->setObjectName(QStringLiteral("consoleInput"));
-    appearance::markMono(m_consoleInput);
-    m_consoleInput->setPlaceholderText(
-        tr("Debugger command (e.g. r, d, m $12596 20)"));
-    m_consoleInput->setToolTip(
-        tr("r registers, d disassemble, m address length, b breakpoint."));
-    m_consoleInput->setEnabled(false);
-    // The command verbs are always completable; symbol names join the
-    // candidate list when a build's listings are parsed (rebuildProgramMap).
-    m_consoleVerbs = {QStringLiteral("r"), QStringLiteral("d"), QStringLiteral("m"),
-                      QStringLiteral("w"), QStringLiteral("l"), QStringLiteral("s"),
-                      QStringLiteral("n"), QStringLiteral("c"), QStringLiteral("b"),
-                      QStringLiteral("info"), QStringLiteral("symbols"),
-                      QStringLiteral("profile"), QStringLiteral("setopt"),
-                      QStringLiteral("help"), QStringLiteral("quit")};
-    m_consoleInput->setCompletions(m_consoleVerbs);
     connect(m_consoleInput, &QLineEdit::returnPressed, this, [this] {
         const QString cmd = m_consoleInput->text().trimmed();
         if (cmd.isEmpty())
@@ -1555,23 +1900,10 @@ void MainWindow::createDocks()
         m_consoleInput->clear();
         sendConsoleCommand(cmd);
     });
+}
 
-    auto *consoleWidget = new QWidget(this);
-    auto *consoleLayout = new QVBoxLayout(consoleWidget);
-    consoleLayout->setContentsMargins(0, 0, 0, 0);
-    consoleLayout->setSpacing(0);
-    consoleLayout->addWidget(m_log);
-    consoleLayout->addWidget(m_consoleInput);
-
-    auto *consoleDock =
-        makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), consoleWidget);
-    addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
-    tabifyDockWidget(m_problemsDock, consoleDock);
-
-    // The first memory pane (tag 0) tabs onto this group; more can be added
-    // from its "+" button.
-    addMemoryPane();
-
+void MainWindow::buildViewMenu()
+{
     // --- default arrangement captured, then the user's arrangement restored ---
     // The View menu gets one show/hide action per dock, plus a way back to the
     // default layout. Built here rather than in createMenus because the docks do
@@ -1654,18 +1986,7 @@ void MainWindow::createDocks()
     // layout captures this state. The Emulator dock is not one of them — the
     // embed checkbox still owns it.
     for (QDockWidget *dock : findChildren<QDockWidget *>()) {
-        const QString name = dock->objectName();
-        const bool debug = name == QLatin1String("registersDock")
-            || name == QLatin1String("disassemblyDock")
-            || name == QLatin1String("stackDock")
-            || name == QLatin1String("hardwareDock")
-            || name == QLatin1String("pcHistoryDock")
-            || name == QLatin1String("breakpointsDock")
-            || name == QLatin1String("instructionRefDock")
-            || name == QLatin1String("symbolsDock")
-            || name == QLatin1String("profilerDock")
-            || name.startsWith(QLatin1String("memoryDock"));
-        if (debug)
+        if (isDebugDockName(dock->objectName()))
             dock->hide();
     }
     if (m_problemsDock)
@@ -1737,9 +2058,9 @@ void MainWindow::applyFactoryDockSizes()
 void MainWindow::finalizeLayout()
 {
     const QByteArray savedLayout =
-        QSettings().value(QStringLiteral("layout/state")).toByteArray();
+        QSettings().value(layoutStateKey()).toByteArray();
     const QByteArray savedGeometry =
-        QSettings().value(QStringLiteral("layout/geometry")).toByteArray();
+        QSettings().value(layoutGeometryKey()).toByteArray();
 
     // Geometry is restored last. restoreState changes the window size, and
     // the saved geometry is the size the user actually had.
@@ -1755,8 +2076,8 @@ void MainWindow::finalizeLayout()
         restoreState(savedLayout);
     if (!savedGeometry.isEmpty())
         restoreGeometry(savedGeometry);
-    const int savedWidth = QSettings().value(QStringLiteral("layout/width")).toInt();
-    const int savedHeight = QSettings().value(QStringLiteral("layout/height")).toInt();
+    const int savedWidth = QSettings().value(layoutWidthKey()).toInt();
+    const int savedHeight = QSettings().value(layoutHeightKey()).toInt();
     if (savedWidth >= 640 && savedHeight >= 400)
         m_restoredSize = QSize(savedWidth, savedHeight);
 
@@ -1783,7 +2104,7 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     if (!editing && !debugging && !sprite)
         return;
 
-    QSettings().setValue(QStringLiteral("layout/previous"), saveState());
+    QSettings().setValue(layoutPreviousKey(), saveState());
     if (m_restoreLayoutAction)
         m_restoreLayoutAction->setEnabled(true);
 
@@ -1795,18 +2116,6 @@ void MainWindow::applyLayoutPreset(const QString &preset)
 
     auto dockNamed = [this](const QString &name) -> QDockWidget * {
         return findChild<QDockWidget *>(name);
-    };
-    const auto isDebugDock = [](const QString &name) {
-        return name == QLatin1String("registersDock")
-            || name == QLatin1String("disassemblyDock")
-            || name == QLatin1String("stackDock")
-            || name == QLatin1String("hardwareDock")
-            || name == QLatin1String("pcHistoryDock")
-            || name == QLatin1String("breakpointsDock")
-            || name == QLatin1String("instructionRefDock")
-            || name == QLatin1String("symbolsDock")
-            || name == QLatin1String("profilerDock")
-            || name.startsWith(QLatin1String("memoryDock"));
     };
 
     // Git stays in the project-files tab. Sprite puts both away; Editing and
@@ -1831,14 +2140,15 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     }
     if (QDockWidget *problems = dockNamed(QStringLiteral("problemsDock")))
         problems->setVisible(!sprite);
-    if (QDockWidget *console = dockNamed(QStringLiteral("consoleDock")))
-        console->setVisible(!sprite);
 
     QDockWidget *console = dockNamed(QStringLiteral("consoleDock"));
+    if (console)
+        console->setVisible(!sprite);
+
     QDockWidget *disassembly = dockNamed(QStringLiteral("disassemblyDock"));
     const bool disassemblyOnRight = debugging && !m_embeddedDisplay;
     for (QDockWidget *dock : findChildren<QDockWidget *>()) {
-        if (!isDebugDock(dock->objectName()))
+        if (!isDebugDockName(dock->objectName()))
             continue;
         const bool onRight = disassemblyOnRight && dock == disassembly;
         dock->setVisible(debugging);
@@ -1864,11 +2174,11 @@ void MainWindow::applyLayoutPreset(const QString &preset)
 
 void MainWindow::restorePreviousLayout()
 {
-    const QByteArray previous = QSettings().value(QStringLiteral("layout/previous")).toByteArray();
+    const QByteArray previous = QSettings().value(layoutPreviousKey()).toByteArray();
     if (previous.isEmpty())
         return;
     restoreState(previous);
-    QSettings().remove(QStringLiteral("layout/previous"));
+    QSettings().remove(layoutPreviousKey());
     if (m_restoreLayoutAction)
         m_restoreLayoutAction->setEnabled(false);
     if (m_displayDock)
@@ -2008,7 +2318,7 @@ void MainWindow::applyAppearance()
         m_instrStrip->setFixedHeight(m_instrStrip->fontMetrics().height() + 6);
     }
     for (CodeEditor *editor : openEditors())
-        editor->applyFontPreferences();
+        editor->setTheme(appearance::editorTheme());
     for (ImageEditor *image : openImages())
         image->applyAppearance();
     if (m_registers)
@@ -2100,7 +2410,7 @@ void MainWindow::updateRegisterStrip()
         return;
     const Registers &r = m_lastState.regs;
     auto word = [](quint32 value) {
-        return QStringLiteral("%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
+        return hex::hex32(value);
     };
     QString data;
     QString addr;
@@ -2369,6 +2679,7 @@ void MainWindow::openFile()
         return;
     openPath(path);
 }
+
 bool MainWindow::openPath(const QString &path)
 {
     return openPathImpl(path, /*quiet=*/false);
@@ -2404,6 +2715,13 @@ bool MainWindow::openPathImpl(const QString &path, bool quiet)
 
     if (m_fileBrowser)
         m_fileBrowser->showFor(path);
+    // The opened file is what decides the project directory, and the per-tab pass
+    // in onTabChanged does not always run here: a pristine first tab takes the
+    // file's contents in place, so the current index never changes and no tab
+    // switch is emitted — git would keep pointing at the previous project (or at
+    // none) while a project is open (MIN-81). Both calls are idempotent.
+    syncGitDirectory();
+    applyGitBlame();
     return true;
 }
 
@@ -2417,9 +2735,11 @@ QString MainWindow::extractedFloppyPath(const QString &imagePath, const QString 
             .toHex()
             .left(8));
     const QString name = QFileInfo(imagePath).completeBaseName();
-    const QString dir = QDir(paths::sessionBaseDir())
-                            .absoluteFilePath(QStringLiteral("docs/%1-%2")
-                                                  .arg(name, imageKey));
+    // Outside the session directory: pruneStaleSessions() deletes those on age
+    // alone, and this file backs an open editor tab that writes back to the
+    // image (paths::documentExtractDir()).
+    const QString dir = QDir(paths::documentExtractDir())
+                            .absoluteFilePath(QStringLiteral("%1-%2").arg(name, imageKey));
     return QDir(dir).absoluteFilePath(QString(entryPath).replace(QLatin1Char('/'),
                                                                  QLatin1Char('_')));
 }
@@ -2591,7 +2911,7 @@ void MainWindow::openProject()
     }
 
     m_settings = loaded;
-    settings::rememberLastProject(path, source);
+    settings::rememberLastSource(source);
     syncFileBrowserDisks();
     statusBar()->showMessage(tr("Opened project %1").arg(QFileInfo(path).fileName()), 5000);
     m_log->appendPlainText(tr("[project] loaded %1").arg(path));
@@ -2615,7 +2935,7 @@ void MainWindow::saveProject()
         return;
     }
 
-    settings::rememberLastProject(path, source);
+    settings::rememberLastSource(source);
     statusBar()->showMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 5000);
     m_log->appendPlainText(tr("[project] saved %1").arg(path));
 }
@@ -2632,7 +2952,7 @@ void MainWindow::persistSettings()
         statusBar()->showMessage(tr("Could not save project settings: %1").arg(error), 8000);
         return;
     }
-    settings::rememberLastProject(path, source);
+    settings::rememberLastSource(source);
 }
 
 void MainWindow::syncFileBrowserDisks()
@@ -2678,7 +2998,7 @@ void MainWindow::editSettings()
                                      .arg(error));
             return;
         }
-        settings::rememberLastProject(path, m_editor->filePath());
+        settings::rememberLastSource(m_editor->filePath());
     }
 
     statusBar()->showMessage(
@@ -2722,7 +3042,7 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
         refreshToolchain();
     }
 
-    settings::rememberLastProject(projectPath, sourcePath);
+    settings::rememberLastSource(sourcePath);
     syncFileBrowserDisks();
     m_log->appendPlainText(tr("[project] loaded %1").arg(projectPath));
     statusBar()->showMessage(
@@ -2736,8 +3056,16 @@ void MainWindow::syncGitDirectory()
 {
     if (!m_gitPanel)
         return;
+    // Only a directory the user actually opened counts as the project. The
+    // browser's model root is the process working directory until something is
+    // opened — so aiming git at it made a window with no project run `git
+    // status` in whichever repository happened to contain the launch directory.
+    // PiST's own suite, run from a build tree inside its checkout, did exactly
+    // that ~90 times per run; an abandoned status child at teardown leaves
+    // `.git/index.lock` in the developer's repository (MIN-81). With nothing
+    // open the panel is told so, and it says as much instead of guessing.
     QString dir;
-    if (m_fileBrowser && !m_fileBrowser->directory().isEmpty())
+    if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
         dir = m_fileBrowser->directory();
     else if (m_editor && !m_editor->filePath().isEmpty())
         dir = QFileInfo(m_editor->filePath()).absolutePath();
@@ -2809,7 +3137,18 @@ void MainWindow::saveFile()
             tr("Assembly sources (*.s *.S *.asm)"));
         if (path.isEmpty())
             return;
-        m_editor->saveFile(path);
+        // The result was discarded here, so a failed write said nothing at all:
+        // no dialog, no status, and — because saveFile() adopts the path only
+        // on success — a buffer that quietly stayed untitled while the user
+        // believed the save had gone through. Report it as the path-known
+        // branch and maybeSaveEditor do, and stop before the paths below that
+        // describe a document on disk.
+        if (!m_editor->saveFile(path)) {
+            QMessageBox::critical(this, tr("Save"),
+                                  tr("Could not write %1: %2")
+                                      .arg(path, m_editor->lastError()));
+            return;
+        }
     } else if (!m_editor->saveFile(m_editor->filePath())) {
         QMessageBox::critical(this, tr("Save"),
                               tr("Could not write %1: %2")
@@ -3115,6 +3454,23 @@ void MainWindow::exportBitplaneData()
 
 void MainWindow::build()
 {
+    buildImpl(/*quiet=*/true);
+}
+
+void MainWindow::buildInteractive()
+{
+    buildImpl(/*quiet=*/false);
+}
+
+void MainWindow::buildImpl(bool quiet)
+{
+    // A remote-initiated build has nobody to dismiss a modal, and the dialog's
+    // own event loop would hold its reply until the operation timeout, so its
+    // refusals are reported on the console and the status bar instead (the
+    // same reason openPathQuiet exists; MAJ-17). The flag is carried on the
+    // window because run()'s launch happens after the build's async hop.
+    m_quietDialogs = quiet;
+
     const QString source = buildSourcePath();
     if (source.isEmpty()) {
         refuseBuild(tr("Build"), tr("Open an assembly source file first."), false);
@@ -3180,39 +3536,79 @@ void MainWindow::build()
     m_build->build();
 }
 
-void MainWindow::resetSessionState()
-{
-    // GEMDOS relocates the program on every run, so resolved addresses and
-    // armed breakpoints are meaningless; the cached machine state and any
-    // pending remote command must not answer for a session that no longer
-    // exists. Both call sites (launch, session end) are idempotent resets.
-    m_sessionArmed = false;
-    m_stoppedFile.clear();
-    m_stoppedLine = 0;
-    m_profileGuided = false;
-    m_profileGuidedAddr = 0;
-    m_profilingActive = false;
-    m_breakpointsArmedThisSession = false;
-    m_bases = LineMap::SectionBases();
-    m_lastState = MachineState();
-    m_pendingDebugCommand.clear();
-}
-
 void MainWindow::refuseBuild(const QString &title, const QString &reason, bool critical)
 {
     // A refused build is still a completed build as far as callers are
     // concerned: run()'s launch intent must be dropped rather than left armed
     // for the next successful build, and a remote-control `build` must be
     // answered now rather than after its timeout.
-    m_launchAfterBuild = false;
+    m_session->setLaunchAfterBuild(false);
     if (m_statusBuild)
         m_statusBuild->setText(tr("Build failed"));
     m_log->appendPlainText(tr("--- build refused: %1 ---").arg(reason));
     emit buildCompleted(false);
+    // A remote-initiated build is answered by buildCompleted and the console
+    // above; opening a modal here would leave the reply waiting on a human who
+    // is not there until the operation timeout expires.
+    if (m_quietDialogs) {
+        statusBar()->showMessage(firstLine(reason), 15000);
+        return;
+    }
     if (critical)
         QMessageBox::critical(this, title, reason);
     else
         QMessageBox::information(this, title, reason);
+}
+
+void MainWindow::refuseRun(const QString &title, const QString &reason, bool critical)
+{
+    // The same contract as refuseBuild, one step later in the run: the build
+    // already reported success, so this is the only place a `run` that cannot
+    // start is announced. buildCompleted(false) is the channel RemoteControl's
+    // reply wait ends on (sessionRunningChanged(true) is the success channel),
+    // and it is only sent for a quiet run: an interactive run has already
+    // reported its build, and its user is looking at the dialog. The build chip
+    // is left alone — the build really did succeed (MAJ-17).
+    if (m_quietDialogs) {
+        m_log->appendPlainText(QStringLiteral("[run] ") + reason);
+        statusBar()->showMessage(firstLine(reason), 15000);
+        emit buildCompleted(false);
+        return;
+    }
+    if (critical)
+        QMessageBox::critical(this, title, reason);
+    else
+        QMessageBox::warning(this, title, reason);
+}
+
+QTreeWidgetItem *MainWindow::addProblemRow(const RemoteStateAdapter::ProblemRow &entry)
+{
+    // One writer for the pane, so the row and its entry cannot drift apart: the
+    // row's index into m_problemEntries is its whole link to the data
+    // (problemsJson() reports that list, and the navigation paths go through it
+    // rather than through these column strings).
+    m_problemEntries.append(entry);
+
+    auto *item = new QTreeWidgetItem(m_problems);
+    item->setData(0, kProblemEntryRole, m_problemEntries.size() - 1);
+    item->setText(0, entry.file.isEmpty() ? tr("(build)") : entry.file);
+    item->setText(1, entry.line > 0 ? QString::number(entry.line) : QString());
+    item->setText(2, entry.message);
+    markProblemSeverity(item, entry.error);
+    return item;
+}
+
+const RemoteStateAdapter::ProblemRow *MainWindow::problemEntryFor(const QTreeWidgetItem *item) const
+{
+    if (!item)
+        return nullptr;
+    const QVariant index = item->data(0, kProblemEntryRole);
+    if (!index.isValid())
+        return nullptr;
+    const int row = index.toInt();
+    if (row < 0 || row >= m_problemEntries.size())
+        return nullptr;
+    return &m_problemEntries.at(row);
 }
 
 void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnostics)
@@ -3253,16 +3649,10 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
             }
         }
 
-        const QString shownFile = file.isEmpty() ? tr("(build)") : file;
-        const int shownLine = line > 0 ? line : 0;
-        m_problemEntries.append({shownFile, shownLine, d.message,
-                                 d.severity == Diagnostic::Error});
-
-        auto *item = new QTreeWidgetItem(m_problems);
-        item->setText(0, shownFile);
-        item->setText(1, shownLine > 0 ? QString::number(shownLine) : QString());
-        item->setText(2, d.message);
-        markProblemSeverity(item, d.severity == Diagnostic::Error);
+        // The entry keeps the real file (empty for a build-level note) and the
+        // real line; how the row renders them is addProblemRow's business.
+        addProblemRow({file, line > 0 ? line : 0, d.message,
+                       d.severity == Diagnostic::Error});
 
         // Mark the gutter of whichever open editor shows this diagnostic's
         // file (with several documents open, errors are not all in one file).
@@ -3286,16 +3676,25 @@ void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnost
                                          .arg(diagnostics.size()));
 
     // Run was requested: continue now that the build has actually finished.
-    if (m_launchAfterBuild) {
-        m_launchAfterBuild = false;
+    if (m_session->consumeLaunchAfterBuild()) {
         if (success)
-            launchEmulator();
+            m_launcher->launch();
         else
             m_log->appendPlainText(tr("[run] build failed, so nothing was launched"));
     }
 }
 
 void MainWindow::run()
+{
+    runImpl(/*quiet=*/true);
+}
+
+void MainWindow::runInteractive()
+{
+    runImpl(/*quiet=*/false);
+}
+
+void MainWindow::runImpl(bool quiet)
 {
     // Always rebuild before running: this keeps the listing in step with the
     // binary, which is what the line map depends on.
@@ -3307,274 +3706,10 @@ void MainWindow::run()
     // chained onto build completion instead, via onBuildFinished.
     //
     // No source check of its own: build()'s refusal handles it (and must, or a
-    // refused run would leave m_launchAfterBuild armed for the next build).
-    m_launchAfterBuild = true;
-    build();
-}
-
-void MainWindow::launchEmulator()
-{
-    const QFileInfo info(buildSourcePath());
-    const QString prg = settings::outputPathsFor(info.absoluteFilePath()).program;
-    if (!QFileInfo::exists(prg)) {
-        QMessageBox::warning(this, tr("Run"),
-                             tr("The build did not produce %1.").arg(prg));
-        return;
-    }
-
-    const ToolInfo emulator = toolchain::findEmulator(m_settings.hatariPath);
-    if (!emulator.found()) {
-        QMessageBox::critical(this, tr("Emulator not found"),
-                              toolchain::emulatorInstallHint());
-        return;
-    }
-
-    // Probe the binary actually being launched (not the default-path one the
-    // status bar probed at startup): the transport selection and the option
-    // gating below must match this emulator.
-    const HatariCapabilities launchedCaps = probeHatari(emulator.path);
-
-    const QString sessionDir = makeSessionDir();
-
-    SessionConfig config;
-    config.hatariPath = emulator.path;
-    config.programPath = prg;
-    config.sessionDir = sessionDir;
-    config.gemdosDir = info.absolutePath();
-
-    config.machine = machineCliName(m_settings.machine);
-    config.monitor = m_settings.monitor;
-    config.memSizeMiB = m_settings.memSizeMiB;
-    config.extraArgs = m_settings.extraEmulatorArgs;
-    if (!m_settings.hardDiskImage.isEmpty()) {
-        // ACSI is the safe default: it exists on every ST-family machine, unlike
-        // IDE which is STe-and-later only.
-        config.acsiImage = m_settings.hardDiskImage;
-        config.acsiId = 0;
-    }
-
-    config.floppyImages = m_settings.floppyImages;
-
-    // The control socket is compiled into Hatari only under
-    // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
-    // Hatari exit with "Unrecognized option", so it must be gated rather than
-    // passed unconditionally (docs/PLAN.md §5 rule 12). The debugger commands
-    // never travel over it: stdin (native) or HRDB's TCP channel carry those.
-    if (launchedCaps.hasControlSocket)
-        config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
-    else
-        config.controlSocketPath.clear();
-
-    // Embedded display: name the container's X11 window so Hatari reparents its
-    // SDL window into it. Gated on the platform and the control socket, so a
-    // Wayland-native session or a socket-less build falls back to a separate
-    // window even when the option is on. The dock is shown and the widget
-    // realized now, because winId() has to be a live X11 window before Hatari
-    // starts or there is nothing to reparent into.
-    if (m_embeddedDisplay && canEmbedDisplay(launchedCaps) && m_display) {
-        m_displayDock->setVisible(true);
-        m_display->setVisible(true);
-        config.parentWindowId = QString::number(m_display->winId());
-    } else {
-        config.parentWindowId.clear();
-    }
-
-    if (!launchedCaps.hasDebugExcept)
-        config.debugExceptions.clear();
-
-    QString error;
-
-    // Backend selection: an explicit per-project setting wins; the default
-    // ("auto") follows the *launched* binary's HRDB capability, probed by
-    // content because the fork is version-identical to upstream and adds no
-    // CLI option (docs/PLAN.md §5 rule 5). The bundled emulator is the fork,
-    // so a fresh install lands on HRDB; a user-supplied stock Hatari lands on
-    // native. Only the control socket is native-transport machinery; the
-    // bootstrap script runs on the fork too (--parse is upstream), and there
-    // its entry breakpoint fires into the remote break loop and waits for our
-    // HRDB connect — no race with TOS boot, unlike a socket-armed bp.
-    // A forced transport that mismatches the binary is a dead session, not a
-    // degradation: the fork's stdin debugger is never read once its listener
-    // binds (§9), and stock Hatari has no HRDB listener at all. Refuse at
-    // launch, naming the mismatch, rather than hanging the user.
-    BackendKind wanted;
-    if (m_settings.debugBackend == QLatin1String("hrdb")) {
-        if (!launchedCaps.hasHrdb) {
-            QMessageBox::critical(this, tr("Run"),
-                tr("The debug transport is set to HRDB, but %1 is a stock Hatari, which "
-                   "has no HRDB listener. Set the transport to Native/Auto, or use the "
-                   "hrdb-main fork.").arg(emulator.path));
-            return;
-        }
-        wanted = BackendKind::Hrdb;
-    } else if (m_settings.debugBackend == QLatin1String("native")) {
-        if (launchedCaps.hasHrdb) {
-            QMessageBox::critical(this, tr("Run"),
-                tr("The debug transport is set to Native, but %1 is the hrdb-main fork, "
-                   "whose stdin debugger is never read once its listener binds. Set the "
-                   "transport to HRDB/Auto.").arg(emulator.path));
-            return;
-        }
-        wanted = BackendKind::Native;
-    } else {
-        wanted = launchedCaps.hasHrdb ? BackendKind::Hrdb : BackendKind::Native;
-    }
-    if (m_host->kind() != wanted) {
-        m_host->stop();
-        delete m_host;
-        m_host = createBackend(wanted, this);
-        wireBackend();
-    }
-
-    config.bootstrapScriptPath =
-        EmulatorHost::writeBootstrapScript(sessionDir, launchedCaps, &error);
-    if (config.bootstrapScriptPath.isEmpty()) {
-        QMessageBox::critical(this, tr("Run"), error);
-        return;
-    }
-
-    // A TOS ROM is required. Hatari ships none and original ROMs remain
-    // proprietary, so this must be user-supplied (docs/PLAN.md §7).
-    //
-    // Selection matters: autostart needs TOS >= 1.04, and picking the
-    // alphabetically first image would select TOS 1.02 and produce a session
-    // that never reaches the entry breakpoint (docs/PLAN.md §5 rule 3).
-    const QList<TosRom> roms = findTosRoms();
-
-    // An explicitly configured ROM wins; otherwise pick the best for the machine.
-    // Choosing for the machine matters because the machines accept different TOS
-    // versions outright: an STe needs 1.06 or 1.62, and would otherwise be handed
-    // a 1.04 that Hatari rejects.
-    TosRom rom;
-    if (!m_settings.tosPath.isEmpty()) {
-        for (const TosRom &candidate : roms) {
-            if (candidate.path == m_settings.tosPath) {
-                rom = candidate;
-                break;
-            }
-        }
-        if (rom.path.isEmpty()) {
-            QMessageBox::warning(
-                this, tr("Run"),
-                tr("The configured TOS ROM is missing:\n\n%1\n\nFalling back to the best "
-                   "ROM for the %2.")
-                    .arg(m_settings.tosPath, machineDisplayName(m_settings.machine)));
-        }
-    }
-    if (rom.path.isEmpty())
-        rom = selectPreferredRom(roms, m_settings.machine);
-    if (rom.path.isEmpty()) {
-        const QStringList searched = paths::tosSearchPaths();
-        QMessageBox::critical(
-            this, tr("Run"),
-            tr("No TOS ROM image found.\n\n"
-               "Original TOS images cannot be bundled with PiST, so one has to be supplied "
-               "separately. Place a ROM image in one of these directories, or point "
-               "$PIST_TOS_DIR at the directory containing it:\n\n%1")
-                .arg(searched.isEmpty() ? tr("(no searchable directory found)")
-                                        : searched.join(QLatin1Char('\n'))));
-        return;
-    }
-    // Three distinct cases, because collapsing them produces either a false
-    // error or the silent hang this check exists to prevent:
-    //
-    //   known too old  -> AUTO-folder floppy fallback
-    //   known good     -> the GEMDOS-HD path
-    //   unknown        -> warn and ask; if the user proceeds, the same floppy
-    //                     fallback, which works on every TOS version
-    bool floppyBoot = false;
-    if (rom.knownTooOldForAutostart()) {
-        // GEMDOS HD does not exist below TOS 1.04 (Hatari refuses it), but
-        // every TOS executes AUTO/*.PRG from the boot floppy — the fallback
-        // instead of the old refusal (docs/PLAN.md §5 rule 3).
-        floppyBoot = true;
-        m_log->appendPlainText(
-            tr("[run] TOS %1 has no GEMDOS-HD autostart; booting from an "
-               "AUTO-folder floppy instead.").arg(rom.versionText()));
-    }
-
-    if (!floppyBoot && !rom.supportsAutostart()) {
-        QString detail;
-        if (rom.versionKnown) {
-            // A version was read from the filename only. Hatari never consults
-            // filenames, so this is not evidence about what it will do.
-            detail = tr("Its filename suggests TOS %1, but the version field in the image "
-                        "header could not be read, so this cannot be confirmed.")
-                         .arg(rom.versionText());
-        } else {
-            detail = tr("Its TOS version could not be determined.");
-        }
-
-        const auto answer = QMessageBox::warning(
-            this, tr("Run"),
-            tr("This ROM cannot be confirmed to support autostarting a program from a "
-               "GEMDOS hard disk (that needs TOS 1.04 or later).\n\n%1\n\n"
-               "If you proceed, the program boots from an AUTO-folder floppy instead, "
-               "which works on every TOS version.\n\nTry to run anyway?")
-                .arg(detail),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes)
-            return;
-        // An unverifiable ROM gets the path that works on every TOS version.
-        floppyBoot = true;
-    }
-
-    if (floppyBoot) {
-        // Build the session's AUTO-folder floppy (AUTO/PROG.PRG plus an empty
-        // EMUDESK.INF for the debug-except deferral), and route the session
-        // around the GEMDOS HD: --disk-a, no positional, no -d, and --debug to
-        // arm the exception mask the INF path would have armed.
-        config.bootFloppyPath = sessionDir + QStringLiteral("/auto.st");
-        QString floppyError;
-        if (!floppy::writeAutoFolderImage(config.bootFloppyPath, prg, &floppyError)) {
-            QMessageBox::critical(this, tr("Run"),
-                                  tr("Could not build the AUTO-folder floppy:\n%1")
-                                      .arg(floppyError));
-            return;
-        }
-        config.gemdosDir.clear();
-        config.debugToggle = true;
-
-        // TOS < 1.04 boots from A:. A user image already in A: would be
-        // overwritten by auto.st (Hatari's last --disk-a wins) — the sidebar
-        // would still list the magazine while Hatari ran the AUTO floppy.
-        const QString userA = config.floppyImages.value(0);
-        if (!userA.isEmpty()) {
-            while (config.floppyImages.size() < 2)
-                config.floppyImages.append(QString());
-            if (config.floppyImages.at(1).isEmpty()) {
-                config.floppyImages[1] = userA;
-                m_log->appendPlainText(
-                    tr("[run] TOS %1 autostarts from drive A:, so '%2' is in B:.")
-                        .arg(rom.versionText(), QFileInfo(userA).fileName()));
-            } else {
-                m_log->appendPlainText(
-                    tr("[run] TOS %1 needs drive A: to autostart; '%2' was not mounted.")
-                        .arg(rom.versionText(), QFileInfo(userA).fileName()));
-            }
-            config.floppyImages[0].clear();
-        }
-    }
-    config.tosPath = rom.path;
-
-    // A new session relocates the program, so previously resolved addresses are
-    // meaningless and arming must happen again after the next entry stop.
-    resetSessionState();
-
-    m_host->setCapabilities(launchedCaps);
-    if (!m_host->start(config, &error)) {
-        QMessageBox::critical(this, tr("Run"), error);
-        return;
-    }
-
-    m_log->appendPlainText(tr("Session started in %1").arg(sessionDir));
-    const QString diskA = !config.floppyImages.value(0).isEmpty()
-        ? config.floppyImages.at(0)
-        : config.bootFloppyPath;
-    if (!diskA.isEmpty())
-        m_log->appendPlainText(tr("[run] Floppy A: %1").arg(diskA));
-    if (!config.floppyImages.value(1).isEmpty())
-        m_log->appendPlainText(tr("[run] Floppy B: %1").arg(config.floppyImages.at(1)));
+    // refused run would leave the session's launch intent armed for the next
+    // build).
+    m_session->setLaunchAfterBuild(true);
+    buildImpl(quiet);
 }
 
 void MainWindow::stopSession()
@@ -3615,10 +3750,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // layout the user has arranged to taste is there next time
     // (docs/FUTURE.md §7).
     QSettings settings;
-    settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
-    settings.setValue(QStringLiteral("layout/width"), width());
-    settings.setValue(QStringLiteral("layout/height"), height());
-    settings.setValue(QStringLiteral("layout/state"), saveState());
+    settings.setValue(layoutGeometryKey(), saveGeometry());
+    settings.setValue(layoutWidthKey(), width());
+    settings.setValue(layoutHeightKey(), height());
+    settings.setValue(layoutStateKey(), saveState());
 
     // Leaving this to the age-based prune would mean a directory survives every
     // ordinary quit, not just a crash.
@@ -3648,18 +3783,7 @@ void MainWindow::stepOver()
 
 void MainWindow::stepOut()
 {
-    // Hatari has no step-out primitive, so: read the return address from the
-    // top of the stack (valid inside a jsr/bsr subroutine that has not
-    // adjusted A7), arm a one-shot breakpoint there and resume. The read is
-    // asynchronous — the stackDumpReady handler does the arming.
-    if (!m_host->isStopped() || !m_lastState.regs.valid) {
-        m_log->appendPlainText(tr("[step out] needs a stopped program with known registers"));
-        return;
-    }
-    if (m_stepOutPending)
-        return;
-    m_stepOutPending = true;
-    m_host->requestStackDump(m_lastState.regs.a[7], 16);
+    m_session->stepOut();
 }
 
 void MainWindow::runToCursor()
@@ -3678,149 +3802,33 @@ void MainWindow::runToCursor()
                                .arg(m_editor->filePath())
                                .arg(line)
                                .arg(address, 0, 16));
-    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
+    m_host->breakAtAddressOnce(address);
     m_host->resume();
 }
 
-
 void MainWindow::profileStart()
 {
-    // Hatari starts collecting on continue (DebugCpu_SetDebugging) and zeroes
-    // the counters if any breakpoint command is issued mid-run — including
-    // Pause's one-shot — so profiling is armed while stopped and the stopping
-    // breakpoint must exist before this. The flow that works: set a
-    // breakpoint, Profile Start here, continue, the breakpoint stops the run.
-    if (!m_host->isStopped()) {
-        const QString hint = tr("Needs a stopped session — run (F5), stop at a "
-                                "breakpoint, then Profile Start");
-        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
-        m_profiler->showMessage(hint);
-        return;
-    }
-    m_host->command(QStringLiteral("profile on"));
-    m_profilingActive = true;
-    syncProfileActions();
-    m_log->appendPlainText(tr("[profile] on — continue to collect, then use "
-                              "Profile Stop at the next breakpoint stop"));
-    m_profiler->showMessage(tr("Collecting — continue, then Profile Stop at the next stop"));
+    m_profiling->start();
 }
 
 bool MainWindow::profileStop()
 {
-    if (!m_host->isStopped() || m_currentSessionDir.isEmpty()) {
-        const QString hint = tr("Needs a stopped session — the save command "
-                                "needs the debugger");
-        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
-        m_profiler->showMessage(hint);
-        return false;
-    }
-    // The UAE disassembler core (the default with PiST's isolated config)
-    // writes profile disassembly to the trace file instead of the save file,
-    // so the save would contain only "[...]" gap markers — switch engines for
-    // the save. Without Capstone the save stays empty and the parser's error
-    // says so plainly.
-    m_profileSavePending = true;
-    m_host->command(QStringLiteral("setopt --disasm ext"));
-    m_host->command(QStringLiteral("profile save %1/profile.txt").arg(m_currentSessionDir));
-    m_host->command(QStringLiteral("profile off"));
-    // The commands run in order, so the save is complete before this restores
-    // the session's default engine — the Disassembly pane must not silently
-    // keep the external renderer for the rest of the run.
-    m_host->command(QStringLiteral("setopt --disasm uae"));
-    m_profilingActive = false;
-    syncProfileActions();
-    m_profiler->showMessage(tr("Saving — results appear when the save lands"));
-    return true;
+    return m_profiling->stop();
 }
 
 void MainWindow::profileToCursor()
 {
-    // The whole ritual in one gesture: a one-shot at the cursor line (armed
-    // BEFORE `profile on`, since any arm after it would zero the counters),
-    // collection on, continue — onDebuggerStopped saves and shows.
-    if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty()) {
-        const QString hint = tr("Needs a stopped session — run (F5) and stop at "
-                                "a breakpoint first");
-        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
-        m_profiler->showMessage(hint);
-        return;
-    }
-    const int line = m_editor->textCursor().blockNumber() + 1;
-    quint32 address = 0;
-    if (!m_programMap.codeAddressFor(m_editor->filePath(), line, &address)) {
-        const QString hint = tr("No code on %1:%2 — put the cursor on an instruction line")
-                                 .arg(m_editor->filePath())
-                                 .arg(line);
-        m_log->appendPlainText(QStringLiteral("[profile] ") + hint);
-        m_profiler->showMessage(hint);
-        return;
-    }
-    m_profileGuided = true;
-    m_profileGuidedAddr = address;
-    m_profilingActive = true;
-    syncProfileActions();
-    m_host->armBreakpoint(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16));
-    m_host->command(QStringLiteral("profile on"));
-    const QString collecting = tr("Collecting to %1:%2 — results show on the stop")
-                                   .arg(m_editor->filePath())
-                                   .arg(line);
-    m_log->appendPlainText(QStringLiteral("[profile] ") + collecting);
-    m_profiler->showMessage(collecting);
-    m_host->resume();
+    m_profiling->toCursor();
 }
 
 void MainWindow::showProfileResults()
 {
-    ProfileData data;
-    QString error;
-    if (!parseProfile(m_currentSessionDir + QStringLiteral("/profile.txt"), &data, &error)) {
-        m_log->appendPlainText(QStringLiteral("[profile] ") + error);
-        emit profileResultsReady(false);
-        return;
-    }
-    m_profiler->setProfile(data, &m_programMap,
-                           m_editor ? m_editor->filePath() : QString(), m_symbols);
-    if (m_profilerDock) {
-        m_profilerDock->show();
-        m_profilerDock->raise();
-    }
-    if (m_editor)
-        m_editor->setLineHeat(m_profiler->lineCounts());
-    m_log->appendPlainText(tr("[profile] %1 instructions, %2 cycles at %3 Hz")
-                               .arg(data.totalCount)
-                               .arg(data.totalCycles)
-                               .arg(data.clockHz));
-    emit profileResultsReady(true);
+    m_profiling->showResults();
 }
 
 void MainWindow::syncProfileActions()
 {
-    // Profiling is a mode: once collecting, Start and Profile-to-cursor make
-    // no sense until Stop; with nothing collecting, Stop has nothing to save.
-    // The tooltip always says WHY, so a disabled button is never a riddle.
-    const bool stopped = m_host && m_host->isStopped();
-    const QString needStopped = tr("Needs a stopped session — run (F5) and stop at a breakpoint");
-    if (m_actProfileStart) {
-        m_actProfileStart->setEnabled(stopped && !m_profilingActive);
-        m_actProfileStart->setToolTip(m_profilingActive
-                                          ? tr("Already collecting — Profile Stop and Show ends the run")
-                                          : stopped ? tr("Start collecting CPU profile counts from here")
-                                                    : needStopped);
-    }
-    if (m_actProfileStop) {
-        m_actProfileStop->setEnabled(stopped && m_profilingActive);
-        m_actProfileStop->setToolTip(!m_profilingActive
-                                         ? tr("Nothing is collecting — Profile Start begins a run")
-                                         : stopped ? tr("Save the profile, then show hot lines and gutter heat")
-                                                   : needStopped);
-    }
-    if (m_actProfileToCursor) {
-        m_actProfileToCursor->setEnabled(stopped && !m_profilingActive);
-        m_actProfileToCursor->setToolTip(m_profilingActive
-                                             ? tr("Already collecting — Profile Stop and Show ends the run")
-                                             : stopped ? tr("Collect profile counts to the cursor line, then show the results")
-                                                       : needStopped);
-    }
+    m_profiling->syncActions();
 }
 
 void MainWindow::pauseSession()
@@ -3831,46 +3839,6 @@ void MainWindow::pauseSession()
 void MainWindow::resume()
 {
     m_host->resume();
-}
-
-void MainWindow::onDebuggerStopped()
-{
-    // Every stop refreshes the views and the editor's execution line, so the
-    // display always shows where the machine actually stopped — on a step, on a
-    // breakpoint, or on an exception. The entry stop additionally runs the
-    // two-phase attach below, once per session.
-    if (m_sessionArmed) {
-        m_host->refresh();
-        if (m_profileGuided) {
-            m_profileGuided = false;
-            // Any stop ends the guided run: the one-shot's, or a user
-            // breakpoint that won the race (results are then partial, which is
-            // what "composes" means). The delete covers the race case; when
-            // the one-shot itself stopped the run it is already consumed and
-            // the delete is a harmless note in the console.
-            profileStop();
-            m_host->command(QStringLiteral("db pc = $%1 :once").arg(m_profileGuidedAddr, 0, 16));
-        }
-        return;
-    }
-    m_sessionArmed = true;
-
-    // The two-phase attach, in order. The program's load address is only known
-    // once it has been executed, so:
-    //
-    //   1. stop at entry (armed at launch via --parse, using the TEXT variable,
-    //      which needs no symbols)
-    //   2. load symbols, which relocates them against the live base page
-    //   3. read the base page, because the line map needs the section addresses
-    //
-    // Only then can a source line be turned into an address
-    // (docs/PLAN.md §5 rules 5 and 6).
-    m_host->command(QStringLiteral("symbols prg"));
-    m_host->command(QStringLiteral("info basepage"));
-    m_host->dumpRegisters();
-    m_host->command(QStringLiteral("d"));
-    // Arming happens in onStateUpdated, when the bases those commands report
-    // actually arrive — not here, where they have not been read yet.
 }
 
 void MainWindow::rebuildProgramMap()
@@ -3903,14 +3871,12 @@ void MainWindow::rebuildProgramMap()
             // breakpoints in them would be armed at the wrong address. Say so
             // instead of mapping them wrongly.
             m_log->appendPlainText(QStringLiteral("[link map] ") + error);
-            auto *item = new QTreeWidgetItem(m_problems);
-            item->setText(0, tr("(build)"));
-            item->setText(2, tr("Could not read the link map, so only the first module "
-                                "can be mapped to source: %1").arg(error));
-            markProblemSeverity(item, true);
+            addProblemRow({QString(), 0,
+                           tr("Could not read the link map, so only the first module "
+                              "can be mapped to source: %1").arg(error),
+                           true});
         }
     }
-
 
     // The symbol browser reads the same listings. Addresses stay blank until
     // a session resolves the live bases (the view is re-fed in onStateUpdated);
@@ -3927,73 +3893,48 @@ void MainWindow::rebuildProgramMap()
             m_consoleInput->setCompletions(all);
         }
     }
-    const QStringList unplaced = m_programMap.unplacedModules();
-    if (!unplaced.isEmpty()) {
-        m_log->appendPlainText(
-            tr("[link map] no placement for: %1").arg(unplaced.join(QLatin1String(", "))));
-    }
-}
-
-void MainWindow::armBreakpoints()
-{
-    m_breakpointsArmedThisSession = true;
-    const ArmPlan plan = planBreakpoints(m_breakpoints, m_programMap);
-
-    // Clear before arming. A rebuilt program can occupy different addresses, so
-    // leaving old breakpoints in place would silently break on whatever code now
-    // lives at those addresses.
-    m_host->clearBreakpoints();
-
-    for (const QString &command : plan.commands)
-        m_host->armBreakpoint(command);
-
-    // Watchpoints arm alongside the source breakpoints. They are address-based,
-    // so unlike source lines they are valid before the program even starts.
-    for (const Watchpoint &wp : m_watchpoints)
-        m_host->armBreakpoint(wp.command());
-
-    for (const QString &label : plan.unresolved) {
-        m_log->appendPlainText(
-            tr("[breakpoints] %1 has no address (it emits no code or data)").arg(label));
-    }
-
-    if (!plan.commands.isEmpty()) {
-        m_log->appendPlainText(
-            tr("[breakpoints] armed %1 of %2")
-                .arg(plan.commands.size())
-                .arg(m_breakpoints.size()));
-    }
-
-    // Show the resolved addresses and flag any breakpoint that could not be
-    // placed, so "why did my breakpoint not fire" is answerable at a glance.
-    if (m_breakpointPanel) {
-        m_breakpointPanel->setResolvable(true);
-        m_breakpointPanel->setBreakpoints(mergeResolved(plan));
-        m_breakpointPanel->setWatchpoints(m_watchpoints);
+    // Only a linked build can lose a module: a single-module `-Ftos` build has no
+    // linker and no map, and its one module owns the whole program, so it is
+    // placed by definition and its lines resolve against the live bases
+    // directly. The line used to fire for exactly that case — naming the only
+    // module of a plain single-file build as unplaced, before any live base
+    // existed to place it (MIN-84).
+    if (m_build->usesLinker()) {
+        const QStringList unplaced = m_programMap.unplacedModules();
+        if (!unplaced.isEmpty()) {
+            m_log->appendPlainText(
+                tr("[link map] no placement for: %1").arg(unplaced.join(QLatin1String(", "))));
+        }
     }
 }
 
 void MainWindow::addWatchpoint()
 {
-    bool accepted = false;
-    const QString text = QInputDialog::getText(
-        this, tr("Add watchpoint"),
-        tr("Address to watch (hex), with optional .b/.w/.l width:"),
-        QLineEdit::Normal, QString(), &accepted);
-    if (!accepted)
-        return;
-
-    QString error;
-    if (!addWatchpointAddress(text, &error))
-        QMessageBox::warning(this, tr("Add watchpoint"), error);
+    m_bpModel->addWatchpoint();
 }
 
 void MainWindow::debugCommand(const QString &command)
 {
     // Route through the host; the response comes back on debugCommandFinished,
-    // which is just the host's commandFinished re-emitted for the socket.
+    // which is just the host's commandFinished re-emitted for the socket. The
+    // text is the client's own, so it is the one place besides the console
+    // where a debugger command is passed through as written.
     m_pendingDebugCommand = command;
     m_host->command(command);
+}
+
+void MainWindow::debugReadMemory(quint32 address, int length)
+{
+    // A tagged dump that no memory pane owns, so it reaches the verb that asked
+    // (see kRemoteReadTag) instead of being applied to a view.
+    m_host->requestMemoryDump(address, length, kRemoteReadTag);
+}
+
+void MainWindow::debugReadDisassembly(quint32 address)
+{
+    // The read reports its text on disassemblyReady, which this relays as a
+    // remote read's answer.
+    m_host->readDisassemblyAt(address);
 }
 
 void MainWindow::sendConsoleCommand(const QString &command)
@@ -4004,9 +3945,11 @@ void MainWindow::sendConsoleCommand(const QString &command)
     }
     m_log->appendPlainText(QStringLiteral("> ") + command);
     // The response streams via logLine from both backends (HRDB emits the ack
-    // for console-originated commands; native streams stderr). While the
-    // machine is running this defers to the next stop (native) or answers
-    // immediately for control commands (HRDB).
+    // for console-originated commands; native streams stderr). While the machine
+    // is running a debugger command cannot run: the native debugger does not
+    // read stdin until it is entered, and HRDB's console handler only runs from
+    // its break loop — so both hold it for the next stop, and HRDB says so in
+    // the log rather than deferring it in silence.
     m_host->consoleCommand(command);
 }
 
@@ -4016,12 +3959,10 @@ bool MainWindow::setMemoryByte(quint32 address, quint32 value, MemoryView *pane)
         m_log->appendPlainText(tr("[edit] memory can only be changed while stopped"));
         return false;
     }
-    // `w b <addr> <value>` writes one byte; silent on success, so refresh the
+    // One byte is written; the debugger is silent on success, so refresh the
     // pane that asked. Without a pane (the remote-control setmem path) the
     // first pane is the sensible default.
-    m_host->command(QStringLiteral("w b $%1 $%2")
-                        .arg(address, 0, 16)
-                        .arg(value, 0, 16));
+    m_host->writeMemoryByte(address, quint8(value));
     if (pane)
         pane->refresh();
     else if (m_memory)
@@ -4029,113 +3970,27 @@ bool MainWindow::setMemoryByte(quint32 address, quint32 value, MemoryView *pane)
     return true;
 }
 
-
 bool MainWindow::setRegister(const QString &regName, quint32 value)
 {
     if (!m_host->isStopped()) {
         m_log->appendPlainText(tr("[edit] registers can only be changed while stopped"));
         return false;
     }
-    // The '=' is mandatory in Hatari's register-set syntax, and a successful set
-    // prints nothing — so refresh to show the new value.
-    m_host->command(QStringLiteral("r %1=$%2").arg(regName).arg(value, 0, 16));
+    // A successful register write prints nothing — so refresh to show the new
+    // value.
+    m_host->writeRegister(regName, value);
     m_host->refresh();
     return true;
 }
 
 bool MainWindow::addWatchpointAddress(const QString &text, QString *error)
 {
-    // A watchpoint breaks when the value at an address changes. Hatari has no
-    // data watchpoints, so it is armed as a self-inequality breakpoint, which is
-    // the debugger's change-tracking (see debug/Watchpoint.h). Width defaults to
-    // word; a trailing b/w/l overrides it.
-    static const QRegularExpression re(
-        QStringLiteral("^\\s*(?:\\$|0x)?([0-9a-fA-F]+)(?:\\.(b|w|l))?\\s*$"));
-    const auto match = re.match(text);
-    if (!match.hasMatch()) {
-        if (error)
-            *error = tr("Could not read an address from '%1'.").arg(text);
-        return false;
-    }
-
-    Watchpoint wp;
-    wp.address = match.captured(1).toUInt(nullptr, 16);
-    if (!match.captured(2).isEmpty())
-        wp.width = match.captured(2).at(0).toLatin1();
-
-    if (wp.address == 0) {
-        if (error)
-            *error = tr("Address 0 is not a useful thing to watch.");
-        return false;
-    }
-
-    m_watchpoints.append(wp);
-    m_log->appendPlainText(tr("[watchpoint] %1").arg(wp.label()));
-    // Re-arm so it takes effect now if a session is already stopped, or on the
-    // next run otherwise. Without a session there is nothing to arm, and
-    // `EmulatorHost::command` would log "No emulator session is running" once per
-    // command, so just show it and let the next Run arm it.
-    if (m_host->isRunning()) {
-        armBreakpoints();
-    } else if (m_breakpointPanel) {
-        m_breakpointPanel->setWatchpoints(m_watchpoints);
-    }
-    return true;
+    return m_bpModel->addWatchpointAddress(text, error);
 }
 
 void MainWindow::removeWatchpoint(int index)
 {
-    if (index < 0 || index >= m_watchpoints.size())
-        return;
-    m_watchpoints.removeAt(index);
-    // Re-arm only with a live session: armBreakpoints() pushes debugger commands,
-    // and with no process running each one logs "No emulator session is running."
-    // (a false error on a plain edit). Without a session, just refresh the panel —
-    // the next Run arms from the models. Matches addWatchpointAddress.
-    if (m_host->isRunning())
-        armBreakpoints();
-    else if (m_breakpointPanel)
-        m_breakpointPanel->setWatchpoints(m_watchpoints);
-}
-
-QList<Breakpoint> MainWindow::mergeResolved(const ArmPlan &plan) const
-{
-    QList<Breakpoint> merged = m_breakpoints;
-
-    // Reset first: a breakpoint that was resolved on a previous run must not keep
-    // showing a stale address from before the program was relocated.
-    for (Breakpoint &bp : merged) {
-        bp.resolved = false;
-        bp.address = 0;
-    }
-
-    for (const Breakpoint &armed : plan.armed) {
-        for (Breakpoint &bp : merged) {
-            if (bp.line == armed.line && bp.file == armed.file) {
-                bp.address = armed.address;
-                bp.resolved = true;
-                break;
-            }
-        }
-    }
-
-    return merged;
-}
-
-void MainWindow::refreshBreakpointMarkers()
-{
-    // Every open editor gets the markers for its own file.
-    for (CodeEditor *editor : openEditors()) {
-        const QString file = QFileInfo(editor->filePath()).fileName();
-        QList<int> lines;
-        for (const Breakpoint &bp : m_breakpoints)
-            if (bp.file == file)
-                lines.append(bp.line);
-        editor->setBreakpointLines(lines);
-    }
-
-    if (m_breakpointPanel)
-        m_breakpointPanel->setBreakpoints(m_breakpoints);
+    m_bpModel->removeWatchpoint(index);
 }
 
 bool MainWindow::toggleBreakpointAtLine(int line)
@@ -4148,170 +4003,42 @@ bool MainWindow::toggleBreakpointAtLine(int line)
     // gutter. Re-keying on the full path is a larger change (the panel, the
     // listings and the linker map all identify modules the same way); until then
     // this is the documented limitation.
-    return toggleBreakpoint(QFileInfo(m_editor->filePath()).fileName(), line);
+    return m_bpModel->toggle(QFileInfo(m_editor->filePath()).fileName(), line);
 }
 
 bool MainWindow::toggleBreakpoint(const QString &file, int line)
 {
-    if (file.isEmpty() || line <= 0)
-        return false;
-
-    auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
-                           [&](const Breakpoint &bp) {
-                               return bp.line == line && bp.file == file;
-                           });
-    if (it != m_breakpoints.end())
-        m_breakpoints.erase(it);
-    else
-        m_breakpoints.append(Breakpoint{file, line, QString(), true, 0, false});
-
-    refreshBreakpointMarkers();
-
-    // Re-arm immediately if a session is already running and stopped, so the new
-    // breakpoint takes effect without restarting.
-    if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
-        armBreakpoints();
-    return true;
+    return m_bpModel->toggle(file, line);
 }
 
 bool MainWindow::toggleBreakpointAtLabel(const QString &name, QString *detail)
 {
-    for (const SymbolEntry &sym : m_symbols) {
-        if (sym.name != name)
-            continue;
-        if (sym.file.isEmpty()) {
-            // A command-line define or macro-generated name has no source
-            // position to break at.
-            *detail = tr("error symbol '%1' has no source position").arg(name);
-            return false;
-        }
-        // Breakpoints key by base name everywhere (gutter, arming, the
-        // panel); the symbol table carries full paths.
-        const QString base = QFileInfo(sym.file).fileName();
-        // A label written on its own line has no code there — `count:`
-        // followed by the instruction on the next line is the norm — and a
-        // breakpoint on that line can never fire. Resolve to the first code
-        // line at or after the definition; base-independent, so this holds
-        // before a session supplies live bases too. An `equ` has no code of
-        // its own and finds nothing, rather than resolving to whatever
-        // unrelated instruction follows it.
-        const int line = m_programMap.nextCodeLine(sym.file, sym.line);
-        if (!line) {
-            *detail = tr("error '%1' has no code at or after its definition "
-                         "(an equate cannot be broken on)").arg(name);
-            return false;
-        }
-        toggleBreakpoint(base, line);
-        *detail = QStringLiteral("ok %1:%2").arg(base).arg(line);
-        // Tell the agent the address too, when the map can — it confirms the
-        // label resolved to the instruction they meant.
-        quint32 address = 0;
-        if (m_programMap.isResolved()
-            && m_programMap.codeAddressFor(sym.file, line, &address))
-            *detail += QStringLiteral(" = 0x%1").arg(address, 8, 16, QLatin1Char('0'));
-        return true;
-    }
-    *detail = tr("error no symbol named '%1' (has the project been built?)").arg(name);
-    return false;
+    return m_bpModel->toggleAtLabel(name, detail);
 }
 
 QJsonArray MainWindow::symbolsJson(const QString &filter) const
 {
-    QJsonArray list;
-    for (const SymbolEntry &sym : m_symbols) {
-        if (!filter.isEmpty() && !sym.name.contains(filter, Qt::CaseInsensitive))
-            continue;
-        QJsonObject object;
-        object.insert(QStringLiteral("name"), sym.name);
-        if (!sym.file.isEmpty()) {
-            object.insert(QStringLiteral("file"), sym.file);
-            object.insert(QStringLiteral("line"), sym.line);
-            // SymbolsView's honesty rule, shared: an address only once the map
-            // has live bases, and only from the definition's own line.
-            if (m_programMap.isResolved()) {
-                quint32 address = 0;
-                if (m_programMap.codeAddressFor(sym.file, sym.line, &address))
-                    object.insert(QStringLiteral("address"),
-                                  QStringLiteral("0x%1").arg(address, 8, 16, QLatin1Char('0')));
-            }
-        }
-        list.append(object);
-    }
-    return list;
+    return m_remoteState->symbolsJson(filter);
 }
 
 QJsonObject MainWindow::documentJson() const
 {
-    QJsonObject object;
-    if (!m_editor || m_editor->filePath().isEmpty())
-        return object;
-    object.insert(QStringLiteral("path"), m_editor->filePath());
-    object.insert(QStringLiteral("text"), m_editor->toPlainText());
-    return object;
+    return m_remoteState->documentJson();
 }
 
 QJsonObject MainWindow::stateJson() const
 {
-    QJsonObject object;
-    const bool running = m_host && m_host->isRunning();
-    const bool stopped = m_host && m_host->isStopped();
-    object.insert(QStringLiteral("running"), running);
-    object.insert(QStringLiteral("stopped"), stopped);
-    if (!m_lastState.regs.valid)
-        return object;
-
-    const Registers &r = m_lastState.regs;
-    const auto hex = [](quint32 value) {
-        return QStringLiteral("0x%1").arg(value, 8, 16, QLatin1Char('0'));
-    };
-    object.insert(QStringLiteral("pc"), hex(m_lastState.pc));
-    QJsonObject d, a;
-    for (int i = 0; i < 8; ++i) {
-        d.insert(QStringLiteral("d%1").arg(i), hex(r.d[i]));
-        a.insert(QStringLiteral("a%1").arg(i), hex(r.a[i]));
-    }
-    object.insert(QStringLiteral("d"), d);
-    object.insert(QStringLiteral("a"), a);
-    object.insert(QStringLiteral("sr"),
-                  QStringLiteral("0x%1").arg(r.sr, 4, 16, QLatin1Char('0')));
-    return object;
+    return m_remoteState->stateJson();
 }
 
 QJsonArray MainWindow::problemsJson() const
 {
-    QJsonArray list;
-    for (const ProblemEntry &entry : m_problemEntries) {
-        QJsonObject problem;
-        problem.insert(QStringLiteral("file"), entry.file);
-        problem.insert(QStringLiteral("line"), entry.line);
-        problem.insert(QStringLiteral("message"), entry.message);
-        problem.insert(QStringLiteral("severity"),
-                       entry.error ? QStringLiteral("error") : QStringLiteral("warning"));
-        list.append(problem);
-    }
-    return list;
+    return m_remoteState->problemsJson();
 }
 
 QJsonArray MainWindow::tabsJson() const
 {
-    QJsonArray list;
-    for (int i = 0; i < m_tabs->count(); ++i) {
-        QJsonObject tab;
-        QString path;
-        bool modified = false;
-        if (auto *editor = qobject_cast<CodeEditor *>(m_tabs->widget(i))) {
-            path = editor->filePath();
-            modified = editor->isModifiedSinceLoad();
-        } else if (auto *image = qobject_cast<ImageEditor *>(m_tabs->widget(i))) {
-            path = image->filePath();
-            modified = image->isModifiedSinceLoad();
-        }
-        tab.insert(QStringLiteral("path"), path);
-        tab.insert(QStringLiteral("modified"), modified);
-        tab.insert(QStringLiteral("current"), i == m_tabs->currentIndex());
-        list.append(tab);
-    }
-    return list;
+    return m_remoteState->tabsJson();
 }
 
 bool MainWindow::saveCurrentDocument()
@@ -4325,27 +4052,7 @@ bool MainWindow::saveCurrentDocument()
 
 QJsonArray MainWindow::profilerResultsJson() const
 {
-    QJsonArray list;
-    if (!m_profiler)
-        return list;
-    const QHash<int, quint64> counts = m_profiler->lineCounts();
-    QList<QPair<int, quint64>> sorted;
-    sorted.reserve(counts.size());
-    for (auto it = counts.begin(); it != counts.end(); ++it)
-        sorted.append({it.key(), it.value()});
-    // Counts descend; ties break by line, the same order the profiler table
-    // and the gutter heat use, so all three presentations agree.
-    std::sort(sorted.begin(), sorted.end(), [](const auto &lhs, const auto &rhs) {
-        return lhs.second != rhs.second ? lhs.second > rhs.second : lhs.first < rhs.first;
-    });
-    for (const auto &[line, count] : sorted) {
-        QJsonObject entry;
-        entry.insert(QStringLiteral("line"), line);
-        // A number, not a string: agents do arithmetic on these.
-        entry.insert(QStringLiteral("count"), QJsonValue::fromVariant(count));
-        list.append(entry);
-    }
-    return list;
+    return m_remoteState->profilerResultsJson();
 }
 
 bool MainWindow::lineHasCode(int line) const
@@ -4361,18 +4068,7 @@ bool MainWindow::lineHasCode(int line) const
 
 void MainWindow::removeBreakpoint(const QString &file, int line)
 {
-    auto it = std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
-                           [&](const Breakpoint &bp) {
-                               return bp.line == line && bp.file == file;
-                           });
-    if (it == m_breakpoints.end())
-        return;
-
-    m_breakpoints.erase(it);
-    refreshBreakpointMarkers();
-
-    if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
-        armBreakpoints();
+    m_bpModel->remove(file, line);
 }
 
 QString MainWindow::resolveNavigablePath(const QString &file) const
@@ -4403,7 +4099,7 @@ bool MainWindow::navigateToSourceLine(const QString &file, int line)
         return false;
 
     // A build-level note has no source file. Stay in the editor that is open.
-    if (file.isEmpty() || file == tr("(build)")) {
+    if (file.isEmpty()) {
         if (!m_editor)
             return false;
         m_tabs->setCurrentWidget(m_editor);
@@ -4458,14 +4154,13 @@ void MainWindow::stepDiagnostic(int direction)
     for (int i = 0; i < count; ++i) {
         row = ((row + direction) % count + count) % count;
         QTreeWidgetItem *item = m_problems->topLevelItem(row);
-        const int line = item->text(1).toInt();
-        if (line <= 0)
+        const RemoteStateAdapter::ProblemRow *entry = problemEntryFor(item);
+        if (!entry || entry->line <= 0)
             continue;
         // Same contract as double-clicking the item: navigate within the open
         // document only (goToBreakpoint's rule), never switch files blindly.
-        const QString file = item->text(0);
         m_problems->setCurrentItem(item);
-        navigateToSourceLine(file, line);
+        navigateToSourceLine(entry->file, entry->line);
         return;
     }
 }
@@ -4482,76 +4177,17 @@ void MainWindow::previousDiagnostic()
 
 void MainWindow::editBreakpointCondition(int line)
 {
-    if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
-        return;
-
-    const QString file = QFileInfo(m_editor->filePath()).fileName();
-    auto findBreakpoint = [&] {
-        return std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
-                            [&](const Breakpoint &bp) {
-                                return bp.line == line && bp.file == file;
-                            });
-    };
-
-    auto it = findBreakpoint();
-    const bool existed = it != m_breakpoints.end();
-
-    bool accepted = false;
-    const QString condition = QInputDialog::getText(
-        this, tr("Breakpoint condition"),
-        tr("Extra condition for %1:%2 (ANDed with the program counter).\n\n"
-           "Hatari has no memory watchpoints, so this is how you watch a value,\n"
-           "for example:  d0 = $1234   or   (buf) = $ff")
-            .arg(file)
-            .arg(line),
-        QLineEdit::Normal, existed ? it->condition : QString(), &accepted);
-    if (!accepted)
-        return;
-
-    if (!existed) {
-        // Nothing to edit on an empty line: create the breakpoint only now the
-        // dialog was accepted, so cancelling does not leave a condition-less one
-        // behind.
-        m_breakpoints.append(Breakpoint{file, line, QString(), true, 0, false});
-        it = findBreakpoint();
-        refreshBreakpointMarkers();
-    }
-
-    it->condition = condition.trimmed();
-    if (m_sessionArmed && m_host->isStopped() && m_bases.isValid())
-        armBreakpoints();
+    m_bpModel->editCondition(line);
 }
 
 void MainWindow::clearAllBreakpoints()
 {
-    m_breakpoints.clear();
-    refreshBreakpointMarkers();
-    if (m_host->isRunning())
-        // Re-derive the host from the models rather than a bare `b all`: watchpoints
-        // are armed as `b` conditions (Hatari has no data watchpoints), so `b all`
-        // would disarm them too, leaving the panel listing watchpoints that are dead
-        // on the emulator until the next arm. armBreakpoints() clears then re-arms —
-        // the cleared breakpoints go, the retained watchpoints come back.
-        armBreakpoints();
-    m_log->appendPlainText(tr("[breakpoints] all cleared"));
+    m_bpModel->clear();
 }
 
 void MainWindow::clearAllDebugTargets()
 {
-    // The dock's "Clear all" lists watchpoints too (its button enables when only
-    // watchpoints are present), so it clears both models — unlike the
-    // breakpoint-only Run-menu action. Watchpoints are armed as `b` conditions
-    // (Hatari has no data watchpoints), so the host's `b all` removes them
-    // alongside breakpoints; refreshBreakpointMarkers() updates the panel's
-    // breakpoint rows but not its watchpoint rows, so those are set explicitly.
-    m_breakpoints.clear();
-    m_watchpoints.clear();
-    refreshBreakpointMarkers();
-    if (m_breakpointPanel)
-        m_breakpointPanel->setWatchpoints(m_watchpoints);
-    if (m_host->isRunning())
-        m_host->clearBreakpoints();
-    m_log->appendPlainText(tr("[breakpoints] all breakpoints and watchpoints cleared"));
+    m_bpModel->clearAllTargets();
 }
 
 void MainWindow::onStateUpdated(const MachineState &state)
@@ -4563,11 +4199,11 @@ void MainWindow::onStateUpdated(const MachineState &state)
     // 0, and publishing that (observed as "event stopped pc=0x00000000")
     // tells a watcher the machine stopped at address 0. The refresh that
     // follows every stop carries real registers, so the event keeps its pc.
-    if (m_stopEventPending && state.regs.valid) {
-        m_stopEventPending = false;
+    if (m_session->stopEventPending() && state.regs.valid) {
+        m_session->setStopEventPending(false);
         if (m_eventSink)
             m_eventSink->publishEvent(QStringLiteral("stopped"),
-                                      QStringLiteral("pc=0x%1").arg(state.pc, 8, 16, QLatin1Char('0')));
+                                      QStringLiteral("pc=0x%1").arg(hex::hex32(state.pc, hex::Case::Lower)));
     }
     m_disassembly->setState(state);
 
@@ -4591,8 +4227,8 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // Arm breakpoints when the bases they resolve against actually arrive —
         // here, where they are set — not on a zero-delay timer that always fires
         // before the basepage response does (P1 root cause A).
-        if (m_sessionArmed && !m_breakpointsArmedThisSession)
-            armBreakpoints();
+        if (m_session->sessionArmed() && !m_session->breakpointsArmedThisSession())
+            m_session->armBreakpoints();
 
         // Point the memory pane at the program's own data on the first stop.
         // Its previous address is meaningless across sessions.
@@ -4616,11 +4252,11 @@ void MainWindow::onStateUpdated(const MachineState &state)
 
     // Refresh the hardware registers as well.
     if (m_hardware)
-        m_host->command(QStringLiteral("info ") + m_hardware->subject());
+        m_host->infoSubject(m_hardware->subject());
 
     // And the execution path that led here.
     if (m_pcHistory)
-        m_host->command(QStringLiteral("history 16"));
+        m_host->readHistory(16);
 
     locationFromPc(state.pc);
     updateRegisterStrip();
@@ -4637,7 +4273,7 @@ bool MainWindow::canEmbedDisplay(const HatariCapabilities &caps) const
 void MainWindow::setDisplayEmbedded(bool on)
 {
     m_embeddedDisplay = on;
-    QSettings().setValue(QStringLiteral("display/embedded"), on);
+    QSettings().setValue(embeddedDisplayKey(), on);
     if (m_displayDock)
         m_displayDock->setVisible(on);
     // A running session keeps the display mode it was launched with; the change
@@ -4665,23 +4301,64 @@ QString MainWindow::debugConsoleText() const
 
 QString MainWindow::stateSummary() const
 {
-    if (!m_lastState.regs.valid) {
-        // "no session state" reads like failure to a remote caller whose
-        // natural first move after `run` is `state`; say why instead.
-        if (m_host && m_host->isRunning() && !m_host->isStopped())
-            return tr("machine is running; state is captured when the debugger stops\n");
-        return tr("no session state\n");
-    }
+    return m_remoteState->stateSummary();
+}
 
-    const Registers &r = m_lastState.regs;
-    QStringList lines;
-    lines << QStringLiteral("pc  %1").arg(m_lastState.pc, 8, 16, QLatin1Char('0'));
-    for (int i = 0; i < 8; ++i)
-        lines << QStringLiteral("d%1  %2").arg(i).arg(r.d[i], 8, 16, QLatin1Char('0'));
-    for (int i = 0; i < 8; ++i)
-        lines << QStringLiteral("a%1  %2").arg(i).arg(r.a[i], 8, 16, QLatin1Char('0'));
-    lines << QStringLiteral("sr  %1").arg(r.sr, 4, 16, QLatin1Char('0'));
-    return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+bool MainWindow::writeMemoryByte(quint32 address, quint32 value)
+{
+    // The remote `setmem`: no view asked for it, so with no pane to refresh the
+    // first one is (setMemoryByte's own rule for a null pane).
+    return setMemoryByte(address, value);
+}
+
+bool MainWindow::saveScreenshot(const QString &path)
+{
+    // Raise first, so the capture is this window and not whatever is on top of
+    // it, and pump once so the raise has landed before the frame buffer is
+    // read. XGetImage (ui/EmbedX11.h) rather than QScreen::grabWindow, which
+    // returns black for a top-level window under XWayland on this setup and
+    // cannot see the reparented foreign window the embedded emulator lives in.
+    raise();
+    activateWindow();
+    QGuiApplication::processEvents();
+    const QImage image = captureWindowImage(winId());
+    return !image.isNull() && image.save(path);
+}
+
+QMetaObject::Connection MainWindow::onBuildCompleted(QObject *context,
+                                                     std::function<void(bool)> handler)
+{
+    return connect(this, &MainWindow::buildCompleted, context, std::move(handler));
+}
+
+QMetaObject::Connection MainWindow::onSessionRunningChanged(QObject *context,
+                                                            std::function<void(bool)> handler)
+{
+    return connect(this, &MainWindow::sessionRunningChanged, context, std::move(handler));
+}
+
+QMetaObject::Connection MainWindow::onProfileResultsReady(QObject *context,
+                                                          std::function<void(bool)> handler)
+{
+    return connect(this, &MainWindow::profileResultsReady, context, std::move(handler));
+}
+
+QMetaObject::Connection MainWindow::onDebugCommandFinished(
+    QObject *context, std::function<void(const QString &, const QString &)> handler)
+{
+    return connect(this, &MainWindow::debugCommandFinished, context, std::move(handler));
+}
+
+QMetaObject::Connection MainWindow::onDebugReadFinished(
+    QObject *context, std::function<void(quint32, const QString &)> handler)
+{
+    return connect(this, &MainWindow::debugReadFinished, context, std::move(handler));
+}
+
+QMetaObject::Connection MainWindow::onDebugReadMemoryFinished(
+    QObject *context, std::function<void(quint32, const QList<MemoryRow> &)> handler)
+{
+    return connect(this, &MainWindow::debugReadMemoryFinished, context, std::move(handler));
 }
 
 void MainWindow::locationFromPc(quint32 pc)

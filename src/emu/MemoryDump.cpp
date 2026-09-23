@@ -4,6 +4,8 @@
 
 #include "emu/MemoryDump.h"
 
+#include "emu/HexFormat.h"
+
 #include <QRegularExpression>
 
 namespace pist {
@@ -15,8 +17,13 @@ namespace {
 /// groups; everything after the double space is the character column.
 const QRegularExpression &rowRe()
 {
+    // Whitespace is horizontal only ([ \t], never \s): a `\s+` between hex
+    // groups also matches the newline that ends the row, so the group run walks
+    // into the *next* row's address, claims it as data and consumes it — one row
+    // comes back with the wrong bytes and the following row disappears. Latent
+    // while only byte width is parsed; word and long dumps corrupt (MIN-4).
     static const QRegularExpression re(
-        QStringLiteral(R"(^([0-9A-Fa-f]{6,8}):\s+((?:[0-9A-Fa-f]{2,8}\s+)*[0-9A-Fa-f]{2,8}))"),
+        QStringLiteral(R"(^([0-9A-Fa-f]{6,8}):[ \t]+((?:[0-9A-Fa-f]{2,8}[ \t]+)*[0-9A-Fa-f]{2,8}))"),
         QRegularExpression::MultilineOption);
     return re;
 }
@@ -33,7 +40,9 @@ const QRegularExpression &groupRe()
 /// 8-digit widths they separate in word and long dumps — are left alone.
 const QRegularExpression &columnSeparator()
 {
-    static const QRegularExpression re(QStringLiteral("\\s{2,}"));
+    // Horizontal only, for the same reason rowRe() is: a `\s{2,}` run can span
+    // the row's own newline and eat into the next row (MIN-4).
+    static const QRegularExpression re(QStringLiteral("[ \\t]{2,}"));
     return re;
 }
 
@@ -84,6 +93,16 @@ QList<MemoryRow> parseMemoryDump(const QString &response)
     return rows;
 }
 
+QString renderMemoryDump(const QList<MemoryRow> &rows)
+{
+    QString text;
+    for (const MemoryRow &row : rows) {
+        text += hex::hexDumpRow(row.address, row.bytes) + QStringLiteral("  ")
+              + renderMemoryChars(row.bytes) + QLatin1Char('\n');
+    }
+    return text;
+}
+
 QString renderMemoryChars(const QVector<quint8> &bytes)
 {
     QString text;
@@ -104,6 +123,15 @@ quint32 readLongBE(const QByteArray &bytes, int offset)
     const auto *p = reinterpret_cast<const quint8 *>(bytes.constData()) + offset;
     return (quint32(p[0]) << 24) | (quint32(p[1]) << 16) | (quint32(p[2]) << 8)
            | quint32(p[3]);
+}
+
+quint32 readLongBE(const QVector<quint8> &bytes, int offset)
+{
+    if (offset < 0 || bytes.size() - offset < 4)
+        return 0;
+
+    return (quint32(bytes[offset]) << 24) | (quint32(bytes[offset + 1]) << 16)
+           | (quint32(bytes[offset + 2]) << 8) | quint32(bytes[offset + 3]);
 }
 
 bool looksLikeAddress(quint32 value)

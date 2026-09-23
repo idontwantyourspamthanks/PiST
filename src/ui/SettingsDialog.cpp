@@ -6,6 +6,7 @@
 
 #include "emu/TosRom.h"
 #include "ui/Appearance.h"
+#include "ui/FileBrowser.h"
 #include "ui/SetupDialog.h"
 
 
@@ -47,6 +48,23 @@ QStringList linesToArgs(const QString &text)
     return args;
 }
 
+/// One "value field + Browse… button" row of `form`: `field` (a QLineEdit or a
+/// QComboBox) takes the space on the left, a Browse… button sits on the right.
+/// The six path rows — assembler, emulator, TOS ROM, hard disk, floppy A/B —
+/// had this construction written out by hand. The row takes ownership of
+/// `field`; the button is returned so the caller can connect it.
+QPushButton *addPathRow(QFormLayout *form, QWidget *tab, const QString &label, QWidget *field)
+{
+    auto *row = new QWidget(tab);
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->addWidget(field, 1);
+    auto *browse = new QPushButton(SettingsDialog::tr("Browse…"), row);
+    rowLayout->addWidget(browse);
+    form->addRow(label, row);
+    return browse;
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
@@ -70,16 +88,10 @@ void SettingsDialog::buildUi()
 
     // Explicit tool paths. Placed first because a missing assembler blocks
     // everything else, and the hint in the error dialog points here.
-    auto *assemblerRow = new QWidget(buildTab);
-    auto *assemblerLayout = new QHBoxLayout(assemblerRow);
-    assemblerLayout->setContentsMargins(0, 0, 0, 0);
-    m_assemblerPath = new QLineEdit(assemblerRow);
+    m_assemblerPath = new QLineEdit;
     m_assemblerPath->setPlaceholderText(tr("Detected automatically"));
-    auto *browseAsm = new QPushButton(tr("Browse…"), assemblerRow);
-    connect(browseAsm, &QPushButton::clicked, this, &SettingsDialog::browseAssembler);
-    assemblerLayout->addWidget(m_assemblerPath, 1);
-    assemblerLayout->addWidget(browseAsm);
-    buildLayout->addRow(tr("vasmm68k_mot:"), assemblerRow);
+    connect(addPathRow(buildLayout, buildTab, tr("vasmm68k_mot:"), m_assemblerPath),
+            &QPushButton::clicked, this, &SettingsDialog::browseAssembler);
 
     m_cpu = new QComboBox(buildTab);
     // Taken from vasm's documented -m values. The ST is a plain 68000; the rest
@@ -167,16 +179,10 @@ void SettingsDialog::buildUi()
     auto *emuTab = new QWidget(this);
     auto *emuLayout = new QFormLayout(emuTab);
 
-    auto *emulatorRow = new QWidget(emuTab);
-    auto *emulatorLayout = new QHBoxLayout(emulatorRow);
-    emulatorLayout->setContentsMargins(0, 0, 0, 0);
-    m_emulatorPath = new QLineEdit(emulatorRow);
+    m_emulatorPath = new QLineEdit;
     m_emulatorPath->setPlaceholderText(tr("Detected automatically"));
-    auto *browseEmu = new QPushButton(tr("Browse…"), emulatorRow);
-    connect(browseEmu, &QPushButton::clicked, this, &SettingsDialog::browseEmulator);
-    emulatorLayout->addWidget(m_emulatorPath, 1);
-    emulatorLayout->addWidget(browseEmu);
-    emuLayout->addRow(tr("hatari:"), emulatorRow);
+    connect(addPathRow(emuLayout, emuTab, tr("hatari:"), m_emulatorPath),
+            &QPushButton::clicked, this, &SettingsDialog::browseEmulator);
 
     m_debugBackend = new QComboBox(emuTab);
     m_debugBackend->addItem(tr("Auto (follow the emulator's capability)"),
@@ -192,16 +198,10 @@ void SettingsDialog::buildUi()
     emuLayout->addRow(tr("Machine:"), m_machine);
 
     // ROM: a combo plus a browse button, because a user's ROMs may live anywhere.
-    auto *romRow = new QWidget(emuTab);
-    auto *romLayout = new QHBoxLayout(romRow);
-    romLayout->setContentsMargins(0, 0, 0, 0);
-    m_rom = new QComboBox(romRow);
+    m_rom = new QComboBox;
     m_rom->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    auto *browse = new QPushButton(tr("Browse…"), romRow);
-    connect(browse, &QPushButton::clicked, this, &SettingsDialog::browseRom);
-    romLayout->addWidget(m_rom, 1);
-    romLayout->addWidget(browse);
-    emuLayout->addRow(tr("TOS ROM:"), romRow);
+    connect(addPathRow(emuLayout, emuTab, tr("TOS ROM:"), m_rom),
+            &QPushButton::clicked, this, &SettingsDialog::browseRom);
 
     m_romNote = new QLabel(emuTab);
     m_romNote->setWordWrap(true);
@@ -219,41 +219,23 @@ void SettingsDialog::buildUi()
     m_ram->setSpecialValueText(tr("512 KiB (default)"));
     emuLayout->addRow(tr("ST RAM:"), m_ram);
 
-    auto *hdRow = new QWidget(emuTab);
-    auto *hdLayout = new QHBoxLayout(hdRow);
-    hdLayout->setContentsMargins(0, 0, 0, 0);
-    m_hardDisk = new QLineEdit(hdRow);
+    m_hardDisk = new QLineEdit;
     m_hardDisk->setPlaceholderText(tr("Optional disk image for ACSI/IDE"));
-    auto *browseHd = new QPushButton(tr("Browse…"), hdRow);
-    connect(browseHd, &QPushButton::clicked, this, &SettingsDialog::browseHardDisk);
-    hdLayout->addWidget(m_hardDisk, 1);
-    hdLayout->addWidget(browseHd);
-    emuLayout->addRow(tr("Hard disk:"), hdRow);
+    connect(addPathRow(emuLayout, emuTab, tr("Hard disk:"), m_hardDisk),
+            &QPushButton::clicked, this, &SettingsDialog::browseHardDisk);
 
     // Floppy drives. Both are optional and independent of the GEMDOS hard disk:
     // a program launched from the HD can still read a floppy, and a disk image is
     // the only way to ship data a program expects on A: or B:.
-    auto *floppyA = new QWidget(emuTab);
-    auto *floppyALayout = new QHBoxLayout(floppyA);
-    floppyALayout->setContentsMargins(0, 0, 0, 0);
-    m_floppyA = new QLineEdit(floppyA);
+    m_floppyA = new QLineEdit;
     m_floppyA->setPlaceholderText(tr("Optional disk image for drive A:"));
-    auto *browseA = new QPushButton(tr("Browse…"), floppyA);
-    connect(browseA, &QPushButton::clicked, this, &SettingsDialog::browseFloppyA);
-    floppyALayout->addWidget(m_floppyA, 1);
-    floppyALayout->addWidget(browseA);
-    emuLayout->addRow(tr("Floppy A:"), floppyA);
+    connect(addPathRow(emuLayout, emuTab, tr("Floppy A:"), m_floppyA), &QPushButton::clicked,
+            this, [this] { browseFloppy(m_floppyA, tr("Select a floppy image for drive A:")); });
 
-    auto *floppyB = new QWidget(emuTab);
-    auto *floppyBLayout = new QHBoxLayout(floppyB);
-    floppyBLayout->setContentsMargins(0, 0, 0, 0);
-    m_floppyB = new QLineEdit(floppyB);
+    m_floppyB = new QLineEdit;
     m_floppyB->setPlaceholderText(tr("Optional disk image for drive B:"));
-    auto *browseB = new QPushButton(tr("Browse…"), floppyB);
-    connect(browseB, &QPushButton::clicked, this, &SettingsDialog::browseFloppyB);
-    floppyBLayout->addWidget(m_floppyB, 1);
-    floppyBLayout->addWidget(browseB);
-    emuLayout->addRow(tr("Floppy B:"), floppyB);
+    connect(addPathRow(emuLayout, emuTab, tr("Floppy B:"), m_floppyB), &QPushButton::clicked,
+            this, [this] { browseFloppy(m_floppyB, tr("Select a floppy image for drive B:")); });
 
     m_extraEmuArgs = new QPlainTextEdit(emuTab);
     m_extraEmuArgs->setPlaceholderText(tr("One argument per line"));
@@ -366,13 +348,13 @@ void SettingsDialog::buildUi()
 void SettingsDialog::accept()
 {
     // Application-wide preferences persist on OK, independently of the
-    // project settings the rest of the dialog edits.
-    QSettings().setValue(QStringLiteral("appearance/theme"),
-                         m_theme->currentData().toString());
-    QSettings().setValue(QStringLiteral("appearance/fontFamily"),
-                         m_fontFamily->currentData().toString());
-    QSettings().setValue(QStringLiteral("appearance/fontSize"), m_fontSize->value());
-    QSettings().setValue(QStringLiteral("appearance/shortcuts"),
+    // project settings the rest of the dialog edits. The keys come from
+    // Appearance — the reader of each one — rather than being spelled again
+    // here (MIN-53).
+    QSettings().setValue(appearance::themeKey(), m_theme->currentData().toString());
+    QSettings().setValue(appearance::fontFamilyKey(), m_fontFamily->currentData().toString());
+    QSettings().setValue(appearance::fontSizeKey(), m_fontSize->value());
+    QSettings().setValue(appearance::shortcutSchemeKey(),
                          m_shortcutScheme->currentData().toString());
     QDialog::accept();
 }
@@ -421,6 +403,16 @@ void SettingsDialog::refreshRomList()
 {
     const Machine machine = static_cast<Machine>(m_machine->currentData().toInt());
 
+    // The combo is the live selection, and the stored settings only say what the
+    // dialog was opened with: rebuilding the list from `m_settings.tosPath` threw
+    // away whatever the user had picked (including a ROM chosen through Browse…),
+    // and settings() then persisted the ROM from the file rather than the one on
+    // screen. A valid current index means the user has a selection to keep — even
+    // the empty data of "Automatic", which is a choice — while -1 only happens
+    // before the list has been built once.
+    const bool hadSelection = m_rom->currentIndex() >= 0;
+    const QString picked = m_rom->currentData().toString();
+
     m_rom->clear();
     m_rom->addItem(tr("Automatic (best for this machine)"), QString());
 
@@ -436,14 +428,16 @@ void SettingsDialog::refreshRomList()
         m_rom->addItem(label, rom.path);
     }
 
-    // Restore the configured ROM if it is still present.
-    const QString configured = m_settings.tosPath;
-    if (!configured.isEmpty()) {
-        const int index = m_rom->findData(configured);
+    // Restore the selection if it is still present. A ROM that is not in the
+    // discovered list (one the user browsed to) keeps its own entry, so the
+    // choice survives the machine change that re-ran this.
+    const QString keep = hadSelection ? picked : m_settings.tosPath;
+    if (!keep.isEmpty()) {
+        const int index = m_rom->findData(keep);
         if (index >= 0)
             m_rom->setCurrentIndex(index);
         else {
-            m_rom->addItem(tr("Configured: %1").arg(configured), configured);
+            m_rom->addItem(tr("Configured: %1").arg(keep), keep);
             m_rom->setCurrentIndex(m_rom->count() - 1);
         }
     }
@@ -527,22 +521,12 @@ void SettingsDialog::browseEmulator()
         m_emulatorPath->setText(path);
 }
 
-void SettingsDialog::browseFloppyA()
+void SettingsDialog::browseFloppy(QLineEdit *field, const QString &title)
 {
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Select a floppy image for drive A:"), QString(),
-        tr("Disk images (*.st *.msa *.img *.dim *.ipf);;All files (*)"));
+    const QString path = QFileDialog::getOpenFileName(this, title, QString(),
+                                                      floppyImageFilter());
     if (!path.isEmpty())
-        m_floppyA->setText(path);
-}
-
-void SettingsDialog::browseFloppyB()
-{
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Select a floppy image for drive B:"), QString(),
-        tr("Disk images (*.st *.msa *.img *.dim *.ipf);;All files (*)"));
-    if (!path.isEmpty())
-        m_floppyB->setText(path);
+        field->setText(path);
 }
 
 void SettingsDialog::addSource()

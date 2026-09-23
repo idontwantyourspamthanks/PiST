@@ -42,7 +42,7 @@ QList<Param> parseParams(const QString &prototype)
     for (const QString &raw : parts) {
         const QString part = raw.trimmed();
         if (part == QLatin1String("..."))
-            continue; // Pexec's varargs: handled by the fixed layout below
+            continue; // Pexec's varargs: the fixedArgBlock layout covers them
 
         Param p;
         p.isPointer = part.contains(QLatin1Char('*'));
@@ -61,7 +61,28 @@ QList<Param> parseParams(const QString &prototype)
     return params;
 }
 
+/// One push of the canonical binding: 4 bytes for a long (or a pointer, which
+/// the binding pushes with `pea`), 2 for a word.
+int pushBytes(const Param &p)
+{
+    return p.isLong ? 4 : 2;
+}
+
 } // namespace
+
+int osCallStackBytes(const OsCallInfo &info)
+{
+    // The function number's word, the caller's arguments, then the reserved
+    // words the call's binding adds. Pexec's fixed block is three longs.
+    int bytes = 2;
+    const QList<Param> params = parseParams(info.prototype);
+    for (const Param &p : params)
+        bytes += pushBytes(p);
+    bytes += 2 * info.reservedWords;
+    if (info.fixedArgBlock)
+        bytes += 3 * 4; // env, cmdline, name
+    return bytes;
+}
 
 QString osCallBinding(const OsCallInfo &info)
 {
@@ -69,21 +90,25 @@ QString osCallBinding(const OsCallInfo &info)
 
     // Arguments in reverse declaration order (the last parameter is pushed
     // first), each as the canonical binding writes it: pea for pointers,
-    // move.l for long values, move.w for words.
+    // move.l for long values, move.w for words. Pexec's fixed argument block is
+    // deeper than every caller-supplied one, so it is pushed first; the
+    // reserved words sit above the arguments, next to the function number.
     const QList<Param> params = parseParams(info.prototype);
-    const bool isPexec = (info.trap == 1 && info.opcode == 75);
-    if (isPexec) {
-        // The varargs call has one fixed layout: three longs after the mode.
+    if (info.fixedArgBlock) {
         lines << QStringLiteral("\tpea\tenv");
         lines << QStringLiteral("\tpea\tcmdline");
         lines << QStringLiteral("\tpea\tname");
     }
     for (int i = params.size() - 1; i >= 0; --i) {
+        if (i == info.reservedArg) {
+            // An argument the call fixes rather than the caller: Dbmsg's
+            // reserved word, which must be 5. Keyed on the argument's position,
+            // so renaming the parameter changes nothing.
+            lines << QStringLiteral("\tmove.w\t#%1,-(sp)").arg(info.reservedArgValue);
+            continue;
+        }
         const Param &p = params.at(i);
-        if (info.trap == 14 && info.opcode == 11 && p.name == QLatin1String("rsrvd")) {
-            // Dbmsg's reserved word is not a parameter to fill in: it must be 5.
-            lines << QStringLiteral("\tmove.w\t#5,-(sp)");
-        } else if (p.isPointer) {
+        if (p.isPointer) {
             lines << QStringLiteral("\tpea\t%1").arg(p.name);
         } else if (p.isLong) {
             lines << QStringLiteral("\tmove.l\t#%1,-(sp)").arg(p.name);
@@ -93,17 +118,21 @@ QString osCallBinding(const OsCallInfo &info)
     }
     // Mshrink and Frename push a reserved zero word between their arguments
     // and the function number (the C binding adds it silently).
-    if ((info.trap == 1 && info.opcode == 74) || (info.trap == 1 && info.opcode == 86))
+    for (int i = 0; i < info.reservedWords; ++i)
         lines << QStringLiteral("\tmove.w\t#0,-(sp)");
 
     lines << QStringLiteral("\tmove.w\t#%1,-(sp)\t; %2 %3")
                  .arg(info.opcode)
                  .arg(osCallLayerName(info.trap), info.name);
     lines << QStringLiteral("\ttrap\t#%1").arg(info.trap);
-    if (info.stackBytes <= 8)
-        lines << QStringLiteral("\taddq.l\t#%1,sp").arg(info.stackBytes);
+
+    // The cleanup is derived from the layout, never from a hand-written size:
+    // the pushes above and the number the caller pops cannot disagree.
+    const int bytes = osCallStackBytes(info);
+    if (bytes <= 8)
+        lines << QStringLiteral("\taddq.l\t#%1,sp").arg(bytes);
     else
-        lines << QStringLiteral("\tlea\t%1(sp),sp").arg(info.stackBytes);
+        lines << QStringLiteral("\tlea\t%1(sp),sp").arg(bytes);
 
     return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
 }

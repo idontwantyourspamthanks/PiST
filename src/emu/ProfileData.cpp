@@ -4,6 +4,7 @@
 
 #include "emu/ProfileData.h"
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QRegularExpression>
 #include <QTextStream>
@@ -98,7 +99,7 @@ bool fail(QString *error, const QString &message)
 bool parseProfileText(const QString &text, ProfileData *data, QString *error)
 {
     if (!data)
-        return fail(error, QStringLiteral("no destination for the parsed profile"));
+        return fail(error, QObject::tr("no destination for the parsed profile"));
 
     ProfileData parsed;
 
@@ -119,8 +120,8 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
     const QString title = next();
     const auto titleMatch = titleRe().match(title);
     if (!titleMatch.hasMatch())
-        return fail(error, QStringLiteral("not a Hatari profile: the first line is "
-                                          "not '<emulator> <processor> profile': '%1'")
+        return fail(error, QObject::tr("not a Hatari profile: the first line is "
+                                       "not '<emulator> <processor> profile': '%1'")
                                .arg(title.trimmed()));
     parsed.processor = titleMatch.captured(2);
     parsed.emulator = titleMatch.captured(3);
@@ -128,14 +129,21 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
     const QString clockLine = next();
     const auto clockMatch = clockRe().match(clockLine);
     if (!clockMatch.hasMatch())
-        return fail(error, QStringLiteral("invalid Cycles/second line: '%1'")
+        return fail(error, QObject::tr("invalid Cycles/second line: '%1'")
                                .arg(clockLine.trimmed()));
-    parsed.clockHz = clockMatch.captured(1).toUInt();
+    // Checked: an unparseable or overflowing value becomes a silent 0 without
+    // the flag, and a profile claiming a 0 Hz clock is worse than a refusal —
+    // every cycle-to-time conversion downstream divides by it (MIN-5).
+    bool clockOk = false;
+    parsed.clockHz = clockMatch.captured(1).toUInt(&clockOk);
+    if (!clockOk)
+        return fail(error, QObject::tr("Cycles/second value is not a 32-bit count: '%1'")
+                               .arg(clockMatch.captured(1)));
 
     const QString fieldsLine = next();
     const auto fieldsMatch = fieldsRe().match(fieldsLine);
     if (!fieldsMatch.hasMatch())
-        return fail(error, QStringLiteral("invalid Field names line: '%1'")
+        return fail(error, QObject::tr("invalid Field names line: '%1'")
                                .arg(fieldsLine.trimmed()));
     const QStringList fields = fieldsMatch.captured(1).split(QLatin1Char(','));
     for (const QString &field : fields) {
@@ -144,9 +152,9 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
             parsed.fieldNames.append(trimmed);
     }
     if (parsed.fieldNames.size() < 2)
-        return fail(error, QStringLiteral("Field names lists %1 field(s): the "
-                                          "instructions and cycles fields Profile_Save "
-                                          "writes first are missing")
+        return fail(error, QObject::tr("Field names lists %1 field(s): the "
+                                       "instructions and cycles fields Profile_Save "
+                                       "writes first are missing")
                                .arg(parsed.fieldNames.size()));
 
     // The regexp line is a format marker only. PiST matches the two documented
@@ -155,7 +163,7 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
     // profile instead of an error.
     const QString regexpLine = next();
     if (!fieldRegexpRe().match(regexpLine).hasMatch())
-        return fail(error, QStringLiteral("invalid Field regexp line: '%1'")
+        return fail(error, QObject::tr("invalid Field regexp line: '%1'")
                                .arg(regexpLine.trimmed()));
 
     // --- memory areas, up to the disassembly comment -------------------------
@@ -169,8 +177,19 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
         if (area.hasMatch()) {
             ProfileRegion region;
             region.name = area.captured(1).trimmed();
-            region.first = area.captured(2).toUInt(nullptr, 16);
-            region.last = area.captured(3).toUInt(nullptr, 16);
+            // Checked, like every other number in this file: an address that
+            // overflows 32 bits parses to a silent 0, and a zeroed span turns a
+            // region's samples into unmapped ones without a word of complaint
+            // (MIN-5).
+            bool firstOk = false;
+            bool lastOk = false;
+            region.first = area.captured(2).toUInt(&firstOk, 16);
+            region.last = area.captured(3).toUInt(&lastOk, 16);
+            if (!firstOk || !lastOk)
+                return fail(error, QObject::tr("memory-area span at line %1 overflows a "
+                                               "32-bit address: '%2'")
+                                       .arg(at + 1)
+                                       .arg(line));
             parsed.regions.append(region);
             ++at;
             continue;
@@ -205,8 +224,8 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
         const quint32 address = match.captured(1).toUInt(nullptr, 16);
         if (havePrevious && address < previous)
             return fail(error,
-                        QStringLiteral("profile addresses are out of order at line %1 "
-                                       "('$%2' after '$%3')")
+                        QObject::tr("profile addresses are out of order at line %1 "
+                                    "('$%2' after '$%3')")
                             .arg(at + 1)
                             .arg(address, 0, 16)
                             .arg(previous, 0, 16));
@@ -216,8 +235,8 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
         const QStringList values = match.captured(2).split(QLatin1Char(','));
         if (values.size() < 2)
             return fail(error,
-                        QStringLiteral("profile line %1 carries no instructions/cycles "
-                                       "pair: '%2'")
+                        QObject::tr("profile line %1 carries no instructions/cycles "
+                                    "pair: '%2'")
                             .arg(at + 1)
                             .arg(line));
         bool okCount = false;
@@ -228,7 +247,7 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
         entry.cycles = values.at(1).trimmed().toULongLong(&okCycles);
         if (!okCount || !okCycles)
             return fail(error,
-                        QStringLiteral("profile line %1 has a non-numeric count: '%2'")
+                        QObject::tr("profile line %1 has a non-numeric count: '%2'")
                             .arg(at + 1)
                             .arg(line));
 
@@ -244,9 +263,9 @@ bool parseProfileText(const QString &text, ProfileData *data, QString *error)
         // the next, and the buffers are zeroed when it begins (Profile_CpuStart,
         // called from DebugCpu_SetDebugging on continue). Naming that is more
         // use than an empty table.
-        return fail(error, QStringLiteral("no profiled instructions in the file "
-                                          "(was profiling enabled while the program "
-                                          "was stopped, before it ran?)"));
+        return fail(error, QObject::tr("no profiled instructions in the file "
+                                       "(was profiling enabled while the program "
+                                       "was stopped, before it ran?)"));
     }
 
     *data = parsed;
@@ -257,7 +276,7 @@ bool parseProfile(const QString &path, ProfileData *data, QString *error)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return fail(error, QStringLiteral("cannot read profile '%1': %2")
+        return fail(error, QObject::tr("cannot read profile '%1': %2")
                                .arg(path, file.errorString()));
 
     QTextStream stream(&file);

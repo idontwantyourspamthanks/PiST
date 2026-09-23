@@ -1329,9 +1329,12 @@ QPainterPath atariLogoGlyph(bool wordmark)
     return p;
 }
 
-void paintAtariLogo(QPainter &p, const QRectF &r, bool wordmark, const QColor &fill)
+/// Draw `glyph` centred in `r`, scaled to fit. The caller builds the path:
+/// `atariLogoGlyph` parses the whole SVG outline, so building it once per
+/// icon/pixmap instead of once per draw removes a second full parse of every
+/// path string (and, for the icon, one parse per size).
+void paintAtariLogo(QPainter &p, const QRectF &r, const QPainterPath &glyph, const QColor &fill)
 {
-    const QPainterPath glyph = atariLogoGlyph(wordmark);
     const QRectF src = glyph.boundingRect();
     if (src.isEmpty() || r.isEmpty())
         return;
@@ -1404,7 +1407,7 @@ QPixmap atariLogoPixmap(int logicalHeight, bool wordmark)
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QColor fill = wordmark ? QColor(Qt::black) : ink();
-    paintAtariLogo(p, QRectF(0, 0, logicalWidth, logicalHeight), wordmark, fill);
+    paintAtariLogo(p, QRectF(0, 0, logicalWidth, logicalHeight), glyph, fill);
     p.end();
     return pm;
 }
@@ -1413,6 +1416,7 @@ QIcon atariLogoIcon()
 {
     QIcon ic;
     const qreal ratio = dpr();
+    const QPainterPath glyph = atariLogoGlyph(false);
     for (int logical : {16, 20, 24, 32}) {
         const int px = int(std::lround(logical * ratio));
         QPixmap pm(px, px);
@@ -1422,7 +1426,7 @@ QIcon atariLogoIcon()
         p.setRenderHint(QPainter::Antialiasing, true);
         const qreal pad = logical * 0.10;
         paintAtariLogo(p, QRectF(pad, pad, logical - 2 * pad, logical - 2 * pad),
-                       false, ink());
+                       glyph, ink());
         p.end();
         ic.addPixmap(pm);
     }

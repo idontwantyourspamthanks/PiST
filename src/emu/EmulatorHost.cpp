@@ -4,6 +4,7 @@
 
 #include "emu/EmulatorHost.h"
 
+#include "build/ProcessUtil.h"
 #include "emu/HatariProbe.h"
 #include "emu/HatariTextParse.h"
 #include "emu/Paths.h"
@@ -93,15 +94,6 @@ const QRegularExpression &basepageRe()
 }
 
 
-/// A prompt is the literal `> ` written before each blocking read. It carries no
-/// trailing newline, so it is counted at the start of a stream or after a
-/// newline.
-const QRegularExpression &promptRe()
-{
-    static const QRegularExpression re(QStringLiteral(R"((?:^|\n)> )"));
-    return re;
-}
-
 /// On stderr, `> <cmd>` is an *echo* of a command the debugger is about to run
 /// (DebugUI_ParseLine and DebugUI_ParseFile both print it), not a prompt. Only a
 /// trailing `> ` with no newline after it is a prompt, which is how builds
@@ -111,22 +103,17 @@ bool stderrEndsWithPrompt(const QByteArray &buffer)
     return buffer.endsWith("> ");
 }
 
-int countPrompts(const QString &text)
-{
-    int count = 0;
-    auto it = promptRe().globalMatch(text);
-    while (it.hasNext()) {
-        it.next();
-        ++count;
-    }
-    return count;
-}
-
 } // namespace
 
 EmulatorHost::EmulatorHost(QObject *parent)
     : IDebugBackend(parent)
 {
+    // The dump rows and the hardware summary ride on this backend's signals
+    // (MAJ-45): registered here, before any connection can be made, so a
+    // queued connection or a QSignalSpy can carry them.
+    qRegisterMetaType<QList<MemoryRow>>("QList<MemoryRow>");
+    qRegisterMetaType<HardwareSummary>("HardwareSummary");
+
     m_commandTimeout = new QTimer(this);
     m_commandTimeout->setSingleShot(true);
     connect(m_commandTimeout, &QTimer::timeout, this, &EmulatorHost::onCommandTimeout);
@@ -240,6 +227,7 @@ void EmulatorHost::resetTransport()
     m_awaitingEntryPrompt = false;
     m_stdoutLoggedChars = 0;
     m_stdoutText.clear();
+    m_promptCarry.clear();
     m_owedPrompts = 0;
     m_stderrBuffer.clear();
     m_stderrAtDispatch = 0;
@@ -272,6 +260,16 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     m_process->setProcessEnvironment(makeSessionEnvironment(config));
 
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
+
+    // Every *read* here is channel-specific (readAllStandardOutput /
+    // readAllStandardError, each with its own readyRead signal connected
+    // below), but `bytesAvailable()` and `waitForReadyRead()` act on the
+    // *current* read channel, which defaults to stdout. drainStderr() uses both
+    // of those to pull the response tail out of the pipe, so without this they
+    // inspected the stdout buffer and blocked their full 20 ms timeout at every
+    // completion, with the response tail arriving only incidentally through a
+    // readyReadStandardError emitted inside the wait (MAJ-13).
+    m_process->setReadChannel(QProcess::StandardError);
 
     connect(m_process, &QProcess::readyReadStandardError, this, [this] {
         processStderrData();
@@ -332,11 +330,7 @@ void EmulatorHost::stop()
         m_settleTimer->stop();
 
     if (m_process) {
-        m_process->disconnect(this);
-        if (m_process->state() != QProcess::NotRunning) {
-            m_process->kill();
-            m_process->waitForFinished(2000);
-        }
+        killAndRelease(m_process, this);
         m_process->deleteLater();
         m_process = nullptr;
     }
@@ -358,20 +352,57 @@ void EmulatorHost::handleStdoutData(const QByteArray &data)
     if (data.isEmpty())
         return;
 
-    const QString previous = m_stdoutText;
-    m_stdoutText += QString::fromUtf8(data);
+    const QString appended = QString::fromUtf8(data);
+    m_stdoutText += appended;
 
-    // Bound memory while preserving the not-yet-logged tail.
+    // Bound memory while preserving the not-yet-logged tail. This is a logging
+    // concern only: the prompt tally below never re-reads the buffer, so
+    // dropping its leading bytes cannot drop a prompt with them (MAJ-15).
     if (m_stdoutText.size() > 65536) {
         const int drop = m_stdoutText.size() - 32768;
         m_stdoutText.remove(0, drop);
         m_stdoutLoggedChars = qMax(0, m_stdoutLoggedChars - drop);
     }
 
-    const int before = countPrompts(previous);
-    const int after = countPrompts(m_stdoutText);
-    for (int i = 0; i < qMax(0, after - before); ++i)
+    // Count the prompts in the newly arrived text only, seeded with the
+    // previous chunk's last two characters so a prompt split across two chunks
+    // ("\n>" then " ") is still seen.
+    //
+    // A prompt is `> ` at a line start **or immediately after another prompt**:
+    // a continue prints nothing on stdout, so the next stop's prompt follows
+    // the previous prompt's space with no newline between it. The old
+    // `(?:^|\n)> ` pattern could not see that second form — two adjacent
+    // prompts merged into one match — and the carry heuristic then suppressed
+    // the chunk-boundary case as "already counted". Every stop after a silent
+    // continue could lose its completion signal ("did not respond to 'r' in
+    // time"), a blind spot masked until CRIT-1 stopped the settle timer from
+    // firing early on every stderr line.
+    const int carried = m_promptCarry.size();
+    const QString scanned = m_promptCarry + appended;
+    // Whether the previous chunk ended exactly on a prompt is derivable from
+    // the carry: such a chunk's last two characters are the prompt's own "> ".
+    const bool chunkStartedAfterPrompt = carried == 2 && m_promptCarry == QLatin1String("> ");
+    static const QRegularExpression promptToken(QStringLiteral("> "));
+    int promptEnd = -1; // end of the last prompt-shaped token, scanned coords
+    auto it = promptToken.globalMatch(scanned);
+    while (it.hasNext()) {
+        const auto match = it.next();
+        const int start = match.capturedStart();
+        const int end = match.capturedEnd();
+        const bool lineStart = start > 0 && scanned.at(start - 1) == QLatin1Char('\n');
+        const bool chainStart = start == 0 ? chunkStartedAfterPrompt : (start == promptEnd);
+        const bool streamStart = start == 0 && carried == 0;
+        if (!(lineStart || chainStart || streamStart))
+            continue;
+        promptEnd = end;
+        // A match wholly inside the carry was counted when it arrived: without
+        // this, a prompt at the end of one chunk ("\n> ") would be counted
+        // again on the next.
+        if (end <= carried)
+            continue;
         onPrompt();
+    }
+    m_promptCarry = scanned.right(2);
 
     // Emit only newly arrived text; re-emitting the whole buffer on every chunk
     // would repeat the entire log.
@@ -396,21 +427,34 @@ void EmulatorHost::enqueue(Pending pending)
     dispatchNext();
 }
 
-void EmulatorHost::command(const QString &commandText, quint32 dumpAddress, bool stackDump,
-                           int dumpTag)
+void EmulatorHost::command(const QString &commandText)
+{
+    // Free text only — the user's console and the remote `cmd` verb. Its
+    // response is text for the log, never a state read: nothing a caller passes
+    // here can rewrite MachineState or be published to a pane (MAJ-12). The
+    // entry attach's reads and the panes' dumps are typed intents now, so the
+    // exact-match table that used to classify this path has no callers left.
+    //
+    // The one thing read out of the text is whether it must survive a resume(),
+    // which is the debugger's own language and the user's to write: see
+    // survivesResume.
+    enqueueIntent(commandText, ResponseKind::None, survivesResume(commandText));
+}
+
+void EmulatorHost::enqueueIntent(const QString &commandText, ResponseKind kind, bool keepOnResume)
 {
     Pending p;
     p.text = commandText;
-    p.dumpAddress = dumpAddress;
-    p.stackDump = stackDump;
-    p.dumpTag = dumpTag;
+    p.kind = kind;
+    p.keepOnResume = keepOnResume;
     enqueue(p);
 }
 
-void EmulatorHost::enqueueSnapshotCommand(const QString &command, bool last)
+void EmulatorHost::enqueueSnapshotCommand(const QString &command, ResponseKind kind, bool last)
 {
     Pending p;
     p.text = command;
+    p.kind = kind;
     p.batchMember = true;
     p.batchEnd = last;
     enqueue(p);
@@ -418,6 +462,41 @@ void EmulatorHost::enqueueSnapshotCommand(const QString &command, bool last)
 
 void EmulatorHost::dispatchNext()
 {
+    // Single entry. The pre-drain in the body can pull a prompt whose handlers
+    // (stoppedChanged consumers queueing the entry attach) call back into
+    // dispatchNext()/processStderrData() while this frame is still on the
+    // stack; a nested body would interleave the queue and the stderr buffer.
+    // Defer instead: the outermost frame re-runs the attempt until no request
+    // is pending and no command is in flight.
+    if (m_inStderr || m_inDispatch) {
+        m_dispatchPending = true;
+        return;
+    }
+    m_inDispatch = true;
+    do {
+        m_dispatchPending = false;
+        dispatchNextOnce();
+    } while (m_dispatchPending && !m_haveCurrent);
+    m_inDispatch = false;
+}
+
+void EmulatorHost::dispatchNextOnce()
+{
+    // Anything the debugger has already written belongs to the state *before*
+    // the command we are about to send, never to its response — and the two
+    // pipes have no ordering between them, so the entry prompt (2 bytes on
+    // stdout) can be read before the multi-KB session dump written before it on
+    // stderr. The prompt then dispatches the first command, and the dump, still
+    // sitting unread in the stderr pipe, lands in that command's response:
+    // pulling it out first is what actually keeps the entry dump out of the
+    // first command (MAJ-14). Non-blocking, and it may re-enter dispatchNext
+    // (a drained prompt calls onPrompt), so every check below is re-evaluated
+    // after it.
+    if (m_process && m_process->bytesAvailable() == 0)
+        m_process->waitForReadyRead(0);
+    if (m_process && m_process->bytesAvailable() > 0)
+        processStderrData();
+
     if (m_haveCurrent || !m_process
         || m_process->state() != QProcess::Running) {
         return;
@@ -477,8 +556,16 @@ void EmulatorHost::dispatchNext()
 
 void EmulatorHost::processStderrData()
 {
-    if (!m_process)
+    // Single entry. The line loop below runs handleStderrLine, whose handlers
+    // can dispatch (and a nested dispatch pre-drains back into here) while the
+    // buffer still holds un-consumed lines; a nested pass would consume the
+    // same buffer under the outer loop's feet. Defer to the outer pass — its
+    // loop keeps consuming after the nested frame unwinds — and run any
+    // dispatch request once the buffer is fully processed, so a command is
+    // never written while output that predates it is still unread.
+    if (m_inStderr || !m_process)
         return;
+    m_inStderr = true;
 
     m_stderrBuffer += m_process->readAllStandardError();
 
@@ -511,6 +598,12 @@ void EmulatorHost::processStderrData()
         m_stderrBuffer.chop(2);
         onPrompt();
     }
+
+    m_inStderr = false;
+    if (m_dispatchPending) {
+        m_dispatchPending = false;
+        dispatchNext();
+    }
 }
 
 void EmulatorHost::drainStderr()
@@ -523,13 +616,15 @@ void EmulatorHost::drainStderr()
     // next prompt, so by the time the prompt is readable the response is already
     // in its pipe — but Qt may not have read it out yet.
     //
-    // `bytesAvailable()` reports Qt's internal buffer, not the pipe, so simply
-    // reading in a loop returns nothing when the notifier has not run yet. That
-    // was the earlier mistake: the loop drained an empty buffer and the command
-    // completed without the response. `waitForReadyRead` waits on the pipe
-    // itself and returns as soon as anything arrives, which for data already
-    // written is immediate — this is not a sleep, it is a read that can block
-    // only if there is genuinely nothing there.
+    // Both of these act on the process's *current* read channel, which start()
+    // points at StandardError: `bytesAvailable()` reports Qt's buffer for that
+    // channel, and `waitForReadyRead` waits on that channel's pipe. On the
+    // default (stdout) channel this loop inspected the stdout buffer and its wait
+    // ran its full 20 ms timeout on every completion, because nothing is ever
+    // pending on stdout at completion time (MAJ-13). For stderr it returns as
+    // soon as anything arrives, which for data already written is immediate —
+    // this is not a sleep, it is a read that can block only if there is
+    // genuinely nothing there.
     int guard = 0;
     while (guard++ < 8) {
         if (m_process->bytesAvailable() > 0) {
@@ -557,21 +652,48 @@ void EmulatorHost::completeCurrent()
     const QString response = m_current.raw.trimmed();
     m_current.response = response;
 
+    // What the response *is* came in with the request (see Pending::kind); the
+    // command text is not consulted anywhere. A `db pc = $X :once` used to
+    // match a `d` prefix and be parsed as a disassembly, which clears the cached
+    // snapshot and publishes an empty state update (MAJ-12).
     bool parsedState = false;
-    if (commandText == QLatin1String("r")) {
+    switch (m_current.kind) {
+    case ResponseKind::Registers:
         parseRegisters(response);
         parsedState = true;
-    } else if (commandText == QLatin1String("info basepage")) {
+        break;
+    case ResponseKind::Basepage:
         parseBasepage(response);
         parsedState = true;
-    } else if (commandText.startsWith(QLatin1Char('d'))) {
+        break;
+    case ResponseKind::Disassembly:
         parseDisassembly(response);
         parsedState = true;
-    } else if (commandText.startsWith(QLatin1Char('m')) && commandText.contains(QLatin1Char(' '))) {
+        // A caller that asked about one address wants the text back as well as
+        // the snapshot (the remote `disasm` verb); the PC read reports neither,
+        // because nothing is waiting on its text.
+        if (m_current.reportDisassembly)
+            emit disassemblyReady(m_current.disassemblyAddress, response);
+        break;
+    case ResponseKind::MemoryDump: {
+        // Only a requestMemoryDump()/requestStackDump() pending can get here,
+        // so the dump carries the address and the pane tag of the pane that
+        // asked: a text `m`/`memdump` reaches its caller through
+        // commandFinished instead of being published as someone's dump.
+        //
+        // Parsed once, here (MAJ-45): the rows are what the panes and the
+        // step-out path read. Parsing it per consumer meant a stack dump was
+        // read twice from the same text, and an `info <subject>` report's
+        // summary was re-derived by a regex in the pane.
+        const QList<MemoryRow> rows = parseMemoryDump(response);
         if (m_current.stackDump)
-            emit stackDumpReady(m_current.dumpAddress, response);
+            emit stackDumpReady(m_current.dumpAddress, rows);
         else
-            emit memoryDumpReady(m_current.dumpAddress, response, m_current.dumpTag);
+            emit memoryDumpReady(m_current.dumpAddress, rows, m_current.dumpTag);
+        break;
+    }
+    case ResponseKind::None:
+        break;
     }
 
     // The parse functions only fill m_state. Emission is decided here because
@@ -580,6 +702,23 @@ void EmulatorHost::completeCurrent()
     // standalone state command still reports an update of its own.
     if (parsedState && (!m_current.batchMember || m_current.batchEnd))
         emit stateUpdated(m_state);
+
+    // A profile save is complete whatever the debugger answered: the file is
+    // what the caller reads, and a save that failed produces a parse error
+    // there rather than a silent "Saving…".
+    if (!m_current.profilePath.isEmpty())
+        emit profileSaveFinished(m_current.profilePath);
+
+    // A typed `info <subject>` report is not part of MachineState: it is
+    // parsed into its summary here and goes to the caller that asked, named by
+    // its subject (MAJ-45).
+    if (!m_current.infoSubject.isEmpty())
+        emit hardwareInfoReady(m_current.infoSubject, hataritext::parseHardwareInfo(response));
+
+    // The execution-path read's text, for the pane that asked (a typed request
+    // reports its own answer rather than a caller matching command text).
+    if (m_current.reportHistory)
+        emit historyReady(response);
 
     m_haveCurrent = false;
     const QString text = m_current.text;
@@ -591,12 +730,14 @@ void EmulatorHost::completeCurrent()
 
 void EmulatorHost::step()
 {
-    command(QStringLiteral("s"));
+    // An internal control command, not free text: it goes straight to the
+    // queue with no caller-supplied text (MAJ-21).
+    enqueueIntent(QStringLiteral("s"));
 }
 
 void EmulatorHost::stepOver()
 {
-    command(QStringLiteral("n"));
+    enqueueIntent(QStringLiteral("n"));
 }
 
 void EmulatorHost::finishContinue()
@@ -616,17 +757,16 @@ void EmulatorHost::resume()
     if (!m_stopped)
         return;
 
-    // Keep `b` / `b all` / watchpoint commands; drop dumps and register
-    // queries. Continue is enabled at the entry stop, which is before
-    // armBreakpoints() has been flushed, and writing `c` immediately used to
-    // discard those unsent arms so a pre-Run breakpoint never fired. `profile`
-    // control commands are kept too: they take effect at the continue itself
-    // (Profile_CpuStart runs in DebugCpu_SetDebugging), so a `profile on`
-    // armed at a stop and pruned here would silently collect nothing.
+    // Keep the arms and the profile control commands queued in the same stack
+    // frame as this resume; drop dumps and reads. Continue is enabled at the
+    // entry stop, which is before armBreakpoints() has been flushed, and
+    // writing `c` immediately used to discard those unsent arms so a pre-Run
+    // breakpoint never fired. Each request states its own keep rule (see
+    // Pending::keepOnResume); a free-text command's comes from its own text.
     QQueue<Pending> arms;
     while (!m_queue.isEmpty()) {
         const Pending p = m_queue.dequeue();
-        if (isBreakpointCommand(p.text) || p.text.startsWith(QLatin1String("profile ")))
+        if (p.keepOnResume)
             arms.enqueue(p);
     }
     m_queue = arms;
@@ -656,18 +796,20 @@ void EmulatorHost::refresh()
     // the last of the three — has been parsed, and carries the complete state.
     // One emission per response made every listener react three times and queue
     // three copies of the memory, stack and hardware refresh.
-    enqueueSnapshotCommand(QStringLiteral("r"), false);
-    enqueueSnapshotCommand(QStringLiteral("info basepage"), false);
-    enqueueSnapshotCommand(QStringLiteral("d"), true);
+    enqueueSnapshotCommand(QStringLiteral("r"), ResponseKind::Registers, false);
+    enqueueSnapshotCommand(QStringLiteral("info basepage"), ResponseKind::Basepage, false);
+    enqueueSnapshotCommand(QStringLiteral("d"), ResponseKind::Disassembly, true);
 }
 
 void EmulatorHost::clearBreakpoints()
 {
     // `b all` removes every conditional breakpoint. Note this also removes the
-
     // bootstrap entry breakpoint if it somehow still exists, which is fine
     // because it is set with `:once` and has already fired by this point.
-    command(QStringLiteral("b all"));
+    //
+    // Kept across a resume(): a clear-then-arm happens in one stack frame with
+    // the continue (see survivesResume).
+    enqueueIntent(QStringLiteral("b all"), ResponseKind::None, true);
 }
 
 void EmulatorHost::pause()
@@ -713,7 +855,9 @@ void EmulatorHost::setFloppyImage(int drive, const QString &path)
         return;
     emit logLine(tr("Floppy %1: %2").arg(letter, path.isEmpty() ? tr("ejected") : path));
     if (isStopped()) {
-        command(cmd);
+        // Hatari's `setopt` over stdin — the only debugger channel it reads
+        // while stopped, so the running case below takes the control socket.
+        enqueueIntent(cmd);
         return;
     }
     if (!m_embedSocket.connected()) {
@@ -726,7 +870,18 @@ void EmulatorHost::setFloppyImage(int drive, const QString &path)
 
 void EmulatorHost::armBreakpoint(const QString &condition)
 {
-    command(condition);
+    // The caller's condition is already the debugger's own `b` command, and
+    // stdin carries it verbatim. Kept across a resume() (see survivesResume):
+    // Continue is enabled at the entry stop, before the arms have flushed.
+    enqueueIntent(condition, ResponseKind::None, true);
+}
+
+void EmulatorHost::breakAtAddressOnce(quint32 address)
+{
+    // Hatari's one-shot form; `:once` makes it remove itself on the hit, which
+    // is why nothing has to delete it afterwards in the common case.
+    enqueueIntent(QStringLiteral("b pc = $%1 :once").arg(address, 0, 16), ResponseKind::None,
+                  true);
 }
 
 void EmulatorHost::requestMemoryDump(quint32 address, int length, int tag)
@@ -735,23 +890,120 @@ void EmulatorHost::requestMemoryDump(quint32 address, int length, int tag)
     // bare number and the debugger reads that as **decimal**. Verified against
     // Hatari 2.6.1: `m $12596 100` returns 112 bytes (7 rows of 16), i.e. 100
     // bytes rounded up to a row; a hex reading would have returned 256.
-    const QString cmd = QStringLiteral("m $%1 %2")
-                            .arg(address, 0, 16)
-                            .arg(length);
-    command(cmd, address, false, tag);
+    Pending p;
+    p.text = QStringLiteral("m $%1 %2").arg(address, 0, 16).arg(length);
+    p.kind = ResponseKind::MemoryDump;
+    p.dumpAddress = address;
+    p.dumpTag = tag;
+    enqueue(p);
 }
 
 void EmulatorHost::requestStackDump(quint32 address, int length)
 {
-    const QString cmd = QStringLiteral("m $%1 %2")
-                            .arg(address, 0, 16)
-                            .arg(length);
-    command(cmd, address, true);
+    Pending p;
+    p.text = QStringLiteral("m $%1 %2").arg(address, 0, 16).arg(length);
+    p.kind = ResponseKind::MemoryDump;
+    p.dumpAddress = address;
+    p.stackDump = true;
+    enqueue(p);
 }
 
 void EmulatorHost::dumpRegisters()
 {
-    command(QStringLiteral("r"));
+    Pending p;
+    p.text = QStringLiteral("r");
+    p.kind = ResponseKind::Registers;
+    enqueue(p);
+}
+
+void EmulatorHost::loadSymbols()
+{
+    // `symbols prg` relocates the program's symbols against the live basepage.
+    enqueueIntent(QStringLiteral("symbols prg"));
+}
+
+void EmulatorHost::infoSubject(const QString &subject)
+{
+    Pending p;
+    p.text = QStringLiteral("info ") + subject;
+    // The report is not part of MachineState: it is answered to the caller that
+    // asked, named by its subject.
+    p.infoSubject = subject;
+    enqueue(p);
+}
+
+void EmulatorHost::readBasepage()
+{
+    // Parsed into the section bases; the response text is the debugger's
+    // basepage dump.
+    enqueueIntent(QStringLiteral("info basepage"), ResponseKind::Basepage);
+}
+
+void EmulatorHost::setDisasmEngine(DisasmEngine engine)
+{
+    enqueueIntent(engine == DisasmEngine::Ext ? QStringLiteral("setopt --disasm ext")
+                                              : QStringLiteral("setopt --disasm uae"));
+}
+
+void EmulatorHost::profileOn()
+{
+    // Kept across a resume(): collection starts at the continue itself, so a
+    // pruned `profile on` collects nothing while the UI says "Collecting".
+    enqueueIntent(QStringLiteral("profile on"), ResponseKind::None, true);
+}
+
+void EmulatorHost::profileOff()
+{
+    enqueueIntent(QStringLiteral("profile off"), ResponseKind::None, true);
+}
+
+void EmulatorHost::profileSave(const QString &path)
+{
+    Pending p;
+    p.text = QStringLiteral("profile save %1").arg(path);
+    p.profilePath = path;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::writeRegister(const QString &name, quint32 value)
+{
+    // The '=' is mandatory in Hatari's register-set syntax, and a successful
+    // set prints nothing — the caller refreshes to show the new value.
+    enqueueIntent(QStringLiteral("r %1=$%2").arg(name).arg(value, 0, 16));
+}
+
+void EmulatorHost::writeMemoryByte(quint32 address, quint8 value)
+{
+    // `w b <addr> <value>` writes one byte and prints nothing on success.
+    enqueueIntent(QStringLiteral("w b $%1 $%2").arg(address, 0, 16).arg(value, 0, 16));
+}
+
+void EmulatorHost::readDisassembly()
+{
+    // At the PC, which is what the entry attach and the stop refresh want.
+    enqueueIntent(QStringLiteral("d"), ResponseKind::Disassembly);
+}
+
+void EmulatorHost::readDisassemblyAt(quint32 address)
+{
+    Pending p;
+    p.text = QStringLiteral("d $%1").arg(address, 0, 16);
+    p.kind = ResponseKind::Disassembly;
+    // The caller asked about one address and wants the text back; the snapshot
+    // is filled as for any disassembly read.
+    p.reportDisassembly = true;
+    p.disassemblyAddress = address;
+    enqueue(p);
+}
+
+void EmulatorHost::readHistory(int count)
+{
+    // `history <count>` prints the last count recorded PCs, one per line.
+    Pending p;
+    p.text = QStringLiteral("history %1").arg(count);
+    p.reportHistory = true;
+    enqueue(p);
 }
 
 void EmulatorHost::onPrompt()
@@ -763,6 +1015,13 @@ void EmulatorHost::onPrompt()
     // next command would be completed by the previous command's output.
     if (m_owedPrompts > 0) {
         m_owedPrompts -= 1;
+        // Drain the timed-out command's tail before the slot (or the queue) is
+        // released. The prompt and the response travel on different pipes, so
+        // the owed prompt can be readable while the command's last response
+        // lines are still unread on stderr; without this they land in the next
+        // command's response (the same contamination completeCurrent() drains
+        // against — MIN-1).
+        drainStderr();
         if (!m_haveCurrent)
             dispatchNext();
         return;
@@ -837,27 +1096,38 @@ void EmulatorHost::handleStderrLine(const QString &line)
         // The banner arrives on stderr amid the multi-KB entry dump, while the
         // entry prompt is 2 bytes on stdout — the prompt's notifier can fire
         // first. If it did, m_stopped is already set and the prompt has been
-        // consumed; setting m_awaitingEntryPrompt now would leave it stale,
-        // and the NEXT stop's prompt (a pause or breakpoint) would be
-        // swallowed as "the entry prompt", leaving the session running
-        // forever from the UI's point of view.
+        // consumed, so this early-out is what keeps a later `true` from
+        // re-arming the guard: a guard set after the prompt was handled would
+        // swallow the NEXT stop's prompt (a pause or a breakpoint), leaving the
+        // session looking like it is still running. That is also why the guard
+        // is set exactly once, here, *before* the stop below and never again.
         if (m_stopped)
             return;
         m_stopped = true;
-        emit stoppedChanged(true);
-        // Do NOT dispatch yet. After announcing entry the debugger prints its
-        // session dump (autoloaded symbols, registers, the instruction at the
-        // PC) and only then reaches its prompt. Dispatching now would attribute
-        // that dump to the first command; wait for the prompt instead.
+        // Arm the guard before publishing the stop. stoppedChanged(true) runs
+        // its handlers synchronously, and MainWindow's queues the entry attach
+        // (`symbols prg` / `info basepage` / `r` / `d`) there: with the guard
+        // armed afterwards, the first command was already written to stdin
+        // while the debugger was still printing its entry dump, so the rest of
+        // the dump was appended to that command's response (MAJ-14).
         m_awaitingEntryPrompt = true;
+        emit stoppedChanged(true);
         return;
     }
 
     if (m_haveCurrent) {
         m_current.raw += (line + QLatin1Char('\n')).toUtf8();
         // More output arrived, so the response is not complete yet: extend the
-        // quiet period.
-        if (m_promptCount >= m_promptTarget)
+        // quiet period. Only a prompt that has actually arrived since this
+        // command was dispatched may start it. m_promptTarget is the count *at
+        // dispatch*, so testing `>=` here would be true from the command's own
+        // first output byte, and any 40 ms gap in that output would complete the
+        // command early — dispatching the next one while the debugger is still
+        // executing this one, after which every response carries the previous
+        // command's output for the rest of the session. onPrompt() increments
+        // before comparing, which is why its `>=` means "a prompt arrived"; this
+        // site does not, so it must use `>`.
+        if (m_promptCount > m_promptTarget)
             m_settleTimer->start(kSettleMs);
     }
 

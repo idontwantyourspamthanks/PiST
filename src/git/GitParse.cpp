@@ -16,6 +16,18 @@ bool isRename(QChar index, QChar worktree)
         || worktree == QLatin1Char('R') || worktree == QLatin1Char('C');
 }
 
+/// The seven unmerged index/worktree pairs from git-status(1). Each one is a
+/// conflict, not a staged/unstaged pair.
+bool isUnmerged(QChar index, QChar worktree)
+{
+    static const char *const pairs[] = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"};
+    for (const char *pair : pairs) {
+        if (index == QLatin1Char(pair[0]) && worktree == QLatin1Char(pair[1]))
+            return true;
+    }
+    return false;
+}
+
 void parseBranch(const QString &header, GitStatus &status)
 {
     QString line = header;
@@ -108,6 +120,13 @@ GitStatus parsePorcelain(const QByteArray &bytes)
 
         if (index == QLatin1Char('?') && worktree == QLatin1Char('?')) {
             status.entries.append({GitChange::Untracked, path, {}});
+            continue;
+        }
+        // An unmerged path is one row, flagged. It is not a staged half plus an
+        // unstaged half — the worktree holds conflict markers, not a version to
+        // stage and commit.
+        if (isUnmerged(index, worktree)) {
+            status.entries.append({GitChange::Unstaged, path, {}, true});
             continue;
         }
         if (index != QLatin1Char(' ') && index != QLatin1Char('?'))

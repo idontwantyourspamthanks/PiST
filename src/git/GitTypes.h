@@ -13,7 +13,9 @@ namespace pist {
 
 /// One row of `git status --porcelain=v1 -z`. A path that is both staged and
 /// modified in the worktree is two rows, so a checkbox can include one half
-/// without the other.
+/// without the other: ticking a file's Unstaged half stages its current
+/// working-tree content, ticking its Staged half commits what is already in
+/// the index. An unmerged path is one row, with `conflicted` set.
 enum class GitChange {
     Staged,
     Unstaged,
@@ -25,6 +27,9 @@ struct GitChangeEntry {
     QString path;
     /// Previous path when this row is a rename or a copy. Empty otherwise.
     QString from;
+    /// True for an unmerged path — a merge conflict with markers in the
+    /// worktree. Shown as its own row and never part of a commit.
+    bool conflicted = false;
 };
 
 struct GitStatus {

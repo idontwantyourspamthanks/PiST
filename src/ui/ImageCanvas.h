@@ -22,6 +22,10 @@ public:
     explicit ImageCanvas(QWidget *parent = nullptr);
 
     void setDocument(ImageDocument *document);
+    /// The document's pixels changed without the document being replaced (a
+    /// stroke): the cached image is rebuilt on the next paint instead of here,
+    /// so a mouse-move's one repaint carries one rebuild.
+    void invalidateImage();
     void setTool(DrawTool tool);
     void setBrushSize(int size);
     void setCurrentColour(int cubeIndex);
@@ -94,6 +98,9 @@ private:
     QVector<int> m_onion;
     qreal m_onionOpacity = 0.5;
     QImage m_logical;
+    /// m_logical is stale: rebuild it in paintEvent. Set by setDocument() and
+    /// invalidateImage(), cleared by rebuildImage().
+    bool m_imageDirty = true;
     QRect m_selection;
     bool m_selecting = false;
     QPoint m_selectStart;

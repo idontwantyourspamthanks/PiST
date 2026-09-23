@@ -16,6 +16,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 class QTcpSocket;
 class QTimer;
 
@@ -40,9 +42,48 @@ class ControlClient : public QObject
 public:
     explicit ControlClient(QObject *parent = nullptr);
 
+    /// Where a listening PiST says it is: the address a *running* IDE publishes
+    /// to its discovery file. A port of 0 means nothing was published.
+    struct Discovery
+    {
+        QString host;
+        quint16 port = 0;
+        QString token;
+        /// The control protocol the IDE speaks, or 0 when the file carries no
+        /// version — an IDE older than the versioned discovery line, whose
+        /// vocabulary is by definition the one this shim was written against.
+        int protocolVersion = 0;
+    };
+
+    /// The well-known file a listening instance publishes
+    /// `host port token [protocol-version]` to (RemoteControl::discoveryFilePath
+    /// on the IDE side; spelled out here because the shim is a separate binary
+    /// that does not link the IDE).
+    static QString discoveryFilePath();
+    /// Read one discovery file — `path` empty means the well-known one. An
+    /// absent, unreadable or malformed file is `Discovery{}`, not an error: the
+    /// shim then keeps the endpoint it was configured with.
+    static Discovery readDiscoveryFile(const QString &path = QString());
+
+    /// Ask `resolver` where the IDE is before every dial. An IDE that restarts
+    /// mints a new session token and may bind a different control port, so the
+    /// address this client was configured with goes stale the moment it does —
+    /// and the shim, which outlives the IDE for as long as the agent's session
+    /// lasts, would then be told `error auth required` once and go silent.
+    using DiscoveryResolver = std::function<Discovery()>;
+    void setDiscoveryResolver(DiscoveryResolver resolver);
+
     /// Where to connect. A port of 0 means "not configured": every request then
     /// fails with a message the agent can act on.
     void setEndpoint(const QString &host, quint16 port);
+
+    /// Whether the published endpoint speaks a control vocabulary this shim
+    /// knows. False only when the IDE *published* a version that differs from
+    /// control::kControlProtocolVersion: a mismatched pist/pist-mcp pair is
+    /// then refused before the dial with both versions named, instead of
+    /// connecting and failing verb by verb once an agent reaches for something
+    /// the other half does not have (MIN-52).
+    bool protocolCompatible() const;
     bool hasEndpoint() const { return m_port != 0; }
 
     /// The session token the IDE expects as the first line (its discovery
@@ -84,11 +125,31 @@ signals:
 
 private:
     void connectNow();
+    /// Re-resolve the endpoint from the discovery file. True when it published
+    /// an address that differs from the one in force, so the caller knows a
+    /// retry is worth attempting.
+    bool applyDiscovery();
+    /// Arm the retry that re-establishes a dropped event subscription. A dial
+    /// that fails re-arms it too: an IDE restart can take longer than one tick.
+    void scheduleReconnect();
+    /// Open and forget the current socket. Its signals are disconnected first,
+    /// so the teardown of a connection that has already been replaced cannot be
+    /// read as the new connection's state.
+    void dropSocket();
     void flush();
-    void sendRaw(const QString &line);
-    void onReadyRead();
-    void onDisconnected();
-    void onSocketError();
+    /// (Re)arm the timer that answers a `watch` whose acknowledgement never
+    /// arrives. Without it a subscription on a socket that stops answering is
+    /// in neither the queue nor the in-flight slot, so nothing ever replies to
+    /// the waiting `pist_watch` (MIN-8).
+    void armWatchAckTimer();
+    /// Write one already-framed control line, appending its terminator.
+    /// Returns false — writing nothing — when `line` is not a single line, so
+    /// the caller can fail the request instead of letting it time out.
+    bool sendRaw(const QString &line);
+    void onReadyRead(QTcpSocket *socket);
+    void onDisconnected(QTcpSocket *socket);
+    void onSocketError(QTcpSocket *socket);
+    void onConnected(QTcpSocket *socket);
     void dispatchLine(const QByteArray &line);
     void completeFlight(const QString &text, bool ok, const QString &message);
     void failEverything(const QString &message);
@@ -106,17 +167,41 @@ private:
     QTimer *m_replyTimer = nullptr;
     /// Re-establishes an event subscription dropped by a disconnect.
     QTimer *m_reconnectTimer = nullptr;
+    /// Answers a `watch` the IDE never acknowledges.
+    QTimer *m_watchTimer = nullptr;
+
+    /// Consulted before a dial (see setDiscoveryResolver). Empty: the endpoint
+    /// is taken as configured, and an address never changes under it.
+    DiscoveryResolver m_resolver;
+    /// A dial was retried because the IDE refused the token; a refusal of the
+    /// retried connection ends the attempt rather than looping.
+    bool m_authRetried = false;
 
     QQueue<Pending> m_queue;
     Pending m_inFlight;
     bool m_awaitingReply = false;
 
+    /// The control protocol the published endpoint speaks, as read from the
+    /// discovery file. 0: none published (or none re-read since).
+    int m_endpointProtocolVersion = 0;
     /// Bytes read but not yet terminated by a newline.
     QByteArray m_partial;
     /// Lines of the block reply being assembled.
     QStringList m_blockLines;
+    /// The block's status header (`ok`/`error`) has been consumed, and what it
+    /// said. A block's first line is its status, never its body: a body that
+    /// merely begins with "error" is data, not a failed reply (MIN-9).
+    bool m_blockStatusSeen = false;
+    bool m_blockOk = true;
+    /// Body bytes buffered for the block in flight, so a runaway reply is
+    /// capped rather than growing memory without limit (MIN-77).
+    qint64 m_blockBytes = 0;
 
     bool m_subscribed = false;
+    /// The client should be watching for events: set by subscribe(), kept across
+    /// a disconnect (and a failed dial), so a dropped subscription is
+    /// re-established however long the IDE takes to come back.
+    bool m_watchWanted = false;
     /// The session token sent on connect, and whether its ack is outstanding.
     QString m_token;
     bool m_authAckPending = false;

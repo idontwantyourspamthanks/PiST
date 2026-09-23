@@ -599,10 +599,11 @@ Bundled or invoked third-party components keep their own licences. In particular
 free software (it permits unmodified, non-commercial redistribution, which is why the IDE never
 patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage and the
 Windows archive is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus
-the remote-debug listener PiST's HRDB transport uses), GPL-2.0-or-later, redistributed unmodified
-from a checksum-pinned commit tarball, and the GNU Readline (GPL-3.0-or-later) the Linux build
-links travels with it. See [docs/PLAN.md](docs/PLAN.md) §7 for the full breakdown and the
-obligations that follow.
+the remote-debug listener PiST's HRDB transport uses), redistributed unmodified from a
+checksum-pinned commit tarball and conveyed under **GPL version 2**: three of the files Hatari
+compiles in grant version 2 alone, so the build pins `-DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON`
+and the GPLv3 GNU Readline neither joins it nor travels in any archive. See [NOTICE](NOTICE) and
+[docs/PLAN.md](docs/PLAN.md) §7 and §10 for the full breakdown and the obligations that follow.
 
 ## Known limitations
 

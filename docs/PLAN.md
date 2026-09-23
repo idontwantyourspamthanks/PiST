@@ -770,9 +770,9 @@ directories now part of tool and ROM discovery (§7, "First run" row).
 | Component | License | Can we ship it? | Boundary |
 |---|---|---|---|
 | **PiST** (this project) | GPL-2.0-or-later | — | Chosen for compatibility with the emulator ecosystem; see §10 |
-| Hatari | GPL-2.0-or-later, with an explicit statement that static **or dynamic** linking makes a combined work | Yes | **Separate process/binary**, bundled in the Linux AppImage and the Windows archive, built unmodified from a checksum-pinned tarball (the hrdb-main fork commit). Isolated in `IDebugBackend`'s implementations so the boundary stays auditable; see §10 |
-| GNU Readline (linked by the bundled Hatari) | GPL-3.0-or-later | Yes | Redistributed unmodified with the Linux AppImage as a Hatari dependency; ship its licence text |
-| libretro Hatari core | GPL-2.0-or-later (identical `readme.txt` blob to upstream) | Yes | Same; `dlopen` does not escape the GPL |
+| Hatari | GPL-2.0-or-later upstream, with an explicit statement that static **or dynamic** linking makes a combined work; the binary we convey is **GPLv2-capped** by three GPL-2.0-only files (§10) | Yes | **Separate process/binary**, bundled in the Linux AppImage and the Windows archive, built unmodified from a checksum-pinned tarball (the hrdb-main fork commit). Isolated in `IDebugBackend`'s implementations so the boundary stays auditable; see §10 |
+| GNU Readline | GPL-3.0-or-later | **No — not redistributed** | The bundled Hatari is built without it (`-DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON`): a GPLv3 library cannot join a v2-capped work, so no readline travels in any archive and no `THIRD-PARTY.txt` lists it. Functionally free — the debugger's `fgets` fallback prompts on stderr, which §2.4 frames; see §10 |
+| libretro Hatari core | GPL-2.0-or-later (identical `readme.txt` blob to upstream) | Yes | Part of Hatari's tree; our build makes the standalone binary, not the core. Were it ever conveyed, `dlopen` does not escape the GPL |
 | libretro API header | MIT-style, per-file | Yes | Preserve notice |
 | **vasm / vbcc** | Non-free: "may be redistributed without modifications and used for non-commercial purposes" | **Yes — because PiST is free software** | **Redistribute unmodified only.** Never patch vasm. Ship its `readme.txt`/manual and mark it as third-party. Any commercial use still needs the author's written consent |
 | Original Atari TOS ROMs | Proprietary | No | User-supplied; validate size/version; add our own hash check |
@@ -790,10 +790,12 @@ terms of every component permit bundling:
   be bundled and pinned to a known-good version instead of relying on the user to install it. The
   constraint is that the bundled binary must be byte-for-byte upstream's, so **the IDE must never
   patch vasm**; behaviours we need are obtained by command-line flags only.
-- **Hatari** — GPL-2.0-or-later. Bundled in the Linux AppImage and the Windows archive as a
-  separate executable (mere aggregation): built unmodified from the checksum-pinned fork commit
-  (upstream 2.6.1 plus the remote-debug listener), never patched. GNU Readline, which the Linux
-  build links, travels with it.
+- **Hatari** — GPL-2.0-or-later upstream; the binary PiST conveys is GPLv2-capped, because three of
+  the files it compiles in grant version 2 alone (§10). Bundled in the Linux AppImage and the Windows
+  archive as a separate executable (mere aggregation): built unmodified from the checksum-pinned fork
+  commit (upstream 2.6.1 plus the remote-debug listener), never patched, and built **without** GNU
+  Readline — a GPLv3 library cannot join a v2-capped work, and the `fgets` fallback that replaces it
+  costs the transport nothing (§2.4).
 
 Two distribution rules follow from this:
 

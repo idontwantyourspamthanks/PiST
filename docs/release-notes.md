@@ -28,16 +28,24 @@ maintenance release this one corrects.
 
 ### Fixed
 
-- **A failed project save no longer destroys the project.** Saving writes through
-  a temporary file that is renamed into place, so a write that cannot reach the
-  disk — a full disk, a quota, an I/O error — was meant to leave the file you
-  had. In the Qt these archives bundle (6.8.1) it did not: `QSaveFile::commit()`
-  does not notice the flush inside it failing, so it renamed the empty temporary
-  file over the project and reported success. The save now flushes explicitly and
-  checks the device error before committing, and cancels the temporary file when
-  either is wrong. Qt 6.10 checks this inside `commit()`; 6.8.1, which every
-  archive ships, does not — so the bug was in the published binaries, not only in
-  a source build against an older Qt.
+- **A failed save no longer destroys the file you were saving.** Every path that
+  replaces a file you already had — your source, the sprite document, an ST or
+  bitplane export, a floppy image, the project — opened its destination with
+  `Truncate` and checked the byte count afterwards, which reports the failure
+  honestly and still leaves the file empty. On a full disk, a quota or an I/O
+  error, that meant losing it. All of them now go through one rule: a temporary
+  file in the same directory, an explicit flush and a device-error check, and
+  only then the replace — so whatever was already there survives, and no
+  half-written temporary is left beside it. (The files PiST generates for a
+  session — the debugger's bootstrap script, the remote-control discovery file,
+  the AUTO-folder image it boots pre-1.04 TOS with — are not user data and keep
+  their plain write.)
+  The project file had already moved to `QSaveFile` and was *still* vulnerable,
+  because Qt 6.8.1's `commit()` — the Qt every archive bundles — does not notice
+  the flush inside it failing: it renames the truncated temporary file over the
+  destination and returns true. Qt 6.10 checks the device error there, which is
+  why a development machine on a newer Qt never saw it. The rule checks the
+  flush itself now and cancels the temporary file, so it holds on both.
 - **A timed-out debugger command's tail can no longer leak into the next
   command's response.** When the transport gives up on a command after 10 s it
   swallows the prompt that command still owes it, and drains stderr first so the

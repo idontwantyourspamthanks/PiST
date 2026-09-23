@@ -39,6 +39,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `EmbedSocket` (the `QLocalServer` on Hatari's `--control-socket` — the `hatari-debug` channel and the embedded display's video-size reports; invariant 14), `MachineState` (the per-stop snapshot the typed reads fill and `stateUpdated` carries), `HatariTextParse` (their shared `d` parser: the `$`-optional address, a byte column that is a run of single-space-separated hex words — so a hex-only mnemonic like `dbf` is never absorbed into it, and a ten-byte instruction's `23+` cut token stays with the bytes — and the instruction text), `SessionConfig` (one session's argv), `HatariProbe` (capability detection; content-scans the binary on Windows, where Hatari's info options print to a fresh console, not the pipe), `ProfileData` (the `profile save` parser behind the Profiler dock), `AttributedProfile` (the attribution of a parsed profile to routines and source lines, with the ROM/TOS row — MAJ-44), `TosRom` (ROM discovery + version), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
 | `src/model/` | `Machine` — the machine vocabulary shared by `emu/` and `project/`: the `Machine` enum, its display/CLI name mapping and TOS-acceptance. ROM discovery stays in `emu/`; this leaf exists so `project/` no longer includes `emu/` (MIN-56). |
+| `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). |
 | `src/control/` | `ControlHost` (`ControlHost.h`, the interface the IDE implements for the protocol: the verbs it serves and the events its verbs wait on) and `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent, with `watch`/`unwatch` event subscriptions — plus `mcp/`, the `pist-mcp` stdio MCP shim that bridges MCP clients to it. Nothing here includes or names a `src/ui/` type: the control layer depends on `ControlHost`, and `MainWindow` is one of its implementers (MIN-86). |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings). |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
@@ -174,12 +175,12 @@ Everything else in this document is a consequence of that rule. The debug transp
 ### The build graph
 
 `CMakeLists.txt` builds one static library per module through the `pist_module()` helper —
-`pist_image`, `pist_build`, `pist_debug`, `pist_emu`, `pist_model`, `pist_project`, `pist_toolchain`, `pist_git`,
-`pist_editor`, `pist_control`, `pist_mcp`, `pist_ui` — plus the two executables (`pist`, `pist-mcp`)
-and one test executable per suite. The module graph is declared with one edge per include in the
-sources, and the layering is enforced by the linker: `image`, `build`, `debug`, `emu`, `model`,
-`project`, `toolchain`, `git` and `mcp` link no `Qt6::Widgets`, so a core module cannot reach a widget (and by
-extension cannot reach the UI).
+`pist_support`, `pist_image`, `pist_build`, `pist_debug`, `pist_emu`, `pist_model`, `pist_project`,
+`pist_toolchain`, `pist_git`, `pist_editor`, `pist_control`, `pist_mcp`, `pist_ui` — plus the two
+executables (`pist`, `pist-mcp`) and one test executable per suite. The module graph is declared with
+one edge per include in the sources, and the layering is enforced by the linker: `support`, `image`,
+`build`, `debug`, `emu`, `model`, `project`, `toolchain`, `git` and `mcp` link no `Qt6::Widgets`, so
+a core module cannot reach a widget (and by extension cannot reach the UI).
 
 The graph is acyclic, so no link line has to repeat an archive to break a cycle. Two static-library
 cycles were stated rather than hidden when the modules were split; both are now gone (MIN-86):
@@ -198,7 +199,7 @@ cycles were stated rather than hidden when the modules were split; both are now 
   editor and its highlighter read) — which `ui/Appearance.cpp` composes from the application
   appearance (`appearance::editorTheme()`). `MainWindow` pushes it at construction and on every
   preference change, through `CodeEditor::setTheme()`; the theme travels ui → editor, never back.
-  `pist_editor` therefore links `Qt6::Widgets` and `pist_git` and nothing else.
+  `pist_editor` therefore links `Qt6::Widgets`, `pist_git` and `pist_support`, and nothing else.
 
 ## How the pieces connect
 
@@ -426,6 +427,13 @@ These exist because a test or a real failure caught them. Do not break them.
 15. **Tests must pass with no emulator present.** Parser/unit tests always run; emulator and GUI
     tests `QSKIP` themselves when Hatari/vasm/a ROM is absent. Never make a test depend on a real
     display or a real emulator unconditionally.
+16. **Never open a destination with `Truncate` and check the byte count afterwards.** The check
+    reports the failure honestly and the file is still empty: on a full disk or a quota that is the
+    only copy of the user's source, artwork, export or floppy image gone. Write through
+    `files::write()` (`support/FileWrite.h`), which stages in the destination's directory, flushes,
+    checks the device error and only then replaces. It cannot be delegated to `QSaveFile::commit()`
+    either — on Qt 6.8.1, the Qt every release archive bundles, a flush that fails inside `commit()`
+    still renames the truncated temporary file over the destination and returns true.
 
 ## Testing
 

@@ -49,6 +49,11 @@ These are correctness requirements, learned from real failures (each is detailed
 5. **Capability-probe Hatari by option name, never by version number.**
 6. **Never emit `echo` into a Hatari script file** (aborts 2.6.1).
 7. **Keep tests independent of a real display/emulator** (they must skip cleanly when those are absent).
+8. **Never open a user's file with `Truncate` and check the byte count afterwards** — the file is
+   already empty when the check fails. Write through `files::write()` (`src/support/FileWrite.h`),
+   which stages, flushes, checks the device error and only then replaces. Do not delegate this to
+   `QSaveFile::commit()`: on the Qt 6.8.1 the archives bundle it renames a truncated temporary file
+   over the destination and returns true when the flush inside it fails.
 
 When you change a verified fact, a launcher rule, or a phase scope, update `docs/PLAN.md`;
 contradictions of the plan go in its §9 ledger rather than being silently absorbed.
@@ -72,6 +77,7 @@ code. Use this table for a quick lookup:
 | Syntax highlighting | `src/editor/AsmHighlighter.{h,cpp}` |
 | The build pipeline / diagnostics | `src/build/BuildService.{h,cpp}` |
 | PC ↔ source-line mapping | `src/build/{LineMap,LinkMap,ProgramLineMap}.{h,cpp}` |
+| How any file is written to disk (atomic replace) | `src/support/FileWrite.{h,cpp}` (`files::write()`) |
 | The Hatari subprocess, debug transport, stepping | `src/emu/EmulatorHost.{h,cpp}` |
 | Hatari's command line for a session | `src/emu/SessionConfig.cpp` (`toArgv()`) |
 | Hatari feature detection | `src/emu/HatariProbe.{h,cpp}` |
@@ -105,7 +111,10 @@ code. Use this table for a quick lookup:
   of `docs/release-notes.md` so it covers only that version. The release workflow publishes the
   whole file as the GitHub release body, so notes from older versions must not remain; they stay
   in git history. Keep the download and install text under the changelog. Commit
-  `release: <version>` and tag `v<version>`.
+  `release: <version>` and tag `v<version>` — but tag only a commit whose CI run has finished green.
+  The release workflow's `await-ci` job blocks packaging until the CI workflow has passed that exact
+  commit, and refuses a tag on a commit that never reached master: push master, wait for CI, then
+  push the tag.
 - **Tests:** add one only where a plausible bug would fail it; assert observable behaviour, not
   implementation. Match the existing QTest style. Do not write tests so a change "has tests".
 - **Style:** follow the surrounding code. Qt parent-child ownership; `tr()` for user-facing strings;

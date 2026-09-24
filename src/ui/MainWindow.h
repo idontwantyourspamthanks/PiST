@@ -653,6 +653,11 @@ private:
     /// The embedded/separate display preference. Persisted via QSettings.
     bool m_embeddedDisplay = false;
 
+    /// Whether the preference above is a stored choice or still the default:
+    /// only the default yields to a platform that cannot embed, and only until
+    /// the user chooses.
+    bool m_embeddedDisplayChosen = false;
+
     /// True while the embedded video is input-transparent for an in-progress
     /// title-bar/tab drag, so the restore only runs once and only when needed.
     bool m_dragVideoPassthrough = false;

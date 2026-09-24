@@ -85,6 +85,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSet>
 #include <QSize>
 #include <QStandardPaths>
@@ -492,8 +493,13 @@ MainWindow::MainWindow(QWidget *parent)
     wireBackend();
 
     // Restore the display preference before any dock is created, so the dock's
-    // initial visibility matches it.
-    m_embeddedDisplay = QSettings().value(embeddedDisplayKey(), false).toBool();
+    // initial visibility matches it. With no stored choice the default is
+    // embedded — a docked display is the point of the IDE — and the probe below
+    // turns that default back off where the platform cannot embed, without
+    // storing anything, so a first run on macOS or Wayland-without-XWayland
+    // does not open with a panel that can never fill.
+    m_embeddedDisplayChosen = QSettings().contains(embeddedDisplayKey());
+    m_embeddedDisplay = QSettings().value(embeddedDisplayKey(), true).toBool();
 
     createActions();
     createMenus();
@@ -836,6 +842,21 @@ void MainWindow::refreshToolchain()
     // override pointing elsewhere, the discovered binary's capabilities are
     // the wrong answer for the status bar and the embed action.
     m_caps = probeHatari(toolchain::findEmulator(m_settings.hatariPath).path);
+    // A first run on a platform that cannot embed keeps the detached window:
+    // the default is not a choice, so it yields to capability, while a stored
+    // choice — including "off" — always wins.
+    if (!m_embeddedDisplayChosen && !canEmbedDisplay(m_caps)) {
+        m_embeddedDisplay = false;
+        if (m_displayDock)
+            m_displayDock->setVisible(false);
+        // createActions checked the box from the pre-probe default; uncheck it
+        // without emitting, or the toggled slot would persist a choice the user
+        // never made.
+        if (m_actEmbedDisplay) {
+            const QSignalBlocker blocker(m_actEmbedDisplay);
+            m_actEmbedDisplay->setChecked(false);
+        }
+    }
     updateEmbedActionState();
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
@@ -1051,9 +1072,9 @@ void MainWindow::createActions()
     m_actEmbedDisplay->setChecked(m_embeddedDisplay);
     connect(m_actEmbedDisplay, &QAction::toggled, this, &MainWindow::setDisplayEmbedded);
 
-    // Off unless the user has asked for it. The lane is a view choice, like
-    // the embedded display, so it lives in application settings rather than
-    // the project file.
+    // Off unless the user has asked for it: the lane is a view choice, so it
+    // lives in application settings rather than the project file. (The other
+    // view choice, the embedded display, defaults on where the platform can.)
     m_actGitBlame = new QAction(tr("Git &blame"), this);
     m_actGitBlame->setObjectName(QStringLiteral("gitBlameAction"));
     m_actGitBlame->setCheckable(true);
@@ -4308,6 +4329,7 @@ bool MainWindow::canEmbedDisplay(const HatariCapabilities &caps) const
 void MainWindow::setDisplayEmbedded(bool on)
 {
     m_embeddedDisplay = on;
+    m_embeddedDisplayChosen = true;
     QSettings().setValue(embeddedDisplayKey(), on);
     if (m_displayDock)
         m_displayDock->setVisible(on);

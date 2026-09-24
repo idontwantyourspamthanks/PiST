@@ -368,6 +368,10 @@ private slots:
     /// The Emulator panel hosts another process's window, or nothing at all
     /// before a session: it must say which, rather than show a black void.
     void emulatorPanelExplainsItselfWhenEmpty();
+    /// Embedding is the default, but only where it can happen: with no stored
+    /// choice a platform that cannot embed stays detached, while a stored
+    /// choice — either way — wins over both the default and the capability.
+    void emulatorDockFollowsTheStoredPreferenceOrThePlatform();
     void gitDockStaysUnderProjectFiles();
     /// Git discovery follows the project the user opened, never the process
     /// working directory: a window with nothing open must run no git at all,
@@ -3851,6 +3855,38 @@ void TstGui::emulatorPanelExplainsItselfWhenEmpty()
         }
     }
     QVERIFY2(lit > 100, "an empty emulator panel paints its explanation, not a black void");
+}
+
+void TstGui::emulatorDockFollowsTheStoredPreferenceOrThePlatform()
+{
+    const QString key = QStringLiteral("display/embedded");
+
+    // Offscreen cannot embed, so an untouched preference must leave the dock
+    // hidden rather than open a panel that can never fill.
+    QSettings().remove(key);
+    {
+        MainWindow window;
+        window.resize(1000, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+        QVERIFY(dock);
+        QVERIFY2(dock->isHidden(),
+                 "no stored choice on a platform that cannot embed stays detached");
+    }
+
+    // A stored choice wins over both the default and the capability.
+    for (const bool chosen : {true, false}) {
+        QSettings().setValue(key, chosen);
+        MainWindow window;
+        window.resize(1000, 700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+        QVERIFY(dock);
+        QCOMPARE(!dock->isHidden(), chosen);
+    }
+    QSettings().remove(key);
 }
 
 // Git is a project pane, not a debug one: it shares Project files' tab and

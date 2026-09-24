@@ -356,6 +356,11 @@ works, and the panel says so. Input queues are deliberately *not* attached (`Att
 Hatari pumps no messages while stopped in its debugger (`src/debug/debugui.c` never calls
 `SDL_PumpEvents`), so coupling the two queues would freeze the IDE at every breakpoint.
 
+The preference defaults to embedded. A first run with no stored choice on a platform that cannot
+embed (macOS, Wayland without XWayland) stays detached instead of opening a panel that can never
+fill: the toolchain probe reconciles the default against `canEmbedDisplay()` once, and a stored
+choice — either way — always wins (`m_embeddedDisplayChosen`).
+
 ### Panels, docks and the event filter
 
 `MainWindow::createDocks()` enables nesting, installs the app-level event filter, and builds docks

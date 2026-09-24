@@ -90,7 +90,7 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 ## First slice
 
 1. This contract, and a backend that loads the dylib or reports that it is absent. Done, on `feature/libretro-macos`.
-2. The fork's frontend, on branch `pist-libretro` of the pinned Hatari. Bring-up takes the session argv, including `--tos` set to the session path, and does not read `hatari.cfg`. A missing path fails. Two different images come back as the two version words they carry, so a user TOS file replaces EmuTOS by being the path. The CPU is left stopped; a frame and the entry breakpoint are the rest of this item. The Linux build still links SDL and forces the dummy video driver. The release dylib, linked against `libm` and `libz` only, is item 4.
+2. The fork's frontend, on branch `pist-libretro` of the pinned Hatari. Bring-up takes the session argv, including `--tos` set to the session path, and does not read `hatari.cfg`. A missing path fails. Two different images come back as the two version words they carry, so a user TOS file replaces EmuTOS by being that path. `pist_hatari_run` returns one frame, or the entry stop (`b pc = TEXT && pc < $e00000 :once`), whichever comes first. Against EmuTOS that is a 640x436 frame and a stop in RAM at the autostarted program. The Linux build still links SDL and forces the dummy video driver. The release dylib, linked against `libm` and `libz` only, is item 4.
 3. The panel draws that frame.
 4. The macOS release job builds the dylib, seals it into the app, and `--diagnose` finds it.
 

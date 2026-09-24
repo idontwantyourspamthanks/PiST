@@ -808,6 +808,18 @@ Remaining assessments:
   the new tag, so the deprecation notice appstreamcli prints about the second
   one is intended and is the only thing left in a clean validation.
 
+  The component must also carry an `<icon>` and `<categories>`, and 0.8.4's
+  carried neither. A component without an icon has no icon at all — that is why
+  Ubuntu's App Center listed the installed package with a blank space beside its
+  name — and `appstreamcli validate` only runs its store-visibility checks,
+  `app-categories-missing` among them, once an icon makes the component qualify,
+  which is how the file validated clean while carrying neither. The icon is
+  `<icon type="stock">pist</icon>`, exactly what `appstream-generator` records
+  from a desktop entry's `Icon` key, and the categories mirror the entry's own.
+  Verified against a live install: `appstreamcli search pist` then reports
+  `Name: PiST` and `Icon: pist`, and the hicolor cache the dpkg trigger rebuilds
+  contains `pist`.
+
   The licence is stated three ways: `project_license` in the metadata, a DEP-5
   `copyright` at `/usr/share/doc/pist/copyright` (`packaging/copyright`), and
   `CPACK_RESOURCE_FILE_LICENSE` pointed at the repository's `LICENSE` instead of

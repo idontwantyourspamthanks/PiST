@@ -28,6 +28,18 @@
     <name>Koala Software</name>
   </developer>
   <developer_name>Koala Software</developer_name>
+  <!-- The icon is a themed one, exactly as appstream-generator would record it
+       from the desktop entry's Icon key. Without an <icon> element a component
+       carries no icon at all, and a software centre then shows nothing beside
+       the name — which is what the 0.8.4 deb did in Ubuntu's App Center. -->
+  <icon type="stock">pist</icon>
+  <!-- Mirrors the desktop entry's Categories. appstreamcli only checks for them
+       once the component qualifies as a store-visible app — i.e. once it has an
+       icon — so this appeared the moment the icon element was added. -->
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+  </categories>
 
   <description>
     <p>

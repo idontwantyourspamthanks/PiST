@@ -409,7 +409,41 @@ jobs:
           # pist-mcp.exe links only Qt6Core and Qt6Network, both of which the
           # pist.exe deploy already places beside it, so it needs no pass of
           # its own.
-          windeployqt --release --no-translations bundle/bin/pist.exe
+          # --no-compiler-runtime: on an MSVC release build windeployqt's
+          # compiler-runtime step stages vc_redist.x64.exe — a ~20 MB installer
+          # nothing tells the user to run — instead of the DLLs themselves. The
+          # CRT ships app-locally below, so the stray bootstrapper is dropped.
+          windeployqt --release --no-translations --no-compiler-runtime bundle/bin/pist.exe
+          # windeployqt deploys Qt and nothing else, but pist.exe and every Qt
+          # DLL import the MSVC runtime: on a clean Windows machine the launch
+          # died with "MSVCP140.dll was not found", because the redistributable
+          # is installed on the runner and so never showed up as missing there.
+          # App-local deployment of the CRT family is what Microsoft's terms
+          # permit and what a machine without the redistributable needs, and it
+          # fixes the archive and the MSI alike, since both pack this bundle/.
+          # The folder is the building toolset's own Redist directory —
+          # CMakeCache names its compiler — with a glob fallback, because the
+          # subfolder is the toolset version on some layouts and "v143" on
+          # others. Everything in it is the CRT family (msvcp140*, vcruntime140*,
+          # concrt140, vccorlib140; the OpenMP and MFC DLLs live in sibling
+          # folders), so copying the folder cannot miss a name a future toolset
+          # adds, and the three asserts keep an empty copy from shipping green.
+          cl="$(sed -n 's|^CMAKE_CXX_COMPILER:[A-Z]*=||p' build/CMakeCache.txt | sed 's|\\|/|g')"
+          [ -n "$cl" ] || { echo "ERROR: CMakeCache.txt has no CMAKE_CXX_COMPILER"; exit 1; }
+          vcroot="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$cl")")")")")")")"
+          ver="$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$cl")")")")")"
+          crt="$(ls -d "$vcroot/Redist/MSVC/$ver/x64"/Microsoft.VC*.CRT 2>/dev/null | head -1 || true)"
+          [ -n "$crt" ] || crt="$(ls -d "$vcroot/Redist/MSVC/"*/x64/Microsoft.VC*.CRT 2>/dev/null | sort -V | tail -1 || true)"
+          [ -n "$crt" ] || { echo "ERROR: no MSVC Redist CRT under $vcroot/Redist/MSVC"; exit 1; }
+          for dll in "$crt"/*.dll; do
+            cp "$dll" bundle/bin/
+          done
+          for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+            [ -f "bundle/bin/$dll" ] || { echo "ERROR: $dll did not land in bundle/bin (from $crt)"; exit 1; }
+          done
+          [ ! -e bundle/bin/vc_redist.x64.exe ] \
+            || { echo "ERROR: windeployqt staged a redistributable installer"; exit 1; }
+          ls -l bundle/bin/msvcp140.dll bundle/bin/vcruntime140.dll bundle/bin/vcruntime140_1.dll
 
       - name: Copy binary (Linux)
         if: '!matrix.deployed'
@@ -1018,6 +1052,17 @@ jobs:
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-windows-x86_64"
           [ -f "PiST-$V-windows-x86_64.msi" ] \
             || { echo "ERROR: no MSI produced"; exit 1; }
+          # Assert inside the package the two things a clean machine complained
+          # about: the CRT DLLs and a Start Menu shortcut. dark decompiles the
+          # MSI — cabinet contents plus the .wxs — and ships in the same WiX
+          # toolset this step installs; both gaps above shipped green precisely
+          # because nothing ever looked inside the artifact.
+          rm -rf msix && mkdir msix
+          dark.exe -nologo -x msix -out msix/product.wxs "PiST-$V-windows-x86_64.msi"
+          grep -rq "msvcp140.dll" msix/ \
+            || { echo "ERROR: the MSI lacks the MSVC runtime"; ls -R msix | head -20; exit 1; }
+          grep -q "<Shortcut" msix/product.wxs \
+            || { echo "ERROR: the MSI has no Start Menu shortcut"; exit 1; }
           echo "ASSET_MSI=PiST-$V-windows-x86_64.msi" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4

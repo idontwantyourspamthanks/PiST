@@ -109,6 +109,16 @@ Comment:
  Present only when the build host's Hatari links it; the generated manifest is
  what says whether this copy does.
 
+Files: */msvcp140*.dll */vcruntime140*.dll */concrt140.dll */vccorlib140.dll
+Copyright: Microsoft Corporation
+License: MS-VC-redist
+Comment:
+ The Visual C++ runtime family, copied unmodified from the building toolset's
+ Redist directory (its Microsoft.VC*.CRT folder) so that a Windows machine
+ without the redistributable installed can run PiST at all. Windows provides
+ the UCRT itself; only this family travels here. More specific than the
+ */bin/*.dll catch-all below, which must not be read as covering these.
+
 # ---------------------------------------------------------------------------
 # The system libraries a self-contained bundle carries, and the licence texts.
 # ---------------------------------------------------------------------------
@@ -209,6 +219,14 @@ License: bundled-library
  travels with it — share/doc/pist/licenses/distro/<package>-copyright in the
  Linux packages — and every component the release process knows it bundled is
  listed with its licence in share/doc/pist/THIRD-PARTY.txt.
+
+License: MS-VC-redist
+ Microsoft's licence terms for the Visual C++ Redistributable permit copying
+ and distributing its runtime files, unmodified, alongside an application. The
+ terms are published at https://aka.ms/vcredistlicense and inside the
+ redistributable installer; capturing a copy into packaging/notices/ (and the
+ matching collect-notices.py entry) is open work, recorded in docs/FUTURE.md §5,
+ so this package states the basis rather than carrying a text.
 
 License: verbatim
  Verbatim copies of another project's licence text, redistributed unchanged.

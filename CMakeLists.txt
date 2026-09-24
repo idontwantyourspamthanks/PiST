@@ -531,6 +531,13 @@ set(CPACK_RPM_PACKAGE_DESCRIPTION "${PIST_PACKAGE_DESCRIPTION}")
 # rather than installing side by side. Do not change it between releases.
 set(CPACK_WIX_UPGRADE_GUID "7d7f9c1e-8a2b-4f3a-9e5d-1c6b2a0d4e8f")
 
+# Start Menu shortcuts. CPackWIX creates them only for the raw names listed in
+# CPACK_PACKAGE_EXECUTABLES, matched against the installed tree; with the
+# variable unset the MSI installed every file and nothing that launches them,
+# which is what a clean machine reported: no Start Menu entry at all. The
+# folder defaults to CPACK_PACKAGE_NAME, so the entry lands under "PiST".
+set(CPACK_PACKAGE_EXECUTABLES "pist" "PiST")
+
 set(CPACK_DMG_VOLUME_NAME "PiST")
 
 include(CPack)

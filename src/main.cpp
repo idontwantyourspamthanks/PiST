@@ -4,6 +4,7 @@
 
 #include "emu/Paths.h"
 #include "emu/HatariProbe.h"
+#include "emu/LibretroBackend.h"
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
 #include "ui/MainWindow.h"
@@ -88,6 +89,12 @@ int runDiagnose()
         out << "  version: " << emulatorVersion << "\n";
     if (emulator.found())
         out << "  transport: " << (caps.hasHrdb ? "hrdb" : "native") << "\n";
+
+    // The in-process core is a file beside the app, not a Hatari on PATH.
+    // A sealed Mac names Contents/Frameworks/hatari_libretro.dylib here.
+    const QString core = pist::findLibretroCore(QCoreApplication::applicationDirPath());
+    out << "Libretro core: "
+        << (core.isEmpty() ? QStringLiteral("NOT FOUND") : core) << "\n";
 
     // ROMs and where they were looked for, since "no ROM" is the most common
     // first-run problem and the search spans several directories.

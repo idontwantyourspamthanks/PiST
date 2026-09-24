@@ -99,6 +99,7 @@ private slots:
     void findsBundledRomInAppImageLayout();
     void findsBundledRomInMacBundleLayout();
     void libretroCoreSitsInFrameworks();
+    void libretroCoreIsFoundInFrameworks();
     void libretroStartFailsWithoutTheCore();
     void reportsNoBundledDirWhenAbsent();
     void tosSearchPathsIncludesBundledDir();
@@ -557,6 +558,23 @@ void TstTosRom::libretroCoreSitsInFrameworks()
     QCOMPARE(candidates.at(1),
              QDir::cleanPath(binDir + QLatin1Char('/') + libretroCoreFileName()));
     QVERIFY(libretroCoreCandidates(QString()).isEmpty());
+}
+
+void TstTosRom::libretroCoreIsFoundInFrameworks()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString binDir = QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/MacOS"));
+    const QString coreDir = QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/Frameworks"));
+    QVERIFY(QDir().mkpath(binDir));
+    QVERIFY(QDir().mkpath(coreDir));
+    QVERIFY(findLibretroCore(binDir).isEmpty());
+
+    const QString core = QDir(coreDir).filePath(libretroCoreFileName());
+    QFile file(core);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.close();
+    QCOMPARE(findLibretroCore(binDir), QDir::cleanPath(core));
 }
 
 void TstTosRom::libretroStartFailsWithoutTheCore()

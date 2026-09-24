@@ -34,6 +34,11 @@ env:
   # The Qt the bundles deploy; collect-notices names it in the LGPL source
   # offer, so it must be the version install-qt-action actually installs.
   QT_VERSION: '6.8.1'
+  # The in-process core the macOS app seals into Contents/Frameworks.
+  # idontwantyourspamthanks/hatari branch pist-libretro. The checksum is the
+  # GitHub archive of that commit, the same check the hrdb pin uses.
+  PIST_HATARI_COMMIT: 7fd298562c99f7c74ef54f39b67ed01fea7baf16
+  PIST_HATARI_SHA256: 1cee05e5bdbeeb59bc34fc48a75408a2369330abdf9f635a4d13dad799da1dbc
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -226,8 +231,9 @@ jobs:
           # emulator: Linux and Windows bundle the hrdb-main fork of Hatari —
           # on Windows it is what gives the archive pause and live breakpoints,
           # since the stock Windows build has no control channel. macOS does
-          # not bundle: the fork links Homebrew SDL2, and rewiring those dylibs
-          # into the .app is unbuilt work (brew install hatari covers it).
+          # not bundle that executable: it links Homebrew SDL2. The Mac app
+          # seals hatari_libretro.dylib instead, built below with SDL stubbed
+          # out so the link line is libm and libz.
           - name: linux-x86_64
             os: ubuntu-22.04
             vasm_artifact: vasm-linux
@@ -266,6 +272,36 @@ jobs:
           curl -fsSL -o vlink.tar.gz "$VLINK_URL"
           echo "$VLINK_SHA256  vlink.tar.gz" | shasum -a 256 -c - 2>/dev/null \
             || echo "$VLINK_SHA256  vlink.tar.gz" | sha256sum -c -
+
+      # The Mac embed is this dylib, not a Hatari executable. SDL is the stub
+      # in the fork, so nothing from Homebrew is on the link line. The copy
+      # into the app happens in the seal step, which is the last modification
+      # before the signature.
+      - name: Build the in-process core (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o hatari-pist.tar.gz \
+            "https://github.com/idontwantyourspamthanks/hatari/archive/${PIST_HATARI_COMMIT}.tar.gz"
+          echo "$PIST_HATARI_SHA256  hatari-pist.tar.gz" | shasum -a 256 -c -
+          rm -rf hatari-pist-src
+          mkdir hatari-pist-src
+          tar -xzf hatari-pist.tar.gz -C hatari-pist-src --strip-components=1
+          cmake -S hatari-pist-src -B hatari-pist-build \
+            -DPIST_LIBRETRO=1 -DPIST_LIBRETRO_STUB_SDL=1 \
+            -DENABLE_OSX_BUNDLE=0 -DENABLE_MAN_PAGES=0 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build hatari-pist-build --target hatari_libretro --parallel
+          test -f hatari-pist-build/src/hatari_libretro.dylib
+          otool -L hatari-pist-build/src/hatari_libretro.dylib > otool-core.txt
+          cat otool-core.txt
+          if grep -q /opt/homebrew otool-core.txt; then
+            echo "ERROR: the core links Homebrew"
+            exit 1
+          fi
+          grep -q libz otool-core.txt \
+            || { echo "ERROR: the core does not link libz"; exit 1; }
 
       # xvfb and the ALSA/X libraries are needed for two different reasons: xvfb to
       # run the AppImage at all (the offscreen plugin is deliberately not bundled),
@@ -1026,6 +1062,12 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile pist' \
             "$APP/Contents/Info.plist"
 
+          # The in-process core. Copied before the signature, which has to be
+          # the last modification of the bundle.
+          mkdir -p "$APP/Contents/Frameworks"
+          cp hatari-pist-build/src/hatari_libretro.dylib \
+            "$APP/Contents/Frameworks/hatari_libretro.dylib"
+
           # A quarantined file copied into the bundle is itself enough for
           # Gatekeeper to call the app damaged.
           xattr -cr "$APP"
@@ -1074,6 +1116,9 @@ jobs:
                  cat diagnose-sealed.txt; exit 1; }
           grep -q 'PiST.app/Contents/MacOS/vasmm68k_mot' diagnose-sealed.txt \
             || { echo "ERROR: the sealed app does not find its own assembler"; \
+                 cat diagnose-sealed.txt; exit 1; }
+          grep -q 'PiST.app/Contents/Frameworks/hatari_libretro.dylib' diagnose-sealed.txt \
+            || { echo "ERROR: the sealed app does not find its libretro core"; \
                  cat diagnose-sealed.txt; exit 1; }
 
       - name: Package archive
@@ -1145,6 +1190,7 @@ jobs:
             || { echo "ERROR: Applications is not a link to /Applications"; hdiutil detach dmgx; exit 1; }
           for f in PiST.app/Contents/MacOS/pist \
                    PiST.app/Contents/MacOS/vasmm68k_mot \
+                   PiST.app/Contents/Frameworks/hatari_libretro.dylib \
                    PiST.app/Contents/share/emutos/etos1024k.img \
                    PiST.app/Contents/share/doc/pist/NOTICE \
                    PiST.app/Contents/share/doc/pist/licenses/vasm-LICENCE.txt \

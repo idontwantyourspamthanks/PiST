@@ -26,6 +26,8 @@ namespace pist {
 /// Only paths are returned. Existence is the loader's concern.
 QString libretroCoreFileName();
 QStringList libretroCoreCandidates(const QString &applicationDir);
+/// The first candidate that exists, or empty. `--diagnose` prints this.
+QString findLibretroCore(const QString &applicationDir);
 
 /// In-process Hatari. The dylib's ABI is emu/LibretroAbi.h. Until a session
 /// launch selects this backend, a missing dylib fails start() and the

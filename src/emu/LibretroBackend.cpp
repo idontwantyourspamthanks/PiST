@@ -41,6 +41,15 @@ QStringList libretroCoreCandidates(const QString &applicationDir)
     return paths;
 }
 
+QString findLibretroCore(const QString &applicationDir)
+{
+    for (const QString &candidate : libretroCoreCandidates(applicationDir)) {
+        if (QFileInfo::exists(candidate))
+            return candidate;
+    }
+    return {};
+}
+
 LibretroBackend::LibretroBackend(QObject *parent)
     : IDebugBackend(parent)
     , m_library(new QLibrary(this))
@@ -57,13 +66,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     Q_UNUSED(config);
     stop();
 
-    QString found;
-    for (const QString &candidate : libretroCoreCandidates(QCoreApplication::applicationDirPath())) {
-        if (QFileInfo::exists(candidate)) {
-            found = candidate;
-            break;
-        }
-    }
+    const QString found = findLibretroCore(QCoreApplication::applicationDirPath());
     if (found.isEmpty()) {
         if (error) {
             *error = tr("The libretro Hatari core was not found. Looked in:\n%1")

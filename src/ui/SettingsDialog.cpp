@@ -16,6 +16,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QFormLayout>
+#include <QGuiApplication>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -24,6 +25,8 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
 #include <QSettings>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -35,6 +38,31 @@ namespace {
 
 /// Data role holding a ROM's absolute path on a combo entry.
 constexpr int kRomPathRole = Qt::UserRole + 1;
+
+/// Height ceiling for the Build tab's three lists (additional sources, include
+/// paths, defines). Each list scrolls on its own, so a fixed slice keeps the
+/// page's size hint — and with it the dialog's preferred height — inside a
+/// 620x520 window instead of growing with the entries.
+constexpr int kBuildListMaxHeight = 100;
+
+/// `page` as a tab: its content wrapped in a frameless, transparent scroll
+/// area, so the dialog's minimum height comes from its own chrome (tab bar,
+/// setup button, OK/Cancel) rather than from the tallest page. Unbounded, the
+/// Build page's word-wrapped notes and lists pushed the floor to 611 px — a
+/// 768 px screen at 150% scaling cannot show that, and Qt then re-applied the
+/// over-tall minimum on every relayout, moving the window and dropping the
+/// button box below its bottom edge. The word-wrapped labels still wrap:
+/// their heightForWidth now feeds the scroll area's content, not the dialog.
+QWidget *scrollableTab(QWidget *page)
+{
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setAttribute(Qt::WA_TranslucentBackground);
+    scroll->viewport()->setAutoFillBackground(false);
+    scroll->setWidget(page);
+    return scroll;
+}
 
 /// One argument per line, blank lines ignored.
 QStringList linesToArgs(const QString &text)
@@ -74,7 +102,23 @@ SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
     setWindowTitle(tr("Settings"));
     buildUi();
     loadValues(settings);
-    resize(620, 520);
+
+    // Preferred 620x520 — but never more window than the screen has room for.
+    // A fixed 520 request on a 768 px screen at 125–150% scaling asks for more
+    // height than the work area holds, so the window manager clamps the frame
+    // while the layout keeps demanding its minimum: whatever is asked for must
+    // be what the dialog actually is. The clamp never drops below the layout's
+    // bounded minimum, and 620x520 survives untouched on a normal desktop.
+    QSize preferred(620, 520);
+    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QRect available = screen->availableGeometry();
+        preferred.setWidth(qMin(preferred.width(), available.width() * 9 / 10));
+        preferred.setHeight(qMin(preferred.height(), available.height() * 85 / 100));
+    }
+    const QSize needed = minimumSizeHint();
+    preferred.setWidth(qMax(preferred.width(), needed.width()));
+    preferred.setHeight(qMax(preferred.height(), needed.height()));
+    resize(preferred);
 }
 
 void SettingsDialog::buildUi()
@@ -105,6 +149,7 @@ void SettingsDialog::buildUi()
     // compilation, so the note explains the ordering rule that TOS imposes.
     m_sources = new QListWidget(buildTab);
     m_sources->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_sources->setMaximumHeight(kBuildListMaxHeight);
 
     auto *srcButtons = new QHBoxLayout;
     auto *addSrc = new QPushButton(tr("Add file…"), buildTab);
@@ -134,6 +179,7 @@ void SettingsDialog::buildUi()
     // Include paths
     m_includePaths = new QListWidget(buildTab);
     m_includePaths->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_includePaths->setMaximumHeight(kBuildListMaxHeight);
     auto *incButtons = new QHBoxLayout;
     auto *addInc = new QPushButton(tr("Add folder…"), buildTab);
     auto *removeInc = new QPushButton(tr("Remove"), buildTab);
@@ -152,6 +198,7 @@ void SettingsDialog::buildUi()
 
     // Defines
     m_defines = new QListWidget(buildTab);
+    m_defines->setMaximumHeight(kBuildListMaxHeight);
     auto *defButtons = new QHBoxLayout;
     auto *addDef = new QPushButton(tr("Add…"), buildTab);
     auto *removeDef = new QPushButton(tr("Remove"), buildTab);
@@ -173,7 +220,7 @@ void SettingsDialog::buildUi()
     m_extraBuildArgs->setMaximumHeight(70);
     buildLayout->addRow(tr("Extra assembler args:"), m_extraBuildArgs);
 
-    tabs->addTab(buildTab, tr("Build"));
+    tabs->addTab(scrollableTab(buildTab), tr("Build"));
 
     // ------------------------------------------------------------- emulator
     auto *emuTab = new QWidget(this);
@@ -242,7 +289,7 @@ void SettingsDialog::buildUi()
     m_extraEmuArgs->setMaximumHeight(70);
     emuLayout->addRow(tr("Extra emulator args:"), m_extraEmuArgs);
 
-    tabs->addTab(emuTab, tr("Emulator"));
+    tabs->addTab(scrollableTab(emuTab), tr("Emulator"));
 
     // ------------------------------------------------------------ appearance
     // Application-wide preferences (QSettings), deliberately not part of the
@@ -326,7 +373,7 @@ void SettingsDialog::buildUi()
         m_shortcutScheme->setCurrentIndex(schemeIndex);
     appearanceLayout->addRow(tr("Shortcut scheme:"), m_shortcutScheme);
 
-    tabs->addTab(appearanceTab, tr("Appearance"));
+    tabs->addTab(scrollableTab(appearanceTab), tr("Appearance"));
 
     layout->addWidget(tabs);
 

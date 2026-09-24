@@ -641,6 +641,10 @@ private slots:
     /// A ROM the user picked must survive the machine change that rebuilds the
     /// list, because that is the ROM OK persists.
     void settingsDialogKeepsTheChosenRomAcrossAMachineChange();
+    /// The dialog's minimum fits a short screen, the OK button stays inside
+    /// the window at that minimum, and nothing about the content resizes the
+    /// dialog once it is shown.
+    void settingsDialogFitsAShortScreenWithReachableButtons();
 
 private:
     QString m_vasm;
@@ -7515,6 +7519,77 @@ void TstGui::settingsDialogKeepsTheChosenRomAcrossAMachineChange()
     machine->setCurrentIndex(machine->currentIndex() == 0 ? 1 : 0);
     QCOMPARE(rom->currentData().toString(), QString());
     QCOMPARE(dialog.settings().tosPath, QString());
+}
+
+// The Settings dialog must fit a short screen: Windows at 125–150% scaling on
+// a 768 px display leaves only about 470 logical pixels of height, and a
+// dialog whose minimum demands more than that gets its frame clamped below
+// what the layout needs — the OK/Cancel buttons end up under the bottom edge.
+// Every relayout then re-applied the over-tall minimum and dragged the window
+// around, which is the "jumps around" half of the report.
+void TstGui::settingsDialogFitsAShortScreenWithReachableButtons()
+{
+    SettingsDialog dialog{ProjectSettings()};
+    dialog.show();
+    QCoreApplication::processEvents();
+
+    // The minimum is bounded by the dialog's own chrome (tab bar, setup
+    // button, button box), not by the tallest page's content — comfortably
+    // under the height a 150%-scaled laptop has left.
+    QVERIFY(dialog.minimumSizeHint().height() <= 320);
+
+    // Shrink the dialog to exactly that minimum: OK must be visible with its
+    // whole geometry inside the window, so the buttons stay reachable without
+    // resizing anything first.
+    dialog.resize(dialog.minimumSizeHint());
+    QCoreApplication::processEvents();
+    auto *buttons = dialog.findChild<QDialogButtonBox *>();
+    QVERIFY(buttons);
+    auto *ok = buttons->button(QDialogButtonBox::Ok);
+    QVERIFY(ok);
+    QVERIFY(ok->isVisible());
+    const QPoint okTopLeft = ok->mapTo(&dialog, QPoint(0, 0));
+    QVERIFY(dialog.rect().contains(okTopLeft));
+    QVERIFY(okTopLeft.y() + ok->height() <= dialog.height());
+
+    // Once shown, the content may not move the window: cycling the machine
+    // combo rewrites the word-wrapped ROM note, and switching tabs swaps the
+    // page behind the size hints. Neither may produce a single resize.
+    struct ResizeCounter : QObject {
+        int resizes = 0;
+        bool eventFilter(QObject *, QEvent *event) override
+        {
+            if (event->type() == QEvent::Resize)
+                ++resizes;
+            return false;
+        }
+    } counter;
+    dialog.installEventFilter(&counter);
+
+    // The machine combo, addressed by what it shows: the machines are listed
+    // in full, while the CPU combo counts the same but starts with a vasm -m
+    // value.
+    QComboBox *machine = nullptr;
+    for (QComboBox *box : dialog.findChildren<QComboBox *>()) {
+        if (box->count() == allMachines().size()
+            && box->itemText(0) == machineDisplayName(Machine::St))
+            machine = box;
+    }
+    QVERIFY(machine);
+    for (int i = 0; i < machine->count(); ++i) {
+        machine->setCurrentIndex(i);
+        QCoreApplication::processEvents();
+    }
+
+    auto *tabs = dialog.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    for (int i = 0; i < tabs->count(); ++i) {
+        tabs->setCurrentIndex(i);
+        QCoreApplication::processEvents();
+    }
+
+    dialog.removeEventFilter(&counter);
+    QCOMPARE(counter.resizes, 0);
 }
 
 // Settings are redirected to a throwaway directory for the whole run, so the

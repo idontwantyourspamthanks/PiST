@@ -4,12 +4,14 @@
 
 #include "emu/LibretroBackend.h"
 
-#include "emu/LibretroAbi.h"
-
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QLibrary>
+
+#include <cstring>
+#include <QMutexLocker>
+#include <QThread>
 
 namespace pist {
 
@@ -148,23 +150,95 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
         return false;
     }
 
+    m_runFn = reinterpret_cast<RunFn>(m_library->resolve("pist_hatari_run"));
+    m_haltFn = reinterpret_cast<HaltFn>(m_library->resolve("pist_hatari_stop"));
+    if (!m_runFn || !m_haltFn) {
+        if (m_haltFn)
+            m_haltFn();
+        m_runFn = nullptr;
+        m_haltFn = nullptr;
+        m_library->unload();
+        if (error)
+            *error = tr("%1 does not export pist_hatari_run.").arg(found);
+        return false;
+    }
+
+    // The core is up and the entry breakpoint is armed. The owner thread is
+    // what advances it; this thread only draws what that one copies out.
+    m_quit = false;
+    m_hold = false;
     m_running = true;
-    m_stopped = true;
+    m_stopped = false;
+    m_thread = QThread::create([this] { pump(); });
+    m_thread->start();
     emit runningChanged(true);
-    emit stoppedChanged(true);
     return true;
+}
+
+void LibretroBackend::pump()
+{
+    while (!m_quit.load()) {
+        {
+            QMutexLocker lock(&m_gate);
+            while (m_hold.load() && !m_quit.load())
+                m_wake.wait(&m_gate);
+        }
+        if (m_quit.load() || !m_runFn)
+            break;
+
+        const int epoch = m_epoch.load();
+        PistHatariFrame frame{};
+        int stopped = 0;
+        if (m_runFn(&frame, &stopped) != 0) {
+            emit errorOccurred(tr("The libretro core failed while running a frame."));
+            break;
+        }
+        if (m_quit.load() || epoch != m_epoch.load())
+            break;
+        if (frame.pixels && frame.width > 0 && frame.height > 0 && frame.pitch > 0) {
+            // The ABI pointer dies at the next run. Copy before leaving this thread.
+            const int bytes = frame.pitch * frame.height;
+            QByteArray pixels(bytes, Qt::Uninitialized);
+            memcpy(pixels.data(), frame.pixels, static_cast<size_t>(bytes));
+            emit frameReady(pixels, frame.width, frame.height, frame.pitch, epoch);
+        }
+        if (stopped) {
+            m_stopped = true;
+            emit stoppedChanged(true);
+            m_hold = true;
+        }
+    }
+    if (m_haltFn)
+        m_haltFn();
+    m_haltFn = nullptr;
+    m_runFn = nullptr;
 }
 
 void LibretroBackend::stop()
 {
-    if (m_library->isLoaded()) {
-        if (auto halt = reinterpret_cast<void (*)()>(m_library->resolve("pist_hatari_stop")))
-            halt();
-        m_library->unload();
+    // Frames already queued carry the old epoch and the panel drops them.
+    m_epoch.fetch_add(1);
+    {
+        QMutexLocker lock(&m_gate);
+        m_quit = true;
+        m_hold = false;
+        m_wake.wakeAll();
     }
-    if (m_running || m_stopped) {
-        m_running = false;
-        m_stopped = false;
+    if (m_thread) {
+        m_thread->wait();
+        delete m_thread;
+        m_thread = nullptr;
+    } else if (m_haltFn) {
+        m_haltFn();
+        m_haltFn = nullptr;
+        m_runFn = nullptr;
+    }
+    if (m_library->isLoaded())
+        m_library->unload();
+    const bool wasLive = m_running.load() || m_stopped.load();
+    m_running = false;
+    m_stopped = false;
+    if (wasLive) {
         emit runningChanged(false);
         emit stoppedChanged(false);
     }

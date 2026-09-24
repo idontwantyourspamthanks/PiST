@@ -218,6 +218,18 @@ void EmulatorDisplayWidget::pollForeignWindow()
 #endif
 }
 
+void EmulatorDisplayWidget::setFrame(const QImage &image)
+{
+    if (image.isNull())
+        return;
+    m_frame = image;
+    m_videoW = image.width();
+    m_videoH = image.height();
+    m_videoAttached = true;
+    m_attachFailed = false;
+    update();
+}
+
 void EmulatorDisplayWidget::clearEmbedded()
 {
     if (m_attachTimer)
@@ -228,6 +240,7 @@ void EmulatorDisplayWidget::clearEmbedded()
     m_attachTicks = 0;
     m_attachFailed = false;
     m_videoAttached = false;
+    m_frame = QImage();
     m_lastFitW = 0;
     m_lastFitH = 0;
     update();
@@ -291,7 +304,14 @@ void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
 {
     QWidget::paintEvent(event);
 
-    if (!m_videoAttached) {
+    if (!m_frame.isNull()) {
+        // The in-process core has no window to reparent. Letterbox the frame
+        // the same way fitEmbedded places a foreign window, so the bars stay
+        // black and the picture keeps its aspect.
+        QPainter p(this);
+        p.fillRect(rect(), Qt::black);
+        p.drawImage(fittedRect(width(), height(), m_frame.width(), m_frame.height()), m_frame);
+    } else if (!m_videoAttached) {
         // With nothing embedded this was a black rectangle, which on a platform
         // that cannot embed at all — or when the adoption failed — reads as a
         // broken emulator rather than as an empty panel. Say what it is.

@@ -5,11 +5,18 @@
 #pragma once
 
 #include "emu/DebugBackend.h"
+#include "emu/LibretroAbi.h"
 
+#include <QByteArray>
+#include <QMutex>
 #include <QString>
 #include <QStringList>
+#include <QWaitCondition>
+
+#include <atomic>
 
 class QLibrary;
+class QThread;
 
 namespace pist {
 
@@ -64,14 +71,39 @@ public:
 
     BackendKind kind() const override { return BackendKind::Libretro; }
 
+    /// Bumped by `stop()`. A `frameReady` whose epoch does not match arrived
+    /// for a session that has already ended.
+    int frameEpoch() const { return m_epoch.load(); }
+
+signals:
+    /// One copied frame from the core's thread, `Format_RGB32` words.
+    /// `epoch` is `frameEpoch()` at the moment the core returned it. The
+    /// bytes are owned; the core's pointer is not.
+    void frameReady(const QByteArray &pixels, int width, int height, int pitch, int epoch);
+
 private:
     /// The typed intents the first slice does not call yet. Named, so a caller
     /// that reaches one hears which one, instead of a silent no-op.
     void notInThisSlice(const QString &what);
+    /// The core's owner. Calls `pist_hatari_run` until the debugger stops or
+    /// `stop()` asks it to leave, and copies each frame before the next run
+    /// invalidates the pointer.
+    void pump();
+
+    using RunFn = int (*)(PistHatariFrame *, int *);
+    using HaltFn = void (*)();
 
     QLibrary *m_library = nullptr;
-    bool m_running = false;
-    bool m_stopped = false;
+    QThread *m_thread = nullptr;
+    RunFn m_runFn = nullptr;
+    HaltFn m_haltFn = nullptr;
+    QMutex m_gate;
+    QWaitCondition m_wake;
+    std::atomic<bool> m_quit{false};
+    std::atomic<bool> m_hold{false};
+    std::atomic<int> m_epoch{0};
+    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_stopped{false};
 };
 
 } // namespace pist

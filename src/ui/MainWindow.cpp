@@ -4,6 +4,9 @@
 
 #include "ui/MainWindow.h"
 #include "emu/HexFormat.h"
+
+#include <QByteArray>
+#include <QImage>
 #include "support/FileWrite.h"
 
 #include "ui/BreakpointWatchpointModel.h"
@@ -17,6 +20,7 @@
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
+#include "emu/LibretroBackend.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
 #include "ui/InstructionRefView.h"
@@ -1113,8 +1117,16 @@ void MainWindow::wireBackend()
             // container adopts it now that there is a process to look for. A
             // no-op elsewhere, where Hatari reparents itself into the container
             // and reports its video size over the control socket.
-            if (m_display && m_embeddedDisplay)
+            if (m_display && m_host->kind() == BackendKind::Libretro) {
+                // The in-process core has no window to adopt. The panel is the
+                // picture, including on a Mac where embedding a subprocess is
+                // not possible.
+                if (m_displayDock)
+                    m_displayDock->setVisible(true);
+                m_display->setVisible(true);
+            } else if (m_display && m_embeddedDisplay) {
                 m_display->attachEmulatorProcess(m_host->emulatorProcessId());
+            }
             return;
         }
         if (m_consoleInput)
@@ -1141,6 +1153,8 @@ void MainWindow::wireBackend()
         // last frame that reads as the emulator's current one.
         if (m_display)
             m_display->clearEmbedded();
+        if (m_host->kind() == BackendKind::Libretro && m_displayDock && !m_embeddedDisplay)
+            m_displayDock->setVisible(false);
         // Both transcripts describe the session that just ended, and neither is
         // re-requested without one: left on screen they read as the hardware's
         // current state. The views' own `clear()` documents the no-session state.
@@ -1219,8 +1233,30 @@ void MainWindow::wireBackend()
                 m_display->setVideoSize(width, height);
                 m_display->showEmbedded();
             });
+    if (auto *core = qobject_cast<LibretroBackend *>(m_host)) {
+        connect(core, &LibretroBackend::frameReady, this,
+                [this](const QByteArray &pixels, int width, int height, int pitch, int epoch) {
+                    auto *live = qobject_cast<LibretroBackend *>(m_host);
+                    if (!live || epoch != live->frameEpoch() || !m_display)
+                        return;
+                    if (width <= 0 || height <= 0 || pitch < width * 4
+                        || pixels.size() < pitch * height)
+                        return;
+                    const QImage view(reinterpret_cast<const uchar *>(pixels.constData()),
+                                      width, height, pitch, QImage::Format_RGB32);
+                    if (m_displayDock)
+                        m_displayDock->setVisible(true);
+                    m_display->setVisible(true);
+                    // `view` borrows `pixels`, which dies with this slot.
+                    m_display->setFrame(view.copy());
+                });
+    }
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
+        // A stop the owner thread queued before stop() joined it. The running
+        // edge has already reset the panel.
+        if (stopped && !m_host->isRunning())
+            return;
         // Watchers (remote-control `watch`, the MCP shim) learn the running
         // edge here; the stopped edge waits for onStateUpdated, which has the
         // PC worth reporting.

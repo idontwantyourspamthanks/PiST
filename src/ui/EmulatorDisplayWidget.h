@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <QImage>
 #include <QWidget>
 
 namespace pist {
@@ -24,7 +25,8 @@ namespace pist {
 ///   exists.
 ///
 /// Anywhere else — Wayland without XWayland, macOS — there is no window to
-/// adopt and the emulator runs as a separate window.
+/// adopt. The in-process core has no window either: `setFrame()` paints the
+/// picture the core returned, letterboxed the same way a foreign window is fit.
 ///
 /// Input needs no forwarding on X11: the reparented window is a real X11 child,
 /// so the display server delivers keyboard and mouse to it directly. On Windows
@@ -54,6 +56,11 @@ public slots:
 
     /// Show the embedded window and fit it within this widget.
     void showEmbedded();
+
+    /// Paint one frame from the in-process core. The image is copied by the
+    /// caller before it crosses threads; this stores that copy and letterboxes
+    /// it. A later `clearEmbedded()` drops it.
+    void setFrame(const QImage &image);
 
     /// Fit the embedded window within this widget, preserving the video's aspect
     /// ratio and centring it (letterbox) rather than squashing it to fill.
@@ -114,6 +121,9 @@ private:
     /// Real video has landed here, on either platform. Until then the panel
     /// says what it is, rather than being an unexplained black rectangle.
     bool m_videoAttached = false;
+    /// The last frame from the in-process core. Empty when the picture is a
+    /// reparented window, or when the session has ended.
+    QImage m_frame;
     /// The Windows adoption was attempted and did not happen.
     bool m_attachFailed = false;
 };

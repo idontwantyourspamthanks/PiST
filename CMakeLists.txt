@@ -652,6 +652,14 @@ qt_add_executable(tst_git
 target_link_libraries(tst_git PRIVATE pist_git pist_editor pist_ui Qt6::Test)
 add_test(NAME git COMMAND tst_git)
 
+# The in-process core has no window. The panel letterboxes the frame it is
+# handed, and a cleared session does not keep that picture.
+qt_add_executable(tst_display
+    tests/tst_display.cpp
+)
+target_link_libraries(tst_display PRIVATE pist_ui Qt6::Test)
+add_test(NAME display COMMAND tst_display)
+
 # GUI-level: constructs MainWindow and verifies the line map against a real
 # vasm listing, covering the PC <-> source-line claim end to end.
 qt_add_executable(tst_gui

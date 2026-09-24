@@ -16,35 +16,40 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.8.5
+## What's new in 0.8.6
 
-A correction to 0.8.4's packaging. The packages installed and ran, but a
-software centre still could not show what they were — and if you are on 0.8.3
-or earlier, the older problems below still apply to you.
+Windows: the emulator's display can now run inside the IDE, and a clean Windows
+install can run PiST at all — the previous archive and MSI were missing the
+Visual C++ runtime and installed no Start Menu entry.
 
-**If you are on 0.8.3:** its `.deb` aborted `dpkg -i` with *trying to overwrite
-`/usr/share/doc/libglib2.0-0/copyright`, which is also in package
-libglib2.0-0*, and both of its packages installed their Qt, glib and D-Bus into
-`/usr/lib`, where `ldconfig` — which scans that directory before the multiarch
-one — would have handed them to every other application on the machine. Update.
+### Added
+
+- **The emulator's display embeds on Windows.** *View ▸ Embed emulator display*
+  now works there as well as on Linux/X11: PiST finds the emulator's window and
+  moves it into the Emulator panel, letterboxed to the video's aspect, and keeps
+  it fitted across resolution changes and dock moves. Hatari's own reparenting
+  handshake is compiled in only for X11, so on Windows PiST performs the
+  reparenting itself; should the window never be adoptable, the emulator keeps
+  its separate window and the panel says so instead of showing black. Each
+  outcome is one `[embed]` line in the Build & debug console.
+- **The Visual C++ runtime ships with the Windows archive and the MSI.**
+  `windeployqt` deploys Qt but not the runtime Qt was compiled against, so on a
+  machine without the redistributable installed PiST stopped at
+  *MSVCP140.dll was not found*. The runtime family now travels beside the
+  executable; there is nothing extra to install.
+- **The MSI creates a Start Menu entry** — *Start Menu ▸ PiST ▸ PiST* — where
+  before it installed every file and nothing that launches them.
 
 ### Fixed
 
-- **Software centres show PiST's icon, name and author.** The metainfo file 0.8.4
-  added carried no `<icon>` element, and a component without one has no icon at
-  all: Ubuntu's App Center listed the installed package with a blank space
-  beside its name. It now declares the themed icon —
-  `<icon type="stock">pist</icon>`, exactly what `appstream-generator` records
-  from a desktop entry's `Icon` key — and the `<categories>` that mirror the
-  entry's own. The categories also matter mechanically: `appstreamcli validate`
-  only checks for them once a component qualifies as store-visible, i.e. once it
-  has an icon, so the file validated clean while carrying neither.
-- **A stale menu icon after installing is expected once, not a defect.** The
-  icon-theme cache and the desktop database are rebuilt by dpkg triggers that run
-  *after* the install returns, and a shell session that looked the icon up in
-  that window keeps the miss cached. If an entry or its icon looks wrong right
-  after an install, log out and back in (or restart the shell) before reporting
-  it.
+- **The Settings dialog fits the screen it opens on.** Its layout demanded
+  611 px of height whatever size was asked for, so on a scaled laptop display
+  the OK and Cancel buttons fell below the window's bottom edge, and every
+  relayout — changing the machine, switching tabs — moved the window. The pages
+  scroll now, the dialog is exactly the size it requests, clamped to the
+  screen's available geometry, and the buttons are always reachable.
+- **An empty Emulator panel explains itself** rather than presenting a black
+  rectangle that reads as a broken emulator.
 
 ### Worth knowing
 
@@ -111,8 +116,9 @@ Everything is built on Ubuntu 22.04, so it needs glibc 2.35 or newer (Ubuntu
 
 ### Windows and macOS
 
-Windows: the `.zip` or the `.msi` — both include the emulator. macOS: the
-`.dmg` or the `.tar.gz`, plus `brew install hatari`.
+Windows: the `.zip` or the `.msi` — both include the emulator, and both carry
+the Visual C++ runtime beside the executable, so no redistributable install is
+needed. macOS: the `.dmg` or the `.tar.gz`, plus `brew install hatari`.
 
 ### What works
 

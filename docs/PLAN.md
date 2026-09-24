@@ -538,6 +538,13 @@ These are the operational constraints the launch builder must encode.
     user is left with no emulator on screen at all — worse than the detached window they had.
     Windows embedding instead adopts the window Hatari already showed (`ui/EmbedWin32.h`), which
     makes every failure path end at the mode that works today.
+15. **On macOS, an empty Hatari path with the dylib present boots the in-process core.**
+    `sessionUsesInProcessCore` is true only then. That launch does not search for a Hatari
+    executable, probe it, open a control socket, or write a bootstrap script: the core arms
+    `b pc = TEXT && pc < $e00000 :once` itself. A project that names its own emulator stays on
+    native or HRDB, including on a Mac that has the dylib. Linux and Windows never take the
+    in-process path. The debug-transport combo does not override an empty path: those values
+    select a subprocess channel.
 
 ### 5.1 Bootstrap parse file
 

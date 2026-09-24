@@ -50,6 +50,11 @@ QString findLibretroCore(const QString &applicationDir)
     return {};
 }
 
+bool sessionUsesInProcessCore(bool onMacOS, const QString &hatariPath, const QString &applicationDir)
+{
+    return onMacOS && hatariPath.isEmpty() && !findLibretroCore(applicationDir).isEmpty();
+}
+
 LibretroBackend::LibretroBackend(QObject *parent)
     : IDebugBackend(parent)
     , m_library(new QLibrary(this))

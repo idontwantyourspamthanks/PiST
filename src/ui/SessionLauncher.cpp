@@ -15,11 +15,13 @@
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
 #include "emu/HatariProbe.h"
+#include "emu/LibretroBackend.h"
 #include "model/Machine.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "toolchain/Toolchain.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QWidget>
@@ -55,17 +57,33 @@ void SessionLauncher::launch()
         return;
     }
 
-    const ToolInfo emulator = toolchain::findEmulator(m_host.settings().hatariPath);
-    if (!emulator.found()) {
-        m_host.refuseRun(MainWindow::tr("Emulator not found"), toolchain::emulatorInstallHint(),
-                         /*critical=*/true);
-        return;
-    }
+    // macOS with the sealed dylib and no emulator path of the user's own: the
+    // core runs in-process and arms its own entry stop, so there is no Hatari
+    // to find, probe, or bootstrap. A named path keeps the subprocess. Linux
+    // and Windows never take this branch.
+    const bool inProcess = sessionUsesInProcessCore(
+#ifdef Q_OS_MACOS
+        true,
+#else
+        false,
+#endif
+        m_host.settings().hatariPath, QCoreApplication::applicationDirPath());
 
-    // Probe the binary actually being launched (not the default-path one the
-    // status bar probed at startup): the transport selection and the option
-    // gating below must match this emulator.
-    const HatariCapabilities launchedCaps = probeHatari(emulator.path);
+    ToolInfo emulator;
+    HatariCapabilities launchedCaps;
+    if (!inProcess) {
+        emulator = toolchain::findEmulator(m_host.settings().hatariPath);
+        if (!emulator.found()) {
+            m_host.refuseRun(MainWindow::tr("Emulator not found"), toolchain::emulatorInstallHint(),
+                             /*critical=*/true);
+            return;
+        }
+
+        // Probe the binary actually being launched (not the default-path one the
+        // status bar probed at startup): the transport selection and the option
+        // gating below must match this emulator.
+        launchedCaps = probeHatari(emulator.path);
+    }
 
     const QString sessionDir = m_host.makeSessionDir();
 
@@ -88,73 +106,82 @@ void SessionLauncher::launch()
 
     config.floppyImages = m_host.settings().floppyImages;
 
-    // The control socket is compiled into Hatari only under
-    // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
-    // Hatari exit with "Unrecognized option", so it must be gated rather than
-    // passed unconditionally (docs/PLAN.md §5 rule 12). The debugger commands
-    // never travel over it: stdin (native) or HRDB's TCP channel carry those.
-    if (launchedCaps.hasControlSocket)
-        config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
-    else
-        config.controlSocketPath.clear();
-
-    // Embedded display: name the container's X11 window so Hatari reparents its
-    // SDL window into it. Gated on the platform and the control socket, so a
-    // Wayland-native session or a socket-less build falls back to a separate
-    // window even when the option is on. The dock is shown and the widget
-    // realized by the window, because winId() has to be a live X11 window
-    // before Hatari starts or there is nothing to reparent into.
-    config.parentWindowId = m_host.embedDisplayWindowId(launchedCaps);
-
-    if (!launchedCaps.hasDebugExcept)
-        config.debugExceptions.clear();
-
     QString error;
 
-    // Backend selection: an explicit per-project setting wins; the default
-    // ("auto") follows the *launched* binary's HRDB capability, probed by
-    // content because the fork is version-identical to upstream and adds no
-    // CLI option (docs/PLAN.md §5 rule 5). The bundled emulator is the fork,
-    // so a fresh install lands on HRDB; a user-supplied stock Hatari lands on
-    // native. Only the control socket is native-transport machinery; the
-    // bootstrap script runs on the fork too (--parse is upstream), and there
-    // its entry breakpoint fires into the remote break loop and waits for our
-    // HRDB connect — no race with TOS boot, unlike a socket-armed bp.
-    // A forced transport that mismatches the binary is a dead session, not a
-    // degradation: the fork's stdin debugger is never read once its listener
-    // binds (§9), and stock Hatari has no HRDB listener at all. Refuse at
-    // launch, naming the mismatch, rather than hanging the user.
-    BackendKind wanted;
-    if (m_host.settings().debugBackend == QLatin1String("hrdb")) {
-        if (!launchedCaps.hasHrdb) {
-            m_host.refuseRun(MainWindow::tr("Run"),
-                             MainWindow::tr("The debug transport is set to HRDB, but %1 is a stock Hatari, which "
-                                "has no HRDB listener. Set the transport to Native/Auto, or use the "
-                                "hrdb-main fork.").arg(emulator.path),
-                             /*critical=*/true);
-            return;
-        }
-        wanted = BackendKind::Hrdb;
-    } else if (m_host.settings().debugBackend == QLatin1String("native")) {
-        if (launchedCaps.hasHrdb) {
-            m_host.refuseRun(MainWindow::tr("Run"),
-                             MainWindow::tr("The debug transport is set to Native, but %1 is the hrdb-main fork, "
-                                "whose stdin debugger is never read once its listener binds. Set the "
-                                "transport to HRDB/Auto.").arg(emulator.path),
-                             /*critical=*/true);
-            return;
-        }
-        wanted = BackendKind::Native;
+    if (inProcess) {
+        // No subprocess window, no control socket, no bootstrap script. The
+        // core arms `b pc = TEXT && pc < $e00000 :once` itself.
+        config.controlSocketPath.clear();
+        config.parentWindowId.clear();
+        config.debugExceptions.clear();
+        m_host.selectBackend(BackendKind::Libretro);
     } else {
-        wanted = launchedCaps.hasHrdb ? BackendKind::Hrdb : BackendKind::Native;
-    }
-    m_host.selectBackend(wanted);
+        // The control socket is compiled into Hatari only under
+        // HAVE_UNIX_DOMAIN_SOCKETS. Passing the option to a build without it makes
+        // Hatari exit with "Unrecognized option", so it must be gated rather than
+        // passed unconditionally (docs/PLAN.md §5 rule 12). The debugger commands
+        // never travel over it: stdin (native) or HRDB's TCP channel carry those.
+        if (launchedCaps.hasControlSocket)
+            config.controlSocketPath = sessionDir + QStringLiteral("/ctl.sock");
+        else
+            config.controlSocketPath.clear();
 
-    config.bootstrapScriptPath =
-        EmulatorHost::writeBootstrapScript(sessionDir, launchedCaps, &error);
-    if (config.bootstrapScriptPath.isEmpty()) {
-        m_host.refuseRun(MainWindow::tr("Run"), error, /*critical=*/true);
-        return;
+        // Embedded display: name the container's X11 window so Hatari reparents its
+        // SDL window into it. Gated on the platform and the control socket, so a
+        // Wayland-native session or a socket-less build falls back to a separate
+        // window even when the option is on. The dock is shown and the widget
+        // realized by the window, because winId() has to be a live X11 window
+        // before Hatari starts or there is nothing to reparent into.
+        config.parentWindowId = m_host.embedDisplayWindowId(launchedCaps);
+
+        if (!launchedCaps.hasDebugExcept)
+            config.debugExceptions.clear();
+
+        // Backend selection: an explicit per-project setting wins; the default
+        // ("auto") follows the *launched* binary's HRDB capability, probed by
+        // content because the fork is version-identical to upstream and adds no
+        // CLI option (docs/PLAN.md §5 rule 5). The bundled emulator is the fork,
+        // so a fresh install lands on HRDB; a user-supplied stock Hatari lands on
+        // native. Only the control socket is native-transport machinery; the
+        // bootstrap script runs on the fork too (--parse is upstream), and there
+        // its entry breakpoint fires into the remote break loop and waits for our
+        // HRDB connect — no race with TOS boot, unlike a socket-armed bp.
+        // A forced transport that mismatches the binary is a dead session, not a
+        // degradation: the fork's stdin debugger is never read once its listener
+        // binds (§9), and stock Hatari has no HRDB listener at all. Refuse at
+        // launch, naming the mismatch, rather than hanging the user.
+        BackendKind wanted;
+        if (m_host.settings().debugBackend == QLatin1String("hrdb")) {
+            if (!launchedCaps.hasHrdb) {
+                m_host.refuseRun(MainWindow::tr("Run"),
+                                 MainWindow::tr("The debug transport is set to HRDB, but %1 is a stock Hatari, which "
+                                    "has no HRDB listener. Set the transport to Native/Auto, or use the "
+                                    "hrdb-main fork.").arg(emulator.path),
+                                 /*critical=*/true);
+                return;
+            }
+            wanted = BackendKind::Hrdb;
+        } else if (m_host.settings().debugBackend == QLatin1String("native")) {
+            if (launchedCaps.hasHrdb) {
+                m_host.refuseRun(MainWindow::tr("Run"),
+                                 MainWindow::tr("The debug transport is set to Native, but %1 is the hrdb-main fork, "
+                                    "whose stdin debugger is never read once its listener binds. Set the "
+                                    "transport to HRDB/Auto.").arg(emulator.path),
+                                 /*critical=*/true);
+                return;
+            }
+            wanted = BackendKind::Native;
+        } else {
+            wanted = launchedCaps.hasHrdb ? BackendKind::Hrdb : BackendKind::Native;
+        }
+        m_host.selectBackend(wanted);
+
+        config.bootstrapScriptPath =
+            EmulatorHost::writeBootstrapScript(sessionDir, launchedCaps, &error);
+        if (config.bootstrapScriptPath.isEmpty()) {
+            m_host.refuseRun(MainWindow::tr("Run"), error, /*critical=*/true);
+            return;
+        }
     }
 
     // A TOS ROM is required. Hatari ships none and original ROMs remain

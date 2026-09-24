@@ -100,6 +100,7 @@ private slots:
     void findsBundledRomInMacBundleLayout();
     void libretroCoreSitsInFrameworks();
     void libretroCoreIsFoundInFrameworks();
+    void libretroSessionUsesTheCoreOnMacWhenPresent();
     void libretroStartFailsWithoutTheCore();
     void reportsNoBundledDirWhenAbsent();
     void tosSearchPathsIncludesBundledDir();
@@ -577,11 +578,36 @@ void TstTosRom::libretroCoreIsFoundInFrameworks()
     QCOMPARE(findLibretroCore(binDir), QDir::cleanPath(core));
 }
 
+void TstTosRom::libretroSessionUsesTheCoreOnMacWhenPresent()
+{
+    // The launch decision, without a Mac and without a real dylib: present on
+    // macOS with an empty Hatari path, absent otherwise. A named path is the
+    // subprocess escape hatch even when the file exists.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString binDir = QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/MacOS"));
+    const QString coreDir = QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/Frameworks"));
+    QVERIFY(QDir().mkpath(binDir));
+    QVERIFY(QDir().mkpath(coreDir));
+
+    QVERIFY(!sessionUsesInProcessCore(true, QString(), binDir));
+    QVERIFY(!sessionUsesInProcessCore(false, QString(), binDir));
+
+    const QString core = QDir(coreDir).filePath(libretroCoreFileName());
+    QFile file(core);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.close();
+
+    QVERIFY(sessionUsesInProcessCore(true, QString(), binDir));
+    QVERIFY(!sessionUsesInProcessCore(false, QString(), binDir));
+    QVERIFY(!sessionUsesInProcessCore(true, QStringLiteral("/usr/local/bin/hatari"), binDir));
+}
+
 void TstTosRom::libretroStartFailsWithoutTheCore()
 {
-    // Run must not select this backend until a dylib can boot a program. What
-    // is pinned here is the failure a missing core reports, naming the
-    // Frameworks path, so a sealed app that forgot the dylib is diagnosable.
+    // A sealed app that forgot the dylib must say so, naming the Frameworks
+    // path. Launch never reaches start() in that case: the decision above is
+    // false when the file is absent.
     LibretroBackend backend;
     QString error;
     QVERIFY(!backend.start(SessionConfig(), &error));

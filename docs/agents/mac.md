@@ -62,10 +62,13 @@ this symbol is the replacement.
 
 ## How PiST drives it
 
-A third `IDebugBackend`, `LibretroBackend`, macOS only. `createBackend` can
-construct it. Session launch does not select it until a dylib is in the
-bundle and a session can boot: Linux and Windows stay on native or HRDB, and a
-Mac without the dylib keeps the subprocess and `brew install hatari`.
+A third `IDebugBackend`, `LibretroBackend`. `createBackend` can construct it.
+Session launch selects it when `sessionUsesInProcessCore` is true: macOS, the
+dylib is beside the app, and the project has not named its own Hatari. Linux
+and Windows stay on native or HRDB. A Mac without the dylib keeps the
+subprocess and `brew install hatari`. An explicit debug transport does not
+override that: hrdb and native are subprocess channels, and the escape hatch
+is the emulator path.
 
 When it is selected, the Emulator panel blits the frame
 (`QImage::Format_RGB32`, the layout `PistHatariFrame` documents) letterboxed
@@ -91,8 +94,9 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 
 1. This contract, and a backend that loads the dylib or reports that it is absent. Done, on `feature/libretro-macos`.
 2. The fork's frontend, on branch `pist-libretro` of the pinned Hatari. Bring-up takes the session argv, including `--tos` set to the session path, and does not read `hatari.cfg`. A missing path fails. Two different images come back as the two version words they carry, so a user TOS file replaces EmuTOS by being that path. `pist_hatari_run` returns one frame, or the entry stop (`b pc = TEXT && pc < $e00000 :once`), whichever comes first. Against EmuTOS that is a 640x436 frame and a stop in RAM at the autostarted program. The Linux build still links SDL and forces the dummy video driver. The release dylib, linked against `libm` and `libz` only, is item 4.
-3. The panel draws that frame. `LibretroBackend` runs `pist_hatari_run` on the core's owner thread and copies each frame before the next run. `EmulatorDisplayWidget::setFrame` letterboxes it; a frame queued after `stop()` carries an old epoch and is dropped. Session launch still does not select this backend until the dylib is beside the app.
+3. The panel draws that frame. `LibretroBackend` runs `pist_hatari_run` on the core's owner thread and copies each frame before the next run. `EmulatorDisplayWidget::setFrame` letterboxes it; a frame queued after `stop()` carries an old epoch and is dropped.
 4. The macOS release job builds the dylib, seals it into the app, and `--diagnose` finds it. `PIST_LIBRETRO_STUB_SDL` compiles Hatari against `src/pist_sdl` instead of SDL, so the link line is libm and libz (plus the platform libc). On Linux that dylib still returns the 640x436 frame and the entry stop. The job copies `hatari_libretro.dylib` into `Contents/Frameworks` before the signature, refuses an `otool -L` that mentions `/opt/homebrew`, and `--diagnose` prints `Libretro core:` with that path. `ENABLE_OSX_BUNDLE` stays off for this build: the dylib is not a Hatari.app.
+5. Session launch selects the backend. On macOS, with the dylib present and an empty Hatari path, Run skips the emulator search, the probe, the control socket, and the bootstrap script, and starts `LibretroBackend`. The core arms the entry breakpoint itself. A named Hatari path, and every Linux and Windows run, stay on the subprocess.
 
 Out of that slice: replacing the Linux and Windows subprocess, the console,
 profile save, IPF.

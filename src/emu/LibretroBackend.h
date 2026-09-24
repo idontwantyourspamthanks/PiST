@@ -29,9 +29,17 @@ QStringList libretroCoreCandidates(const QString &applicationDir);
 /// The first candidate that exists, or empty. `--diagnose` prints this.
 QString findLibretroCore(const QString &applicationDir);
 
-/// In-process Hatari. The dylib's ABI is emu/LibretroAbi.h. Until a session
-/// launch selects this backend, a missing dylib fails start() and the
-/// subprocess backends are what Run uses. docs/agents/mac.md.
+/// Whether a session boots the in-process core. True only on macOS, when the
+/// project has not named its own Hatari, and the dylib is present. A named
+/// emulator path keeps the subprocess even on a Mac that has the core. Linux
+/// and Windows stay subprocesses: `onMacOS` is false there. The flag is an
+/// argument so the decision can be tested off a Mac.
+bool sessionUsesInProcessCore(bool onMacOS, const QString &hatariPath,
+                              const QString &applicationDir);
+
+/// In-process Hatari. The dylib's ABI is emu/LibretroAbi.h. Session launch
+/// selects it on macOS when `sessionUsesInProcessCore` is true. A missing
+/// dylib fails start(). docs/agents/mac.md.
 class LibretroBackend : public IDebugBackend
 {
     Q_OBJECT

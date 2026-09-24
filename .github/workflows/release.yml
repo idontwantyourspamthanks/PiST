@@ -443,10 +443,11 @@ jobs:
           done
           [ ! -e bundle/bin/vc_redist.x64.exe ] \
             || { echo "ERROR: windeployqt staged a redistributable installer"; exit 1; }
-          # Diagnostic for the 0.8.6 failure: the cache-derived derivation found
-          # no compiler line on the runner although the same job had configured.
-          # Harmless now that vswhere resolves the CRT; keep the echo until the
-          # cause is known.
+          # The Visual Studio generator writes no CMAKE_CXX_COMPILER entry into
+          # the cache — the 0.8.6 echo proved the line absent rather than
+          # mis-read — which is why the CRT is resolved with vswhere instead.
+          # The echo stays as the record of that, and as an early warning should
+          # a future generator start writing it again.
           grep -m1 "^CMAKE_CXX_COMPILER" build/CMakeCache.txt \
             || echo "note: no CMAKE_CXX_COMPILER line in build/CMakeCache.txt"
           ls -l bundle/bin/msvcp140.dll bundle/bin/vcruntime140.dll bundle/bin/vcruntime140_1.dll

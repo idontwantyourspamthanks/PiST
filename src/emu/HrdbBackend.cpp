@@ -133,6 +133,11 @@ bool HrdbBackend::isRunning() const
     return m_process && m_process->state() != QProcess::NotRunning;
 }
 
+qint64 HrdbBackend::emulatorProcessId() const
+{
+    return m_process ? m_process->processId() : -1;
+}
+
 bool HrdbBackend::start(const SessionConfig &config, QString *error)
 {
     stop();

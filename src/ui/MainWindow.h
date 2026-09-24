@@ -555,10 +555,13 @@ private:
     /// produced, and load the linker's placement map when there was a link.
     void rebuildProgramMap();
 
-    /// Whether the emulator's display can be embedded in this session: it needs
-    /// PiST to be an X11 (xcb) client, and the control socket that carries the
-    /// video-size report. When false the option is disabled and the emulator
-    /// runs as a separate window regardless of the setting.
+    /// Whether the emulator's display can be embedded in this session. Two
+    /// platforms, two mechanisms: on X11 (xcb) Hatari reparents itself into the
+    /// container and reports its video size over the control socket, so both are
+    /// preconditions there; on Windows PiST adopts Hatari's own window
+    /// (ui/EmbedWin32.h) and reads the size from it, so neither is. When false
+    /// the option is disabled and the emulator runs as a separate window
+    /// regardless of the setting.
     bool canEmbedDisplay(const HatariCapabilities &caps) const;
 
     /// The embedded/separate display preference. Applies on the next Run; a

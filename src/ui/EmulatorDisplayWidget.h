@@ -11,23 +11,36 @@ namespace pist {
 /// Hosts the emulator's display when it runs embedded rather than as its own
 /// top-level window.
 ///
-/// The mechanics are X11 reparenting, done by Hatari itself: PiST names this
-/// widget's native window ID in `PARENT_WIN_ID`, and Hatari reparents its SDL
-/// window into it (src/control.c). That only works when both processes are X11
-/// clients of the same display, which is why the application is pinned to the
-/// xcb platform on Linux and why the child is pinned to SDL_VIDEODRIVER=x11.
-/// On a Wayland-native or non-X11 session there is no such window ID and the
-/// widget is not used; the emulator then runs as a separate window.
+/// Two mechanisms, one per platform, because neither generalizes:
 ///
-/// The widget is a plain black surface. Input does not need forwarding: the
-/// reparented SDL window is a real X11 child, so the display server delivers
-/// keyboard and mouse to it directly when it is focused.
+/// - X11: reparenting done by Hatari itself. PiST names this widget's native
+///   window ID in `PARENT_WIN_ID`, and Hatari reparents its SDL window into it
+///   (src/sdl/screen.c). That only works when both processes are X11 clients of
+///   the same display, which is why the application is pinned to the xcb
+///   platform on Linux and why the child is pinned to SDL_VIDEODRIVER=x11.
+/// - Windows: reparenting done by PiST, with `SetParent` (ui/EmbedWin32.h).
+///   Hatari's side of the X11 handshake is compiled out there, so the emulator
+///   creates its own window and this widget adopts it, by process id, once it
+///   exists.
+///
+/// Anywhere else — Wayland without XWayland, macOS — there is no window to
+/// adopt and the emulator runs as a separate window.
+///
+/// Input needs no forwarding on X11: the reparented window is a real X11 child,
+/// so the display server delivers keyboard and mouse to it directly. On Windows
+/// the adopted window is a real child too, but whether it takes keyboard focus
+/// on a click — and what the documented cross-process DPI-awareness reset does
+/// to its scale — are known risks to confirm on a Windows machine
+/// (docs/PLAN.md §9), not verified behaviour.
 class EmulatorDisplayWidget : public QWidget
 {
     Q_OBJECT
 
 public:
     explicit EmulatorDisplayWidget(QWidget *parent = nullptr);
+    /// Releases an adopted Windows window before this container goes away:
+    /// destroying a window destroys its children, foreign ones included.
+    ~EmulatorDisplayWidget() override;
 
     /// A plain QWidget has an invalid sizeHint, which makes a dock size it to its
     /// minimum instead of a usable video size — which is why the display was
@@ -51,11 +64,40 @@ public slots:
     /// badge makes the stopped state legible instead.
     void setPaused(bool paused);
 
+    /// Windows: adopt the display of the emulator running as `processId`. The
+    /// window does not exist yet when a session starts, so this begins a poll
+    /// that adopts it as soon as it does. A no-op on every other platform,
+    /// where Hatari reparents itself and reports its size instead.
+    void attachEmulatorProcess(qint64 processId);
+
+    /// Forget the embedded display: the session ended, so whatever window was
+    /// here is gone. Releases an adopted one first, and returns the panel to
+    /// the empty state it paints for itself.
+    void clearEmbedded();
+
+signals:
+    /// One line about the Windows adoption: what was adopted, at what size, and
+    /// what happened when it could not be. The console is the only record of
+    /// which branch ran on a machine this code cannot be tested on.
+    void embedEvent(const QString &message);
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
 
 private:
+    /// One tick of the Windows adoption poll: adopt the emulator's window when
+    /// it appears, notice when the emulator resizes or replaces the adopted one,
+    /// and say on the panel when it never appears at all.
+    /// The rect the last fit placed the adopted window at, in the container's
+    /// client pixels. A child whose client size no longer matches it was resized
+    /// by the emulator itself — a guest video-mode change — and that size is
+    /// then the new video size.
+    int m_lastFitW = 0;
+    int m_lastFitH = 0;
+
+    void pollForeignWindow();
+
     class QTimer *m_settleTimer = nullptr;
     int m_settleTicks = 0;
     /// The emulator's native video size, for the aspect-preserved fit.
@@ -63,6 +105,17 @@ private:
     int m_videoH = 0;
     /// Whether the debugger is stopped (drives the paused hint).
     bool m_paused = false;
+    /// The adopted emulator window (Windows only), 0 when there is none.
+    quintptr m_childWindow = 0;
+    /// The process whose window is being looked for.
+    qint64 m_foreignPid = -1;
+    class QTimer *m_attachTimer = nullptr;
+    int m_attachTicks = 0;
+    /// Real video has landed here, on either platform. Until then the panel
+    /// says what it is, rather than being an unexplained black rectangle.
+    bool m_videoAttached = false;
+    /// The Windows adoption was attempted and did not happen.
+    bool m_attachFailed = false;
 };
 
 } // namespace pist

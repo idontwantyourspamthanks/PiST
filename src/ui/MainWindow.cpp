@@ -351,14 +351,25 @@ MainWindow::MainWindow(QWidget *parent)
         wireBackend();
     };
     // The embedded display container, realized and shown only once the session
-    // is known to be able to embed one: winId() has to be a live X11 window
+    // is known to be able to embed one: winId() has to be a live native window
     // before Hatari starts, or there is nothing to reparent into.
     launcherHost.embedDisplayWindowId = [this](const HatariCapabilities &caps) -> QString {
         if (!(m_embeddedDisplay && canEmbedDisplay(caps) && m_display))
             return QString();
         m_displayDock->setVisible(true);
         m_display->setVisible(true);
+#ifdef Q_OS_WIN
+        // Windows gets no window id in the environment. Hatari's reparenting is
+        // compiled in only under X11 upstream, while the PARENT_WIN_ID check
+        // that creates its SDL window *hidden* is not guarded at all — so
+        // naming our window there would leave the user with no emulator on
+        // screen if the adoption then failed. The container adopts Hatari's own
+        // window once the process is running instead (runningChanged, below),
+        // where every failure path ends at the detached window that works today.
+        return QString();
+#else
         return QString::number(m_display->winId());
+#endif
     };
     launcherHost.quiet = [this] { return m_quietDialogs; };
     launcherHost.refuseRun = [this](const QString &title, const QString &reason, bool critical) {
@@ -1077,6 +1088,12 @@ void MainWindow::wireBackend()
                 m_actPause->setEnabled(!m_host->isStopped());
             if (m_consoleInput)
                 m_consoleInput->setEnabled(true);
+            // Windows: the emulator has just made its own window, and the
+            // container adopts it now that there is a process to look for. A
+            // no-op elsewhere, where Hatari reparents itself into the container
+            // and reports its video size over the control socket.
+            if (m_display && m_embeddedDisplay)
+                m_display->attachEmulatorProcess(m_host->emulatorProcessId());
             return;
         }
         if (m_consoleInput)
@@ -1098,6 +1115,11 @@ void MainWindow::wireBackend()
         // into whatever happens next.
         m_session->resetSessionState();
         updateRegisterStrip();
+        // The embedded display belonged to the session that just ended: forget
+        // its window, so the panel paints its empty state rather than a stale
+        // last frame that reads as the emulator's current one.
+        if (m_display)
+            m_display->clearEmbedded();
         // Both transcripts describe the session that just ended, and neither is
         // re-requested without one: left on screen they read as the hardware's
         // current state. The views' own `clear()` documents the no-session state.
@@ -1715,6 +1737,13 @@ void MainWindow::buildPanels()
 
 void MainWindow::wirePanels()
 {
+    // The Windows adoption cannot be exercised on any machine this is built on,
+    // so its outcomes go to the console: one line says which branch ran when a
+    // user reports a docked display that is not there.
+    connect(m_display, &EmulatorDisplayWidget::embedEvent, this, [this](const QString &text) {
+        if (m_log)
+            m_log->appendPlainText(QStringLiteral("[embed] ") + text);
+    });
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
     connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
             [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });
@@ -4263,10 +4292,17 @@ void MainWindow::onStateUpdated(const MachineState &state)
 
 bool MainWindow::canEmbedDisplay(const HatariCapabilities &caps) const
 {
-    // Both ends must be X11 clients of the same display, and the size report
+    const QString platform = QGuiApplication::platformName();
+    // Windows: PiST adopts the emulator's own window with SetParent
+    // (ui/EmbedWin32.h), so all that is needed is a container to adopt it
+    // into. The video size comes from that window rather than from a
+    // control-socket report, so the socket is not a precondition here — a stock
+    // Windows Hatari does not have one.
+    if (platform == QLatin1String("windows"))
+        return true;
+    // X11: both ends must be clients of the same display, and the size report
     // that sizes the container travels on the control socket.
-    return QGuiApplication::platformName() == QLatin1String("xcb")
-        && caps.hasControlSocket;
+    return platform == QLatin1String("xcb") && caps.hasControlSocket;
 }
 
 void MainWindow::setDisplayEmbedded(bool on)

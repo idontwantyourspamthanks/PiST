@@ -132,6 +132,13 @@ public:
     virtual bool isRunning() const = 0;
     virtual bool isStopped() const = 0;
 
+    /// The emulator process's id, or -1 when no session is running. Windows
+    /// embedding has no window id to hand the emulator — Hatari's
+    /// `PARENT_WIN_ID` reparenting is compiled in only under X11 upstream — so
+    /// it finds the emulator's window by process instead (ui/EmbedWin32.h).
+    /// Nothing else needs the id.
+    virtual qint64 emulatorProcessId() const { return -1; }
+
     virtual void step() = 0;
     virtual void stepOver() = 0;
     virtual void resume() = 0;

@@ -242,6 +242,8 @@ pist_module(pist_ui
     src/ui/EmulatorDisplayWidget.h
     src/ui/EmbedX11.cpp
     src/ui/EmbedX11.h
+    src/ui/EmbedWin32.cpp
+    src/ui/EmbedWin32.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
     src/ui/GitPanel.cpp
@@ -335,6 +337,14 @@ if(X11_FOUND)
         target_compile_definitions(pist_ui PUBLIC PIST_HAVE_XEXT)
         target_link_libraries(pist_ui PUBLIC X11::Xext)
     endif()
+endif()
+
+if(WIN32)
+    # The Windows half of the embedded display (src/ui/EmbedWin32.cpp) moves the
+    # emulator's own window into the dock: EnumWindows, SetParent, MoveWindow
+    # and the window styles are all user32. Qt links it transitively, but the
+    # direct use is declared here so it does not depend on that.
+    target_link_libraries(pist_ui PUBLIC user32)
 endif()
 
 qt_add_executable(pist

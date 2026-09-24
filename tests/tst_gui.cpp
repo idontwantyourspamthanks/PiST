@@ -365,6 +365,9 @@ private slots:
     void statusBarNamesTheStop();
     void registerDockShowsFlagsUntilTheMachineStops();
     void layoutPresetsHideDocksAndRestore();
+    /// The Emulator panel hosts another process's window, or nothing at all
+    /// before a session: it must say which, rather than show a black void.
+    void emulatorPanelExplainsItselfWhenEmpty();
     void gitDockStaysUnderProjectFiles();
     /// Git discovery follows the project the user opened, never the process
     /// working directory: a window with nothing open must run no git at all,
@@ -3813,6 +3816,37 @@ void TstGui::layoutPresetsHideDocksAndRestore()
             sawColour = true;
     }
     QVERIFY2(sawColour, "the canvas status names the active colour index");
+}
+
+// The Emulator panel is a container for a window that belongs to another
+// process, and before any session — or on a platform that cannot embed at all —
+// there is nothing in it. A bare black rectangle there reads as a broken
+// emulator rather than as an empty panel, which is exactly how the Windows
+// "docked emulator is a black screen" report presented itself, so the panel
+// paints what it is waiting for.
+void TstGui::emulatorPanelExplainsItselfWhenEmpty()
+{
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(dock);
+    dock->show();
+    QWidget *display = dock->widget();
+    QVERIFY(display);
+    QVERIFY(QTest::qWaitFor([display] { return display->width() > 100; }, 2000));
+
+    const QImage image = display->grab().toImage();
+    int lit = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (qGray(image.pixel(x, y)) > 16)
+                ++lit;
+        }
+    }
+    QVERIFY2(lit > 100, "an empty emulator panel paints its explanation, not a black void");
 }
 
 // Git is a project pane, not a debug one: it shares Project files' tab and

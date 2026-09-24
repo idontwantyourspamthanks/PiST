@@ -163,6 +163,11 @@ bool EmulatorHost::isRunning() const
     return m_process && m_process->state() != QProcess::NotRunning;
 }
 
+qint64 EmulatorHost::emulatorProcessId() const
+{
+    return m_process ? m_process->processId() : -1;
+}
+
 QString EmulatorHost::writeBootstrapScript(const QString &directory,
                                            const HatariCapabilities &caps,
                                            QString *error)

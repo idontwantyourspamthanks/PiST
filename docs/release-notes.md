@@ -16,70 +16,42 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.8.4
+## What's new in 0.8.5
 
-A packaging release. The IDE itself is unchanged apart from how it presents
-itself to the desktop; what changed is that the packages a release publishes are
-now correct — and the 0.8.3 deb, it turns out, could not be installed at all.
+A correction to 0.8.4's packaging. The packages installed and ran, but a
+software centre still could not show what they were — and if you are on 0.8.3
+or earlier, the older problems below still apply to you.
 
-**If you downloaded the 0.8.3 `.deb`, it was broken:** `dpkg -i` aborted with
-*trying to overwrite `/usr/share/doc/libglib2.0-0/copyright`, which is also in
-package libglib2.0-0*. Use this one. The 0.8.3 AppImage runs fine; only the
-packages were affected.
+**If you are on 0.8.3:** its `.deb` aborted `dpkg -i` with *trying to overwrite
+`/usr/share/doc/libglib2.0-0/copyright`, which is also in package
+libglib2.0-0*, and both of its packages installed their Qt, glib and D-Bus into
+`/usr/lib`, where `ldconfig` — which scans that directory before the multiarch
+one — would have handed them to every other application on the machine. Update.
 
 ### Fixed
 
-- **The deb installs.** It was staged straight from the AppImage's AppDir, so it
-  carried the build host's copyright file for every library the bundle links —
-  `libglib2.0-0`, `libpulse0`, `libxcb-*` and fifty more — into paths dpkg knows
-  belong to packages already installed, and dpkg will not take a file away from
-  another package. Those texts now live under
-  `/usr/share/doc/pist/licenses/distro/`, where they still travel with the
-  binaries they cover, and the AppImage plumbing that was being installed into
-  `/` (`AppRun`, `.DirIcon`, `apprun-hooks/`) stays out of the package. The
-  release workflow now installs the deb on the runner and removes it again, which
-  is the check that would have caught this.
-- **The packages no longer hand their libraries to the rest of the system.** The
-  bundle's Qt, glib, D-Bus and X libraries were installed into `/usr/lib`, which
-  `ldconfig` scans *before* the multiarch directory — so the package made itself
-  the system-wide provider of `libQt6Core.so.6` and friends, for every other
-  application on the machine. Everything now lives in the private prefix
-  `/usr/lib/pist/`, with only `pist` and `pist-mcp` linked into `/usr/bin`, so
-  the bundled Hatari, vasm and vlink cannot shadow your own either.
-- **The name, author and licence a software centre shows.** PiST shipped no
-  AppStream metadata at all, so GNOME Software and Discover reported the deb's
-  file name and "Unknown Author", with no licence anywhere. *PiST*, *Koala
-  Software* and *GPL-2.0-or-later* now come from a metainfo file, a DEP-5
-  `/usr/share/doc/pist/copyright`, and the installer licence resource — which was
-  still CMake's generic placeholder, so the MSI and self-extracting installers
-  quoted no licence either. The RPM's vendor was the literal string `unknown`.
-- **Asset and package naming.** Every artifact is now
-  `PiST-<version>-<platform>`. The tag's `v` was being interpolated verbatim,
-  which is how the deb came to be called `pist-v0.8.3-linux-amd64.deb` — and how
-  a software centre came to show it as "pist-v0". The AppImage carries its
-  version too (`PiST-0.8.4-x86_64.AppImage` rather than `PiST-x86_64.AppImage`),
-  and the icons are installed at 128, 256 and 512 px instead of leaving the
-  hicolor directories the deployer creates empty. The Debian and RPM package
-  names stay lowercase `pist`, as both require.
-- **The deb's description was mangled.** It was assembled from several quoted
-  arguments, which CMake joins into a list, so the control file carried a literal
-  `"; "` at the head of every line after the first.
-- **On Wayland the window now belongs to its menu entry.** The app states its
-  desktop-file name, which is what Wayland uses as the `app_id`; it was being
-  derived from the application name and matched nothing, so the taskbar icon did
-  not group with the launcher. It is stated only where an entry is actually
-  installed — claiming one that does not exist makes the desktop portal fail to
-  register the app ID on every start — and the entry itself now declares
-  `StartupWMClass=pist`, which is what X11 was already reporting.
-- **The macOS bundle had an empty `CFBundleIdentifier`**, and presented itself as
-  "pist" rather than "PiST" in Finder and the menu bar.
+- **Software centres show PiST's icon, name and author.** The metainfo file 0.8.4
+  added carried no `<icon>` element, and a component without one has no icon at
+  all: Ubuntu's App Center listed the installed package with a blank space
+  beside its name. It now declares the themed icon —
+  `<icon type="stock">pist</icon>`, exactly what `appstream-generator` records
+  from a desktop entry's `Icon` key — and the `<categories>` that mirror the
+  entry's own. The categories also matter mechanically: `appstreamcli validate`
+  only checks for them once a component qualifies as store-visible, i.e. once it
+  has an icon, so the file validated clean while carrying neither.
+- **A stale menu icon after installing is expected once, not a defect.** The
+  icon-theme cache and the desktop database are rebuilt by dpkg triggers that run
+  *after* the install returns, and a shell session that looked the icon up in
+  that window keeps the miss cached. If an entry or its icon looks wrong right
+  after an install, log out and back in (or restart the shell) before reporting
+  it.
 
 ### Worth knowing
 
 An AppImage does not add itself to your application menu, and cannot: that
-integration is done by AppImageLauncher or `appimaged`. If you want a menu entry,
-install the `.deb` or the `.rpm` — that is what they are for, and both now carry
-the entry, the icons and the metadata a software centre reads.
+integration is done by AppImageLauncher or `appimaged`. If you want a menu
+entry, install the `.deb` or the `.rpm` — that is what they are for, and both
+carry the entry, the icons and the metadata a software centre reads.
 
 Every archive contains PiST, the `vasmm68k_mot` assembler, the `vlink` linker,
 and an EmuTOS ROM. The Linux AppImage and the Windows archive additionally

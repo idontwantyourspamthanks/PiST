@@ -222,7 +222,7 @@ some paths.
 |---|---|---|
 | X11 | `PARENT_WIN_ID` — Hatari reparents its own SDL window (`src/sdl/screen.c:219`) | X11 only |
 | Wayland | force `QT_QPA_PLATFORM=xcb` + `SDL_VIDEODRIVER=x11`, run under XWayland | depends on XWayland |
-| Windows | `SetParent` on the Hatari HWND | input-queue/focus quirks |
+| Windows | PiST finds the emulator's window by process id and `SetParent`s it into the panel (`src/ui/EmbedWin32.cpp`). `PARENT_WIN_ID` must **not** be set (§5 rule 14) | focus quirks; a cross-process `SetParent` force-resets the *child's* DPI awareness (MSDN) |
 | macOS | **cannot** reparent a foreign process window (`WId` is a process-local `NSView*`) | detached window, or in-process core |
 
 **A detached emulator window mode ships from day one.** It removes the entire embedding risk class
@@ -535,6 +535,14 @@ These are the operational constraints the launch builder must encode.
     are excluded too: they are normal parts of graphics calls.
     Note the `autostart` entry is not an exception class but a *deferral*: it arms the mask at INF
     load (`event.c`) rather than at startup, which is what keeps boot-time faults from breaking in.
+14. **Never set `PARENT_WIN_ID` on Windows.** Upstream reads that variable in two places and guards
+    only one of them: `Screen_ReparentWindow()`, which does the reparenting, is compiled in under
+    `#if HAVE_X11 && SDL_VIDEO_DRIVER_X11`, while the check that creates the SDL window
+    `SDL_WINDOW_BORDERLESS|SDL_WINDOW_HIDDEN` (`src/sdl/screen.c:439`) is not inside that guard.
+    A Windows Hatari given the variable therefore creates a window that nothing ever maps, and the
+    user is left with no emulator on screen at all — worse than the detached window they had.
+    Windows embedding instead adopts the window Hatari already showed (`ui/EmbedWin32.h`), which
+    makes every failure path end at the mode that works today.
 
 ### 5.1 Bootstrap parse file
 
@@ -1161,9 +1169,16 @@ project; everything before it was either Linux-only or read from source.
 - Autoload defaults and gating (`configuration.c:615` / `:621`, `symbols.c`, `debugui.c:1346`)
 - Single-positional argument handling and `INF_SetAutoStart` (`options.c:1128-1183`)
 - TOS ≥ 1.04 requirement for INF autostart (`inffile.c:1042-1046`)
-- `PARENT_WIN_ID` reparenting (`src/sdl/screen.c:219`)
+- `PARENT_WIN_ID` reparenting (`src/sdl/screen.c:219`) — and that the `SDL_WINDOW_HIDDEN` flag check
+  for the same variable (`screen.c:439`) sits *outside* the `HAVE_X11 && SDL_VIDEO_DRIVER_X11` guard
+  around the reparent itself, so on Windows the variable hides the video instead of embedding it
+  (§5 rule 14)
 - DSP command set (`dspreg` reads **and writes**)
 - Fork status, licences, and the Qt/SDL foreign-window capability matrices
+- CPackWIX's Start Menu shortcuts come from `CPACK_PACKAGE_EXECUTABLES`
+  (`cmCPackWIXGenerator::AddComponentsToFeature`, CMake 4.2), and `windeployqt`
+  ships no MSVC runtime — both read in CMake's sources after a clean Windows
+  install reported *MSVCP140.dll was not found* and an empty Start Menu
 
 ### Unverified — to resolve during Phase 0/1
 
@@ -1177,7 +1192,15 @@ project; everything before it was either Linux-only or read from source.
    Floppy *listing* and *export* of 720 KiB `.st` / `.msa` images from the project-files pane
    is also implemented (`src/build/FloppyImage.cpp`), as are in-place edits (`readFileRaw` +
    `updateImage` back the file browser's copy/move); IPF/Pasti authoring is not.
-5. Windows and macOS behaviour of the embedding paths and `SetParent`
+5. ~~Windows behaviour of the embedding path~~ — **implemented, not yet executed**: `ui/EmbedWin32`
+   adopts the emulator's window with `SetParent` (§3.2, §5 rule 14). It cross-compiles clean under
+   mingw-w64 with `-Wall -Wextra -Wshadow`, and every `Q_OS_WIN` branch in `ui/` type-checks against
+   the real signatures, but the behaviour still needs a Windows machine: whether the adopted window
+   takes keyboard focus on a click, and what the documented cross-process DPI force-reset does to
+   the video's scale. Every outcome lands on the console as an `[embed]` line — adopted (with the
+   video size), resized or replaced by the emulator, never appeared, could not adopt — so a Windows
+   report names the branch that ran without a debugger. macOS embedding remains unimplemented
+   (`WId` is a process-local `NSView*`).
 6. ~~Behaviour of `--control-socket` alternatives on Windows~~ — **resolved**: HRDB is the
    alternative. The fork builds for Windows with MSYS2 ucrt64 (its listener is winsock-aware
    upstream of us), CI exercises it there, and the Windows release archive bundles it. Stock

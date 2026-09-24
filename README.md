@@ -404,13 +404,25 @@ ticking a pre-shifted block is what makes the motion fine (2 px with 8 copies).
 
 ## Emulator embedding
 
-On Linux, `PiST` can run the emulator's display **inside the IDE** instead of in a
-separate window: **View ▸ Embed emulator display**. The mechanism is X11
-reparenting — the emulator attaches its own window into a panel in the IDE — so
-it works on X11 and, under Wayland, through XWayland. The preference is
-remembered. Where reparenting is not possible (Wayland without XWayland, and for
-now macOS and Windows), the option is unavailable and the emulator always runs as
-a separate window, which remains the default everywhere.
+`PiST` can run the emulator's display **inside the IDE** instead of in a separate
+window: **View ▸ Embed emulator display**. The preference is remembered. The
+mechanism differs by platform, because neither one generalises:
+
+- **Linux / X11** — reparenting done by the emulator: `PiST` names the panel's X11
+  window in `PARENT_WIN_ID`, and Hatari attaches its own SDL window to it. This
+  also covers a Wayland session through XWayland, which is why `PiST` prefers the
+  `xcb` platform whenever an X display is reachable.
+- **Windows** — reparenting done by `PiST`: Hatari's side of that handshake is
+  compiled in only for X11, so `PiST` finds the emulator's window by process id
+  and moves it into the panel with `SetParent`. Should that ever fail, the
+  emulator keeps the separate window it already had.
+- **macOS** — not possible: a foreign process's window cannot be reparented there
+  (`WId` is a process-local `NSView*`).
+
+Where embedding is not possible the option is unavailable and the emulator always
+runs as a separate window, which remains the default everywhere. A panel with
+nothing embedded says what it is waiting for, rather than showing an unexplained
+black rectangle.
 
 ## TOS ROMs
 

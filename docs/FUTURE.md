@@ -177,7 +177,10 @@ Original TOS ROMs stay user-supplied, always.
 
 The dependency-notice generation is delivered as `packaging/collect-notices.py`, which derives the
 shipped licence texts from each archive's actual contents — including whether the bundled Hatari
-links Capstone, and the MinGW runtime DLLs a Windows emulator carries.
+links Capstone, the MinGW runtime DLLs a Windows emulator carries, and the MSVC runtime DLLs the
+Windows bundle now ships beside pist.exe. The MSVC terms are the one text not yet captured:
+Microsoft publishes them only as a web page and inside the installer, so `packaging/copyright`
+states the redistribution basis and a `KNOWN_LIBS` entry waits on a copy in `packaging/notices/`.
 
 ---
 

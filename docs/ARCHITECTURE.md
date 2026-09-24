@@ -83,13 +83,19 @@ Everything else in this document is a consequence of that rule. The debug transp
   `MainWindow` is also the control layer's `control::ControlHost` (`control/ControlHost.h`): the
   remote-control verbs are its own methods, so `RemoteControl` drives the IDE through an interface
   `src/control/` owns instead of including this header (MIN-86).
-- **`ui/EmulatorDisplayWidget.{h,cpp}`** — a black `WA_NativeWindow` container whose `winId()` is
-  handed to Hatari. Tracks the emulator's video size, aspect-fits it inside the dock, and paints a
-  "Paused" badge when stopped.
+- **`ui/EmulatorDisplayWidget.{h,cpp}`** — the `WA_NativeWindow` container the emulator's display
+  lands in. On X11 its `winId()` is handed to Hatari, which reparents itself into it; on Windows it
+  adopts the emulator's own window by process id (`attachEmulatorProcess()` starts a poll that ends
+  when that window appears, or says on the panel that it never did). Tracks the video size,
+  aspect-fits it inside the dock, and paints a "Paused" badge when stopped.
 - **`ui/EmbedX11.{h,cpp}`** — free X11 functions over Qt's `QX11Application` native interface:
   `mapEmbeddedWindowChildren`, `embeddedContainerSize`, `resizeEmbeddedChild`,
   `setEmbeddedChildrenInputTransparent`, `captureWindowImage`. All no-ops without
   `PIST_HAVE_X11`/`PIST_HAVE_XEXT`.
+- **`ui/EmbedWin32.{h,cpp}`** — the Windows half: `findEmulatorWindow` (by process id, nothing else
+  names the emulator's window), `embedForeignWindow` / `releaseForeignWindow` (`SetParent`, with the
+  window styles set in the order MSDN requires of it), `windowHandleValid`, `windowClientSize`,
+  `moveEmbeddedChild`. All no-ops off Windows.
 - **Debug panels** (`ui/`): `RegistersView` (editable D0–D7/A0–A7, PC, SR, USP/ISP, flags),
   `DisassemblyView` (current PC highlighted), `MemoryView` (hex, byte editing, address navigation),
   `StackView` (longs at SP, return-address annotation), `HardwareView` (`info <subject>` output —
@@ -335,6 +341,20 @@ Sizing uses `embeddedContainerSize()` (the real X11 window size) as ground truth
 a native dock can disagree — and `resizeEmbeddedChild()` letterboxes the video. During a dock drag
 that crosses the video, `setEmbeddedChildrenInputTransparent()` gives the foreign window an empty
 input region so the drag keeps tracking (a foreign window otherwise swallows the pointer events).
+
+On Windows there is no handshake to answer. Hatari's reparenting is compiled in only under
+`HAVE_X11 && SDL_VIDEO_DRIVER_X11` upstream (`src/sdl/screen.c`, `Screen_ReparentWindow`), while the
+`PARENT_WIN_ID` check that creates the SDL window *hidden* (`screen.c:439`) is not inside that guard
+at all — so naming the panel in the environment would leave the user with no emulator window
+whatsoever if the adoption then failed. PiST therefore leaves the environment alone and adopts the
+window Hatari already showed: `findEmulatorWindow()` polls by process id
+(`IDebugBackend::emulatorProcessId()`), `embedForeignWindow()` clears `WS_POPUP` and the caption,
+sets `WS_CHILD`, and calls `SetParent` in MSDN's order, and `moveEmbeddedChild()` letterboxes it in
+the container's physical pixels. The poll stays alive at 500 ms because the emulator replaces its
+window on a guest resolution change; every failure path ends at the detached window that already
+works, and the panel says so. Input queues are deliberately *not* attached (`AttachThreadInput`):
+Hatari pumps no messages while stopped in its debugger (`src/debug/debugui.c` never calls
+`SDL_PumpEvents`), so coupling the two queues would freeze the IDE at every breakpoint.
 
 ### Panels, docks and the event filter
 

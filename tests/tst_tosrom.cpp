@@ -90,9 +90,9 @@ private slots:
     void fallbackPicksNewestCompatibleRom();
 
     // Bundled-ROM discovery. Every release archive ships its ROM in share/emutos
-    // beside the executable's parent, but nothing searched there, so the ROM
-    // travelled in every archive and was still invisible on a machine without a
-    // system TOS. These pin the layouts that must resolve.
+    // reached by walking up from the executable, but nothing searched there, so
+    // the ROM travelled in every archive and was still invisible on a machine
+    // without a system TOS. These pin the layouts that must resolve.
     void findsBundledRomInTarballLayout();
     void findsBundledRomInAppImageLayout();
     void findsBundledRomInMacBundleLayout();
@@ -523,15 +523,22 @@ void TstTosRom::findsBundledRomInAppImageLayout()
 
 void TstTosRom::findsBundledRomInMacBundleLayout()
 {
-    // A macOS bundle puts the executable in Contents/MacOS, three levels below
-    // the directory the ROM sits in.
+    // The disk image ships only the app, so the ROM sits inside it at
+    // Contents/share — one level above Contents/MacOS. A share directory beside
+    // the .app would be left on the disk image when the app is dragged to
+    // Applications, and this layout is the one that has to resolve.
     QTemporaryDir tmp;
     QVERIFY(tmp.isValid());
-    const QString binDir = makeBundle(tmp, QStringLiteral("pist.app/Contents/MacOS"),
-                                      QStringLiteral("etos1024k.img"));
-    QVERIFY(!binDir.isEmpty());
+    const QString romDir =
+        QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/share/emutos"));
+    QVERIFY(QDir().mkpath(romDir));
+    QVERIFY(!writeRom(romDir, QStringLiteral("etos1024k.img"), 0x0104, true).isEmpty());
+    const QString binDir =
+        QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/MacOS"));
+    QVERIFY(QDir().mkpath(binDir));
 
-    QVERIFY(reportsEmutosDir(paths::bundledDataSearchPaths(binDir), tmp));
+    const QString expected = QDir::cleanPath(romDir);
+    QVERIFY(paths::bundledDataSearchPaths(binDir).contains(expected));
 }
 
 void TstTosRom::reportsNoBundledDirWhenAbsent()

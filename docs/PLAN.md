@@ -797,11 +797,33 @@ Remaining assessments:
   `CFBundleIdentifier` from `MACOSX_BUNDLE_GUI_IDENTIFIER`, a property the
   project never set, so `pist.app` shipped with `<string></string>` there. It is
   now the same reverse-DNS name the AppStream component uses, and
-  `MACOSX_BUNDLE_BUNDLE_NAME` supplies `CFBundleName` — what Finder shows under
-  the icon and what the menu bar shows while the app runs, which was the target
-  name, "pist". The bundle *directory* stays `pist.app`, because that path is
-  what the packaging steps, the dmg assertions and the archive checks name; the
-  macOS deploy step now asserts the plist rather than trusting the property.
+  `MACOSX_BUNDLE_BUNDLE_NAME` supplies `CFBundleName` — the short name in the
+  menu bar, which was the target name, "pist". Finder's label under the icon
+  is the bundle directory's name, not that key. The build tree stays
+  `pist.app` (the target name); the release step renames the shipped bundle
+  to `PiST.app` in two moves, because the runner's volume is case-insensitive
+  and a one-step rename does not change the spelling Finder shows. The deploy
+  step asserts the plist rather than trusting the property.
+- **The macOS disk image is the app and an Applications folder.** CPack
+  DragNDrop packed the staged tree, so the volume showed `pist`, `share/`,
+  `BUILD-INFO.txt` and the Applications shortcut. Dragging the app across
+  left the ROM and the notices on the image. Those now live inside the bundle
+  (`Contents/share`, which `bundledDataSearchPaths()` already finds one level
+  above `Contents/MacOS`; `BUILD-INFO.txt` and the icon in `Contents/Resources`),
+  and the image is written with `ditto` and `hdiutil` from a folder that holds
+  only `PiST.app` and a symlink to `/Applications`. `ditto` rather than `cp`,
+  because Qt's frameworks are symlink trees and a copy that flattens them
+  breaks the bundle.
+- **A macOS app with a signature that does not match its contents is
+  "damaged".** The dialog is Launch Services, and the wording is "move it to
+  the Bin". `macdeployqt` rewrites install names, which invalidates the
+  signature the linker wrote, and the assembler is copied in afterwards, so
+  the bundle that shipped could not verify. Signing is the last modification:
+  loose Mach-O, then each framework, then the app, then `codesign --verify
+  --deep --strict`, repeated on the copy inside the mounted image. The
+  identity is ad-hoc unless `APPLE_SIGNING_IDENTITY` is set. That satisfies
+  the kernel. It does not notarize the download; Gatekeeper can still ask
+  for approval on first open until an Apple Developer ID is used for that.
 - **The name, author and licence a software centre shows come from AppStream**,
   not from the control file:
   `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, installed to

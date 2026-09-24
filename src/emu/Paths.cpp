@@ -114,12 +114,15 @@ QStringList bundledDataSearchPaths(const QString &applicationDir)
         return dirs;
 
     // Four levels reaches `share` from every layout the release archives use:
-    //   <bundle>/bin/pist                      -> ../share
-    //   <mount>/usr/bin/pist                   -> ../../share
-    //   <bundle>/pist.app/Contents/MacOS/pist  -> ../../../share
-    // One level beyond the deepest of those costs a couple of stat calls and
-    // tolerates an extra wrapper directory, so the walk is deliberately shallow
-    // but not exactly fitted to today's layouts.
+    //   <bundle>/bin/pist                         -> ../share
+    //   <mount>/usr/bin/pist                      -> ../../share
+    //   PiST.app/Contents/MacOS/pist              -> ../share  (Contents/share)
+    // The macOS disk image carries only the app, so the ROM has to live inside
+    // it; a share directory beside the .app is still found (../../../share),
+    // which is what an older archive unpacked to. One level beyond the deepest
+    // of those costs a couple of stat calls and tolerates an extra wrapper
+    // directory, so the walk is deliberately shallow but not exactly fitted to
+    // today's layouts.
     QDir up(applicationDir);
     for (int level = 0; level < 4; ++level) {
         for (const char *sub : {"share/emutos", "share/hatari"}) {
@@ -148,8 +151,8 @@ QStringList tosSearchPaths()
     //    in a `share/emutos` directory next to the executable's parent: a tarball
     //    unpacks to `bin/pist` beside `share/emutos`, and an AppImage mounts
     //    `usr/bin/pist` beside `usr/share/emutos`. Walking up covers both, and the
-    //    macOS bundle (`Contents/MacOS/pist` beside `../share`) as well, without
-    //    hard-coding any one of those layouts.
+    //    macOS bundle (`Contents/MacOS/pist` beside `../share`, inside the .app)
+    //    as well, without hard-coding any one of those layouts.
     //
     //    This deliberately precedes the system locations. The archive's own ROM is
     //    the one the release process verified against the GEMDOS-hard-disk

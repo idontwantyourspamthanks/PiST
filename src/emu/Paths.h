@@ -35,7 +35,8 @@ QStringList bundledDataSearchPaths(const QString &applicationDir);
 ///      executable's own directory, which is how every release archive is laid
 ///      out: `bin/pist` beside `share/emutos`, `usr/bin/pist` beside
 ///      `usr/share/emutos` inside an AppImage, and `Contents/MacOS/pist` beside
-///      `../share` in a macOS bundle. These come first because the ROM an archive
+///      `../share` inside a macOS app bundle (`PiST.app/Contents/share`). These
+///      come first because the ROM an archive
 ///      carries is the one its release process verified, so it is what makes a
 ///      fresh download run; it is still only a default, and a ROM chosen in
 ///      Project Settings or named by `$PIST_TOS_DIR` takes precedence

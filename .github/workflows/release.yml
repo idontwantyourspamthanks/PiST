@@ -979,6 +979,103 @@ jobs:
             cat diagnose.txt
           } > bundle/BUILD-INFO.txt
 
+      # The macOS disk image is the app and an Applications folder. Everything
+      # else — the ROM, the notices, the build record — has to be inside the
+      # .app, or dragging the icon to Applications leaves it behind on the
+      # volume. Finder labels the icon from the bundle's directory name, so
+      # the shipped bundle is PiST.app; the build tree stays pist.app because
+      # that is the target name.
+      #
+      # "PiST is damaged and can't be opened" is Launch Services rejecting a
+      # bundle whose code signature does not match its contents. macdeployqt
+      # rewrites install names, which invalidates the signature the linker
+      # wrote, and the assembler is copied in after that. Signing has to be
+      # the last modification. An ad-hoc signature is enough for the kernel
+      # to accept the binary; a Developer ID (APPLE_SIGNING_IDENTITY) is used
+      # when the release secrets provide one. Notarization is a further step
+      # those secrets do not yet cover.
+      - name: Seal the macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          # APFS on the runner is case-insensitive: renaming pist.app to
+          # PiST.app in one step is the same directory and Finder keeps the
+          # old spelling. Two steps change the catalog name.
+          mv bundle/pist.app bundle/pist-rename.app
+          mv bundle/pist-rename.app bundle/PiST.app
+          APP=bundle/PiST.app
+          test ! -e "$APP/Contents/share"
+          mv bundle/share "$APP/Contents/share"
+          mkdir -p "$APP/Contents/Resources"
+          mv bundle/BUILD-INFO.txt "$APP/Contents/Resources/BUILD-INFO.txt"
+
+          # The icon Finder draws. iconutil wants a full iconset; the PNGs
+          # already in the tree are the source, scaled to the sizes it names.
+          iconset=$(mktemp -d)/pist.iconset
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            sips -z "$size" "$size" packaging/icons/pist-512.png \
+              --out "$iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z $((size * 2)) $((size * 2)) packaging/icons/pist-512.png \
+              --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$iconset" -o "$APP/Contents/Resources/pist.icns"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile pist' \
+            "$APP/Contents/Info.plist"
+
+          # A quarantined file copied into the bundle is itself enough for
+          # Gatekeeper to call the app damaged.
+          xattr -cr "$APP"
+
+          identity="${APPLE_SIGNING_IDENTITY:--}"
+          sign() {
+            if [ "$identity" = "-" ]; then
+              codesign --force --sign - "$1"
+            else
+              codesign --force --sign "$identity" --timestamp --options runtime "$1"
+            fi
+          }
+          # Loose Mach-O first (plugins, the assembler, the helper, the
+          # executable). Binaries inside a framework are signed with the
+          # framework directory, not on their own. The scan is not a pipeline:
+          # under pipefail the read at EOF would fail the step.
+          list=$(mktemp)
+          raw=$(mktemp)
+          find "$APP" -type f -print0 > "$raw"
+          while IFS= read -r -d '' p; do
+            case "$p" in
+              *.framework/*) continue ;;
+            esac
+            if file -b "$p" | grep -q 'Mach-O'; then
+              printf '%s\n' "$p"
+            fi
+          done < "$raw" > "$list"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            sign "$path" || exit 1
+          done < <(awk '{ print length, $0 }' "$list" | sort -nr | cut -d' ' -f2-)
+          find "$APP" -depth -type d \( -name '*.framework' -o -name '*.bundle' \) \
+            -print > "$list"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            sign "$path" || exit 1
+          done < "$list"
+          sign "$APP" || exit 1
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # The ROM has to be found with no PIST_TOS_DIR: that variable is how
+          # the earlier check skipped the discovery this layout depends on.
+          "$APP/Contents/MacOS/pist" --diagnose > diagnose-sealed.txt
+          grep -q 'PiST.app/Contents/share/emutos' diagnose-sealed.txt \
+            || { echo "ERROR: the sealed app does not find its own ROM"; \
+                 cat diagnose-sealed.txt; exit 1; }
+          grep -q 'PiST.app/Contents/MacOS/vasmm68k_mot' diagnose-sealed.txt \
+            || { echo "ERROR: the sealed app does not find its own assembler"; \
+                 cat diagnose-sealed.txt; exit 1; }
+
       - name: Package archive
         shell: bash
         run: |
@@ -992,10 +1089,15 @@ jobs:
           fi
 
           # The generated notices must be inside what ships — asserting on the
-          # tree being archived, not on the script having run.
+          # tree being archived, not on the script having run. On macOS that
+          # tree is inside the app; the disk image has nowhere else to put it.
+          DOC="bundle/share/doc/pist"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            DOC="bundle/PiST.app/Contents/share/doc/pist"
+          fi
           for f in THIRD-PARTY.txt licenses/LGPL-3.0.txt licenses/vasm-LICENCE.txt licenses/vlink-LICENCE.txt; do
-            if [ ! -f "bundle/share/doc/pist/$f" ]; then
-              echo "ERROR: the archive lacks doc/pist/$f"
+            if [ ! -f "$DOC/$f" ]; then
+              echo "ERROR: the archive lacks $DOC/$f"
               exit 1
             fi
           done
@@ -1011,35 +1113,47 @@ jobs:
           fi
           ls -l "$NAME".*
 
-      # The dmg/MSI installers pack the same bundle/ the archives carry, so an
-      # installer and its archive are byte-identical content. The project's own
-      # install rules are suppressed so only the staged tree ships.
+      # The disk image is not the staged tree. CPack's DragNDrop packs whatever
+      # directory it is given and adds an Applications symlink, which is how the
+      # volume came to show the app, share/, BUILD-INFO.txt and the shortcut.
+      # A Mac disk image is the application and a link to /Applications.
+      # ditto, not cp: Qt's frameworks are symlink trees, and a copy that
+      # flattens them or drops the signature is the other way an app becomes
+      # "damaged" on the far side of the image.
       - name: Build dmg installer (macOS)
         if: matrix.name == 'macos-arm64'
         shell: bash
         run: |
           set -euo pipefail
           V="$PIST_VERSION"
-          stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" bundle)
-          cpack -G DragNDrop --config build/CPackConfig.cmake \
-            -D "CPACK_INSTALLED_DIRECTORIES=${stage};/" \
-            -D "CPACK_INSTALL_CMAKE_PROJECTS=" \
-            -D CPACK_PACKAGE_FILE_NAME="PiST-$V-macos-arm64"
-          # Assert the installer carries what the archive has.
-          #
-          # This attach is also what catches a dmg CPack gave a Software Licence
-          # Agreement: an SLA cannot be accepted headlessly, and hdiutil answers
-          # "attach canceled" — which is how the first 0.8.4 attempt died, all
-          # five of a retry loop's attempts alike. The retry was the wrong
-          # response to a deterministic failure and is gone; the cause is
-          # CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE, off in CMakeLists.txt with
-          # the reasoning written out there.
+          rm -rf dmg-src && mkdir dmg-src
+          ditto bundle/PiST.app dmg-src/PiST.app
+          ln -s /Applications dmg-src/Applications
+          hdiutil create -volname PiST -srcfolder dmg-src -ov -format UDZO \
+            "PiST-$V-macos-arm64.dmg"
           rm -rf dmgx && mkdir dmgx
           hdiutil attach -nobrowse -mountpoint dmgx "PiST-$V-macos-arm64.dmg" > /dev/null
-          for f in pist.app/Contents/MacOS/pist share/emutos/etos1024k.img \
-                   share/doc/pist/NOTICE share/doc/pist/licenses/vasm-LICENCE.txt; do
-            [ -e "dmgx/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R dmgx | head -20; hdiutil detach dmgx; exit 1; }
+          got=$(cd dmgx && find . -maxdepth 1 -mindepth 1 -print | sed 's|^\./||' | sort)
+          want=$(printf '%s\n' Applications PiST.app | sort)
+          if [ "$got" != "$want" ]; then
+            echo "ERROR: the dmg root is not the app and Applications"
+            echo "$got"
+            hdiutil detach dmgx
+            exit 1
+          fi
+          [ "$(readlink dmgx/Applications)" = "/Applications" ] \
+            || { echo "ERROR: Applications is not a link to /Applications"; hdiutil detach dmgx; exit 1; }
+          for f in PiST.app/Contents/MacOS/pist \
+                   PiST.app/Contents/MacOS/vasmm68k_mot \
+                   PiST.app/Contents/share/emutos/etos1024k.img \
+                   PiST.app/Contents/share/doc/pist/NOTICE \
+                   PiST.app/Contents/share/doc/pist/licenses/vasm-LICENCE.txt \
+                   PiST.app/Contents/Resources/pist.icns \
+                   PiST.app/Contents/Resources/BUILD-INFO.txt; do
+            [ -e "dmgx/$f" ] || { echo "ERROR: dmg lacks $f"; ls -R dmgx | head -30; hdiutil detach dmgx; exit 1; }
           done
+          codesign --verify --deep --strict dmgx/PiST.app \
+            || { echo "ERROR: the app in the dmg fails its signature check"; hdiutil detach dmgx; exit 1; }
           hdiutil detach dmgx > /dev/null
           echo "ASSET_DMG=PiST-$V-macos-arm64.dmg" >> "$GITHUB_ENV"
 

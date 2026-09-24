@@ -389,10 +389,10 @@ if(APPLE)
     # Applications. Without this the release packaging step failed with
     # "Could not find app bundle".
     #
-    # BUNDLE_NAME is CFBundleName: what Finder shows under the icon and what the
-    # menu bar shows while the app runs. Unset, both read the target name,
-    # "pist". The bundle *directory* stays pist.app — that path is what the
-    # packaging steps, the dmg assertions and the archive checks name.
+    # BUNDLE_NAME is CFBundleName: the short name in the menu bar. Finder's
+    # label under the icon is the bundle directory's name, not this key — the
+    # build tree stays pist.app (the target name) and the release step renames
+    # the shipped bundle to PiST.app, which is what the disk image shows.
     #
     # GUI_IDENTIFIER is CFBundleIdentifier, and the project never set it: the
     # template writes whatever the property holds, so pist.app shipped with an
@@ -456,12 +456,14 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # ---------------------------------------------------------------------------
-# Packaging (CPack): installers built from the same staged trees the release
-# archives ship, so the installer and the tarball carry identical content —
-# binary, bundled Qt runtime, assembler, emulator, ROM, licences and notices.
-# The generator is chosen at package time (DEB/RPM on Linux, DragNDrop on
-# macOS, WIX on Windows); CPACK_INSTALLED_DIRECTORIES overrides the tree and
-# must be an absolute path (CMake 4 RelativePath).
+# Packaging (CPack): the Linux deb/rpm and the Windows MSI are built from the
+# same staged trees the release archives ship, so the installer and the
+# archive carry identical content — binary, bundled Qt runtime, assembler,
+# emulator, ROM, licences and notices. The generator is chosen at package
+# time (DEB/RPM on Linux, WIX on Windows). The macOS disk image is not a
+# CPack product; the release workflow writes it with hdiutil. 
+# CPACK_INSTALLED_DIRECTORIES overrides the tree and must be an absolute path
+# (CMake 4 RelativePath).
 # ---------------------------------------------------------------------------
 # The product is PiST and the author is Koala Software. These are the names an
 # installer shows: CPACK_PACKAGE_NAME is the MSI product name and the NSIS/STGZ
@@ -491,10 +493,10 @@ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_BINARY_DIR}/license.txt")
 # enable a dmg Software License Agreement by default: CPack.cmake sets
 # CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE unless CMP0133 is NEW. A dmg with an
 # SLA cannot be attached without somebody clicking Agree, so `hdiutil attach`
-# fails with "attach canceled" on a headless runner and the macOS leg can neither
-# verify nor publish it. Off keeps the dmg as 0.8.3 shipped it; the licence still
-# travels inside the bundle (LICENSE, NOTICE and the generated THIRD-PARTY.txt),
-# which the dmg step asserts.
+# fails with "attach canceled" on a headless runner. Off is what a hand-run
+# `cpack -G DragNDrop` needs. The published image is built by the release
+# workflow with hdiutil, not by this generator; the licence still travels
+# inside the app (LICENSE, NOTICE and the generated THIRD-PARTY.txt).
 set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE OFF)
 
 # One description for both binary package formats, so the deb and the rpm cannot
@@ -538,6 +540,11 @@ set(CPACK_WIX_UPGRADE_GUID "7d7f9c1e-8a2b-4f3a-9e5d-1c6b2a0d4e8f")
 # folder defaults to CPACK_PACKAGE_NAME, so the entry lands under "PiST".
 set(CPACK_PACKAGE_EXECUTABLES "pist" "PiST")
 
+# The published disk image is not built by this generator. The release
+# workflow writes it with hdiutil from a folder that holds only PiST.app and
+# a link to /Applications; CPack DragNDrop would pack the whole staged tree
+# (the app, share/ and BUILD-INFO.txt) and that is the volume that shipped.
+# These settings still apply if someone runs `cpack -G DragNDrop` by hand.
 set(CPACK_DMG_VOLUME_NAME "PiST")
 
 include(CPack)

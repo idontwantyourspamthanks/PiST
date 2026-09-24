@@ -264,7 +264,8 @@ or install a package.
 The macOS archive does not bundle the emulator (the fork links Homebrew SDL2, and
 rewiring those dylibs into the `.app` is unbuilt work), so install **Hatari** yourself
 there — `brew install hatari` carries 2.6.1 — or point PiST at one in Project Settings.
-Everything else is included, so the IDE assembles out of the box once Hatari is present.
+Everything else is inside the app. Open the disk image and drag PiST to Applications;
+the IDE assembles out of the box once Hatari is present.
 
 To install from source instead:
 

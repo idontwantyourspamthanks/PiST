@@ -421,28 +421,34 @@ jobs:
           # App-local deployment of the CRT family is what Microsoft's terms
           # permit and what a machine without the redistributable needs, and it
           # fixes the archive and the MSI alike, since both pack this bundle/.
-          # The folder is the building toolset's own Redist directory —
-          # CMakeCache names its compiler — with a glob fallback, because the
-          # subfolder is the toolset version on some layouts and "v143" on
-          # others. Everything in it is the CRT family (msvcp140*, vcruntime140*,
-          # concrt140, vccorlib140; the OpenMP and MFC DLLs live in sibling
-          # folders), so copying the folder cannot miss a name a future toolset
-          # adds, and the three asserts keep an empty copy from shipping green.
-          cl="$(sed -n 's|^CMAKE_CXX_COMPILER:[A-Z]*=||p' build/CMakeCache.txt | sed 's|\\|/|g')"
-          [ -n "$cl" ] || { echo "ERROR: CMakeCache.txt has no CMAKE_CXX_COMPILER"; exit 1; }
-          vcroot="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$cl")")")")")")")"
-          ver="$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$cl")")")")")"
-          crt="$(ls -d "$vcroot/Redist/MSVC/$ver/x64"/Microsoft.VC*.CRT 2>/dev/null | head -1 || true)"
-          [ -n "$crt" ] || crt="$(ls -d "$vcroot/Redist/MSVC/"*/x64/Microsoft.VC*.CRT 2>/dev/null | sort -V | tail -1 || true)"
-          [ -n "$crt" ] || { echo "ERROR: no MSVC Redist CRT under $vcroot/Redist/MSVC"; exit 1; }
-          for dll in "$crt"/*.dll; do
-            cp "$dll" bundle/bin/
-          done
+          # vswhere names the toolset root on every Windows runner; the Redist
+          # subfolder is the toolset version on some layouts and "v143"-style
+          # on others, so glob and take the newest. Everything in that folder
+          # is the CRT family (msvcp140*, vcruntime140*, concrt140, vccorlib140;
+          # the OpenMP and MFC DLLs live in sibling folders), so copying the
+          # folder cannot miss a name a future toolset adds.
+          vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          crt=""
+          if [ -x "$vswhere" ]; then
+            vsroot="$("$vswhere" -latest -property installationPath | sed 's|\\|/|g' | head -1)"
+            crt="$(ls -d "$vsroot/VC/Redist/MSVC/"*/x64/Microsoft.VC*.CRT 2>/dev/null \
+                     | sort -V | tail -1 || true)"
+          fi
+          [ -n "$crt" ] || crt="$(ls -d "/c/Program Files/Microsoft Visual Studio"/*/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT 2>/dev/null | sort -V | tail -1 || true)"
+          [ -n "$crt" ] || { echo "ERROR: no MSVC Redist CRT found via vswhere or the install roots"; exit 1; }
+          [ -e "$crt/msvcp140.dll" ] || { echo "ERROR: $crt holds no CRT DLLs"; ls "$crt"; exit 1; }
+          cp "$crt"/*.dll bundle/bin/ || { echo "ERROR: copying $crt into bundle/bin failed"; exit 1; }
           for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
             [ -f "bundle/bin/$dll" ] || { echo "ERROR: $dll did not land in bundle/bin (from $crt)"; exit 1; }
           done
           [ ! -e bundle/bin/vc_redist.x64.exe ] \
             || { echo "ERROR: windeployqt staged a redistributable installer"; exit 1; }
+          # Diagnostic for the 0.8.6 failure: the cache-derived derivation found
+          # no compiler line on the runner although the same job had configured.
+          # Harmless now that vswhere resolves the CRT; keep the echo until the
+          # cause is known.
+          grep -m1 "^CMAKE_CXX_COMPILER" build/CMakeCache.txt \
+            || echo "note: no CMAKE_CXX_COMPILER line in build/CMakeCache.txt"
           ls -l bundle/bin/msvcp140.dll bundle/bin/vcruntime140.dll bundle/bin/vcruntime140_1.dll
 
       - name: Copy binary (Linux)

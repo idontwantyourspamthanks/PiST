@@ -1205,14 +1205,15 @@ project; everything before it was either Linux-only or read from source.
    alternative. The fork builds for Windows with MSYS2 ucrt64 (its listener is winsock-aware
    upstream of us), CI exercises it there, and the Windows release archive bundles it. Stock
    Windows Hatari remains stdin-only, which §5 rule 12 already treats as normal.
-7. Why Git Bash's `sed` on the Windows release runner printed nothing for a
-   `CMAKE_CXX_COMPILER` line its own job's configure step had just written into
-   `build/CMakeCache.txt` — the 0.8.6 Windows package job died on exactly that
-   empty read, after `cp` from `build/Release/` in the same step had proved the
-   build tree present. The CRT derivation no longer depends on the cache
-   (vswhere names the toolset root, with an install-roots glob behind it), and
-   the step echoes the cache line — or says it is absent — so the next Windows
-   packaging run settles whether the file or the read was at fault.
+7. ~~Why the cache-derived CRT lookup failed~~ — **settled by the 0.8.6 re-cut**:
+   the read was fine, the line was absent. The packaging job's own echo reports
+   `note: no CMAKE_CXX_COMPILER line in build/CMakeCache.txt`, although the same
+   job's configure step identified MSVC 19.51 moments earlier; why a Visual
+   Studio generator cache lacks the entry at that point is still unexplained,
+   and no longer matters. The CRT is resolved with vswhere (an install-roots
+   glob behind it), which the re-cut run proved end to end: the family landed in
+   `bundle/bin` and `collect-notices` listed msvcp140, _1, _2, atomic_wait and
+   codecvt_ids from it.
 
 ---
 

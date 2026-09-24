@@ -9,11 +9,13 @@
 
 #include <QByteArray>
 #include <QMutex>
+#include <QQueue>
 #include <QString>
 #include <QStringList>
 #include <QWaitCondition>
 
 #include <atomic>
+#include <cstdint>
 
 class QLibrary;
 class QThread;
@@ -39,7 +41,9 @@ bool sessionUsesInProcessCore(bool onMacOS, const QString &hatariPath,
 
 /// In-process Hatari. The dylib's ABI is emu/LibretroAbi.h. Session launch
 /// selects it on macOS when `sessionUsesInProcessCore` is true. A missing
-/// dylib fails start(). docs/agents/mac.md.
+/// dylib fails start(). The owner thread is the only caller of the core:
+/// the UI posts steps, resumes, and breakpoint changes onto it.
+/// docs/agents/mac.md.
 class LibretroBackend : public IDebugBackend
 {
     Q_OBJECT
@@ -92,23 +96,73 @@ signals:
     void frameReady(const QByteArray &pixels, int width, int height, int pitch, int epoch);
 
 private:
-    /// The typed intents the first slice does not call yet. Named, so a caller
+    /// A request the UI thread hands to the owner. `keepOnResume` is the
+    /// subprocess rule: Continue is live at the entry stop, before the
+    /// breakpoint arms have been posted, and those arms have to be applied
+    /// before the CPU runs again.
+    enum class CoreJob {
+        Arm,
+        Clear,
+        BreakOnce,
+        Registers,
+        Basepage,
+        Refresh,
+        Step,
+        StepOver,
+        Pause,
+        Memory,
+        Stack,
+    };
+    struct CoreRequest {
+        CoreJob job = CoreJob::Refresh;
+        bool keepOnResume = false;
+        QString text;
+        quint32 address = 0;
+        int length = 0;
+        int tag = 0;
+    };
+
+    /// The typed intents this backend does not serve. Named, so a caller
     /// that reaches one hears which one, instead of a silent no-op.
     void notInThisSlice(const QString &what);
-    /// The core's owner. Calls `pist_hatari_run` until the debugger stops or
-    /// `stop()` asks it to leave, and copies each frame before the next run
-    /// invalidates the pointer.
+    /// The core's owner. Runs frames, and the debugger calls, until `stop()`.
     void pump();
+    void post(const CoreRequest &request);
+    void dispatch(const CoreRequest &request);
+    /// Registers and the basepage, one snapshot. Called on the owner thread.
+    bool readCoreState();
+    /// Blocks until the UI has handled the snapshot, so breakpoint arms posted
+    /// from that handler are in the queue before the owner resumes.
+    void publishState();
+    void publishFrame();
+    QList<MemoryRow> rowsFromRam(quint32 address, int length) const;
 
     using RunFn = int (*)(PistHatariFrame *, int *);
     using HaltFn = void (*)();
+    using StepFn = int (*)();
+    using ArmFn = int (*)(const char *);
+    using RegsFn = int (*)(const char **, uint32_t *, int, int *);
+    using BaseFn = int (*)(uint32_t *, uint32_t *, uint32_t *);
+    using RamFn = void *(*)(size_t *);
 
     QLibrary *m_library = nullptr;
     QThread *m_thread = nullptr;
     RunFn m_runFn = nullptr;
     HaltFn m_haltFn = nullptr;
+    StepFn m_stepFn = nullptr;
+    StepFn m_stepOverFn = nullptr;
+    StepFn m_resumeFn = nullptr;
+    StepFn m_pauseFn = nullptr;
+    StepFn m_clearFn = nullptr;
+    ArmFn m_armFn = nullptr;
+    RegsFn m_regsFn = nullptr;
+    BaseFn m_baseFn = nullptr;
+    RamFn m_ramFn = nullptr;
     QMutex m_gate;
     QWaitCondition m_wake;
+    QQueue<CoreRequest> m_jobs;
+    bool m_continueWhenIdle = false;
+    MachineState m_state;
     std::atomic<bool> m_quit{false};
     std::atomic<bool> m_hold{false};
     std::atomic<int> m_epoch{0};

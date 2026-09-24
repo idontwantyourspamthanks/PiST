@@ -125,7 +125,7 @@ pist_module(pist_debug
     src/debug/Watchpoint.h
 )
 
-# emu/ — the two debug backends, the session argv, ROM/model/memory/paths helpers.
+# emu/ — the debug backends, the session argv, ROM/model/memory/paths helpers.
 pist_module(pist_emu
     src/emu/ProfileData.cpp
     src/emu/ProfileData.h
@@ -136,6 +136,9 @@ pist_module(pist_emu
     src/emu/EmbedSocket.h
     src/emu/HrdbBackend.cpp
     src/emu/HrdbBackend.h
+    src/emu/LibretroAbi.h
+    src/emu/LibretroBackend.cpp
+    src/emu/LibretroBackend.h
     src/emu/HatariTextParse.cpp
     src/emu/HatariTextParse.h
     src/emu/HatariProbe.cpp

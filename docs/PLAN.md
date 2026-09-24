@@ -170,24 +170,19 @@ flowchart TB
 
 ### 3.2 Decisions and rationale
 
-**Emulator is always a separate process.** Hatari's `readme.txt` states that linking it statically
-*or dynamically* creates a combined work under the GPL. Keeping Hatari out-of-process is the only
-approach that works on all three platforms today, and it keeps the GPL boundary explicit and
-auditable — an important property for a project that asks others to contribute to it.
+**Linux and Windows run Hatari as a separate process.** Hatari's `readme.txt` states that linking
+it statically *or dynamically* creates a combined work under the GPL. Out-of-process keeps that
+boundary a subprocess launch, which is auditable — an important property for a project that asks
+others to contribute to it. It is also the only embed that works there: Linux reparents the SDL
+window, Windows adopts it by process id.
 
-The project itself is GPL-2.0-or-later, so in-process linking would be permissible *provided* the
+The project itself is GPL-2.0-or-later, so in-process linking is permissible *provided* the
 combined work is conveyed under GPLv2 — Hatari contains three GPL-2.0-**only** files that are
-compiled in (audited in §10). Two things nonetheless keep it a subprocess:
-
-1. **Platform capability.** macOS cannot reparent a foreign process window (`WId` is a process-local
-   `NSView*`), and embedding via libretro's flat C ABI means reimplementing video, input, and audio
-   plumbing that Hatari's SDL frontend already provides.
-2. **Maintenance surface.** The transport is text-based and version-gated (§3.3), which is far
-   cheaper to keep working against an upstream we do not control than a compiled-in dependency that
-   must be rebuilt and re-audited on every release.
-
-In-process libretro remains possible for macOS later — the `libretro/hatari` core is a fork of
-exactly the tree audited in §10, so the same GPLv2 conveyance condition applies.
+compiled in (audited in §10). macOS cannot reparent a foreign process window (`WId` is a
+process-local `NSView*`), so the Mac embed is the in-process core in `docs/agents/mac.md`: a
+fork of the Hatari audited in §10, same GPLv2 conveyance. Linux and Windows stay subprocesses,
+because their text transport (§3.3) is cheaper to keep working against an upstream we do not
+control than a compiled-in dependency rebuilt on every release.
 
 **The bundled emulator is the hrdb-main fork** (upstream 2.6.1 plus the remote-debug listener).
 The full debug loop also works on stock Hatari via the native backend; the fork adds typed
@@ -703,8 +698,10 @@ Remaining assessments:
 - **GDB-stub backend** (`dgis/hatari`): not needed. Its one unique capability was memory
   watchpoints, delivered in Phase 2 via self-inequality conditional breakpoints on stock
   Hatari; HRDB covers the rest of its ground with typed framing and DSP support.
-- **libretro in-process core for macOS**: unchanged — licence-compatible, deferred for macOS
-  polish; see `docs/FUTURE.md` §4.
+- **libretro in-process core for macOS**: the Mac embed. Decided, not built. The core is a
+  fork of the pinned Hatari, not the published `libretro/hatari` tree (that one still
+  compiles the pre-2.6 CPU). Contract, packaging and the first slice are
+  `docs/agents/mac.md`.
 - **Windows control channel**: HRDB supersedes it for pause/live breakpoints (works over TCP
   everywhere). Live floppy insert/eject uses debugger `setopt` while stopped (stdin / HRDB
   `console`), so that path is not socket-bound. A *running* native session still needs
@@ -1284,18 +1281,17 @@ other GPLv3 code — and *not* with Hatari — may take the whole work to v3.
 GPL-2.0-or-later also matches the surrounding ecosystem (Hatari, EmuTOS), which keeps
 combined distribution and shared tooling straightforward.
 
-**Consequence for Phase 3:** the in-process libretro core remains licence-compatible in principle,
-provided any combined distribution is conveyed under GPLv2. This does not change the plan's
-sequencing — it stays an optional backend behind `IDebugBackend` — but the blocker is now
-understood precisely rather than assumed.
+**Consequence for Phase 3:** the in-process core is licence-compatible, provided any combined
+distribution is conveyed under GPLv2. It is the macOS embed (`docs/agents/mac.md`), an optional
+backend behind `IDebugBackend`. Linux and Windows stay subprocesses.
 
 ### What stays out-of-process, and why
 
-Hatari still runs as a subprocess. That is now driven by *platform capability and maintenance cost*
-rather than licence necessity, and it keeps the integration surface small and auditable:
+On Linux and Windows Hatari still runs as a subprocess. That is driven by platform capability and
+maintenance cost rather than licence necessity, and it keeps that integration surface small:
 
-- macOS cannot reparent a foreign process window, so a subprocess gives a detached-window experience
-  there and real embedding on Linux/Windows.
+- macOS cannot reparent a foreign process window. Its embed is the in-process core
+  (`docs/agents/mac.md`). A subprocess there is a detached window; Linux and Windows embed.
 - The debugger transport (§3.3) is text-based and version-gated, which is easier to maintain against
   an upstream we do not control than a compiled-in dependency.
 

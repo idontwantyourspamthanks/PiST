@@ -25,10 +25,12 @@ struct HatariCapabilities;
 ///           (EmulatorHost; docs/PLAN.md §3.3).
 ///   Hrdb    the tattlemuss/hatari hrdb-main fork, driven over its typed TCP
 ///           protocol on 56001 (HrdbBackend; docs/PLAN.md §9 spike). The fork
-///           is a user-supplied emulator, selected explicitly in the project
-///           settings — it is version-identical to upstream, so no capability
-///           probe can tell the two apart.
-enum class BackendKind { Native, Hrdb };
+///           is version-identical to upstream, so the choice is the binary's
+///           content, not a version number.
+///   Libretro the in-process core the macOS app embeds (LibretroBackend;
+///           docs/agents/mac.md). Session launch does not select it until the
+///           dylib can boot a program.
+enum class BackendKind { Native, Hrdb, Libretro };
 
 /// What a request's response *is*, carried on the request itself rather than
 /// inferred when it completes.

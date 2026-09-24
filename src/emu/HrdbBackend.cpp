@@ -4,6 +4,8 @@
 
 #include "emu/HrdbBackend.h"
 
+#include "emu/LibretroBackend.h"
+
 #include "build/ProcessUtil.h"
 #include "emu/EmulatorHost.h"
 #include "emu/HatariTextParse.h"
@@ -1024,6 +1026,8 @@ IDebugBackend *createBackend(BackendKind kind, QObject *parent)
     switch (kind) {
     case BackendKind::Hrdb:
         return new HrdbBackend(parent);
+    case BackendKind::Libretro:
+        return new LibretroBackend(parent);
     case BackendKind::Native:
         break;
     }

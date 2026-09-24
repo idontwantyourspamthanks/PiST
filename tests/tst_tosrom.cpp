@@ -10,7 +10,9 @@
 // be too old — so the guard against the silent-hang case would be skippable.
 
 #include "model/Machine.h"
+#include "emu/LibretroBackend.h"
 #include "emu/Paths.h"
+#include "emu/SessionConfig.h"
 #include "emu/TosRom.h"
 
 #include <QCoreApplication>
@@ -96,6 +98,8 @@ private slots:
     void findsBundledRomInTarballLayout();
     void findsBundledRomInAppImageLayout();
     void findsBundledRomInMacBundleLayout();
+    void libretroCoreSitsInFrameworks();
+    void libretroStartFailsWithoutTheCore();
     void reportsNoBundledDirWhenAbsent();
     void tosSearchPathsIncludesBundledDir();
 };
@@ -539,6 +543,33 @@ void TstTosRom::findsBundledRomInMacBundleLayout()
 
     const QString expected = QDir::cleanPath(romDir);
     QVERIFY(paths::bundledDataSearchPaths(binDir).contains(expected));
+}
+
+void TstTosRom::libretroCoreSitsInFrameworks()
+{
+    // The disk image copies the core to Contents/Frameworks. From the
+    // executable in Contents/MacOS that is one directory up, then Frameworks.
+    const QString binDir = QStringLiteral("/PiST.app/Contents/MacOS");
+    const QStringList candidates = libretroCoreCandidates(binDir);
+    QCOMPARE(candidates.size(), 2);
+    QCOMPARE(candidates.at(0),
+             QDir::cleanPath(binDir + QStringLiteral("/../Frameworks/") + libretroCoreFileName()));
+    QCOMPARE(candidates.at(1),
+             QDir::cleanPath(binDir + QLatin1Char('/') + libretroCoreFileName()));
+    QVERIFY(libretroCoreCandidates(QString()).isEmpty());
+}
+
+void TstTosRom::libretroStartFailsWithoutTheCore()
+{
+    // Run must not select this backend until a dylib can boot a program. What
+    // is pinned here is the failure a missing core reports, naming the
+    // Frameworks path, so a sealed app that forgot the dylib is diagnosable.
+    LibretroBackend backend;
+    QString error;
+    QVERIFY(!backend.start(SessionConfig(), &error));
+    QVERIFY(error.contains(libretroCoreFileName()));
+    QVERIFY(error.contains(QStringLiteral("Frameworks")));
+    QVERIFY(!backend.isRunning());
 }
 
 void TstTosRom::reportsNoBundledDirWhenAbsent()

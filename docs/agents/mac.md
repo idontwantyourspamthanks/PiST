@@ -1,0 +1,98 @@
+# macOS emulator: in-process libretro core
+
+The decision, and the build that follows from it. Linux and Windows keep launching
+Hatari as a separate process. macOS cannot put that process's window into the
+Emulator panel (`WId` is a process-local `NSView*`; AppKit has no
+cross-process reparent), so the Mac release embeds by running the emulator
+inside PiST.
+
+The published `libretro/hatari` tree is not the core we build. Its makefile
+still compiles `src/uae-cpu`, the CPU Hatari replaced before 2.6, and the
+product is named `hatari2014`. The core is a fork of the Hatari we already pin
+— `tattlemuss/hatari` @ `21aa4cb`, upstream 2.6.1 plus `remotedebug.c` — with a
+libretro frontend added on that tree.
+
+## What the release job produces
+
+`hatari_libretro.dylib`, linked against `libm` and `libz` only. Under
+`__LIBRETRO__` the SDL window, audio device and input grab are stubbed. Frames
+leave through the run call below, sound through a callback the frontend
+registers, keys and mouse through another. No Homebrew library is on the link
+line, which is what made a Mac `hatari` executable non-relocatable.
+
+The dylib is built from a checksum-pinned tarball of that fork, the same shape
+as the hrdb pin in `.github/actions/build-hatari`. It is copied to
+`PiST.app/Contents/Frameworks/hatari_libretro.dylib` before the signature seal.
+`otool -L` on it must not mention `/opt/homebrew`. `--diagnose` must name the
+core inside the app.
+
+`libretroCoreCandidates()` is the search. From `Contents/MacOS` the first
+candidate is `../Frameworks/hatari_libretro.dylib`, then beside the executable.
+The same relative Frameworks path is the one the disk image ships.
+
+## The contract
+
+`src/emu/LibretroAbi.h` is the ABI, plain C, versioned by `PIST_HATARI_ABI`.
+The fork exports these symbols and no others that PiST depends on. Bump the
+constant when a field or a signature changes. The dylib's `pist_hatari_abi()`
+must return the same value; a mismatch is a failed start, not a guess.
+
+One thread owns the core. That thread is the only caller of `pist_hatari_run`
+and of every debugger entry. The UI thread queues work onto it and draws the
+last frame. A frame pointer is valid until the next run or stop.
+
+`pist_hatari_start` takes the session PiST already builds: TOS path, GEMDOS
+directory, program path, optional floppies, the Hatari `--machine` name, RAM in
+MiB. That is how a PRG is autostarted today. `retro_load_game` on the published
+core only understands disk images and a `.gem` directory that boots from
+`BOOT.ST`, which is the wrong shape for an IDE.
+
+The ROM is that TOS path and nothing else. Bundled EmuTOS is only what
+discovery selects when the user has not chosen an image. A TOS file set in
+the project, or any other image the session resolved, is passed through the
+same field. The core ships no ROM and does not special-case an EmuTOS
+filename. An empty path fails the start.
+
+Debugger calls take the text `IDebugBackend` already produces. A breakpoint
+condition is the planner's command (`b pc = $addr`, the watchpoint
+self-inequality, `:once` included). The fork feeds that to Hatari's existing
+debugger. It does not grow a second condition language. `pist_hatari_ram`
+returns ST RAM; the published core's `retro_get_memory_data` returns NULL, and
+this symbol is the replacement.
+
+## How PiST drives it
+
+A third `IDebugBackend`, `LibretroBackend`, macOS only. `createBackend` can
+construct it. Session launch does not select it until a dylib is in the
+bundle and a session can boot: Linux and Windows stay on native or HRDB, and a
+Mac without the dylib keeps the subprocess and `brew install hatari`.
+
+When it is selected, the Emulator panel blits the frame
+(`QImage::Format_RGB32`, the layout `PistHatariFrame` documents) letterboxed
+the way the Windows embed already fits a foreign window. There is no Hatari
+window on that path. Keys and mouse are forwarded to the core. A Project
+Settings emulator path can still name a subprocess Hatari; that session stays
+on the existing backends.
+
+The free-text console, profile save, hardware-info subjects and IPF disks are
+not in the first slice. The typed intents are: start, stop, run-until-frame,
+pause, step, step-over, resume, arm and clear breakpoints, RAM, registers,
+basepage. `command()` for arbitrary debugger text waits until those work.
+
+## Licence
+
+Linking this core into PiST, including by `dlopen`, is a combined work. Hatari
+compiles three GPL-2.0-only files, so the combination is conveyed under GPLv2.
+PiST is GPL-2.0-or-later, which permits that. The notices name the fork commit
+the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
+§10.
+
+## First slice
+
+1. This contract, and a backend that loads the dylib or reports that it is absent.
+2. The fork's frontend: start a GEMDOS program from the session's ROM (the user's TOS image, or EmuTOS when that is the image the session resolved), produce a frame, break at entry.
+3. The panel draws that frame.
+4. The macOS release job builds the dylib, seals it into the app, and `--diagnose` finds it.
+
+Out of that slice: replacing the Linux and Windows subprocess, the console,
+profile save, IPF.

@@ -77,4 +77,6 @@ __pycache__/
 
 # Agent-generated review records (docs/agents/): working documents, not
 # project documentation — kept out of the repository on purpose.
-/docs/agents/
+# mac.md is the macOS embed plan and is project documentation.
+/docs/agents/*
+!/docs/agents/mac.md

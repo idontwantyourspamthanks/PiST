@@ -143,18 +143,17 @@ Falcon-specific tooling.
 
 ## 4. Emulator embedding on macOS
 
-**Status:** not started. macOS cannot reparent a foreign process window — `WId` is a process-local
-`NSView*` and AppKit has no cross-process reparenting — so the emulator runs as a detached window
-there (`docs/PLAN.md` §3.2).
+**Status:** decided, not built. The plan is [docs/agents/mac.md](agents/mac.md): an in-process
+core forked from the pinned Hatari, loaded as `hatari_libretro.dylib` from
+`Contents/Frameworks`. macOS cannot reparent a foreign process window — `WId` is a process-local
+`NSView*` and AppKit has no cross-process reparenting — so a subprocess stays a detached window
+(`docs/PLAN.md` §3.2). Linux and Windows keep that subprocess.
 
-An in-process emulator core would fix that, and with `PiST` at GPL-2.0-or-later it is
-**licence-compatible**: Hatari contains three GPL-2.0-only files, so a combined work must be
-conveyed under GPLv2, which our licence permits. The cost is reimplementing the video, input and
-audio plumbing that Hatari's SDL frontend already provides, plus the licence audit for each release.
-The `libretro/hatari` core also returns `NULL`/`0` from `retro_get_memory_data`/`size`, so a RAM
-viewer would need a core patch.
-
-Do it for macOS polish, not as an architectural simplification.
+The core is licence-compatible: Hatari contains three GPL-2.0-only files, so a combined work is
+conveyed under GPLv2, which GPL-2.0-or-later permits. The published `libretro/hatari` tree is not
+the one we build — it still compiles the pre-2.6 CPU, and `retro_get_memory_data` returns NULL —
+so the fork adds its own RAM and debugger exports. The cost that remains is the frontend
+(video, input, audio) and naming the fork commit in each release's notices.
 
 ---
 
@@ -166,8 +165,8 @@ and rpm on Linux; dmg on macOS; MSI on Windows); and the Linux AppImage and the 
 both bundle the hrdb-main fork of Hatari (2.6.1-based) — the Windows one built with MSYS2 ucrt64,
 with its runtime DLLs beside the exe. The first-run setup flow is delivered (`ui/SetupDialog`:
 checksum-pinned vasm source build and EmuTOS download, shown when the assembler or ROM is
-missing). What remains open here is Hatari-on-macOS bundling: the fork links Homebrew SDL2, and
-rewiring those dylibs into the .app is unbuilt work — `brew install hatari` (2.6.1) covers it.
+missing). Hatari on macOS is the in-process core in `docs/agents/mac.md`, which links `libm` and
+`libz` only. Until that dylib ships, `brew install hatari` (2.6.1) is how a Mac session runs.
 
 Because `PiST` is free software, vasm's redistribution terms permit bundling it **unmodified** for
 non-commercial use, and EmuTOS can ship as the default ROM — so a one-click install is legally

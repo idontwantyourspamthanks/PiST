@@ -16,40 +16,28 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.8.6
+## What's new in 0.8.7
 
-Windows: the emulator's display can now run inside the IDE, and a clean Windows
-install can run PiST at all — the previous archive and MSI were missing the
-Visual C++ runtime and installed no Start Menu entry.
-
-### Added
-
-- **The emulator's display embeds on Windows.** *View ▸ Embed emulator display*
-  now works there as well as on Linux/X11: PiST finds the emulator's window and
-  moves it into the Emulator panel, letterboxed to the video's aspect, and keeps
-  it fitted across resolution changes and dock moves. Hatari's own reparenting
-  handshake is compiled in only for X11, so on Windows PiST performs the
-  reparenting itself; should the window never be adoptable, the emulator keeps
-  its separate window and the panel says so instead of showing black. Each
-  outcome is one `[embed]` line in the Build & debug console.
-- **The Visual C++ runtime ships with the Windows archive and the MSI.**
-  `windeployqt` deploys Qt but not the runtime Qt was compiled against, so on a
-  machine without the redistributable installed PiST stopped at
-  *MSVCP140.dll was not found*. The runtime family now travels beside the
-  executable; there is nothing extra to install.
-- **The MSI creates a Start Menu entry** — *Start Menu ▸ PiST ▸ PiST* — where
-  before it installed every file and nothing that launches them.
+macOS: open the disk image and drag PiST onto the Applications folder. The
+previous image also showed the ROM folder and a build-info file, and macOS
+refused to launch the app — *PiST is damaged and can't be opened. You should
+move it to the Bin* — because the bundle had been changed after it was signed.
 
 ### Fixed
 
-- **The Settings dialog fits the screen it opens on.** Its layout demanded
-  611 px of height whatever size was asked for, so on a scaled laptop display
-  the OK and Cancel buttons fell below the window's bottom edge, and every
-  relayout — changing the machine, switching tabs — moved the window. The pages
-  scroll now, the dialog is exactly the size it requests, clamped to the
-  screen's available geometry, and the buttons are always reachable.
-- **An empty Emulator panel explains itself** rather than presenting a black
-  rectangle that reads as a broken emulator.
+- **The macOS disk image is a drag-install.** It contains PiST and a shortcut
+  to Applications. The ROM, the assembler, the linker and the notices are
+  inside the app, so dragging it across is the whole install. The `.tar.gz` is
+  that same app.
+- **The macOS app is signed after the bundle is finished.** Deploying Qt
+  rewrites the binaries, and the assembler was copied in afterwards, which
+  left a signature that did not match the app. That is the failure macOS
+  reports as damaged.
+
+Opening a downloaded copy may still ask for approval under *System Settings ▸
+Privacy & Security*. The signature lets the system see an intact app;
+notarization, which would skip that prompt, needs an Apple Developer ID and
+this release does not have one.
 
 ### Worth knowing
 
@@ -118,7 +106,8 @@ Everything is built on Ubuntu 22.04, so it needs glibc 2.35 or newer (Ubuntu
 
 Windows: the `.zip` or the `.msi` — both include the emulator, and both carry
 the Visual C++ runtime beside the executable, so no redistributable install is
-needed. macOS: the `.dmg` or the `.tar.gz`, plus `brew install hatari`.
+needed. macOS: open the `.dmg` and drag PiST to Applications, or unpack the
+`.tar.gz`. Either one still needs `brew install hatari`.
 
 ### What works
 

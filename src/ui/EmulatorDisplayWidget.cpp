@@ -8,6 +8,7 @@
 #include "ui/EmbedX11.h"
 #include "ui/EmbedWin32.h"
 
+#include <QCoreApplication>
 #include <QCursor>
 #include <QFocusEvent>
 #include <QGuiApplication>
@@ -81,8 +82,8 @@ EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
     setMinimumSize(320, 200);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     // A click focuses the panel so keys go to the machine. The reparented
-    // window on Linux and Windows takes its own keys; this matters for the
-    // in-process frame, which has no window of its own.
+    // window on Linux takes its own keys; on Windows and for the in-process
+    // frame, keys reach the machine only through this panel's focus.
     setFocusPolicy(Qt::StrongFocus);
     // Motion without a button held, so the ST pointer follows the host one.
     setMouseTracking(true);
@@ -106,6 +107,9 @@ EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
     m_attachTimer->setInterval(kAttachPollMs);
     connect(m_attachTimer, &QTimer::timeout, this,
             &EmulatorDisplayWidget::pollForeignWindow);
+    // Application-wide, because Windows posts keystrokes to the top-level
+    // window's queue, not to this widget's native child window.
+    QCoreApplication::instance()->installNativeEventFilter(this);
 #endif
 }
 
@@ -189,6 +193,7 @@ void EmulatorDisplayWidget::pollForeignWindow()
     }
     if (m_childWindow != 0)
         emit embedEvent(tr("the emulator's window is gone; looking for its replacement"));
+    releaseEmbeddedKeys(0);
     m_childWindow = 0;
     m_videoAttached = false;
     m_lastFitW = 0;
@@ -225,9 +230,10 @@ void EmulatorDisplayWidget::pollForeignWindow()
 
     m_childWindow = found;
     m_videoAttached = true;
-    // A click is also handled below. Focusing now means the keys work if the
-    // user is already looking at the panel when the window appears.
-    focusEmbeddedWindow(found);
+    m_keyForwarded = false;
+    // A click is also handled in nativeEvent. Focusing now means the keys work
+    // if the user is already looking at the panel when the window appears.
+    setFocus(Qt::OtherFocusReason);
     m_attachTicks = 0;
     // The dock's own layout can still be settling around a fresh session, so
     // re-fit a few times rather than trusting the first geometry.
@@ -268,7 +274,7 @@ void EmulatorDisplayWidget::clearEmbedded()
     unsetCursor();
     if (m_attachTimer)
         m_attachTimer->stop();
-    releaseEmbeddedKeyboard();
+    releaseEmbeddedKeys(m_childWindow);
     releaseForeignWindow(m_childWindow);
     m_childWindow = 0;
     m_foreignPid = -1;
@@ -341,8 +347,9 @@ bool EmulatorDisplayWidget::nativeEvent(const QByteArray &eventType, void *messa
     // Hatari's window is a child of this one. Windows tells the parent about a
     // click on that child, and the click is what should take the keyboard.
     if (m_childWindow
-        && (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG"))
-        handleEmbeddedParentMessage(m_childWindow, message);
+        && (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG")
+        && isEmbeddedChildClick(m_childWindow, message))
+        setFocus(Qt::MouseFocusReason);
 #else
     Q_UNUSED(eventType);
     Q_UNUSED(message);
@@ -438,10 +445,36 @@ void EmulatorDisplayWidget::leaveEvent(QEvent *event)
     QWidget::leaveEvent(event);
 }
 
+bool EmulatorDisplayWidget::nativeEventFilter(const QByteArray &eventType, void *message,
+                                              qintptr *result)
+{
+    Q_UNUSED(result);
+    if (eventType != "windows_dispatcher_MSG" || !m_childWindow || !hasFocus())
+        return false;
+    if (!forwardEmbeddedKey(m_childWindow, message))
+        return false;
+    if (!m_keyForwarded) {
+        m_keyForwarded = true;
+        emit embedEvent(tr("sending keys to the emulator's window"));
+    }
+    return true;
+}
+
+void EmulatorDisplayWidget::focusInEvent(QFocusEvent *event)
+{
+    if (m_childWindow)
+        emit embedEvent(tr("the Emulator panel has the keyboard"));
+    QWidget::focusInEvent(event);
+}
+
 void EmulatorDisplayWidget::focusOutEvent(QFocusEvent *event)
 {
     releaseHeldKeys();
     releaseHostMouse();
+    if (m_childWindow) {
+        releaseEmbeddedKeys(m_childWindow);
+        emit embedEvent(tr("the Emulator panel lost the keyboard"));
+    }
     QWidget::focusOutEvent(event);
 }
 

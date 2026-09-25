@@ -195,47 +195,73 @@ bool embedForeignWindow(quintptr child, quintptr container)
 namespace {
 
 #ifdef Q_OS_WIN
-DWORD sFocusThread = 0;
+/// A key forwarded down and not yet up, indexed by scan code with the
+/// extended-key bit as bit 8: left and right Shift share a virtual key, not a
+/// scan code.
+struct HeldKey
+{
+    bool down = false;
+    bool sys = false;
+    WPARAM wParam = 0;
+    LPARAM lParam = 0;
+};
+HeldKey sHeldKeys[0x200];
+
+int heldKeyIndex(LPARAM lParam)
+{
+    return static_cast<int>((lParam >> 16) & 0x1ff);
+}
 #endif
 
 } // namespace
 
-void focusEmbeddedWindow(quintptr child)
+bool forwardEmbeddedKey(quintptr child, void *message)
 {
 #ifdef Q_OS_WIN
-    if (!windowHandleValid(child))
-        return;
-    HWND hwnd = toHwnd(child);
-    const DWORD childThread = GetWindowThreadProcessId(hwnd, nullptr);
-    const DWORD thisThread = GetCurrentThreadId();
-    // SetFocus only succeeds for a window on this thread's input queue.
-    // Hatari's window belongs to Hatari's thread, so the queues have to be
-    // joined first, and they have to stay joined or the focus snaps back.
-    if (childThread && childThread != thisThread && childThread != sFocusThread) {
-        if (sFocusThread)
-            AttachThreadInput(thisThread, sFocusThread, FALSE);
-        if (AttachThreadInput(thisThread, childThread, TRUE))
-            sFocusThread = childThread;
-        else
-            sFocusThread = 0;
+    if (!windowHandleValid(child) || !message)
+        return false;
+    const MSG *msg = static_cast<const MSG *>(message);
+    const bool down = msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN;
+    const bool up = msg->message == WM_KEYUP || msg->message == WM_SYSKEYUP;
+    if (!down && !up)
+        return false;
+    // SDL reads the scan code and extended bit from lParam and the virtual key
+    // from wParam, so the message goes over exactly as Windows produced it.
+    PostMessageW(toHwnd(child), msg->message, msg->wParam, msg->lParam);
+    HeldKey &held = sHeldKeys[heldKeyIndex(msg->lParam)];
+    held.down = down;
+    held.sys = msg->message == WM_SYSKEYDOWN;
+    held.wParam = msg->wParam;
+    held.lParam = msg->lParam;
+    return true;
+#else
+    Q_UNUSED(child);
+    Q_UNUSED(message);
+    return false;
+#endif
+}
+
+void releaseEmbeddedKeys(quintptr child)
+{
+#ifdef Q_OS_WIN
+    const bool live = windowHandleValid(child);
+    for (HeldKey &held : sHeldKeys) {
+        if (!held.down)
+            continue;
+        held.down = false;
+        if (!live)
+            continue;
+        // Repeat count 1, previous state down, transition up.
+        const LPARAM upParam = (held.lParam & 0x01ff0000) | 1 | (LPARAM(1) << 30)
+            | (LPARAM(1) << 31);
+        PostMessageW(toHwnd(child), held.sys ? WM_SYSKEYUP : WM_KEYUP, held.wParam, upParam);
     }
-    SetFocus(hwnd);
 #else
     Q_UNUSED(child);
 #endif
 }
 
-void releaseEmbeddedKeyboard()
-{
-#ifdef Q_OS_WIN
-    if (!sFocusThread)
-        return;
-    AttachThreadInput(GetCurrentThreadId(), sFocusThread, FALSE);
-    sFocusThread = 0;
-#endif
-}
-
-bool handleEmbeddedParentMessage(quintptr child, void *message)
+bool isEmbeddedChildClick(quintptr child, void *message)
 {
 #ifdef Q_OS_WIN
     if (!windowHandleValid(child) || !message)
@@ -244,10 +270,7 @@ bool handleEmbeddedParentMessage(quintptr child, void *message)
     if (msg->message != WM_PARENTNOTIFY)
         return false;
     const UINT ev = LOWORD(msg->wParam);
-    if (ev != WM_LBUTTONDOWN && ev != WM_RBUTTONDOWN && ev != WM_MBUTTONDOWN)
-        return false;
-    focusEmbeddedWindow(child);
-    return true;
+    return ev == WM_LBUTTONDOWN || ev == WM_RBUTTONDOWN || ev == WM_MBUTTONDOWN;
 #else
     Q_UNUSED(child);
     Q_UNUSED(message);

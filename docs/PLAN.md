@@ -223,7 +223,7 @@ some paths.
 |---|---|---|
 | X11 | `PARENT_WIN_ID` — Hatari reparents its own SDL window (`src/sdl/screen.c:219`) | X11 only |
 | Wayland | force `QT_QPA_PLATFORM=xcb` + `SDL_VIDEODRIVER=x11`, run under XWayland | depends on XWayland |
-| Windows | PiST finds the emulator's window by process id and `SetParent`s it into the panel (`src/ui/EmbedWin32.cpp`). `PARENT_WIN_ID` must **not** be set (§5 rule 14). A click does not focus that window, so `focusEmbeddedWindow` joins the input queues and focuses it | a cross-process `SetParent` force-resets the *child's* DPI awareness (MSDN); scale still unconfirmed |
+| Windows | PiST finds the emulator's window by process id and `SetParent`s it into the panel (`src/ui/EmbedWin32.cpp`). `PARENT_WIN_ID` must **not** be set (§5 rule 14). A click does not focus that window, so the panel keeps the keyboard and `forwardEmbeddedKey` posts each keystroke to it | a cross-process `SetParent` force-resets the *child's* DPI awareness (MSDN); scale still unconfirmed |
 | macOS | **cannot** reparent a foreign process window (`WId` is a process-local `NSView*`) | detached window, or in-process core |
 
 **A detached emulator window mode ships from day one.** It removes the entire embedding risk class
@@ -1261,13 +1261,19 @@ project; everything before it was either Linux-only or read from source.
    Floppy *listing* and *export* of 720 KiB `.st` / `.msa` images from the project-files pane
    is also implemented (`src/build/FloppyImage.cpp`), as are in-place edits (`readFileRaw` +
    `updateImage` back the file browser's copy/move); IPF/Pasti authoring is not.
-5. ~~Windows behaviour of the embedding path~~ — **keyboard focus confirmed, DPI not**:
+5. Windows behaviour of the embedding path — **keyboard forwarding unconfirmed, DPI unconfirmed**:
    `ui/EmbedWin32` adopts the emulator's window with `SetParent` (§3.2, §5 rule 14). On a Windows
    machine the mouse works and the picture is Hatari's own, and the keyboard does not: a click
    hits the window under the cursor, but keystrokes go to the focused window, and the adopted
-   child never becomes that window. `focusEmbeddedWindow` joins the two threads' input queues and
-   `SetFocus`es Hatari, on adoption and on the parent's `WM_PARENTNOTIFY` for a click. The
-   cross-process DPI force-reset's effect on scale is still unconfirmed. macOS embedding remains
+   child never becomes that window. Joining the two threads' input queues and `SetFocus`ing
+   Hatari was tried and, on a real machine, still delivered no keys. A joined queue also stalls
+   PiST's input while Hatari is blocked at a debugger stop. The panel now keeps Qt focus, taken on
+   adoption and on the parent's `WM_PARENTNOTIFY` for a click. An application native-event filter
+   posts each `WM_(SYS)KEYDOWN/UP` unchanged to Hatari's window. SDL2's `WIN_WindowProc` builds
+   the key from that message's `wParam`/`lParam`, and `SDL_SendKeyboardKey` does not require
+   keyboard focus. Upstream SDL2 decides focus from `GetForegroundWindow() == hwnd`, which never
+   holds for a child window. The console logs "sending keys to the emulator's window" on the first
+   forwarded key. The cross-process DPI force-reset's effect on scale is still unconfirmed. macOS embedding remains
    unimplemented (`WId` is a process-local `NSView*`).
 6. ~~Behaviour of `--control-socket` alternatives on Windows~~ — **resolved**: HRDB is the
    alternative. The fork builds for Windows with MSYS2 ucrt64 (its listener is winsock-aware

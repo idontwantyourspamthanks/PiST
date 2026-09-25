@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <QAbstractNativeEventFilter>
 #include <QImage>
 #include <QSet>
 #include <QWidget>
@@ -33,10 +34,12 @@ namespace pist {
 /// so the display server delivers keyboard and mouse to it directly. On Windows
 /// the mouse does too, because it goes to the window under the cursor. The
 /// keyboard does not: the adopted window is never focused by the click, so
-/// keystrokes stay in whichever Qt widget had them. A click notifies this
-/// container, and that focuses Hatari's window. The cross-process DPI reset
-/// remains something to confirm on a Windows machine (docs/PLAN.md §9).
-class EmulatorDisplayWidget : public QWidget
+/// keystrokes stay in PiST. This panel takes Qt focus instead — on adoption
+/// and when the adopted window is clicked — and while it has it, an
+/// application native-event filter posts every keystroke on to Hatari's
+/// window. The cross-process DPI reset remains something to confirm on a
+/// Windows machine (docs/PLAN.md §9).
+class EmulatorDisplayWidget : public QWidget, public QAbstractNativeEventFilter
 {
     Q_OBJECT
 
@@ -50,6 +53,10 @@ public:
     /// minimum instead of a usable video size — which is why the display was
     /// stuck small with dead space around it. Offer the ST low-res size doubled.
     QSize sizeHint() const override;
+
+    /// Windows: while this panel has focus and a window is adopted, send each
+    /// keystroke to that window instead of to PiST.
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
 
 public slots:
     /// Record the emulator's native video size, which drives the aspect-preserved
@@ -104,6 +111,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
+    void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     bool event(QEvent *event) override;
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
@@ -154,6 +162,8 @@ private:
     QImage m_frame;
     /// The Windows adoption was attempted and did not happen.
     bool m_attachFailed = false;
+    /// A key has been forwarded to the adopted window since it was adopted.
+    bool m_keyForwarded = false;
     /// SDL keycodes currently held, so a focus loss can release them.
     QSet<int> m_heldSyms;
     /// Pointer position in 256ths of a video pixel, and whether one exists.

@@ -177,8 +177,9 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     m_regsFn = reinterpret_cast<RegsFn>(m_library->resolve("pist_hatari_registers"));
     m_baseFn = reinterpret_cast<BaseFn>(m_library->resolve("pist_hatari_basepage"));
     m_ramFn = reinterpret_cast<RamFn>(m_library->resolve("pist_hatari_ram"));
+    m_keyFn = reinterpret_cast<KeyFn>(m_library->resolve("pist_hatari_key"));
     if (!m_runFn || !m_haltFn || !m_stepFn || !m_stepOverFn || !m_resumeFn || !m_pauseFn
-        || !m_clearFn || !m_armFn || !m_regsFn || !m_baseFn || !m_ramFn) {
+        || !m_clearFn || !m_armFn || !m_regsFn || !m_baseFn || !m_ramFn || !m_keyFn) {
         if (m_haltFn)
             m_haltFn();
         m_runFn = nullptr;
@@ -192,9 +193,10 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
         m_regsFn = nullptr;
         m_baseFn = nullptr;
         m_ramFn = nullptr;
+        m_keyFn = nullptr;
         m_library->unload();
         if (error)
-            *error = tr("%1 does not export the debugger calls this PiST needs.").arg(found);
+            *error = tr("%1 does not export the calls this PiST needs.").arg(found);
         return false;
     }
 
@@ -292,6 +294,7 @@ void LibretroBackend::pump()
     m_regsFn = nullptr;
     m_baseFn = nullptr;
     m_ramFn = nullptr;
+    m_keyFn = nullptr;
 }
 
 void LibretroBackend::post(const CoreRequest &request)
@@ -356,6 +359,10 @@ void LibretroBackend::dispatch(const CoreRequest &request)
         break;
     case CoreJob::Stack:
         emit stackDumpReady(request.address, rowsFromRam(request.address, request.length));
+        break;
+    case CoreJob::Key:
+        if (m_keyFn)
+            m_keyFn(request.tag, request.length, request.address ? 1 : 0);
         break;
     }
 }
@@ -501,6 +508,7 @@ void LibretroBackend::stop()
         m_regsFn = nullptr;
         m_baseFn = nullptr;
         m_ramFn = nullptr;
+        m_keyFn = nullptr;
     }
     if (m_library->isLoaded())
         m_library->unload();
@@ -565,6 +573,19 @@ void LibretroBackend::resume()
     m_jobs = kept;
     m_continueWhenIdle = true;
     m_wake.wakeAll();
+}
+
+void LibretroBackend::postKey(int sym, int mod, bool down)
+{
+    if (sym == 0 || !m_running)
+        return;
+    CoreRequest request;
+    request.job = CoreJob::Key;
+    request.keepOnResume = true;
+    request.tag = sym;
+    request.length = mod;
+    request.address = down ? 1u : 0u;
+    post(request);
 }
 
 void LibretroBackend::pause()

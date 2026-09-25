@@ -4,9 +4,13 @@
 
 #include "ui/EmulatorDisplayWidget.h"
 
+#include "emu/HostKey.h"
 #include "ui/EmbedX11.h"
 #include "ui/EmbedWin32.h"
 
+#include <QFocusEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPalette>
 #include <QPainter>
 #include <QResizeEvent>
@@ -66,6 +70,10 @@ EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
     // leaving the video at its native resolution with dead space around it.
     setMinimumSize(320, 200);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // A click focuses the panel so keys go to the machine. The reparented
+    // window on Linux and Windows takes its own keys; this matters for the
+    // in-process frame, which has no window of its own.
+    setFocusPolicy(Qt::StrongFocus);
 
     // The dock's layout settles over the first moments after launch, and this
     // widget's Qt size can lag the size the underlying X11 window actually ends
@@ -232,6 +240,7 @@ void EmulatorDisplayWidget::setFrame(const QImage &image)
 
 void EmulatorDisplayWidget::clearEmbedded()
 {
+    releaseHeldKeys();
     if (m_attachTimer)
         m_attachTimer->stop();
     releaseForeignWindow(m_childWindow);
@@ -349,6 +358,61 @@ void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
     p.drawRoundedRect(badge, 4, 4);
     p.setPen(QColor(230, 230, 230));
     p.drawText(badge, Qt::AlignCenter, text);
+}
+
+void EmulatorDisplayWidget::mousePressEvent(QMouseEvent *event)
+{
+    if (!m_frame.isNull())
+        setFocus(Qt::MouseFocusReason);
+    QWidget::mousePressEvent(event);
+}
+
+void EmulatorDisplayWidget::focusOutEvent(QFocusEvent *event)
+{
+    releaseHeldKeys();
+    QWidget::focusOutEvent(event);
+}
+
+bool EmulatorDisplayWidget::event(QEvent *event)
+{
+    // The panel has no window of its own, so a Qt shortcut (F5 run, F10 step)
+    // would otherwise consume the key before the ST saw it. Accepting the
+    // override is what keeps the key. The reparented display has no frame
+    // image, and its own window takes the keys, so this stays out of that path.
+    if (!m_frame.isNull() && hasFocus()) {
+        if (event->type() == QEvent::ShortcutOverride) {
+            event->accept();
+            return true;
+        }
+        if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
+            forwardHostKey(static_cast<QKeyEvent *>(event));
+            return true;
+        }
+    }
+    return QWidget::event(event);
+}
+
+void EmulatorDisplayWidget::forwardHostKey(QKeyEvent *event)
+{
+    if (event->isAutoRepeat())
+        return;
+    const int sym = qtKeyToSdlSym(event->key());
+    if (sym == 0)
+        return;
+    const bool down = event->type() == QEvent::KeyPress;
+    if (down)
+        m_heldSyms.insert(sym);
+    else
+        m_heldSyms.remove(sym);
+    emit hostKey(sym, qtModifiersToSdlMod(int(event->modifiers())), down);
+}
+
+void EmulatorDisplayWidget::releaseHeldKeys()
+{
+    const QSet<int> held = m_heldSyms;
+    m_heldSyms.clear();
+    for (int sym : held)
+        emit hostKey(sym, 0, false);
 }
 
 

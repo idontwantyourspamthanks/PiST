@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QImage>
+#include <QSet>
 #include <QWidget>
 
 namespace pist {
@@ -87,10 +88,16 @@ signals:
     /// what happened when it could not be. The console is the only record of
     /// which branch ran on a machine this code cannot be tested on.
     void embedEvent(const QString &message);
+    /// A key while this panel is showing an in-process frame and has focus.
+    /// `sdlSym` is an SDL_Keycode, `sdlMod` is SDL_Keymod, `down` is a press.
+    void hostKey(int sdlSym, int sdlMod, bool down);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
+    bool event(QEvent *event) override;
 
 private:
     /// One tick of the Windows adoption poll: adopt the emulator's window when
@@ -104,6 +111,12 @@ private:
     int m_lastFitH = 0;
 
     void pollForeignWindow();
+    /// Translate one Qt key into the host-key signal. Auto-repeat is ignored:
+    /// the ST keyboard generates its own repeat from a key that stays down.
+    void forwardHostKey(class QKeyEvent *event);
+    /// Release every key this panel still holds, so focus leaving does not
+    /// leave a key down inside the ST.
+    void releaseHeldKeys();
 
     class QTimer *m_settleTimer = nullptr;
     int m_settleTicks = 0;
@@ -126,6 +139,8 @@ private:
     QImage m_frame;
     /// The Windows adoption was attempted and did not happen.
     bool m_attachFailed = false;
+    /// SDL keycodes currently held, so a focus loss can release them.
+    QSet<int> m_heldSyms;
 };
 
 } // namespace pist

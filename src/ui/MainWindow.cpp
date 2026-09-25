@@ -1250,6 +1250,7 @@ void MainWindow::wireBackend()
                     // `view` borrows `pixels`, which dies with this slot.
                     m_display->setFrame(view.copy());
                 });
+        connect(m_display, &EmulatorDisplayWidget::hostKey, core, &LibretroBackend::postKey);
     }
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {

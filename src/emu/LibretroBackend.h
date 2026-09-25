@@ -85,6 +85,10 @@ public:
     void readDisassemblyAt(quint32 address) override;
     void readHistory(int count) override;
 
+    /// A host key, already translated to an SDL_Keycode. Queued onto the
+    /// owner thread. `sym` 0 is ignored.
+    void postKey(int sym, int mod, bool down);
+
     BackendKind kind() const override { return BackendKind::Libretro; }
 
     /// Bumped by `stop()`. A `frameReady` whose epoch does not match arrived
@@ -114,6 +118,7 @@ private:
         Pause,
         Memory,
         Stack,
+        Key,
     };
     struct CoreRequest {
         CoreJob job = CoreJob::Refresh;
@@ -146,6 +151,7 @@ private:
     using RegsFn = int (*)(const char **, uint32_t *, int, int *);
     using BaseFn = int (*)(uint32_t *, uint32_t *, uint32_t *);
     using RamFn = void *(*)(size_t *);
+    using KeyFn = int (*)(int sym, int mod, int down);
 
     QLibrary *m_library = nullptr;
     QThread *m_thread = nullptr;
@@ -160,6 +166,7 @@ private:
     RegsFn m_regsFn = nullptr;
     BaseFn m_baseFn = nullptr;
     RamFn m_ramFn = nullptr;
+    KeyFn m_keyFn = nullptr;
     QMutex m_gate;
     QWaitCondition m_wake;
     QQueue<CoreRequest> m_jobs;

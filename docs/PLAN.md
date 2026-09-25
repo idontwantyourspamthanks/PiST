@@ -544,7 +544,9 @@ These are the operational constraints the launch builder must encode.
     `b pc = TEXT && pc < $e00000 :once` itself. A project that names its own emulator stays on
     native or HRDB, including on a Mac that has the dylib. Linux and Windows never take the
     in-process path. The debug-transport combo does not override an empty path: those values
-    select a subprocess channel.
+    select a subprocess channel. A click on the panel focuses it, and while it is
+    showing a frame those keys are posted to Hatari's keymap on the owner thread.
+    Hatari's own shortcut table is cleared at start, so function keys reach the ST.
 
 ### 5.1 Bootstrap parse file
 

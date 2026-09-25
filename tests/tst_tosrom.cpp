@@ -10,6 +10,7 @@
 // be too old — so the guard against the silent-hang case would be skippable.
 
 #include "model/Machine.h"
+#include "emu/HostKey.h"
 #include "emu/LibretroBackend.h"
 #include "emu/Paths.h"
 #include "emu/SessionConfig.h"
@@ -108,6 +109,7 @@ private slots:
     void libretroSessionUsesTheCoreOnMacWhenPresent();
     void libretroStartFailsWithoutTheCore();
     void libretroCoreDrivesTheEntryStop();
+    void hostKeyMapsQtToSdl();
     void reportsNoBundledDirWhenAbsent();
     void tosSearchPathsIncludesBundledDir();
 
@@ -631,6 +633,21 @@ void TstTosRom::libretroStartFailsWithoutTheCore()
     QVERIFY(error.contains(libretroCoreFileName()));
     QVERIFY(error.contains(QStringLiteral("Frameworks")));
     QVERIFY(!backend.isRunning());
+}
+
+void TstTosRom::hostKeyMapsQtToSdl()
+{
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_A), 97);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_Z), 122);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_1), 49);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_Exclam), 49);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_Return), 13);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_Left), 1073741904);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_F5), 1073741886);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_Shift), 1073742049);
+    QCOMPARE(qtKeyToSdlSym(Qt::Key_unknown), 0);
+    QCOMPARE(qtModifiersToSdlMod(Qt::ShiftModifier | Qt::AltModifier), 0x0001 | 0x0100);
+    QCOMPARE(qtModifiersToSdlMod(Qt::ControlModifier), 0x0040);
 }
 
 void TstTosRom::libretroCoreDrivesTheEntryStop()

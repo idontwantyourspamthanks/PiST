@@ -136,6 +136,7 @@ pist_module(pist_emu
     src/emu/EmbedSocket.h
     src/emu/HrdbBackend.cpp
     src/emu/HrdbBackend.h
+    src/emu/HostKey.h
     src/emu/LibretroAbi.h
     src/emu/LibretroBackend.cpp
     src/emu/LibretroBackend.h

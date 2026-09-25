@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* Bump when a field or a function signature changes. */
-#define PIST_HATARI_ABI 1
+#define PIST_HATARI_ABI 2
 
 /* Pixels are QImage::Format_RGB32: a native 32-bit word 0xFFRRGGBB.
  * `pixels` is valid until the next pist_hatari_run or pist_hatari_stop.
@@ -80,6 +80,12 @@ int pist_hatari_resume(void);
  * sends, including the leading "b ". */
 int pist_hatari_arm_breakpoint(const char *condition);
 int pist_hatari_clear_breakpoints(void);
+
+/* Press or release one host key. `sym` is an SDL_Keycode and `mod` is
+ * SDL_Keymod: the values Hatari's keymap already switches on. `down` is 1
+ * for a press and 0 for a release. The owner thread is the only legal
+ * caller. 0 when the machine is up. */
+int pist_hatari_key(int sym, int mod, int down);
 
 #ifdef __cplusplus
 }

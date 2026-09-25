@@ -155,8 +155,8 @@ The core is licence-compatible: Hatari contains three GPL-2.0-only files, so a c
 conveyed under GPLv2, which GPL-2.0-or-later permits. The published `libretro/hatari` tree is not
 the one we build — it still compiles the pre-2.6 CPU, and `retro_get_memory_data` returns NULL —
 so the fork adds its own RAM and debugger exports. Frames, the entry stop, step, resume,
-registers, breakpoints, keyboard and mouse are in place. What remains is audio,
-and naming the fork commit in each release's notices.
+registers, breakpoints, keyboard, mouse and audio are in place. What remains is
+naming the fork commit in each release's notices.
 
 ---
 

@@ -549,7 +549,10 @@ These are the operational constraints the launch builder must encode.
     Hatari's own shortcut table is cleared at start, so function keys reach the ST.
     Pointer motion over that frame is scaled into ST pixels and posted the same
     way, with the left and right buttons. The host cursor is hidden; the ST draws
-    its own.
+    its own. Sound is off during the fast run up to the entry stop, then each
+    frame's samples are played at 44100 Hz. The owner waits when playback is
+    ahead, and a key or a mouse move still runs during that wait. A stop lets
+    the queue drain.
 
 ### 5.1 Bootstrap parse file
 

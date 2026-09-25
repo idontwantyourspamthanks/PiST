@@ -5,6 +5,7 @@
 #pragma once
 
 #include "emu/DebugBackend.h"
+#include "emu/HostAudio.h"
 #include "emu/LibretroAbi.h"
 
 #include <QByteArray>
@@ -146,6 +147,11 @@ private:
     /// from that handler are in the queue before the owner resumes.
     void publishState();
     void publishFrame();
+    /// Copy whatever the core has mixed since the last pull. The player
+    /// drops it on Linux; on macOS it is what comes out of the speakers.
+    void pullAudio();
+    /// Wait while playback is ahead of the machine, unless a job is queued.
+    void paceAudio();
     QList<MemoryRow> rowsFromRam(quint32 address, int length) const;
 
     using RunFn = int (*)(PistHatariFrame *, int *);
@@ -157,6 +163,7 @@ private:
     using RamFn = void *(*)(size_t *);
     using KeyFn = int (*)(int sym, int mod, int down);
     using MouseFn = int (*)(int dx, int dy, int buttons);
+    using AudioFn = int (*)(int16_t *interleaved, int frames);
 
     QLibrary *m_library = nullptr;
     QThread *m_thread = nullptr;
@@ -173,6 +180,8 @@ private:
     RamFn m_ramFn = nullptr;
     KeyFn m_keyFn = nullptr;
     MouseFn m_mouseFn = nullptr;
+    AudioFn m_audioFn = nullptr;
+    HostAudio m_audio;
     QMutex m_gate;
     QWaitCondition m_wake;
     QQueue<CoreRequest> m_jobs;
@@ -183,6 +192,10 @@ private:
     std::atomic<int> m_epoch{0};
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopped{false};
+    // Sound stays off through the fast run up to the entry stop. It starts
+    // when the user resumes, or immediately when the session has no program
+    // and the desktop is what is on screen.
+    bool m_playAudio = false;
 };
 
 } // namespace pist

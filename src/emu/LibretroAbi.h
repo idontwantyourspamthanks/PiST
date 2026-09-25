@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* Bump when a field or a function signature changes. */
-#define PIST_HATARI_ABI 3
+#define PIST_HATARI_ABI 4
 
 /* Pixels are QImage::Format_RGB32: a native 32-bit word 0xFFRRGGBB.
  * `pixels` is valid until the next pist_hatari_run or pist_hatari_stop.
@@ -91,6 +91,12 @@ int pist_hatari_key(int sym, int mod, int down);
  * left button, bit 1 the right. The owner thread is the only legal caller.
  * 0 when the machine is up. */
 int pist_hatari_mouse(int dx, int dy, int buttons);
+
+/* Stereo signed 16-bit host-endian frames, 44100 Hz, interleaved left,
+ * right. Copies up to `frames` frames into `interleaved` and returns how
+ * many were copied. 0 when sound is off, nothing is queued, or the machine
+ * is down. The owner thread is the only legal caller. */
+int pist_hatari_audio(int16_t *interleaved, int frames);
 
 #ifdef __cplusplus
 }

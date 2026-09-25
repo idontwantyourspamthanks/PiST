@@ -179,9 +179,10 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     m_ramFn = reinterpret_cast<RamFn>(m_library->resolve("pist_hatari_ram"));
     m_keyFn = reinterpret_cast<KeyFn>(m_library->resolve("pist_hatari_key"));
     m_mouseFn = reinterpret_cast<MouseFn>(m_library->resolve("pist_hatari_mouse"));
+    m_audioFn = reinterpret_cast<AudioFn>(m_library->resolve("pist_hatari_audio"));
     if (!m_runFn || !m_haltFn || !m_stepFn || !m_stepOverFn || !m_resumeFn || !m_pauseFn
         || !m_clearFn || !m_armFn || !m_regsFn || !m_baseFn || !m_ramFn || !m_keyFn
-        || !m_mouseFn) {
+        || !m_mouseFn || !m_audioFn) {
         if (m_haltFn)
             m_haltFn();
         m_runFn = nullptr;
@@ -197,6 +198,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
         m_ramFn = nullptr;
         m_keyFn = nullptr;
         m_mouseFn = nullptr;
+        m_audioFn = nullptr;
         m_library->unload();
         if (error)
             *error = tr("%1 does not export the calls this PiST needs.").arg(found);
@@ -207,6 +209,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     // what advances it; this thread only draws what that one copies out.
     m_quit = false;
     m_hold = false;
+    m_playAudio = config.programPath.isEmpty();
     m_running = true;
     m_stopped = false;
     m_thread = QThread::create([this] { pump(); });
@@ -251,6 +254,7 @@ void LibretroBackend::pump()
                 continue;
             }
             m_stopped = false;
+            m_playAudio = true;
             emit stoppedChanged(false);
             continue;
         }
@@ -273,6 +277,7 @@ void LibretroBackend::pump()
             memcpy(pixels.data(), frame.pixels, static_cast<size_t>(bytes));
             emit frameReady(pixels, frame.width, frame.height, frame.pitch, epoch);
         }
+        pullAudio();
         if (stopped) {
             m_stopped = true;
             {
@@ -282,6 +287,8 @@ void LibretroBackend::pump()
             }
             if (!m_quit.load())
                 emit stoppedChanged(true);
+        } else {
+            paceAudio();
         }
     }
     if (m_haltFn)
@@ -299,6 +306,39 @@ void LibretroBackend::pump()
     m_ramFn = nullptr;
     m_keyFn = nullptr;
     m_mouseFn = nullptr;
+    m_audioFn = nullptr;
+}
+
+void LibretroBackend::pullAudio()
+{
+    if (!m_audioFn)
+        return;
+    int16_t samples[4096 * 2];
+    for (;;) {
+        const int frames = m_audioFn(samples, 4096);
+        if (frames <= 0)
+            break;
+        if (m_playAudio)
+            m_audio.write(samples, frames);
+        if (frames < 4096)
+            break;
+    }
+}
+
+void LibretroBackend::paceAudio()
+{
+    if (!m_playAudio)
+        return;
+    while (!m_quit.load() && m_audio.needsPacing()) {
+        {
+            QMutexLocker lock(&m_gate);
+            if (!m_jobs.isEmpty() || m_quit.load())
+                return;
+            // Playback is the clock. A queued key or mouse move wakes this early.
+            m_wake.wait(&m_gate, 8);
+        }
+        m_audio.flush();
+    }
 }
 
 void LibretroBackend::post(const CoreRequest &request)
@@ -348,6 +388,7 @@ void LibretroBackend::dispatch(const CoreRequest &request)
         }
         m_stopped = true;
         publishFrame();
+        pullAudio();
         if (!m_quit.load())
             emit stoppedChanged(true);
         break;
@@ -518,12 +559,15 @@ void LibretroBackend::stop()
         m_ramFn = nullptr;
         m_keyFn = nullptr;
         m_mouseFn = nullptr;
+        m_audioFn = nullptr;
     }
+    m_audio.close();
     if (m_library->isLoaded())
         m_library->unload();
     const bool wasLive = m_running.load() || m_stopped.load();
     m_running = false;
     m_stopped = false;
+    m_playAudio = false;
     m_state = {};
     if (wasLive) {
         emit runningChanged(false);

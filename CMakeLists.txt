@@ -136,6 +136,8 @@ pist_module(pist_emu
     src/emu/EmbedSocket.h
     src/emu/HrdbBackend.cpp
     src/emu/HrdbBackend.h
+    src/emu/HostAudio.cpp
+    src/emu/HostAudio.h
     src/emu/HostKey.h
     src/emu/LibretroAbi.h
     src/emu/LibretroBackend.cpp
@@ -301,6 +303,11 @@ target_link_libraries(pist_image PUBLIC Qt6::Gui pist_support)     # QImage/QCol
 target_link_libraries(pist_build PUBLIC Qt6::Core pist_support)    # subprocess + parsed text only; saveRaw writes the user's floppy image
 target_link_libraries(pist_debug PUBLIC Qt6::Core pist_build)      # Breakpoint.h includes build/LineMap.h + ProgramLineMap.h
 target_link_libraries(pist_emu PUBLIC Qt6::Core Qt6::Network pist_model)   # emu/TosRom.h includes model/Machine.h
+if(APPLE)
+    # The in-process core's sound. Linux discards the same samples; it does
+    # not link a player. AudioToolbox is a system framework, not a Qt module.
+    target_link_libraries(pist_emu PUBLIC "-framework AudioToolbox")
+endif()
 target_link_libraries(pist_project PUBLIC Qt6::Core pist_model pist_support)    # ProjectSettings.h includes model/Machine.h, and save() is files::write
 target_link_libraries(pist_toolchain PUBLIC Qt6::Core pist_emu)    # ToolFetch.cpp includes emu/Paths.h
 target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subprocess + porcelain only

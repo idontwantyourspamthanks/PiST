@@ -16,8 +16,8 @@ libretro frontend added on that tree.
 
 `hatari_libretro.dylib`, linked against `libm` and `libz` only. Under
 `__LIBRETRO__` the SDL window, audio device and input grab are stubbed. Frames
-leave through the run call below, sound through a callback the frontend
-registers, keys and mouse through another. No Homebrew library is on the link
+leave through the run call below, sound through `pist_hatari_audio`, keys
+and mouse through their own calls. No Homebrew library is on the link
 line, which is what made a Mac `hatari` executable non-relocatable.
 
 The dylib is built from a checksum-pinned tarball of that fork, the same shape
@@ -86,10 +86,18 @@ reach the ST. The UI thread posts the call onto the owner thread. A click
 focuses the panel; while it is showing a frame, those keys are not PiST
 shortcuts.
 
+`pist_hatari_audio` copies queued stereo 16-bit frames at 44100 Hz. The
+owner thread pulls that after each frame. The run up to the entry stop stays
+fast and silent; sound starts when the user resumes. A session with no
+program plays from the first frame, and the owner waits once about 80 ms is
+already queued so the speed stays 44100 Hz. A key or a mouse move still runs
+during that wait. While the debugger is stopped, playback drains and goes
+quiet.
+
 The free-text console, profile save, hardware-info subjects and IPF disks are
 not in the first slice. The typed intents are: start, stop, run-until-frame,
 pause, step, step-over, resume, arm and clear breakpoints, RAM, registers,
-basepage, keys, and the mouse. `command()` for arbitrary debugger text waits until those work.
+basepage, keys, the mouse, and sound. `command()` for arbitrary debugger text waits until those work.
 
 ## Licence
 
@@ -109,6 +117,7 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 6. The entry stop can continue. `pist_hatari_step`, `pist_hatari_step_over`, `pist_hatari_resume`, `pist_hatari_pause`, `pist_hatari_registers`, `pist_hatari_basepage`, and the arm and clear calls are implemented in the core. `LibretroBackend` runs them on the owner thread. The snapshot those reads return is what arms file:line breakpoints after the bases arrive. The console, profile save, disassembly, hardware info, and history are still later.
 7. Keys. The panel takes focus on a click. `qtKeyToSdlSym` turns the Qt key into the SDL keycode Hatari's keymap already maps, and `pist_hatari_key` runs on the owner thread. Hatari's shortcut table is cleared, so a function key is the ST's.
 8. Mouse. Motion over the picture is scaled into ST pixels and posted, with the left and right buttons, as `pist_hatari_mouse` on the owner thread. The host cursor is hidden while a frame is showing, because the ST draws its own; the cursor is a transparent pixmap, because `Qt::BlankCursor` on macOS stops move events after a key. The panel does not grab the pointer, and on macOS it is not a native view: either one stops moves after a key. Hover events carry the motion when mouse-move delivery has stopped. Entering the panel does not fling that pointer. Those deltas become ST packets only from the IKBD autosend interrupt. A frame ends by setting Hatari's quit flag, and that interrupt arms itself again anyway, so a frame boundary cannot retire it.
+9. Sound. `--sound off` is gone, so Hatari's mixer runs. The stub audio open succeeds and does not open a device; `pist_hatari_audio` is how the samples leave. On macOS, AudioQueue plays them. On Linux the same pull discards them, which keeps the mix ring from wrapping during a test. Playback waits for the user to resume past the entry stop, so that run stays fast. After that, the owner thread is paced by the queue.
 
 Out of that slice: replacing the Linux and Windows subprocess, the console,
 profile save, IPF.

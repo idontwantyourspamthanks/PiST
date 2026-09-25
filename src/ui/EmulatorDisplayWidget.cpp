@@ -8,9 +8,13 @@
 #include "ui/EmbedX11.h"
 #include "ui/EmbedWin32.h"
 
+#include <QCursor>
 #include <QFocusEvent>
+#include <QGuiApplication>
+#include <QHoverEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPixmap>
 #include <QPalette>
 #include <QPainter>
 #include <QResizeEvent>
@@ -55,8 +59,14 @@ EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
 {
     // Native, so winId() is a real window of our own — an X11 window ID on X11,
     // an HWND on Windows — rather than an alias for the top-level window's:
-    // both embedding paths attach the emulator's display to it.
+    // both embedding paths attach the emulator's display to it. On macOS that
+    // native view stops delivering moves after a key, and the in-process frame
+    // has nothing to attach, so the widget stays a normal Qt widget there.
+#if !defined(Q_OS_MACOS)
     setAttribute(Qt::WA_NativeWindow);
+#endif
+    // Hover keeps arriving on macOS after mouse-move delivery has stopped.
+    setAttribute(Qt::WA_Hover);
 
     // Black behind the video: the ST border colour is not always black, and an
     // unpainted frame reads as a rendering bug.
@@ -233,8 +243,13 @@ void EmulatorDisplayWidget::setFrame(const QImage &image)
     if (image.isNull())
         return;
     // The ST draws its own pointer. A host cursor on top of it is a second one.
-    if (m_frame.isNull())
-        setCursor(Qt::BlankCursor);
+    // Qt::BlankCursor on macOS stops move events once a key is pressed; a
+    // transparent cursor hides the pointer without that.
+    if (m_frame.isNull()) {
+        QPixmap empty(16, 16);
+        empty.fill(Qt::transparent);
+        setCursor(QCursor(empty, 0, 0));
+    }
     m_frame = image;
     m_videoW = image.width();
     m_videoH = image.height();
@@ -371,7 +386,6 @@ void EmulatorDisplayWidget::mousePressEvent(QMouseEvent *event)
 {
     if (!m_frame.isNull()) {
         setFocus(Qt::MouseFocusReason);
-        grabMouse();
         forwardHostMouse(event->pos(), event->buttons());
     }
     QWidget::mousePressEvent(event);
@@ -388,8 +402,6 @@ void EmulatorDisplayWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (!m_frame.isNull())
         forwardHostMouse(event->pos(), event->buttons());
-    if ((event->buttons() & (Qt::LeftButton | Qt::RightButton)) == 0 && mouseGrabber() == this)
-        releaseMouse();
     QWidget::mouseReleaseEvent(event);
 }
 
@@ -411,8 +423,6 @@ void EmulatorDisplayWidget::focusOutEvent(QFocusEvent *event)
 {
     releaseHeldKeys();
     releaseHostMouse();
-    if (mouseGrabber() == this)
-        releaseMouse();
     QWidget::focusOutEvent(event);
 }
 
@@ -431,6 +441,12 @@ bool EmulatorDisplayWidget::event(QEvent *event)
             forwardHostKey(static_cast<QKeyEvent *>(event));
             return true;
         }
+    }
+    // Motion with no button. mouseMove covers a drag; hover covers the
+    // pointer moving over the picture, including after a key on macOS.
+    if (!m_frame.isNull() && event->type() == QEvent::HoverMove) {
+        const auto *hover = static_cast<QHoverEvent *>(event);
+        forwardHostMouse(hover->position().toPoint(), QGuiApplication::mouseButtons());
     }
     return QWidget::event(event);
 }

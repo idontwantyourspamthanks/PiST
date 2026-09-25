@@ -37,8 +37,8 @@ env:
   # The in-process core the macOS app seals into Contents/Frameworks.
   # idontwantyourspamthanks/hatari branch pist-libretro. The checksum is the
   # GitHub archive of that commit, the same check the hrdb pin uses.
-  PIST_HATARI_COMMIT: 001897a968ea3afb37f71e2e39e8e03cc15dd24b
-  PIST_HATARI_SHA256: 3c2d24e54bf7b25681dad968edf92547a560c5f544133d2de94c731c7e1d1084
+  PIST_HATARI_COMMIT: 05fb1b5077536678ae5b5b2b82b9e80bc99f4ce9
+  PIST_HATARI_SHA256: a064ef5ebde173011d2cd8ac55515551f9145fab5dfa1c1597848858c2cfaf1e
 
 jobs:
   # ---------------------------------------------------------------------------

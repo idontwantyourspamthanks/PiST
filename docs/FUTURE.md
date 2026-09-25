@@ -158,7 +158,9 @@ so the fork adds its own RAM and debugger exports. Frames, the entry stop, step,
 registers, breakpoints, keyboard, mouse, audio, the session's monitor, a debugger
 line (hardware info, disassembly, PC history and the console), register and
 memory-byte edits and the CPU profiler are in
-place. Each macOS archive's `THIRD-PARTY.txt` names the pist-libretro commit the
+place. IPF disks are not: Hatari reads them only through the SPS decoder library,
+which cannot be linked into the dylib we ship (`docs/PLAN.md` §3.2). Each macOS
+archive's `THIRD-PARTY.txt` names the pist-libretro commit the
 dylib was built from.
 
 ---

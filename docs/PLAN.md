@@ -184,6 +184,11 @@ fork of the Hatari audited in §10, same GPLv2 conveyance. Linux and Windows sta
 because their text transport (§3.3) is cheaper to keep working against an upstream we do not
 control than a compiled-in dependency rebuilt on every release.
 
+**IPF disks stay out of the shipped core.** Hatari reads `.ipf` only through the SPS decoder
+library. That licence forbids selling the library or bundling it with a product, including at
+no cost, and it is not compatible with the GPL. Linking it into `hatari_libretro.dylib` would
+be a combined work we cannot convey. A `.st` or `.msa` image does not need it.
+
 **The bundled emulator is the hrdb-main fork** (upstream 2.6.1 plus the remote-debug listener).
 The full debug loop also works on stock Hatari via the native backend; the fork adds typed
 framing, pause-while-running, and a Windows-capable control path. The fork is bundled

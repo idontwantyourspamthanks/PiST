@@ -95,7 +95,9 @@ already queued so the speed stays 44100 Hz. A key or a mouse move still runs
 during that wait. While the debugger is stopped, playback drains and goes
 quiet.
 
-IPF disks are not in this slice. A debugger line is.
+IPF disks stay out of the shipped core. Hatari reads them only through the SPS
+decoder library, whose licence forbids bundling it with a product and is not
+compatible with the GPL, so it is not linked into the dylib. A debugger line is.
 `pist_hatari_command` runs one Hatari debugger line on the owner thread and
 returns the text it printed. That text is the hardware report, the disassembly,
 the PC history and the reply to a command typed in the console. A register
@@ -130,4 +132,5 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 11. A debugger line. `pist_hatari_command` captures the text one Hatari debugger line prints. The core enables `history cpu` at start. Hardware info, disassembly, the PC history and a command typed in the console are that call, and the kind of reply is carried with the request rather than read off the text. A line that leaves the debugger drops the hold. A register write (`r D0=$value`) and a byte write (`w b $addr $value`) are the same call. A successful one prints nothing, so the pane reads the machine again.
 12. The profiler. `profile on`, `profile off` and `profile save` are debugger lines, and `profile on` survives Continue so collection actually starts. This core has no Capstone, so the external disassembler is not selected: Hatari would print its usage text and change nothing. The UAE disassembler writes the save to the file it was given, and a debugger line while a profile is already collecting does not throw the counts away. The dock parses that file.
 
-Out of that slice: replacing the Linux and Windows subprocess, IPF.
+Out of that slice: replacing the Linux and Windows subprocess. IPF stays out
+for the licence reason above.

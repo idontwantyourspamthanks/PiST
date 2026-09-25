@@ -186,9 +186,13 @@ jobs:
             total="$(jq 'length' <<<"$runs")"
             finished="$(jq '[.[] | select(.status == "completed")] | length' <<<"$runs")"
             if [ "$total" -eq 0 ]; then
-              # A tag on a commit that never went to master: CI was never
-              # triggered, so there is nothing to wait for and nothing that
-              # vouches for the tree.
+              # A manual run builds the archives as artifacts and does not
+              # publish. A tag on a commit that never went to master has
+              # nothing to wait for and nothing that vouches for the tree.
+              if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                echo "No CI run for $sha. Building artifacts only; this is not a release."
+                exit 0
+              fi
               if [ "$attempt" -ge 4 ]; then
                 echo "No CI run exists for $sha."
                 echo "This workflow publishes only what CI has passed: push the commit"

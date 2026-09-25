@@ -434,6 +434,12 @@ These are the operational constraints the launch builder must encode.
    against Hatari 2.6.1 `src/options.c` `Opt_HandleArgument`. The Windows package of the
    in-process core showed this as `No GEMDOS dir 'C:\Program Files\PiST 0.8.7\bin\AUTO'`:
    EmuTOS reached its desktop, and the entry breakpoint never fired.
+   Once the drive is the project directory, that same warning names `<project>\AUTO`.
+   TOS always looks for an AUTO folder; the warning is printed on a healthy Linux boot
+   too. On Windows it was also the symptom of the lookup itself failing: GEMDOS lists a
+   directory with a trailing separator, and the large-file CRT rejects a trailing `\`,
+   so the program file was invisible. `host_dir_for_listing()` strips that separator
+   before `opendir`. The AUTO line remains when the folder is absent.
 2. **`--gemdos-drive` takes a drive letter only** (`C`–`Z`, or `skip`). The host directory comes
    from the positional argument. Never pass a directory to it.
 3. **Autostart requires TOS ≥ 1.04.** Autostart is implemented via `C:\EMUDESK.INF`, and

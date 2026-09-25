@@ -541,6 +541,9 @@ void LibretroBackend::runText(const CoreRequest &request)
     case TextKind::History:
         line = QStringLiteral("history %1").arg(qMax(1, request.length));
         break;
+    case TextKind::Write:
+        line = request.text;
+        break;
     }
 
     QString text;
@@ -567,15 +570,19 @@ void LibretroBackend::runText(const CoreRequest &request)
         emit historyReady(text);
         break;
     case TextKind::Console:
-        // The input line already wrote "> cmd". The debugger echoes that
-        // same prompt; the lines after it are the reply.
+    case TextKind::Write:
+        // The console input already wrote "> cmd". A write prints nothing
+        // when it succeeds, and the pane that asked reads the machine again.
+        // The debugger echoes its own prompt either way; the lines after it
+        // are the reply, which for a write is an error.
         for (const QString &row : text.split(QLatin1Char('\n'))) {
             const QString trimmed = row.trimmed();
             if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("> ")))
                 continue;
             emit logLine(trimmed);
         }
-        emit commandFinished(request.text, text);
+        if (kind == TextKind::Console)
+            emit commandFinished(request.text, text);
         break;
     }
 
@@ -890,15 +897,28 @@ void LibretroBackend::breakAtAddressOnce(quint32 address)
 }
 void LibretroBackend::writeMemoryByte(quint32 address, quint8 value)
 {
-    Q_UNUSED(address);
-    Q_UNUSED(value);
-    notInThisSlice(QStringLiteral("write memory"));
+    // One byte, and a successful write prints nothing. The caller refreshes
+    // the pane, which reads RAM after this job.
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::Write);
+    request.text = QStringLiteral("w b $%1 $%2").arg(address, 0, 16).arg(value, 0, 16);
+    post(request);
 }
 void LibretroBackend::writeRegister(const QString &name, quint32 value)
 {
-    Q_UNUSED(name);
-    Q_UNUSED(value);
-    notInThisSlice(QStringLiteral("write register"));
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty()) {
+        emit errorOccurred(tr("Cannot write a register with no name."));
+        return;
+    }
+    // The '=' is mandatory. A successful set prints nothing, so the caller
+    // refreshes the snapshot after posting this.
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::Write);
+    request.text = QStringLiteral("r %1=$%2").arg(trimmed).arg(value, 0, 16);
+    post(request);
 }
 void LibretroBackend::readDisassembly()
 {

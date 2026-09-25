@@ -12,6 +12,7 @@
 #include "model/Machine.h"
 #include "emu/HostKey.h"
 #include "emu/LibretroBackend.h"
+#include "emu/MemoryDump.h"
 #include "emu/Paths.h"
 #include "emu/SessionConfig.h"
 #include "emu/TosRom.h"
@@ -766,6 +767,45 @@ void TstTosRom::libretroCoreDrivesTheEntryStop()
     QVERIFY(state.hasBases());
     QVERIFY(state.pc < 0xe00000u);
     QCOMPARE(state.pc, state.textBase + 2);
+
+    // A successful write prints nothing. The refresh behind it is what shows
+    // the new register, and the dump behind a byte write reads the RAM the
+    // command just stored. Both jobs are posted after the write, so they
+    // observe it.
+    backend.writeRegister(QStringLiteral("D0"), 0xA5A5A5A5u);
+    {
+        QEventLoop loop;
+        MachineState after;
+        const QMetaObject::Connection conn = connect(
+            &backend, &IDebugBackend::stateUpdated, &loop, [&](const MachineState &got) {
+                after = got;
+                loop.quit();
+            });
+        backend.refresh();
+        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+        loop.exec();
+        disconnect(conn);
+        QCOMPARE(after.regs.d[0], 0xA5A5A5A5u);
+    }
+    const quint32 pokeAt = state.textBase + 8;
+    backend.writeMemoryByte(pokeAt, 0xA5);
+    {
+        QEventLoop loop;
+        QList<MemoryRow> rows;
+        const QMetaObject::Connection conn = connect(
+            &backend, &IDebugBackend::memoryDumpReady, &loop,
+            [&](quint32, const QList<MemoryRow> &got, int) {
+                rows = got;
+                loop.quit();
+            });
+        backend.requestMemoryDump(pokeAt, 1, 0);
+        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+        loop.exec();
+        disconnect(conn);
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows.first().bytes.size(), 1);
+        QCOMPARE(rows.first().bytes.at(0), quint8(0xA5));
+    }
 
     backend.armBreakpoint(QStringLiteral("b pc = $%1").arg(state.pc, 0, 16));
     QVERIFY(waitUntilStopped([&] { backend.resume(); }));

@@ -192,6 +192,69 @@ bool embedForeignWindow(quintptr child, quintptr container)
 #endif
 }
 
+namespace {
+
+#ifdef Q_OS_WIN
+DWORD sFocusThread = 0;
+#endif
+
+} // namespace
+
+void focusEmbeddedWindow(quintptr child)
+{
+#ifdef Q_OS_WIN
+    if (!windowHandleValid(child))
+        return;
+    HWND hwnd = toHwnd(child);
+    const DWORD childThread = GetWindowThreadProcessId(hwnd, nullptr);
+    const DWORD thisThread = GetCurrentThreadId();
+    // SetFocus only succeeds for a window on this thread's input queue.
+    // Hatari's window belongs to Hatari's thread, so the queues have to be
+    // joined first, and they have to stay joined or the focus snaps back.
+    if (childThread && childThread != thisThread && childThread != sFocusThread) {
+        if (sFocusThread)
+            AttachThreadInput(thisThread, sFocusThread, FALSE);
+        if (AttachThreadInput(thisThread, childThread, TRUE))
+            sFocusThread = childThread;
+        else
+            sFocusThread = 0;
+    }
+    SetFocus(hwnd);
+#else
+    Q_UNUSED(child);
+#endif
+}
+
+void releaseEmbeddedKeyboard()
+{
+#ifdef Q_OS_WIN
+    if (!sFocusThread)
+        return;
+    AttachThreadInput(GetCurrentThreadId(), sFocusThread, FALSE);
+    sFocusThread = 0;
+#endif
+}
+
+bool handleEmbeddedParentMessage(quintptr child, void *message)
+{
+#ifdef Q_OS_WIN
+    if (!windowHandleValid(child) || !message)
+        return false;
+    const MSG *msg = static_cast<const MSG *>(message);
+    if (msg->message != WM_PARENTNOTIFY)
+        return false;
+    const UINT ev = LOWORD(msg->wParam);
+    if (ev != WM_LBUTTONDOWN && ev != WM_RBUTTONDOWN && ev != WM_MBUTTONDOWN)
+        return false;
+    focusEmbeddedWindow(child);
+    return true;
+#else
+    Q_UNUSED(child);
+    Q_UNUSED(message);
+    return false;
+#endif
+}
+
 void releaseForeignWindow(quintptr child)
 {
 #ifdef Q_OS_WIN

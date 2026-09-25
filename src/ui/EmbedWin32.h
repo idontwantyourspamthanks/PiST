@@ -28,8 +28,12 @@ namespace pist {
 /// already showed means every failure path here ends at the detached window
 /// that works today.
 ///
-/// Input needs no forwarding: the reparented window is a real child, so Windows
-/// gives it keyboard and mouse directly once it has the focus.
+/// Mouse arrives on its own: a click hits whichever window is under the cursor,
+/// and that is Hatari's. Keyboard does not. Keystrokes go to the focused
+/// window, and a cross-process child does not become focused when it is
+/// clicked. `focusEmbeddedWindow` joins the two threads' input queues and
+/// focuses it; a click on the child is reported to the container as
+/// `WM_PARENTNOTIFY`, which is when that runs.
 ///
 /// Windows only. Every entry point is a no-op (or false, or 0) elsewhere, so
 /// callers need no platform guards of their own.
@@ -61,6 +65,17 @@ bool embedForeignWindow(quintptr child, quintptr container);
 /// again. Called before the container goes away, because destroying a window
 /// destroys its children, foreign ones included.
 void releaseForeignWindow(quintptr child);
+
+/// Focus `child` for keyboard input. A no-op when `child` is not a live window.
+/// The input-queue join stays until `releaseEmbeddedKeyboard`.
+void focusEmbeddedWindow(quintptr child);
+
+/// Drop the input-queue join `focusEmbeddedWindow` made.
+void releaseEmbeddedKeyboard();
+
+/// If `message` is the container's notification that `child` was clicked,
+/// focus that child. Returns true when it did.
+bool handleEmbeddedParentMessage(quintptr child, void *message);
 
 /// A window's client size, in physical pixels. Read on the emulator's window
 /// before it is embedded this is the video size Hatari chose, which is what the

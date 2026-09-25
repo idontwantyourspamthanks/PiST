@@ -225,6 +225,9 @@ void EmulatorDisplayWidget::pollForeignWindow()
 
     m_childWindow = found;
     m_videoAttached = true;
+    // A click is also handled below. Focusing now means the keys work if the
+    // user is already looking at the panel when the window appears.
+    focusEmbeddedWindow(found);
     m_attachTicks = 0;
     // The dock's own layout can still be settling around a fresh session, so
     // re-fit a few times rather than trusting the first geometry.
@@ -265,6 +268,7 @@ void EmulatorDisplayWidget::clearEmbedded()
     unsetCursor();
     if (m_attachTimer)
         m_attachTimer->stop();
+    releaseEmbeddedKeyboard();
     releaseForeignWindow(m_childWindow);
     m_childWindow = 0;
     m_foreignPid = -1;
@@ -329,6 +333,21 @@ void EmulatorDisplayWidget::resizeEvent(QResizeEvent *event)
     // The dock changed size, so the embedded window must change with it. Hatari
     // rescales its renderer to match, as it does for a hand-resized window.
     fitEmbedded();
+}
+
+bool EmulatorDisplayWidget::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    // Hatari's window is a child of this one. Windows tells the parent about a
+    // click on that child, and the click is what should take the keyboard.
+    if (m_childWindow
+        && (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG"))
+        handleEmbeddedParentMessage(m_childWindow, message);
+#else
+    Q_UNUSED(eventType);
+    Q_UNUSED(message);
+#endif
+    return QWidget::nativeEvent(eventType, message, result);
 }
 
 void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)

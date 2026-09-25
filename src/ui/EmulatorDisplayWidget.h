@@ -31,10 +31,11 @@ namespace pist {
 ///
 /// Input needs no forwarding on X11: the reparented window is a real X11 child,
 /// so the display server delivers keyboard and mouse to it directly. On Windows
-/// the adopted window is a real child too, but whether it takes keyboard focus
-/// on a click — and what the documented cross-process DPI-awareness reset does
-/// to its scale — are known risks to confirm on a Windows machine
-/// (docs/PLAN.md §9), not verified behaviour.
+/// the mouse does too, because it goes to the window under the cursor. The
+/// keyboard does not: the adopted window is never focused by the click, so
+/// keystrokes stay in whichever Qt widget had them. A click notifies this
+/// container, and that focuses Hatari's window. The cross-process DPI reset
+/// remains something to confirm on a Windows machine (docs/PLAN.md §9).
 class EmulatorDisplayWidget : public QWidget
 {
     Q_OBJECT
@@ -105,6 +106,7 @@ protected:
     void leaveEvent(QEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     bool event(QEvent *event) override;
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 
 private:
     /// One tick of the Windows adoption poll: adopt the emulator's window when

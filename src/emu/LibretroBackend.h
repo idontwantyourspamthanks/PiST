@@ -29,6 +29,8 @@ namespace pist {
 QString libretroCoreFileName();
 QStringList libretroCoreCandidates(const QString &applicationDir);
 /// The first candidate that exists, or empty. `--diagnose` prints this.
+/// `$PIST_LIBRETRO_CORE`, when it names a file, wins: that is how a core
+/// built outside an app bundle is loaded.
 QString findLibretroCore(const QString &applicationDir);
 
 /// Whether a session boots the in-process core. True only on macOS, when the

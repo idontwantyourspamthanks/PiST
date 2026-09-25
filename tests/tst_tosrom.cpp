@@ -17,10 +17,14 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtTest>
+
+#include <functional>
 
 using namespace pist;
 
@@ -67,6 +71,7 @@ class TstTosRom : public QObject
     Q_OBJECT
 
 private slots:
+    void initTestCase();
     void readsVersionFromHeader();
     void versionComesFromHeaderNotFilename();
     void detectsEmuTos();
@@ -102,9 +107,21 @@ private slots:
     void libretroCoreIsFoundInFrameworks();
     void libretroSessionUsesTheCoreOnMacWhenPresent();
     void libretroStartFailsWithoutTheCore();
+    void libretroCoreDrivesTheEntryStop();
     void reportsNoBundledDirWhenAbsent();
     void tosSearchPathsIncludesBundledDir();
+
+private:
+    /// Saved from the environment in initTestCase, then unset, so the
+    /// "core is missing" case still sees the Frameworks search.
+    QString m_libretroCore;
 };
+
+void TstTosRom::initTestCase()
+{
+    m_libretroCore = qEnvironmentVariable("PIST_LIBRETRO_CORE");
+    qunsetenv("PIST_LIBRETRO_CORE");
+}
 
 void TstTosRom::readsVersionFromHeader()
 {
@@ -614,6 +631,105 @@ void TstTosRom::libretroStartFailsWithoutTheCore()
     QVERIFY(error.contains(libretroCoreFileName()));
     QVERIFY(error.contains(QStringLiteral("Frameworks")));
     QVERIFY(!backend.isRunning());
+}
+
+void TstTosRom::libretroCoreDrivesTheEntryStop()
+{
+    // The owner thread against a real core: boot, stop in RAM, read the
+    // bases and registers, arm the instruction we stopped on, resume onto
+    // that breakpoint, and step. Skips where the core or a ROM is absent.
+    if (m_libretroCore.isEmpty() || !QFileInfo::exists(m_libretroCore))
+        QSKIP("needs hatari_libretro ($PIST_LIBRETRO_CORE)");
+
+    QString tos = qEnvironmentVariable("PIST_TOS");
+    if (tos.isEmpty()) {
+        const QList<TosRom> roms = findTosRoms();
+        if (!roms.isEmpty())
+            tos = roms.first().path;
+    }
+    if (tos.isEmpty() || !QFileInfo::exists(tos))
+        QSKIP("needs a TOS image ($PIST_TOS or $PIST_TOS_DIR)");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString prgPath = QDir(dir.path()).filePath(QStringLiteral("HELLO.PRG"));
+    // Header, four bytes of text, and a four-byte empty relocation table.
+    // Without the table Hatari refuses the program and the entry stop never comes.
+    QByteArray prg(0x1c + 4 + 4, '\0');
+    prg[0] = 0x60;
+    prg[1] = 0x1a;
+    prg[5] = 4;
+    prg[0x1c] = 0x4e;
+    prg[0x1d] = 0x71; // nop
+    prg[0x1e] = 0x60;
+    prg[0x1f] = static_cast<char>(0xfe); // bra.s to itself
+    QFile prgFile(prgPath);
+    QVERIFY(prgFile.open(QIODevice::WriteOnly));
+    QCOMPARE(prgFile.write(prg), prg.size());
+    prgFile.close();
+
+    qputenv("PIST_LIBRETRO_CORE", m_libretroCore.toLocal8Bit());
+    const struct CoreEnv {
+        ~CoreEnv() { qunsetenv("PIST_LIBRETRO_CORE"); }
+    } coreEnv;
+    LibretroBackend backend;
+    // Connect before the action. A stop emitted from the owner thread is
+    // queued, and a connection made after that emit misses it.
+    auto waitUntilStopped = [&backend](const std::function<void()> &action) {
+        QEventLoop loop;
+        bool got = false;
+        const QMetaObject::Connection conn = connect(
+            &backend, &IDebugBackend::stoppedChanged, &loop, [&](bool stopped) {
+                if (stopped) {
+                    got = true;
+                    loop.quit();
+                }
+            });
+        action();
+        QTimer::singleShot(20000, &loop, &QEventLoop::quit);
+        loop.exec();
+        disconnect(conn);
+        return got;
+    };
+
+    SessionConfig config;
+    config.tosPath = tos;
+    config.programPath = prgPath;
+    config.gemdosDir = dir.path();
+    config.machine = QStringLiteral("st");
+    config.memSizeMiB = 1;
+    QString error;
+    QVERIFY(waitUntilStopped([&] {
+        QVERIFY2(backend.start(config, &error), qPrintable(error));
+    }));
+
+    MachineState state;
+    {
+        QEventLoop loop;
+        const QMetaObject::Connection conn = connect(
+            &backend, &IDebugBackend::stateUpdated, &loop, [&](const MachineState &got) {
+                state = got;
+                loop.quit();
+            });
+        backend.readBasepage();
+        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+        loop.exec();
+        disconnect(conn);
+    }
+    QVERIFY(state.regs.valid);
+    QVERIFY(state.hasBases());
+    QVERIFY(state.pc < 0xe00000u);
+    QCOMPARE(state.pc, state.textBase + 2);
+
+    backend.armBreakpoint(QStringLiteral("b pc = $%1").arg(state.pc, 0, 16));
+    QVERIFY(waitUntilStopped([&] { backend.resume(); }));
+    QVERIFY(backend.isStopped());
+
+    QVERIFY(waitUntilStopped([&] { backend.step(); }));
+    QVERIFY(backend.isStopped());
+
+    backend.stop();
+    qunsetenv("PIST_LIBRETRO_CORE");
 }
 
 void TstTosRom::reportsNoBundledDirWhenAbsent()

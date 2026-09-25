@@ -44,6 +44,11 @@ QStringList libretroCoreCandidates(const QString &applicationDir)
 
 QString findLibretroCore(const QString &applicationDir)
 {
+    // A built core that is not inside an app bundle. The release app does not
+    // set this; the Frameworks candidate below is what it loads.
+    const QString overridePath = qEnvironmentVariable("PIST_LIBRETRO_CORE");
+    if (!overridePath.isEmpty() && QFileInfo::exists(overridePath))
+        return overridePath;
     for (const QString &candidate : libretroCoreCandidates(applicationDir)) {
         if (QFileInfo::exists(candidate))
             return candidate;

@@ -143,17 +143,20 @@ Falcon-specific tooling.
 
 ## 4. Emulator embedding on macOS
 
-**Status:** decided, not built. The plan is [docs/agents/mac.md](agents/mac.md): an in-process
-core forked from the pinned Hatari, loaded as `hatari_libretro.dylib` from
-`Contents/Frameworks`. macOS cannot reparent a foreign process window — `WId` is a process-local
+**Status:** on `feature/libretro-macos`. The plan is [docs/agents/mac.md](agents/mac.md): an
+in-process core forked from the pinned Hatari, loaded as `hatari_libretro.dylib` from
+`Contents/Frameworks`. Launch selects it on macOS when that file is present and the project
+names no Hatari of its own. The release job builds the dylib; a person does not compile on a
+Mac for each release. macOS cannot reparent a foreign process window — `WId` is a process-local
 `NSView*` and AppKit has no cross-process reparenting — so a subprocess stays a detached window
 (`docs/PLAN.md` §3.2). Linux and Windows keep that subprocess.
 
 The core is licence-compatible: Hatari contains three GPL-2.0-only files, so a combined work is
 conveyed under GPLv2, which GPL-2.0-or-later permits. The published `libretro/hatari` tree is not
 the one we build — it still compiles the pre-2.6 CPU, and `retro_get_memory_data` returns NULL —
-so the fork adds its own RAM and debugger exports. The cost that remains is the frontend
-(video, input, audio) and naming the fork commit in each release's notices.
+so the fork adds its own RAM and debugger exports. Frames, the entry stop, step, resume,
+registers and breakpoints are in place. What remains is input, audio, and naming the fork
+commit in each release's notices.
 
 ---
 

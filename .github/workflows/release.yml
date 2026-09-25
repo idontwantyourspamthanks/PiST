@@ -857,8 +857,16 @@ jobs:
 
           # What a package manager reports. Debian policy requires the lowercase
           # package name; the product name and the author come from CPack and
-          # from the AppStream file.
-          for field in "Package pist" "Maintainer Koala Software" "Version $V"; do
+          # from the AppStream file. The Version field is the CMake project
+          # version. A tag's filename is that same number; a branch dispatch
+          # names the file after the branch, and the field stays the project
+          # version rather than becoming the branch name.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            pkg_version="$V"
+          else
+            pkg_version=$(sed -n 's/^[[:space:]]*VERSION[[:space:]]*//p' CMakeLists.txt | head -1)
+          fi
+          for field in "Package pist" "Maintainer Koala Software" "Version $pkg_version"; do
             key=${field%% *}
             got=$(dpkg-deb -f "$DEB" "$key")
             if [ "$got" != "${field#* }" ]; then

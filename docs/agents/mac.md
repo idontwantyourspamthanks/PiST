@@ -95,10 +95,14 @@ already queued so the speed stays 44100 Hz. A key or a mouse move still runs
 during that wait. While the debugger is stopped, playback drains and goes
 quiet.
 
-The free-text console, profile save, hardware-info subjects and IPF disks are
-not in the first slice. The typed intents are: start, stop, run-until-frame,
-pause, step, step-over, resume, arm and clear breakpoints, RAM, registers,
-basepage, keys, the mouse, and sound. `command()` for arbitrary debugger text waits until those work.
+Profile save, writing a register or a memory byte, and IPF disks are not in
+this slice. A debugger line is. `pist_hatari_command` runs one Hatari debugger
+line on the owner thread and returns the text it printed. That text is the
+hardware report, the disassembly, the PC history and the reply to a command
+typed in the console. The core enables `history cpu` at start, which is what
+the subprocess bootstrap script does. A line that leaves the debugger (`c`,
+`s`, `n`) drops the hold so the owner runs again; it does not clear a step
+count that line just armed.
 
 ## Licence
 
@@ -115,11 +119,12 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 3. The panel draws that frame. `LibretroBackend` runs `pist_hatari_run` on the core's owner thread and copies each frame before the next run. `EmulatorDisplayWidget::setFrame` letterboxes it; a frame queued after `stop()` carries an old epoch and is dropped.
 4. The macOS release job builds the dylib, seals it into the app, and `--diagnose` finds it. `PIST_LIBRETRO_STUB_SDL` compiles Hatari against `src/pist_sdl` instead of SDL, so the link line is libm and libz (plus the platform libc). On Linux that dylib still returns the 640x436 frame and the entry stop. The job copies `hatari_libretro.dylib` into `Contents/Frameworks` before the signature, refuses an `otool -L` that mentions `/opt/homebrew`, and `--diagnose` prints `Libretro core:` with that path. `ENABLE_OSX_BUNDLE` stays off for this build: the dylib is not a Hatari.app.
 5. Session launch selects the backend. On macOS, with the dylib present and an empty Hatari path, Run skips the emulator search, the probe, the control socket, and the bootstrap script, and starts `LibretroBackend`. The core arms the entry breakpoint itself. A named Hatari path, and every Linux and Windows run, stay on the subprocess.
-6. The entry stop can continue. `pist_hatari_step`, `pist_hatari_step_over`, `pist_hatari_resume`, `pist_hatari_pause`, `pist_hatari_registers`, `pist_hatari_basepage`, and the arm and clear calls are implemented in the core. `LibretroBackend` runs them on the owner thread. The snapshot those reads return is what arms file:line breakpoints after the bases arrive. The console, profile save, disassembly, hardware info, and history are still later.
+6. The entry stop can continue. `pist_hatari_step`, `pist_hatari_step_over`, `pist_hatari_resume`, `pist_hatari_pause`, `pist_hatari_registers`, `pist_hatari_basepage`, and the arm and clear calls are implemented in the core. `LibretroBackend` runs them on the owner thread. The snapshot those reads return is what arms file:line breakpoints after the bases arrive.
 7. Keys. The panel takes focus on a click. `qtKeyToSdlSym` turns the Qt key into the SDL keycode Hatari's keymap already maps, and `pist_hatari_key` runs on the owner thread. Hatari's shortcut table is cleared, so a function key is the ST's.
 8. Mouse. Motion over the picture is scaled into ST pixels and posted, with the left and right buttons, as `pist_hatari_mouse` on the owner thread. The host cursor is hidden while a frame is showing, because the ST draws its own; the cursor is a transparent pixmap, because `Qt::BlankCursor` on macOS stops move events after a key. The panel does not grab the pointer, and on macOS it is not a native view: either one stops moves after a key. Hover events carry the motion when mouse-move delivery has stopped. Entering the panel does not fling that pointer. Those deltas become ST packets only from the IKBD autosend interrupt. A frame ends by setting Hatari's quit flag, and that interrupt arms itself again anyway, so a frame boundary cannot retire it.
 9. Sound. `--sound off` is gone, so Hatari's mixer runs. The stub audio open succeeds and does not open a device; `pist_hatari_audio` is how the samples leave. On macOS, AudioQueue plays them. On Linux the same pull discards them, which keeps the mix ring from wrapping during a test. Playback waits for the user to resume past the entry stop, so that run stays fast. After that, the owner thread is paced by the queue.
 10. Colour. The core boots the session's monitor instead of a hardcoded mono. An empty monitor is mono. Anything other than mono, rgb, vga or tv fails the start. The panel already draws whatever size the frame is, so a low-resolution colour screen is just a smaller colour picture.
+11. A debugger line. `pist_hatari_command` captures the text one Hatari debugger line prints. The core enables `history cpu` at start. Hardware info, disassembly, the PC history and a command typed in the console are that call, and the kind of reply is carried with the request rather than read off the text. A line that leaves the debugger drops the hold. Profile save, and writing a register or a memory byte, are still later.
 
-Out of that slice: replacing the Linux and Windows subprocess, the console,
-profile save, IPF.
+Out of that slice: replacing the Linux and Windows subprocess, profile save,
+register and memory writes, IPF.

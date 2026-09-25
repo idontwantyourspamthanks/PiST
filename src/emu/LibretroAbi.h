@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* Bump when a field or a function signature changes. */
-#define PIST_HATARI_ABI 5
+#define PIST_HATARI_ABI 6
 
 /* Pixels are QImage::Format_RGB32: a native 32-bit word 0xFFRRGGBB.
  * `pixels` is valid until the next pist_hatari_run or pist_hatari_stop.
@@ -99,6 +99,17 @@ int pist_hatari_mouse(int dx, int dy, int buttons);
  * many were copied. 0 when sound is off, nothing is queued, or the machine
  * is down. The owner thread is the only legal caller. */
 int pist_hatari_audio(int16_t *interleaved, int frames);
+
+/* Run one Hatari debugger line. Copies the text it printed into `out`,
+ * NUL-terminated. `*needed` is that text's length, not counting the NUL,
+ * even when `out` is too small. `out` may be NULL.
+ * 0 when the line finished and the machine is still in the state it was in.
+ * 2 when the line left the debugger: the machine is running, and the next
+ * pist_hatari_run advances it. A step or a step-over is this too; the core
+ * stops again from inside that run.
+ * 1 when the machine is down, the line is empty, or the text could not be
+ * captured. The owner thread is the only legal caller. */
+int pist_hatari_command(const char *line, char *out, int outCap, int *needed);
 
 #ifdef __cplusplus
 }

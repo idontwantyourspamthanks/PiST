@@ -4,6 +4,8 @@
 
 #include "emu/LibretroBackend.h"
 
+#include "emu/HatariTextParse.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -182,9 +184,10 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     m_keyFn = reinterpret_cast<KeyFn>(m_library->resolve("pist_hatari_key"));
     m_mouseFn = reinterpret_cast<MouseFn>(m_library->resolve("pist_hatari_mouse"));
     m_audioFn = reinterpret_cast<AudioFn>(m_library->resolve("pist_hatari_audio"));
+    m_commandFn = reinterpret_cast<CommandFn>(m_library->resolve("pist_hatari_command"));
     if (!m_runFn || !m_haltFn || !m_stepFn || !m_stepOverFn || !m_resumeFn || !m_pauseFn
         || !m_clearFn || !m_armFn || !m_regsFn || !m_baseFn || !m_ramFn || !m_keyFn
-        || !m_mouseFn || !m_audioFn) {
+        || !m_mouseFn || !m_audioFn || !m_commandFn) {
         if (m_haltFn)
             m_haltFn();
         m_runFn = nullptr;
@@ -201,6 +204,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
         m_keyFn = nullptr;
         m_mouseFn = nullptr;
         m_audioFn = nullptr;
+        m_commandFn = nullptr;
         m_library->unload();
         if (error)
             *error = tr("%1 does not export the calls this PiST needs.").arg(found);
@@ -309,6 +313,7 @@ void LibretroBackend::pump()
     m_keyFn = nullptr;
     m_mouseFn = nullptr;
     m_audioFn = nullptr;
+    m_commandFn = nullptr;
 }
 
 void LibretroBackend::pullAudio()
@@ -415,6 +420,9 @@ void LibretroBackend::dispatch(const CoreRequest &request)
         if (m_mouseFn)
             m_mouseFn(request.tag, request.length, int(request.address));
         break;
+    case CoreJob::Text:
+        runText(request);
+        break;
     }
 }
 
@@ -469,7 +477,110 @@ bool LibretroBackend::readCoreState()
         m_state.dataBase = data;
         m_state.bssBase = bss;
     }
+
+    // The same `d` the native refresh queues. A failure leaves the previous
+    // disassembly: the registers are still a snapshot.
+    QString listing;
+    if (captureCommand(QStringLiteral("d"), &listing, nullptr))
+        hataritext::parseDisassembly(listing, &m_state);
     return true;
+}
+
+bool LibretroBackend::captureCommand(const QString &line, QString *text, bool *continued)
+{
+    if (continued)
+        *continued = false;
+    if (!m_commandFn || line.isEmpty())
+        return false;
+    // One screen of disassembly, an info report, or a short history. A longer
+    // reply is cut here; the core still reports the full length.
+    constexpr int cap = 256 * 1024;
+    QByteArray buf(cap, '\0');
+    int needed = 0;
+    const int rc = m_commandFn(line.toUtf8().constData(), buf.data(), cap, &needed);
+    if (rc == 1)
+        return false;
+    if (continued)
+        *continued = rc == 2;
+    if (text)
+        *text = QString::fromUtf8(buf.constData());
+    Q_UNUSED(needed);
+    return true;
+}
+
+void LibretroBackend::leaveDebugger()
+{
+    {
+        QMutexLocker lock(&m_gate);
+        m_hold = false;
+        m_continueWhenIdle = false;
+    }
+    m_stopped = false;
+    m_playAudio = true;
+    if (!m_quit.load())
+        emit stoppedChanged(false);
+}
+
+void LibretroBackend::runText(const CoreRequest &request)
+{
+    const auto kind = static_cast<TextKind>(request.tag);
+    QString line;
+    switch (kind) {
+    case TextKind::Console:
+        line = request.text;
+        break;
+    case TextKind::Info:
+        line = QStringLiteral("info ") + request.text;
+        break;
+    case TextKind::Disasm:
+        line = QStringLiteral("d");
+        break;
+    case TextKind::DisasmAt:
+        line = QStringLiteral("d $%1").arg(request.address, 0, 16);
+        break;
+    case TextKind::History:
+        line = QStringLiteral("history %1").arg(qMax(1, request.length));
+        break;
+    }
+
+    QString text;
+    bool continued = false;
+    if (!captureCommand(line, &text, &continued)) {
+        emit errorOccurred(tr("The libretro core did not run the debugger command."));
+        return;
+    }
+
+    switch (kind) {
+    case TextKind::Info:
+        emit hardwareInfoReady(request.text, hataritext::parseHardwareInfo(text));
+        break;
+    case TextKind::Disasm:
+        hataritext::parseDisassembly(text, &m_state);
+        publishState();
+        break;
+    case TextKind::DisasmAt:
+        hataritext::parseDisassembly(text, &m_state);
+        publishState();
+        emit disassemblyReady(request.address, text);
+        break;
+    case TextKind::History:
+        emit historyReady(text);
+        break;
+    case TextKind::Console:
+        // The input line already wrote "> cmd". The debugger echoes that
+        // same prompt; the lines after it are the reply.
+        for (const QString &row : text.split(QLatin1Char('\n'))) {
+            const QString trimmed = row.trimmed();
+            if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("> ")))
+                continue;
+            emit logLine(trimmed);
+        }
+        emit commandFinished(request.text, text);
+        break;
+    }
+
+    if (continued)
+        leaveDebugger();
 }
 
 void LibretroBackend::publishState()
@@ -562,6 +673,7 @@ void LibretroBackend::stop()
         m_keyFn = nullptr;
         m_mouseFn = nullptr;
         m_audioFn = nullptr;
+        m_commandFn = nullptr;
     }
     m_audio.close();
     if (m_library->isLoaded())
@@ -673,8 +785,16 @@ void LibretroBackend::refresh()
 
 void LibretroBackend::command(const QString &commandText)
 {
-    Q_UNUSED(commandText);
-    notInThisSlice(QStringLiteral("console command"));
+    if (commandText.trimmed().isEmpty()) {
+        emit errorOccurred(tr("Cannot run an empty debugger command."));
+        return;
+    }
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::Console);
+    request.text = commandText;
+    request.keepOnResume = true;
+    post(request);
 }
 
 void LibretroBackend::clearBreakpoints()
@@ -730,9 +850,15 @@ void LibretroBackend::loadSymbols()
 
 void LibretroBackend::infoSubject(const QString &subject)
 {
-    // Hardware registers are not in this slice. The stop path asks anyway;
-    // an error dialog on every stop would bury the register snapshot.
-    Q_UNUSED(subject);
+    const QString trimmed = subject.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::Info);
+    request.text = trimmed;
+    request.keepOnResume = true;
+    post(request);
 }
 
 void LibretroBackend::readBasepage()
@@ -776,18 +902,29 @@ void LibretroBackend::writeRegister(const QString &name, quint32 value)
 }
 void LibretroBackend::readDisassembly()
 {
-    // Disassembly text is not in this slice. The entry attach asks for it
-    // after the registers; an error there would land on every stop.
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::Disasm);
+    request.keepOnResume = true;
+    post(request);
 }
 void LibretroBackend::readDisassemblyAt(quint32 address)
 {
-    Q_UNUSED(address);
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::DisasmAt);
+    request.address = address;
+    request.keepOnResume = true;
+    post(request);
 }
 void LibretroBackend::readHistory(int count)
 {
-    // The history pane asks on every stop. Same as disassembly: quiet until
-    // the core can answer it.
-    Q_UNUSED(count);
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::History);
+    request.length = count;
+    request.keepOnResume = true;
+    post(request);
 }
 
 } // namespace pist

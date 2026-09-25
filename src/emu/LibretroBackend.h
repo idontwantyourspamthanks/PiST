@@ -45,7 +45,7 @@ bool sessionUsesInProcessCore(bool onMacOS, const QString &hatariPath,
 /// In-process Hatari. The dylib's ABI is emu/LibretroAbi.h. Session launch
 /// selects it on macOS when `sessionUsesInProcessCore` is true. A missing
 /// dylib fails start(). The owner thread is the only caller of the core:
-/// the UI posts steps, resumes, and breakpoint changes onto it.
+/// the UI posts steps, resumes, breakpoint changes and debugger lines onto it.
 /// docs/agents/mac.md.
 class LibretroBackend : public IDebugBackend
 {
@@ -124,7 +124,11 @@ private:
         Stack,
         Key,
         Pointer,
+        Text,
     };
+    /// Which pane a Text job fills. Carried on the request, never inferred
+    /// from the command text (MAJ-12).
+    enum class TextKind { Console, Info, Disasm, DisasmAt, History };
     struct CoreRequest {
         CoreJob job = CoreJob::Refresh;
         bool keepOnResume = false;
@@ -143,6 +147,13 @@ private:
     void dispatch(const CoreRequest &request);
     /// Registers and the basepage, one snapshot. Called on the owner thread.
     bool readCoreState();
+    /// One debugger line. False when the core did not run it. `continued` is
+    /// set when the line left the debugger.
+    bool captureCommand(const QString &line, QString *text, bool *continued);
+    void runText(const CoreRequest &request);
+    /// The line asked to run. Drop the hold without clearing a step count
+    /// the command itself just armed.
+    void leaveDebugger();
     /// Blocks until the UI has handled the snapshot, so breakpoint arms posted
     /// from that handler are in the queue before the owner resumes.
     void publishState();
@@ -164,6 +175,7 @@ private:
     using KeyFn = int (*)(int sym, int mod, int down);
     using MouseFn = int (*)(int dx, int dy, int buttons);
     using AudioFn = int (*)(int16_t *interleaved, int frames);
+    using CommandFn = int (*)(const char *line, char *out, int outCap, int *needed);
 
     QLibrary *m_library = nullptr;
     QThread *m_thread = nullptr;
@@ -181,6 +193,7 @@ private:
     KeyFn m_keyFn = nullptr;
     MouseFn m_mouseFn = nullptr;
     AudioFn m_audioFn = nullptr;
+    CommandFn m_commandFn = nullptr;
     HostAudio m_audio;
     QMutex m_gate;
     QWaitCondition m_wake;

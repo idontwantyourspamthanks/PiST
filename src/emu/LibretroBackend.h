@@ -128,7 +128,18 @@ private:
     };
     /// Which pane a Text job fills. Carried on the request, never inferred
     /// from the command text (MAJ-12).
-    enum class TextKind { Console, Info, Disasm, DisasmAt, History, Write };
+    enum class TextKind {
+        Console,
+        Info,
+        Disasm,
+        DisasmAt,
+        History,
+        Write,
+        DisasmEngine,
+        ProfileOn,
+        ProfileOff,
+        ProfileSave,
+    };
     struct CoreRequest {
         CoreJob job = CoreJob::Refresh;
         bool keepOnResume = false;

@@ -557,7 +557,10 @@ These are the operational constraints the launch builder must encode.
     runs on that same thread and the text it prints is the hardware report,
     the disassembly, the PC history and the reply in the console. A register
     write and a one-byte memory write are that same line. A successful write
-    prints nothing, and the pane reads the machine again to show it. The core
+    prints nothing, and the pane reads the machine again to show it. A CPU
+    profile is the same line: `profile on` survives Continue, and the save
+    file is what the dock parses. This core has no Capstone, so the save is
+    written by the UAE disassembler into the file it was given. The core
     enables `history cpu` at start, as the subprocess bootstrap script does.
     The macOS archive's notices name the pist-libretro commit that dylib was
     built from.

@@ -95,12 +95,14 @@ already queued so the speed stays 44100 Hz. A key or a mouse move still runs
 during that wait. While the debugger is stopped, playback drains and goes
 quiet.
 
-Profile save and IPF disks are not in this slice. A debugger line is.
+IPF disks are not in this slice. A debugger line is.
 `pist_hatari_command` runs one Hatari debugger line on the owner thread and
 returns the text it printed. That text is the hardware report, the disassembly,
 the PC history and the reply to a command typed in the console. A register
 write and a one-byte memory write are the same call. A successful write prints
-nothing, so the pane reads the machine again. The core enables `history cpu`
+nothing, so the pane reads the machine again. `profile on`, `profile off`
+and `profile save` are the same call, and the dock parses the save file. The
+core enables `history cpu`
 at start, which is what the subprocess bootstrap script does. A line that
 leaves the debugger (`c`, `s`, `n`) drops the hold so the owner runs again; it
 does not clear a step count that line just armed.
@@ -126,6 +128,6 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 9. Sound. `--sound off` is gone, so Hatari's mixer runs. The stub audio open succeeds and does not open a device; `pist_hatari_audio` is how the samples leave. On macOS, AudioQueue plays them. On Linux the same pull discards them, which keeps the mix ring from wrapping during a test. Playback waits for the user to resume past the entry stop, so that run stays fast. After that, the owner thread is paced by the queue.
 10. Colour. The core boots the session's monitor instead of a hardcoded mono. An empty monitor is mono. Anything other than mono, rgb, vga or tv fails the start. The panel already draws whatever size the frame is, so a low-resolution colour screen is just a smaller colour picture.
 11. A debugger line. `pist_hatari_command` captures the text one Hatari debugger line prints. The core enables `history cpu` at start. Hardware info, disassembly, the PC history and a command typed in the console are that call, and the kind of reply is carried with the request rather than read off the text. A line that leaves the debugger drops the hold. A register write (`r D0=$value`) and a byte write (`w b $addr $value`) are the same call. A successful one prints nothing, so the pane reads the machine again.
-12. Profile save is still later. It needs the disassembler choice as well, because the core writes the trace with whichever disassembler is selected.
+12. The profiler. `profile on`, `profile off` and `profile save` are debugger lines, and `profile on` survives Continue so collection actually starts. This core has no Capstone, so the external disassembler is not selected: Hatari would print its usage text and change nothing. The UAE disassembler writes the save to the file it was given, and a debugger line while a profile is already collecting does not throw the counts away. The dock parses that file.
 
-Out of that slice: replacing the Linux and Windows subprocess, profile save, IPF.
+Out of that slice: replacing the Linux and Windows subprocess, IPF.

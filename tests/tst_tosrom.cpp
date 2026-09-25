@@ -14,6 +14,7 @@
 #include "emu/LibretroBackend.h"
 #include "emu/MemoryDump.h"
 #include "emu/Paths.h"
+#include "emu/ProfileData.h"
 #include "emu/SessionConfig.h"
 #include "emu/TosRom.h"
 
@@ -805,6 +806,36 @@ void TstTosRom::libretroCoreDrivesTheEntryStop()
         QCOMPARE(rows.size(), 1);
         QCOMPARE(rows.first().bytes.size(), 1);
         QCOMPARE(rows.first().bytes.at(0), quint8(0xA5));
+    }
+
+    // The same order as Profile Stop: collect, switch disassembler, save,
+    // switch back. The save's file is what the dock parses. The external
+    // engine is absent from this core; the UAE one writes the file.
+    const QString profilePath = QDir(dir.path()).filePath(QStringLiteral("profile.txt"));
+    backend.profileOn();
+    QVERIFY(waitUntilStopped([&] { backend.step(); }));
+    {
+        QEventLoop loop;
+        bool saved = false;
+        const QMetaObject::Connection conn = connect(
+            &backend, &IDebugBackend::profileSaveFinished, &loop, [&](const QString &) {
+                saved = true;
+                loop.quit();
+            });
+        backend.setDisasmEngine(IDebugBackend::DisasmEngine::Ext);
+        backend.profileSave(profilePath);
+        backend.profileOff();
+        backend.setDisasmEngine(IDebugBackend::DisasmEngine::Uae);
+        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+        loop.exec();
+        disconnect(conn);
+        QVERIFY(saved);
+    }
+    {
+        ProfileData profile;
+        QString profileError;
+        QVERIFY2(parseProfile(profilePath, &profile, &profileError), qPrintable(profileError));
+        QVERIFY(!profile.lines.isEmpty());
     }
 
     backend.armBreakpoint(QStringLiteral("b pc = $%1").arg(state.pc, 0, 16));

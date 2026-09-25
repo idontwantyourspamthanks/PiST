@@ -542,14 +542,29 @@ void LibretroBackend::runText(const CoreRequest &request)
         line = QStringLiteral("history %1").arg(qMax(1, request.length));
         break;
     case TextKind::Write:
+    case TextKind::DisasmEngine:
         line = request.text;
+        break;
+    case TextKind::ProfileOn:
+        line = QStringLiteral("profile on");
+        break;
+    case TextKind::ProfileOff:
+        line = QStringLiteral("profile off");
+        break;
+    case TextKind::ProfileSave:
+        line = QStringLiteral("profile save %1").arg(request.text);
         break;
     }
 
     QString text;
     bool continued = false;
     if (!captureCommand(line, &text, &continued)) {
-        emit errorOccurred(tr("The libretro core did not run the debugger command."));
+        // The caller is waiting on the save either way. An error dialog with
+        // no finished signal leaves the profiler on "Saving…".
+        if (kind == TextKind::ProfileSave)
+            emit profileSaveFinished(request.text);
+        else
+            emit errorOccurred(tr("The libretro core did not run the debugger command."));
         return;
     }
 
@@ -583,6 +598,20 @@ void LibretroBackend::runText(const CoreRequest &request)
         }
         if (kind == TextKind::Console)
             emit commandFinished(request.text, text);
+        break;
+    case TextKind::ProfileOn:
+    case TextKind::ProfileOff:
+        for (const QString &row : text.split(QLatin1Char('\n'))) {
+            const QString trimmed = row.trimmed();
+            if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("> ")))
+                continue;
+            emit logLine(trimmed);
+        }
+        break;
+    case TextKind::ProfileSave:
+        emit profileSaveFinished(request.text);
+        break;
+    case TextKind::DisasmEngine:
         break;
     }
 
@@ -877,15 +906,51 @@ void LibretroBackend::readBasepage()
 }
 void LibretroBackend::setDisasmEngine(DisasmEngine engine)
 {
-    Q_UNUSED(engine);
-    notInThisSlice(QStringLiteral("disassembler choice"));
+    // No Capstone in this core. Asking for the external disassembler makes
+    // Hatari print its usage text and change nothing. The UAE disassembler
+    // writes a profile save to the file it was given, so the switch is not
+    // what gets the instructions into the file. Restoring uae still runs, for
+    // a core that does have the other engine.
+    if (engine == DisasmEngine::Ext)
+        return;
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::DisasmEngine);
+    request.text = QStringLiteral("setopt --disasm uae");
+    request.keepOnResume = true;
+    post(request);
 }
-void LibretroBackend::profileOn() { notInThisSlice(QStringLiteral("profile on")); }
-void LibretroBackend::profileOff() { notInThisSlice(QStringLiteral("profile off")); }
+void LibretroBackend::profileOn()
+{
+    // Collection starts on the next continue. Continue must not drop this:
+    // a pruned `profile on` collects nothing while the UI says "Collecting".
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::ProfileOn);
+    request.keepOnResume = true;
+    post(request);
+}
+void LibretroBackend::profileOff()
+{
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::ProfileOff);
+    request.keepOnResume = true;
+    post(request);
+}
 void LibretroBackend::profileSave(const QString &path)
 {
-    Q_UNUSED(path);
-    notInThisSlice(QStringLiteral("profile save"));
+    if (path.trimmed().isEmpty()) {
+        emit errorOccurred(tr("Cannot save a profile without a path."));
+        emit profileSaveFinished(path);
+        return;
+    }
+    CoreRequest request;
+    request.job = CoreJob::Text;
+    request.tag = int(TextKind::ProfileSave);
+    request.text = path;
+    request.keepOnResume = true;
+    post(request);
 }
 void LibretroBackend::breakAtAddressOnce(quint32 address)
 {

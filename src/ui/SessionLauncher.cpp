@@ -57,16 +57,10 @@ void SessionLauncher::launch()
         return;
     }
 
-    // macOS with the sealed dylib and no emulator path of the user's own: the
-    // core runs in-process and arms its own entry stop, so there is no Hatari
-    // to find, probe, or bootstrap. A named path keeps the subprocess. Linux
-    // and Windows never take this branch.
+    // An empty Hatari path with the core library present: the core runs
+    // in-process and arms its own entry stop, so there is no Hatari to find,
+    // probe, or bootstrap. A named path keeps the subprocess.
     const bool inProcess = sessionUsesInProcessCore(
-#ifdef Q_OS_MACOS
-        true,
-#else
-        false,
-#endif
         m_host.settings().hatariPath, QCoreApplication::applicationDirPath());
 
     ToolInfo emulator;

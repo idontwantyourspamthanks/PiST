@@ -108,7 +108,7 @@ private slots:
     void findsBundledRomInMacBundleLayout();
     void libretroCoreSitsInFrameworks();
     void libretroCoreIsFoundInFrameworks();
-    void libretroSessionUsesTheCoreOnMacWhenPresent();
+    void libretroSessionUsesTheCoreWhenPresent();
     void libretroStartFailsWithoutTheCore();
     void libretroCoreDrivesTheEntryStop();
     void hostKeyMapsQtToSdl();
@@ -600,11 +600,11 @@ void TstTosRom::libretroCoreIsFoundInFrameworks()
     QCOMPARE(findLibretroCore(binDir), QDir::cleanPath(core));
 }
 
-void TstTosRom::libretroSessionUsesTheCoreOnMacWhenPresent()
+void TstTosRom::libretroSessionUsesTheCoreWhenPresent()
 {
-    // The launch decision, without a Mac and without a real dylib: present on
-    // macOS with an empty Hatari path, absent otherwise. A named path is the
-    // subprocess escape hatch even when the file exists.
+    // The launch decision, without a real library: an empty Hatari path and a
+    // core file beside the app. A named path is the subprocess escape hatch
+    // even when the file exists. Absent file stays on the subprocess.
     QTemporaryDir tmp;
     QVERIFY(tmp.isValid());
     const QString binDir = QDir(tmp.path()).filePath(QStringLiteral("PiST.app/Contents/MacOS"));
@@ -612,17 +612,15 @@ void TstTosRom::libretroSessionUsesTheCoreOnMacWhenPresent()
     QVERIFY(QDir().mkpath(binDir));
     QVERIFY(QDir().mkpath(coreDir));
 
-    QVERIFY(!sessionUsesInProcessCore(true, QString(), binDir));
-    QVERIFY(!sessionUsesInProcessCore(false, QString(), binDir));
+    QVERIFY(!sessionUsesInProcessCore(QString(), binDir));
 
     const QString core = QDir(coreDir).filePath(libretroCoreFileName());
     QFile file(core);
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.close();
 
-    QVERIFY(sessionUsesInProcessCore(true, QString(), binDir));
-    QVERIFY(!sessionUsesInProcessCore(false, QString(), binDir));
-    QVERIFY(!sessionUsesInProcessCore(true, QStringLiteral("/usr/local/bin/hatari"), binDir));
+    QVERIFY(sessionUsesInProcessCore(QString(), binDir));
+    QVERIFY(!sessionUsesInProcessCore(QStringLiteral("/usr/local/bin/hatari"), binDir));
 }
 
 void TstTosRom::libretroStartFailsWithoutTheCore()

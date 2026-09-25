@@ -180,9 +180,10 @@ The project itself is GPL-2.0-or-later, so in-process linking is permissible *pr
 combined work is conveyed under GPLv2 — Hatari contains three GPL-2.0-**only** files that are
 compiled in (audited in §10). macOS cannot reparent a foreign process window (`WId` is a
 process-local `NSView*`), so the Mac embed is the in-process core in `docs/agents/mac.md`: a
-fork of the Hatari audited in §10, same GPLv2 conveyance. Linux and Windows stay subprocesses,
-because their text transport (§3.3) is cheaper to keep working against an upstream we do not
-control than a compiled-in dependency rebuilt on every release.
+fork of the Hatari audited in §10, same GPLv2 conveyance. Linux and Windows use that
+same core when the project has not named its own Hatari and the library is beside the app.
+A named path stays a subprocess: that text transport (§3.3) is still how a stock Hatari
+is driven, and the release archives still ship the hrdb binary for it.
 
 **IPF disks stay out of the shipped core.** Hatari reads `.ipf` only through the SPS decoder
 library. That licence forbids selling the library or bundling it with a product, including at
@@ -543,12 +544,12 @@ These are the operational constraints the launch builder must encode.
     user is left with no emulator on screen at all — worse than the detached window they had.
     Windows embedding instead adopts the window Hatari already showed (`ui/EmbedWin32.h`), which
     makes every failure path end at the mode that works today.
-15. **On macOS, an empty Hatari path with the dylib present boots the in-process core.**
-    `sessionUsesInProcessCore` is true only then. That launch does not search for a Hatari
-    executable, probe it, open a control socket, or write a bootstrap script: the core arms
-    `b pc = TEXT && pc < $e00000 :once` itself. A project that names its own emulator stays on
-    native or HRDB, including on a Mac that has the dylib. Linux and Windows never take the
-    in-process path. The debug-transport combo does not override an empty path: those values
+15. **An empty Hatari path with the core library present boots the in-process core.**
+    `sessionUsesInProcessCore` is true on every platform then. That launch does not search
+    for a Hatari executable, probe it, open a control socket, or write a bootstrap script:
+    the core arms `b pc = TEXT && pc < $e00000 :once` itself. A project that names its own
+    emulator stays on native or HRDB, including when the library is present. The
+    debug-transport combo does not override an empty path: those values
     select a subprocess channel. A click on the panel focuses it, and while it is
     showing a frame those keys are posted to Hatari's keymap on the owner thread.
     Hatari's own shortcut table is cleared at start, so function keys reach the ST.
@@ -567,8 +568,9 @@ These are the operational constraints the launch builder must encode.
     file is what the dock parses. This core has no Capstone, so the save is
     written by the UAE disassembler into the file it was given. The core
     enables `history cpu` at start, as the subprocess bootstrap script does.
-    The macOS archive's notices name the pist-libretro commit that dylib was
-    built from.
+    Each archive's notices name the pist-libretro commit that library was
+    built from. Linux plays the samples through ALSA and Windows through
+    waveOut; a device that does not open leaves the session silent.
 
 ### 5.1 Bootstrap parse file
 
@@ -1315,22 +1317,22 @@ GPL-2.0-or-later also matches the surrounding ecosystem (Hatari, EmuTOS), which 
 combined distribution and shared tooling straightforward.
 
 **Consequence for Phase 3:** the in-process core is licence-compatible, provided any combined
-distribution is conveyed under GPLv2. It is the macOS embed (`docs/agents/mac.md`), an optional
-backend behind `IDebugBackend`. Linux and Windows stay subprocesses.
+distribution is conveyed under GPLv2. It is the embed in `docs/agents/mac.md`, selected when the
+project names no Hatari of its own and the library is beside the app.
 
 ### What stays out-of-process, and why
 
-On Linux and Windows Hatari still runs as a subprocess. That is driven by platform capability and
-maintenance cost rather than licence necessity, and it keeps that integration surface small:
+A project that names its own Hatari still runs that binary as a subprocess. The Linux and Windows
+archives still ship the hrdb binary for that path. An empty path uses the in-process core.
 
-- macOS cannot reparent a foreign process window. Its embed is the in-process core
-  (`docs/agents/mac.md`). A subprocess there is a detached window; Linux and Windows embed.
-- The debugger transport (§3.3) is text-based and version-gated, which is easier to maintain against
-  an upstream we do not control than a compiled-in dependency.
+- macOS cannot reparent a foreign process window. A named Hatari there is a detached window.
+  Linux and Windows can still embed that subprocess window.
+- The debugger transport (§3.3) is text-based and version-gated, which is how a stock Hatari is
+  driven. The in-process core is the pist-libretro fork, rebuilt for each release.
 
-Bundling Hatari in the Linux AppImage and the Windows archive does not change this: the bundled
-copy is still launched as a separate process, with command-line arguments only, and is never
-patched or linked in (§7).
+The hrdb binary in the Linux AppImage and the Windows archive is still launched as a separate
+process, with command-line arguments only, and is never patched (§7). The in-process library is
+a different build of the pist-libretro fork, linked into the session.
 
 ### Not bundled
 

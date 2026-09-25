@@ -146,10 +146,13 @@ Falcon-specific tooling.
 **Status:** on `feature/libretro-macos`. The plan is [docs/agents/mac.md](agents/mac.md): an
 in-process core forked from the pinned Hatari, loaded as `hatari_libretro.dylib` from
 `Contents/Frameworks`. Launch selects it on macOS when that file is present and the project
-names no Hatari of its own. The release job builds the dylib; a person does not compile on a
+names no Hatari of its own. The same rule selects it on Linux and Windows when
+`hatari_libretro.so` or `hatari_libretro.dll` is beside the executable. A named
+Hatari path stays a subprocess, and those archives still ship the hrdb binary
+for that path. The release job builds the library; a person does not compile on a
 Mac for each release. macOS cannot reparent a foreign process window — `WId` is a process-local
-`NSView*` and AppKit has no cross-process reparenting — so a subprocess stays a detached window
-(`docs/PLAN.md` §3.2). Linux and Windows keep that subprocess.
+`NSView*` and AppKit has no cross-process reparenting — so a subprocess there stays a detached window
+(`docs/PLAN.md` §3.2).
 
 The core is licence-compatible: Hatari contains three GPL-2.0-only files, so a combined work is
 conveyed under GPLv2, which GPL-2.0-or-later permits. The published `libretro/hatari` tree is not

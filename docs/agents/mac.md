@@ -1,7 +1,7 @@
 # macOS emulator: in-process libretro core
 
-The decision, and the build that follows from it. Linux and Windows keep launching
-Hatari as a separate process. macOS cannot put that process's window into the
+The decision, and the build that follows from it. macOS cannot put a Hatari
+process's window into the
 Emulator panel (`WId` is a process-local `NSView*`; AppKit has no
 cross-process reparent), so the Mac release embeds by running the emulator
 inside PiST.
@@ -123,7 +123,7 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 2. The fork's frontend, on branch `pist-libretro` of the pinned Hatari. Bring-up takes the session argv, including `--tos` set to the session path, and does not read `hatari.cfg`. A missing path fails. Two different images come back as the two version words they carry, so a user TOS file replaces EmuTOS by being that path. `pist_hatari_run` returns one frame, or the entry stop (`b pc = TEXT && pc < $e00000 :once`), whichever comes first. Against EmuTOS that is a 640x436 frame and a stop in RAM at the autostarted program. The Linux build still links SDL and forces the dummy video driver. The release dylib, linked against `libm` and `libz` only, is item 4.
 3. The panel draws that frame. `LibretroBackend` runs `pist_hatari_run` on the core's owner thread and copies each frame before the next run. `EmulatorDisplayWidget::setFrame` letterboxes it; a frame queued after `stop()` carries an old epoch and is dropped.
 4. The macOS release job builds the dylib, seals it into the app, and `--diagnose` finds it. `PIST_LIBRETRO_STUB_SDL` compiles Hatari against `src/pist_sdl` instead of SDL, so the link line is libm and libz (plus the platform libc). On Linux that dylib still returns the 640x436 frame and the entry stop. The job copies `hatari_libretro.dylib` into `Contents/Frameworks` before the signature, refuses an `otool -L` that mentions `/opt/homebrew`, and `--diagnose` prints `Libretro core:` with that path. `ENABLE_OSX_BUNDLE` stays off for this build: the dylib is not a Hatari.app.
-5. Session launch selects the backend. On macOS, with the dylib present and an empty Hatari path, Run skips the emulator search, the probe, the control socket, and the bootstrap script, and starts `LibretroBackend`. The core arms the entry breakpoint itself. A named Hatari path, and every Linux and Windows run, stay on the subprocess.
+5. Session launch selects the backend. With the core library present and an empty Hatari path, Run skips the emulator search, the probe, the control socket, and the bootstrap script, and starts `LibretroBackend` on every platform. The core arms the entry breakpoint itself. A named Hatari path stays on the subprocess.
 6. The entry stop can continue. `pist_hatari_step`, `pist_hatari_step_over`, `pist_hatari_resume`, `pist_hatari_pause`, `pist_hatari_registers`, `pist_hatari_basepage`, and the arm and clear calls are implemented in the core. `LibretroBackend` runs them on the owner thread. The snapshot those reads return is what arms file:line breakpoints after the bases arrive.
 7. Keys. The panel takes focus on a click. `qtKeyToSdlSym` turns the Qt key into the SDL keycode Hatari's keymap already maps, and `pist_hatari_key` runs on the owner thread. Hatari's shortcut table is cleared, so a function key is the ST's.
 8. Mouse. Motion over the picture is scaled into ST pixels and posted, with the left and right buttons, as `pist_hatari_mouse` on the owner thread. The host cursor is hidden while a frame is showing, because the ST draws its own; the cursor is a transparent pixmap, because `Qt::BlankCursor` on macOS stops move events after a key. The panel does not grab the pointer, and on macOS it is not a native view: either one stops moves after a key. Hover events carry the motion when mouse-move delivery has stopped. Entering the panel does not fling that pointer. Those deltas become ST packets only from the IKBD autosend interrupt. A frame ends by setting Hatari's quit flag, and that interrupt arms itself again anyway, so a frame boundary cannot retire it.
@@ -132,5 +132,6 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 11. A debugger line. `pist_hatari_command` captures the text one Hatari debugger line prints. The core enables `history cpu` at start. Hardware info, disassembly, the PC history and a command typed in the console are that call, and the kind of reply is carried with the request rather than read off the text. A line that leaves the debugger drops the hold. A register write (`r D0=$value`) and a byte write (`w b $addr $value`) are the same call. A successful one prints nothing, so the pane reads the machine again.
 12. The profiler. `profile on`, `profile off` and `profile save` are debugger lines, and `profile on` survives Continue so collection actually starts. This core has no Capstone, so the external disassembler is not selected: Hatari would print its usage text and change nothing. The UAE disassembler writes the save to the file it was given, and a debugger line while a profile is already collecting does not throw the counts away. The dock parses that file.
 
-Out of that slice: replacing the Linux and Windows subprocess. IPF stays out
-for the licence reason above.
+A named Hatari path stays a subprocess on every platform, and the Linux and
+Windows archives still ship that binary. IPF stays out for the licence reason
+above.

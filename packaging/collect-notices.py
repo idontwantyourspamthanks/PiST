@@ -146,10 +146,10 @@ def main():
                              "final artifact, so a broken deploy still fails loudly.")
     parser.add_argument("--libretro-commit",
                         help="full lowercase sha of the pist-libretro commit the "
-                             "macOS hatari_libretro dylib was built from. The copy "
+                             "in-process core was built from. The copy "
                              "into the app happens after this script, so the "
                              "packaging job names the commit before the file is "
-                             "inside --root. Required when that dylib is already "
+                             "inside --root. Required when that library is already "
                              "in the tree.")
     args = parser.parse_args()
 

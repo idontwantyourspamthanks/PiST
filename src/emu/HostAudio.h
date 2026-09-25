@@ -6,10 +6,11 @@
 
 #include <cstdint>
 
-/// Plays the stereo frames `pist_hatari_audio` copies out. On macOS that is
-/// an AudioQueue at 44100 Hz. Everywhere else `write` discards them: the
-/// pull still has to happen, or Hatari's mix ring wraps, but the Linux
-/// tests must not open a device or block on playback.
+/// Plays the stereo frames `pist_hatari_audio` copies out, at 44100 Hz.
+/// macOS uses an AudioQueue, Linux ALSA when it was found at build time,
+/// Windows waveOut. A build with no player, or a machine whose device does
+/// not open, discards the samples: the pull still has to happen or Hatari's
+/// mix ring wraps, and a headless test must not block on playback.
 class HostAudio
 {
 public:

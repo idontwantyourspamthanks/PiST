@@ -37,8 +37,8 @@ env:
   # The in-process core the macOS app seals into Contents/Frameworks.
   # idontwantyourspamthanks/hatari branch pist-libretro. The checksum is the
   # GitHub archive of that commit, the same check the hrdb pin uses.
-  PIST_HATARI_COMMIT: 4ecf44dee9059cd5a508a01f61bf86f496a375ef
-  PIST_HATARI_SHA256: c7d411a63dd38d95c6e2b5211ddd2c95bf9426cf1f736a77a18593b4f21288ea
+  PIST_HATARI_COMMIT: 001897a968ea3afb37f71e2e39e8e03cc15dd24b
+  PIST_HATARI_SHA256: 3c2d24e54bf7b25681dad968edf92547a560c5f544133d2de94c731c7e1d1084
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -232,12 +232,11 @@ jobs:
           # host, and sidesteps the archive-area policy problem of shipping a
           # non-free assembler (an AppImage is not a distro package, so the DFSG
           # does not apply — only vasm's own redistribution terms do).
-          # emulator: Linux and Windows bundle the hrdb-main fork of Hatari —
-          # on Windows it is what gives the archive pause and live breakpoints,
-          # since the stock Windows build has no control channel. macOS does
-          # not bundle that executable: it links Homebrew SDL2. The Mac app
-          # seals hatari_libretro.dylib instead, built below with SDL stubbed
-          # out so the link line is libm and libz.
+          # emulator: Linux and Windows bundle the hrdb-main fork of Hatari for a
+          # project that names its own emulator. An empty path uses the
+          # in-process core, built below with SDL stubbed out so the link line
+          # is libm and libz. macOS does not bundle the executable: it links
+          # Homebrew SDL2. The Mac app seals hatari_libretro.dylib.
           - name: linux-x86_64
             os: ubuntu-22.04
             vasm_artifact: vasm-linux
@@ -277,12 +276,18 @@ jobs:
           echo "$VLINK_SHA256  vlink.tar.gz" | shasum -a 256 -c - 2>/dev/null \
             || echo "$VLINK_SHA256  vlink.tar.gz" | sha256sum -c -
 
-      # The Mac embed is this dylib, not a Hatari executable. SDL is the stub
-      # in the fork, so nothing from Homebrew is on the link line. The copy
-      # into the app happens in the seal step, which is the last modification
-      # before the signature.
-      - name: Build the in-process core (macOS)
-        if: runner.os == 'macOS'
+      - name: Install core build libraries (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zlib1g-dev libasound2-dev
+
+      # SDL is the stub in the fork, so the core links libm and libz. The Mac
+      # copy into the app happens in the seal step, which is the last
+      # modification before the signature. Linux copies the .so into the
+      # AppDir. Windows builds in the MSYS2 step below, after that toolchain
+      # exists.
+      - name: Build the in-process core (Linux and macOS)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -297,15 +302,27 @@ jobs:
             -DENABLE_OSX_BUNDLE=0 -DENABLE_MAN_PAGES=0 \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build hatari-pist-build --target hatari_libretro --parallel
-          test -f hatari-pist-build/src/hatari_libretro.dylib
-          otool -L hatari-pist-build/src/hatari_libretro.dylib > otool-core.txt
-          cat otool-core.txt
-          if grep -q /opt/homebrew otool-core.txt; then
-            echo "ERROR: the core links Homebrew"
-            exit 1
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            test -f hatari-pist-build/src/hatari_libretro.dylib
+            otool -L hatari-pist-build/src/hatari_libretro.dylib > otool-core.txt
+            cat otool-core.txt
+            if grep -q /opt/homebrew otool-core.txt; then
+              echo "ERROR: the core links Homebrew"
+              exit 1
+            fi
+            grep -q libz otool-core.txt \
+              || { echo "ERROR: the core does not link libz"; exit 1; }
+          else
+            test -f hatari-pist-build/src/hatari_libretro.so
+            ldd hatari-pist-build/src/hatari_libretro.so > ldd-core.txt
+            cat ldd-core.txt
+            if grep -qi 'libSDL' ldd-core.txt; then
+              echo "ERROR: the core links SDL"
+              exit 1
+            fi
+            grep -q libz ldd-core.txt \
+              || { echo "ERROR: the core does not link libz"; exit 1; }
           fi
-          grep -q libz otool-core.txt \
-            || { echo "ERROR: the core does not link libz"; exit 1; }
 
       # xvfb and the ALSA/X libraries are needed for two different reasons: xvfb to
       # run the AppImage at all (the offscreen plugin is deliberately not bundled),
@@ -337,6 +354,34 @@ jobs:
           # joins it (NOTICE, docs/PLAN.md §10).
           variant: hrdb
           destination: ${{ github.workspace }}/bundle/bin
+
+      # MSYS2 ucrt64 is what the Hatari step above installed. The DLL is loaded
+      # by the MSVC pist.exe; its C ABI is the contract, and the ucrt64 runtime
+      # DLLs are copied beside pist.exe once that directory exists.
+      - name: Build the in-process core (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          MSYSTEM: UCRT64
+        run: |
+          set -euo pipefail
+          curl -fsSL -o hatari-pist.tar.gz \
+            "https://github.com/idontwantyourspamthanks/hatari/archive/${PIST_HATARI_COMMIT}.tar.gz"
+          echo "$PIST_HATARI_SHA256  hatari-pist.tar.gz" | sha256sum -c -
+          rm -rf hatari-pist-src
+          mkdir hatari-pist-src
+          tar -xzf hatari-pist.tar.gz -C hatari-pist-src --strip-components=1
+          cmake -S hatari-pist-src -B hatari-pist-build \
+            -G Ninja -DPIST_LIBRETRO=1 -DPIST_LIBRETRO_STUB_SDL=1 \
+            -DENABLE_MAN_PAGES=0 -DCMAKE_BUILD_TYPE=Release
+          cmake --build hatari-pist-build --target hatari_libretro --parallel
+          test -f hatari-pist-build/src/hatari_libretro.dll
+          ldd hatari-pist-build/src/hatari_libretro.dll > ldd-core.txt
+          cat ldd-core.txt
+          if grep -qi 'SDL' ldd-core.txt; then
+            echo "ERROR: the core links SDL"
+            exit 1
+          fi
 
       - uses: actions/download-artifact@v4
         with:
@@ -494,6 +539,21 @@ jobs:
             || echo "note: no CMAKE_CXX_COMPILER line in build/CMakeCache.txt"
           ls -l bundle/bin/msvcp140.dll bundle/bin/vcruntime140.dll bundle/bin/vcruntime140_1.dll
 
+      # Beside pist.exe, which is where findLibretroCore looks. The ucrt64
+      # DLLs the core itself imports come with it; system DLLs do not.
+      - name: Install the in-process core (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          MSYSTEM: UCRT64
+        run: |
+          set -euo pipefail
+          cp hatari-pist-build/src/hatari_libretro.dll bundle/bin/
+          ldd hatari-pist-build/src/hatari_libretro.dll | awk '/ucrt64/ {print $3}' | while read -r dll; do
+            cp "$dll" bundle/bin/
+          done
+          test -f bundle/bin/hatari_libretro.dll
+
       - name: Copy binary (Linux)
         if: '!matrix.deployed'
         shell: bash
@@ -532,6 +592,7 @@ jobs:
           # builds the moment the flag is flipped and then fails confusingly; kept
           # together, a no-emulator build is simply a smaller AppImage.
           cp bundle/bin/vasmm68k_mot bundle/bin/vlink AppDir/usr/bin/
+          cp hatari-pist-build/src/hatari_libretro.so AppDir/usr/bin/
           mkdir -p AppDir/usr/share/emutos
           cp bundle/share/emutos/etos1024k.img AppDir/usr/share/emutos/
           EXE_ARGS=(-e AppDir/usr/bin/pist)
@@ -550,7 +611,8 @@ jobs:
           # --expect-qt; the final artifact's notices are asserted below.
           python3 packaging/collect-notices.py --root AppDir/usr --platform linux \
             --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz \
-            --vlink-tarball vlink.tar.gz --expect-qt
+            --vlink-tarball vlink.tar.gz --expect-qt \
+            --libretro-commit "$PIST_HATARI_COMMIT"
 
 
           export QMAKE="$(command -v qmake6 || command -v qmake)"
@@ -658,6 +720,10 @@ jobs:
           # depends on is the logic being tested. The archive check sets that
           # variable, which is why a bundled ROM that nothing searched still passed
           # the release gate.
+          if ! grep -q 'hatari_libretro.so' diagnose-appimage.txt; then
+            echo "ERROR: the AppImage did not find its in-process core"
+            exit 1
+          fi
           for needle in vasmm68k_mot hatari EmuTOS; do
             if ! grep -q "$needle" diagnose-appimage.txt; then
               echo "ERROR: the AppImage did not report $needle"
@@ -865,6 +931,10 @@ jobs:
           env -i HOME="$PWD/fakehome" PATH=/usr/bin:/bin \
             debx/usr/bin/pist-mcp --version | grep -q pist-mcp \
             || { echo "ERROR: deb pist-mcp not self-contained"; exit 1; }
+          if ! grep -q 'hatari_libretro.so' diagnose-deb.txt; then
+            echo "ERROR: the deb did not find its in-process core"
+            exit 1
+          fi
           for needle in vasmm68k_mot hatari EmuTOS; do
             grep -q "$needle" diagnose-deb.txt \
               || { echo "ERROR: the deb does not report $needle"; cat diagnose-deb.txt; exit 1; }
@@ -910,10 +980,7 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] && PLATFORM=windows
           # The dylib is copied into the app in the seal step, after this.
           # The commit is the source offer for that binary.
-          extra=()
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            extra+=(--libretro-commit "$PIST_HATARI_COMMIT")
-          fi
+          extra=(--libretro-commit "$PIST_HATARI_COMMIT")
           python3 packaging/collect-notices.py --root bundle --platform "$PLATFORM" \
             --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz \
             --vlink-tarball vlink.tar.gz "${extra[@]}"

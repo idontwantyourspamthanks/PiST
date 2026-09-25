@@ -304,9 +304,22 @@ target_link_libraries(pist_build PUBLIC Qt6::Core pist_support)    # subprocess 
 target_link_libraries(pist_debug PUBLIC Qt6::Core pist_build)      # Breakpoint.h includes build/LineMap.h + ProgramLineMap.h
 target_link_libraries(pist_emu PUBLIC Qt6::Core Qt6::Network pist_model)   # emu/TosRom.h includes model/Machine.h
 if(APPLE)
-    # The in-process core's sound. Linux discards the same samples; it does
-    # not link a player. AudioToolbox is a system framework, not a Qt module.
+    # The in-process core's sound. AudioToolbox is a system framework, not a
+    # Qt module.
     target_link_libraries(pist_emu PUBLIC "-framework AudioToolbox")
+elseif(WIN32)
+    # waveOut. A system library, same role as AudioToolbox.
+    target_link_libraries(pist_emu PUBLIC winmm)
+    target_compile_definitions(pist_emu PUBLIC PIST_HOST_AUDIO_WINMM)
+elseif(UNIX)
+    # ALSA when the headers are on the machine. A build without them still
+    # runs: HostAudio discards the samples, which is what the headless tests
+    # need. The release job installs the library so the archive plays sound.
+    find_package(ALSA)
+    if(ALSA_FOUND)
+        target_link_libraries(pist_emu PUBLIC ALSA::ALSA)
+        target_compile_definitions(pist_emu PUBLIC PIST_HOST_AUDIO_ALSA)
+    endif()
 endif()
 target_link_libraries(pist_project PUBLIC Qt6::Core pist_model pist_support)    # ProjectSettings.h includes model/Machine.h, and save() is files::write
 target_link_libraries(pist_toolchain PUBLIC Qt6::Core pist_emu)    # ToolFetch.cpp includes emu/Paths.h

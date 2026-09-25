@@ -313,8 +313,31 @@ void BuildService::runNextStep()
         return;
     }
 
+    // Hatari named as the assembler answers the first vasm flag with
+    // "Unrecognized option", which says nothing about the setting that is wrong.
+    if (QFileInfo(step.program).completeBaseName().startsWith(QLatin1String("hatari"),
+                                                               Qt::CaseInsensitive)) {
+        Diagnostic d;
+        d.severity = Diagnostic::Error;
+        d.message = step.isLinker
+            ? tr("The project's linker path points at Hatari (%1). Hatari's path goes in "
+                 "Settings > Emulator; remove linkerPath from the project file to use the "
+                 "bundled linker.")
+                  .arg(step.program)
+            : tr("The vasmm68k_mot path in Settings > Build points at Hatari (%1). Hatari's "
+                 "path goes in Settings > Emulator; clear the vasmm68k_mot field to use the "
+                 "bundled assembler.")
+                  .arg(step.program);
+        m_diagnostics.append(d);
+        finishBuild(false);
+        return;
+    }
+
     m_stderrBuffer.clear();
     m_stdoutBuffer.clear();
+
+    emit outputLine(QStringLiteral("> ") + QDir::toNativeSeparators(step.program)
+                    + QLatin1Char(' ') + step.arguments.join(QLatin1Char(' ')));
 
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::SeparateChannels);

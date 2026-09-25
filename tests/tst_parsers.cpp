@@ -42,6 +42,7 @@ private slots:
     void lineMapMatchesAbsoluteListingPaths();
     void buildServiceFlushesFinalUnterminatedLine();
     void buildServiceWithoutALinkerSaysSo();
+    void buildServiceRefusesHatariAsTheAssembler();
     void buildServiceRefusesCollidingObjectPaths();
     void symbolTableReadsTheTablesInEitherOrder();
     void floppyImageGeometry();
@@ -506,6 +507,45 @@ void TstParsers::buildServiceWithoutALinkerSaysSo()
     QVERIFY(bs.objectFiles().isEmpty());
     QVERIFY(bs.listingFiles().isEmpty());
     QVERIFY(!bs.isRunning());
+}
+
+// Hatari in the assembler field ran as the assembler and answered vasm's first
+// flag with "Unrecognized option '-quiet'", which names neither the setting nor
+// the fix.
+void TstParsers::buildServiceRefusesHatariAsTheAssembler()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString src = dir.filePath(QStringLiteral("hello.s"));
+    {
+        QFile f(src);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("\ttext\n");
+    }
+
+    BuildService bs;
+    bs.setAssemblerPath(dir.filePath(QStringLiteral("hatari.exe")));
+    bs.setSourceFile(src);
+    bs.setOutputFile(dir.filePath(QStringLiteral("hello.prg")));
+
+    QSignalSpy done(&bs, &BuildService::finished);
+    QStringList messages;
+    bool succeeded = true;
+    connect(&bs, &BuildService::finished, &bs,
+            [&](bool success, const QList<Diagnostic> &diags) {
+                succeeded = success;
+                for (const Diagnostic &d : diags)
+                    messages.append(d.message);
+            });
+    bs.build();
+    if (done.isEmpty())
+        QVERIFY(done.wait(5000));
+
+    QCOMPARE(done.count(), 1);
+    QVERIFY(!succeeded);
+    const QString joined = messages.join(QStringLiteral(" | "));
+    QVERIFY2(joined.contains(QStringLiteral("points at Hatari")), qPrintable(joined));
+    QVERIFY2(!joined.contains(QStringLiteral("Could not run")), qPrintable(joined));
 }
 
 // `a.s` and `a.asm` in one directory both derive `a.o`/`a.lst`: the second

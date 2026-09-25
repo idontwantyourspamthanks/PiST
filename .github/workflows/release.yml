@@ -398,6 +398,8 @@ jobs:
         run: |
           set -euo pipefail
           V="${GITHUB_REF_NAME#v}"
+          # A branch name can contain a slash. Asset filenames are paths.
+          V="${V//\//-}"
           [ -n "$V" ] || V="dev"
           echo "PIST_VERSION=$V" >> "$GITHUB_ENV"
           echo "release version: $V"

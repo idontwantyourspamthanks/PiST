@@ -12,6 +12,7 @@
 #include <QLibrary>
 #include <QMetaObject>
 
+#include <cstdio>
 #include <cstring>
 #include <QMutexLocker>
 #include <QThread>
@@ -174,6 +175,10 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
         return false;
     }
 
+    fprintf(stderr, "pist host: tos='%s' gemdos='%s' program='%s'\n",
+            tos.constData(), gemdos.constData(), program.constData());
+    fflush(stderr);
+
     m_runFn = reinterpret_cast<RunFn>(m_library->resolve("pist_hatari_run"));
     m_haltFn = reinterpret_cast<HaltFn>(m_library->resolve("pist_hatari_stop"));
     m_stepFn = reinterpret_cast<StepFn>(m_library->resolve("pist_hatari_step"));
@@ -289,6 +294,8 @@ void LibretroBackend::pump()
         }
         pullAudio();
         if (stopped) {
+            fprintf(stderr, "pist host: run returned stopped=1\n");
+            fflush(stderr);
             m_stopped = true;
             {
                 QMutexLocker lock(&m_gate);

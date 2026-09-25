@@ -5,6 +5,8 @@
 #include "ui/MainWindow.h"
 #include "emu/HexFormat.h"
 
+#include <cstdio>
+
 #include <QByteArray>
 #include <QImage>
 #include "support/FileWrite.h"
@@ -1215,8 +1217,11 @@ void MainWindow::wireBackend()
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
         // A stop the owner thread queued before stop() joined it. The running
         // edge has already reset the panel.
-        if (stopped && !m_host->isRunning())
+        if (stopped && !m_host->isRunning()) {
+            fprintf(stderr, "pist host: stoppedChanged ignored, session not running\n");
+            fflush(stderr);
             return;
+        }
         // Watchers (remote-control `watch`, the MCP shim) learn the running
         // edge here; the stopped edge waits for onStateUpdated, which has the
         // PC worth reporting.
@@ -1238,6 +1243,10 @@ void MainWindow::wireBackend()
         m_actStepOut->setEnabled(stopped);
         m_actRunToCursor->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
+        fprintf(stderr, "pist host: stoppedChanged stopped=%d resume=%d\n",
+                stopped ? 1 : 0,
+                m_actResume->isEnabled() ? 1 : 0);
+        fflush(stderr);
         updateRunContinueShortcut();
         updateSessionChip();
         updateRegisterStrip();

@@ -1251,6 +1251,7 @@ void MainWindow::wireBackend()
                     m_display->setFrame(view.copy());
                 });
         connect(m_display, &EmulatorDisplayWidget::hostKey, core, &LibretroBackend::postKey);
+        connect(m_display, &EmulatorDisplayWidget::hostMouse, core, &LibretroBackend::postMouse);
     }
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {

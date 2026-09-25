@@ -88,6 +88,9 @@ public:
     /// A host key, already translated to an SDL_Keycode. Queued onto the
     /// owner thread. `sym` 0 is ignored.
     void postKey(int sym, int mod, bool down);
+    /// Relative motion in ST pixels, and the buttons held (bit 0 left,
+    /// bit 1 right). Queued onto the owner thread.
+    void postMouse(int dx, int dy, int buttons);
 
     BackendKind kind() const override { return BackendKind::Libretro; }
 
@@ -119,6 +122,7 @@ private:
         Memory,
         Stack,
         Key,
+        Pointer,
     };
     struct CoreRequest {
         CoreJob job = CoreJob::Refresh;
@@ -152,6 +156,7 @@ private:
     using BaseFn = int (*)(uint32_t *, uint32_t *, uint32_t *);
     using RamFn = void *(*)(size_t *);
     using KeyFn = int (*)(int sym, int mod, int down);
+    using MouseFn = int (*)(int dx, int dy, int buttons);
 
     QLibrary *m_library = nullptr;
     QThread *m_thread = nullptr;
@@ -167,6 +172,7 @@ private:
     BaseFn m_baseFn = nullptr;
     RamFn m_ramFn = nullptr;
     KeyFn m_keyFn = nullptr;
+    MouseFn m_mouseFn = nullptr;
     QMutex m_gate;
     QWaitCondition m_wake;
     QQueue<CoreRequest> m_jobs;

@@ -91,11 +91,18 @@ signals:
     /// A key while this panel is showing an in-process frame and has focus.
     /// `sdlSym` is an SDL_Keycode, `sdlMod` is SDL_Keymod, `down` is a press.
     void hostKey(int sdlSym, int sdlMod, bool down);
+    /// Pointer motion in ST pixels, and the buttons held (bit 0 left, bit 1
+    /// right), while this panel is showing an in-process frame.
+    void hostMouse(int dx, int dy, int buttons);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     bool event(QEvent *event) override;
 
@@ -117,6 +124,12 @@ private:
     /// Release every key this panel still holds, so focus leaving does not
     /// leave a key down inside the ST.
     void releaseHeldKeys();
+    /// Scale one pointer sample into ST pixels and emit it. The first sample
+    /// after entering the panel records the position and does not move.
+    void forwardHostMouse(const QPoint &pos, Qt::MouseButtons buttons);
+    /// Drop a button the host is no longer holding, and forget the pointer
+    /// position so the next entry does not fling the ST cursor.
+    void releaseHostMouse();
 
     class QTimer *m_settleTimer = nullptr;
     int m_settleTicks = 0;
@@ -141,6 +154,12 @@ private:
     bool m_attachFailed = false;
     /// SDL keycodes currently held, so a focus loss can release them.
     QSet<int> m_heldSyms;
+    /// Pointer position in 256ths of a video pixel, and whether one exists.
+    int m_pointerX = 0;
+    int m_pointerY = 0;
+    bool m_havePointer = false;
+    /// Buttons last sent, so a focus loss can release them.
+    int m_pointerButtons = 0;
 };
 
 } // namespace pist

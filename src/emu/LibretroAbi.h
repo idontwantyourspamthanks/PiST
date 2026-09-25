@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* Bump when a field or a function signature changes. */
-#define PIST_HATARI_ABI 2
+#define PIST_HATARI_ABI 3
 
 /* Pixels are QImage::Format_RGB32: a native 32-bit word 0xFFRRGGBB.
  * `pixels` is valid until the next pist_hatari_run or pist_hatari_stop.
@@ -86,6 +86,11 @@ int pist_hatari_clear_breakpoints(void);
  * for a press and 0 for a release. The owner thread is the only legal
  * caller. 0 when the machine is up. */
 int pist_hatari_key(int sym, int mod, int down);
+
+/* Relative motion in ST pixels, and which buttons are held. Bit 0 is the
+ * left button, bit 1 the right. The owner thread is the only legal caller.
+ * 0 when the machine is up. */
+int pist_hatari_mouse(int dx, int dy, int buttons);
 
 #ifdef __cplusplus
 }

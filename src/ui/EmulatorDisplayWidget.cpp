@@ -74,6 +74,8 @@ EmulatorDisplayWidget::EmulatorDisplayWidget(QWidget *parent)
     // window on Linux and Windows takes its own keys; this matters for the
     // in-process frame, which has no window of its own.
     setFocusPolicy(Qt::StrongFocus);
+    // Motion without a button held, so the ST pointer follows the host one.
+    setMouseTracking(true);
 
     // The dock's layout settles over the first moments after launch, and this
     // widget's Qt size can lag the size the underlying X11 window actually ends
@@ -230,6 +232,9 @@ void EmulatorDisplayWidget::setFrame(const QImage &image)
 {
     if (image.isNull())
         return;
+    // The ST draws its own pointer. A host cursor on top of it is a second one.
+    if (m_frame.isNull())
+        setCursor(Qt::BlankCursor);
     m_frame = image;
     m_videoW = image.width();
     m_videoH = image.height();
@@ -241,6 +246,8 @@ void EmulatorDisplayWidget::setFrame(const QImage &image)
 void EmulatorDisplayWidget::clearEmbedded()
 {
     releaseHeldKeys();
+    releaseHostMouse();
+    unsetCursor();
     if (m_attachTimer)
         m_attachTimer->stop();
     releaseForeignWindow(m_childWindow);
@@ -362,14 +369,50 @@ void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
 
 void EmulatorDisplayWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (!m_frame.isNull())
+    if (!m_frame.isNull()) {
         setFocus(Qt::MouseFocusReason);
+        grabMouse();
+        forwardHostMouse(event->pos(), event->buttons());
+    }
     QWidget::mousePressEvent(event);
+}
+
+void EmulatorDisplayWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!m_frame.isNull())
+        forwardHostMouse(event->pos(), event->buttons());
+    QWidget::mouseMoveEvent(event);
+}
+
+void EmulatorDisplayWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!m_frame.isNull())
+        forwardHostMouse(event->pos(), event->buttons());
+    if ((event->buttons() & (Qt::LeftButton | Qt::RightButton)) == 0 && mouseGrabber() == this)
+        releaseMouse();
+    QWidget::mouseReleaseEvent(event);
+}
+
+void EmulatorDisplayWidget::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    // The second press of a double click arrives here, not as mousePressEvent.
+    if (!m_frame.isNull())
+        forwardHostMouse(event->pos(), event->buttons());
+    QWidget::mouseDoubleClickEvent(event);
+}
+
+void EmulatorDisplayWidget::leaveEvent(QEvent *event)
+{
+    m_havePointer = false;
+    QWidget::leaveEvent(event);
 }
 
 void EmulatorDisplayWidget::focusOutEvent(QFocusEvent *event)
 {
     releaseHeldKeys();
+    releaseHostMouse();
+    if (mouseGrabber() == this)
+        releaseMouse();
     QWidget::focusOutEvent(event);
 }
 
@@ -413,6 +456,36 @@ void EmulatorDisplayWidget::releaseHeldKeys()
     m_heldSyms.clear();
     for (int sym : held)
         emit hostKey(sym, 0, false);
+}
+
+void EmulatorDisplayWidget::forwardHostMouse(const QPoint &pos, Qt::MouseButtons buttons)
+{
+    if (m_frame.isNull() || m_videoW <= 0 || m_videoH <= 0)
+        return;
+    const QRect fit = fittedRect(width(), height(), m_videoW, m_videoH);
+    if (fit.width() <= 0 || fit.height() <= 0)
+        return;
+    int x256 = 0;
+    int y256 = 0;
+    widgetToVideo256(pos.x(), pos.y(), fit.x(), fit.y(), fit.width(), fit.height(),
+                     m_videoW, m_videoH, &x256, &y256);
+    int dx = 0;
+    int dy = 0;
+    takePointerDelta(x256, y256, &m_pointerX, &m_pointerY, &m_havePointer, &dx, &dy);
+    const int bits = qtButtonsToHost(int(buttons));
+    if (dx == 0 && dy == 0 && bits == m_pointerButtons)
+        return;
+    m_pointerButtons = bits;
+    emit hostMouse(dx, dy, bits);
+}
+
+void EmulatorDisplayWidget::releaseHostMouse()
+{
+    m_havePointer = false;
+    if (m_pointerButtons == 0)
+        return;
+    m_pointerButtons = 0;
+    emit hostMouse(0, 0, 0);
 }
 
 

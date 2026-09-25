@@ -110,6 +110,7 @@ private slots:
     void libretroStartFailsWithoutTheCore();
     void libretroCoreDrivesTheEntryStop();
     void hostKeyMapsQtToSdl();
+    void hostMouseScalesToVideoPixels();
     void reportsNoBundledDirWhenAbsent();
     void tosSearchPathsIncludesBundledDir();
 
@@ -648,6 +649,34 @@ void TstTosRom::hostKeyMapsQtToSdl()
     QCOMPARE(qtKeyToSdlSym(Qt::Key_unknown), 0);
     QCOMPARE(qtModifiersToSdlMod(Qt::ShiftModifier | Qt::AltModifier), 0x0001 | 0x0100);
     QCOMPARE(qtModifiersToSdlMod(Qt::ControlModifier), 0x0040);
+}
+
+void TstTosRom::hostMouseScalesToVideoPixels()
+{
+    QCOMPARE(qtButtonsToHost(Qt::LeftButton | Qt::RightButton), 3);
+    QCOMPARE(qtButtonsToHost(Qt::MiddleButton), 0);
+
+    int x = 0;
+    int y = 0;
+    // A 640x400 picture stretched to 1280x800: two widget pixels are one ST pixel.
+    widgetToVideo256(2, 4, 0, 0, 1280, 800, 640, 400, &x, &y);
+    QCOMPARE(x, 256);
+    QCOMPARE(y, 512);
+
+    int originX = 0;
+    int originY = 0;
+    int dx = -1;
+    int dy = -1;
+    bool have = false;
+    takePointerDelta(x, y, &originX, &originY, &have, &dx, &dy);
+    QCOMPARE(dx, 0);
+    QCOMPARE(dy, 0);
+    takePointerDelta(x + 256, y + 200, &originX, &originY, &have, &dx, &dy);
+    QCOMPARE(dx, 1);
+    QCOMPARE(dy, 0);
+    takePointerDelta(x + 256, y + 512, &originX, &originY, &have, &dx, &dy);
+    QCOMPARE(dx, 0);
+    QCOMPARE(dy, 2);
 }
 
 void TstTosRom::libretroCoreDrivesTheEntryStop()

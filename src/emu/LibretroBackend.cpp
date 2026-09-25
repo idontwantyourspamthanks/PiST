@@ -178,8 +178,10 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     m_baseFn = reinterpret_cast<BaseFn>(m_library->resolve("pist_hatari_basepage"));
     m_ramFn = reinterpret_cast<RamFn>(m_library->resolve("pist_hatari_ram"));
     m_keyFn = reinterpret_cast<KeyFn>(m_library->resolve("pist_hatari_key"));
+    m_mouseFn = reinterpret_cast<MouseFn>(m_library->resolve("pist_hatari_mouse"));
     if (!m_runFn || !m_haltFn || !m_stepFn || !m_stepOverFn || !m_resumeFn || !m_pauseFn
-        || !m_clearFn || !m_armFn || !m_regsFn || !m_baseFn || !m_ramFn || !m_keyFn) {
+        || !m_clearFn || !m_armFn || !m_regsFn || !m_baseFn || !m_ramFn || !m_keyFn
+        || !m_mouseFn) {
         if (m_haltFn)
             m_haltFn();
         m_runFn = nullptr;
@@ -194,6 +196,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
         m_baseFn = nullptr;
         m_ramFn = nullptr;
         m_keyFn = nullptr;
+        m_mouseFn = nullptr;
         m_library->unload();
         if (error)
             *error = tr("%1 does not export the calls this PiST needs.").arg(found);
@@ -295,6 +298,7 @@ void LibretroBackend::pump()
     m_baseFn = nullptr;
     m_ramFn = nullptr;
     m_keyFn = nullptr;
+    m_mouseFn = nullptr;
 }
 
 void LibretroBackend::post(const CoreRequest &request)
@@ -363,6 +367,10 @@ void LibretroBackend::dispatch(const CoreRequest &request)
     case CoreJob::Key:
         if (m_keyFn)
             m_keyFn(request.tag, request.length, request.address ? 1 : 0);
+        break;
+    case CoreJob::Pointer:
+        if (m_mouseFn)
+            m_mouseFn(request.tag, request.length, int(request.address));
         break;
     }
 }
@@ -509,6 +517,7 @@ void LibretroBackend::stop()
         m_baseFn = nullptr;
         m_ramFn = nullptr;
         m_keyFn = nullptr;
+        m_mouseFn = nullptr;
     }
     if (m_library->isLoaded())
         m_library->unload();
@@ -573,6 +582,19 @@ void LibretroBackend::resume()
     m_jobs = kept;
     m_continueWhenIdle = true;
     m_wake.wakeAll();
+}
+
+void LibretroBackend::postMouse(int dx, int dy, int buttons)
+{
+    if (!m_running)
+        return;
+    CoreRequest request;
+    request.job = CoreJob::Pointer;
+    request.keepOnResume = true;
+    request.tag = dx;
+    request.length = dy;
+    request.address = quint32(buttons);
+    post(request);
 }
 
 void LibretroBackend::postKey(int sym, int mod, bool down)

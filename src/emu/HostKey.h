@@ -98,4 +98,44 @@ inline int qtModifiersToSdlMod(int qtModifiers)
     return mod;
 }
 
+/// Bit 0 is the left button, bit 1 the right. Those are also Qt::LeftButton
+/// and Qt::RightButton, and they are what pist_hatari_mouse reads.
+inline int qtButtonsToHost(int qtButtons)
+{
+    int buttons = 0;
+    if (qtButtons & Qt::LeftButton)
+        buttons |= 1;
+    if (qtButtons & Qt::RightButton)
+        buttons |= 2;
+    return buttons;
+}
+
+/// Widget pixel to 256ths of a video pixel, through the letterboxed rect.
+inline void widgetToVideo256(int widgetX, int widgetY, int fitX, int fitY, int fitW, int fitH,
+                             int videoW, int videoH, int *x256, int *y256)
+{
+    *x256 = fitW > 0 ? int(qint64(widgetX - fitX) * videoW * 256 / fitW) : 0;
+    *y256 = fitH > 0 ? int(qint64(widgetY - fitY) * videoH * 256 / fitH) : 0;
+}
+
+/// Whole ST pixels of motion since the last sample. The first sample records
+/// the position and returns no motion, so entering the panel does not fling
+/// the ST pointer. The leftover fraction stays in the origin.
+inline void takePointerDelta(int videoX256, int videoY256, int *originX256, int *originY256,
+                             bool *have, int *dx, int *dy)
+{
+    if (!*have) {
+        *originX256 = videoX256;
+        *originY256 = videoY256;
+        *have = true;
+        *dx = 0;
+        *dy = 0;
+        return;
+    }
+    *dx = (videoX256 - *originX256) / 256;
+    *dy = (videoY256 - *originY256) / 256;
+    *originX256 += *dx * 256;
+    *originY256 += *dy * 256;
+}
+
 } // namespace pist

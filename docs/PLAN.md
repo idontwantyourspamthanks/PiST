@@ -547,6 +547,9 @@ These are the operational constraints the launch builder must encode.
     select a subprocess channel. A click on the panel focuses it, and while it is
     showing a frame those keys are posted to Hatari's keymap on the owner thread.
     Hatari's own shortcut table is cleared at start, so function keys reach the ST.
+    Pointer motion over that frame is scaled into ST pixels and posted the same
+    way, with the left and right buttons. The host cursor is hidden; the ST draws
+    its own.
 
 ### 5.1 Bootstrap parse file
 

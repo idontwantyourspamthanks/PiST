@@ -14,7 +14,19 @@ BIN=build/pist
 
 if [ ! -x "$BIN" ] || [ -n "$(find src CMakeLists.txt -newer "$BIN" -print -quit 2>/dev/null)" ]; then
     echo "Building PiST..."
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+    # Homebrew's Qt is keg-only: it is not on CMake's default search path.
+    # The release disk image already contains Qt; this script is a source build.
+    prefix_args=
+    if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        qt_prefix="$(brew --prefix qt 2>/dev/null || true)"
+        if [ -n "$qt_prefix" ] && [ -d "$qt_prefix/lib/cmake/Qt6" ]; then
+            prefix_args="-DCMAKE_PREFIX_PATH=$qt_prefix"
+        else
+            echo "Qt 6 was not found. A source build needs it: brew install qt" >&2
+            exit 1
+        fi
+    fi
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug $prefix_args
     cmake --build build --parallel
 fi
 

@@ -29,7 +29,7 @@ struct HostAudio::Impl
     };
 
     AudioQueueRef queue = nullptr;
-    Slot slots[kBuffers];
+    Slot buffers[kBuffers];
     std::vector<int16_t> pending;
     size_t read = 0;
     bool open = false;
@@ -43,7 +43,7 @@ struct HostAudio::Impl
         std::lock_guard<std::mutex> lock(self->mu);
         if (!self->open)
             return;
-        for (auto &slot : self->slots) {
+        for (auto &slot : self->buffers) {
             if (slot.ref == buf)
                 slot.busy = false;
         }
@@ -52,7 +52,7 @@ struct HostAudio::Impl
     int queuedFramesLocked() const
     {
         int frames = int((pending.size() - read) / 2);
-        for (const auto &slot : slots) {
+        for (const auto &slot : buffers) {
             if (slot.busy)
                 frames += kFrames;
         }
@@ -77,7 +77,7 @@ struct HostAudio::Impl
             warned = true;
             return;
         }
-        for (auto &slot : slots) {
+        for (auto &slot : buffers) {
             if (AudioQueueAllocateBuffer(queue, kFrames * 4, &slot.ref) != noErr) {
                 qWarning("PiST: AudioQueue output did not open");
                 AudioQueueDispose(queue, true);
@@ -118,7 +118,7 @@ struct HostAudio::Impl
             return;
         while ((pending.size() - read) / 2 >= size_t(kFrames)) {
             Slot *slot = nullptr;
-            for (auto &candidate : slots) {
+            for (auto &candidate : buffers) {
                 if (!candidate.busy) {
                     slot = &candidate;
                     break;
@@ -201,7 +201,7 @@ void HostAudio::close()
         m_impl->started = false;
         queue = m_impl->queue;
         m_impl->queue = nullptr;
-        for (auto &slot : m_impl->slots) {
+        for (auto &slot : m_impl->buffers) {
             slot.ref = nullptr;
             slot.busy = false;
         }

@@ -4131,7 +4131,9 @@ void TstGui::programPathUsesHostSeparators()
     // Hatari 2.6.1 Opt_HandleArgument splits the positional with
     // strrchr(path, PATHSEP). PATHSEP is '\\' on Windows, and a Qt path has
     // none, so the GEMDOS drive becomes the process working directory and the
-    // autostart name is the whole "C:/proj/hello.prg" string.
+    // autostart name is the whole "C:/proj/hello.prg" string. The in-process
+    // session uses the same hatariHostPath() rewrite; it does not go through
+    // toArgv().
     SessionConfig config;
     config.hatariPath = QStringLiteral("hatari");
     config.gemdosDir = QStringLiteral("C:/proj");

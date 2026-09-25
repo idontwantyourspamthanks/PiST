@@ -8,28 +8,18 @@
 
 namespace pist {
 
-namespace {
-
-// Hatari's Windows build splits the positional program argument on PATHSEP
-// ('\\') in Opt_HandleArgument. Qt paths use '/', so "C:/proj/hello.prg" has
-// no backslash: Hatari then mounts the process working directory as the
-// GEMDOS HD and autostarts a program whose name is the whole Windows path,
-// which TOS cannot open. Native separators make that split find the real
-// directory and the real filename. On other hosts this is a no-op.
-QString hostPath(const QString &path)
+QString hatariHostPath(const QString &path)
 {
     return QDir::toNativeSeparators(path);
 }
 
-} // namespace
-
 QStringList SessionConfig::toArgv() const
 {
     QStringList argv;
-    argv << hostPath(hatariPath);
+    argv << hatariHostPath(hatariPath);
 
     if (!tosPath.isEmpty())
-        argv << QStringLiteral("--tos") << hostPath(tosPath);
+        argv << QStringLiteral("--tos") << hatariHostPath(tosPath);
 
     argv << QStringLiteral("--machine") << machine;
 
@@ -40,7 +30,7 @@ QStringList SessionConfig::toArgv() const
 
     if (!acsiImage.isEmpty()) {
         argv << QStringLiteral("--acsi")
-             << QStringLiteral("%1=%2").arg(acsiId).arg(hostPath(acsiImage));
+             << QStringLiteral("%1=%2").arg(acsiId).arg(hatariHostPath(acsiImage));
     }
 
     // Floppy drives are individually addressed; there is no generic --disk.
@@ -49,7 +39,7 @@ QStringList SessionConfig::toArgv() const
     const bool userDiskA = floppyImages.size() > 0 && !floppyImages.at(0).isEmpty();
     for (int i = 0; i < floppyImages.size() && i < 2; ++i) {
         if (!floppyImages.at(i).isEmpty()) {
-            argv << QString::fromLatin1(floppyOpts[i]) << hostPath(floppyImages.at(i));
+            argv << QString::fromLatin1(floppyOpts[i]) << hatariHostPath(floppyImages.at(i));
             userFloppy = true;
         }
     }
@@ -77,14 +67,14 @@ QStringList SessionConfig::toArgv() const
     // image to B: when TOS actually needs A: for autostart.
     const bool autoBoot = !bootFloppyPath.isEmpty() && !userDiskA;
     if (autoBoot) {
-        argv << QStringLiteral("--disk-a") << hostPath(bootFloppyPath);
+        argv << QStringLiteral("--disk-a") << hatariHostPath(bootFloppyPath);
         if (debugToggle)
             argv << QStringLiteral("--debug");
     } else if (!gemdosDir.isEmpty()) {
-        argv << QStringLiteral("-d") << hostPath(gemdosDir);
+        argv << QStringLiteral("-d") << hatariHostPath(gemdosDir);
     }
     if (!bootstrapScriptPath.isEmpty())
-        argv << QStringLiteral("--parse") << hostPath(bootstrapScriptPath);
+        argv << QStringLiteral("--parse") << hatariHostPath(bootstrapScriptPath);
 
     // Break in on the faults that mean the program under test is broken.
     // `hasDebugExcept` is checked by the caller, which leaves this empty on a
@@ -95,7 +85,7 @@ QStringList SessionConfig::toArgv() const
     // Omitted entirely when the emulator has no control-socket support; see the
     // field comment.
     if (!controlSocketPath.isEmpty())
-        argv << QStringLiteral("--control-socket") << hostPath(controlSocketPath);
+        argv << QStringLiteral("--control-socket") << hatariHostPath(controlSocketPath);
 
     argv << extraArgs;
 
@@ -105,7 +95,7 @@ QStringList SessionConfig::toArgv() const
     // On the AUTO-folder path there is no positional: the program boots from
     // the floppy (and a positional would wrongly also mount a GEMDOS HD).
     if (!programPath.isEmpty() && !autoBoot)
-        argv << hostPath(programPath);
+        argv << hatariHostPath(programPath);
 
     return argv;
 }

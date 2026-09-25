@@ -134,13 +134,17 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
 
     // QByteArray storage has to outlive the call: the core reads the pointers
     // during start and must not be handed a temporary's buffer.
-    const QByteArray tos = config.tosPath.toUtf8();
-    const QByteArray gemdos = config.gemdosDir.toUtf8();
-    const QByteArray program = config.programPath.toUtf8();
+    // hatariHostPath() is load-bearing on Windows. The core's option parser
+    // splits the program on '\\'. A Qt "C:/proj/hello.prg" has none, so the
+    // GEMDOS drive becomes the process working directory (the install folder
+    // for a packaged build) and the program never autostarts.
+    const QByteArray tos = hatariHostPath(config.tosPath).toUtf8();
+    const QByteArray gemdos = hatariHostPath(config.gemdosDir).toUtf8();
+    const QByteArray program = hatariHostPath(config.programPath).toUtf8();
     const QString diskAPath = !config.bootFloppyPath.isEmpty() ? config.bootFloppyPath
                                                                : config.floppyImages.value(0);
-    const QByteArray diskA = diskAPath.toUtf8();
-    const QByteArray diskB = config.floppyImages.value(1).toUtf8();
+    const QByteArray diskA = hatariHostPath(diskAPath).toUtf8();
+    const QByteArray diskB = hatariHostPath(config.floppyImages.value(1)).toUtf8();
     const QByteArray machine = config.machine.toUtf8();
     const QByteArray monitor = config.monitor.toUtf8();
     const auto cstr = [](const QString &text, const QByteArray &bytes) {

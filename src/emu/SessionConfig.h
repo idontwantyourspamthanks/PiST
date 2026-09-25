@@ -10,6 +10,14 @@
 
 namespace pist {
 
+/// Hatari on Windows splits a program path with `strrchr(path, '\\')`. Qt
+/// stores `C:/proj/hello.prg`, which has no backslash, so Hatari mounts the
+/// process working directory as the GEMDOS drive and tries to autostart a
+/// program whose name is the whole Windows path. Native separators make the
+/// split find the directory and the filename. A no-op on other hosts.
+/// Both `SessionConfig::toArgv()` and the in-process session use this.
+QString hatariHostPath(const QString &path);
+
 /// Everything needed to launch one emulator session.
 ///
 /// This is deliberately a plain value type: the IDE expresses emulator state as

@@ -555,20 +555,12 @@ private:
     /// produced, and load the linker's placement map when there was a link.
     void rebuildProgramMap();
 
-    /// Whether the emulator's display can be embedded in this session. Two
-    /// platforms, two mechanisms: on X11 (xcb) Hatari reparents itself into the
-    /// container and reports its video size over the control socket, so both are
-    /// preconditions there; on Windows PiST adopts Hatari's own window
-    /// (ui/EmbedWin32.h) and reads the size from it, so neither is. When false
-    /// the option is disabled and the emulator runs as a separate window
-    /// regardless of the setting.
+    /// Whether a subprocess Hatari can be reparented into the Emulator panel.
+    /// On X11 (xcb) Hatari reparents itself and reports its video size over the
+    /// control socket, so both are preconditions there. On Windows PiST adopts
+    /// Hatari's own window (ui/EmbedWin32.h). When false, that subprocess keeps
+    /// its own window. The in-process core draws into the panel either way.
     bool canEmbedDisplay(const HatariCapabilities &caps) const;
-
-    /// The embedded/separate display preference. Applies on the next Run; a
-    /// running session keeps the mode it was launched with. Persisted as an
-    /// application setting, because it is a view choice, not a project one.
-    void setDisplayEmbedded(bool on);
-    void updateEmbedActionState();
 
     /// Per-session working directory, kept short so the control socket path fits
     /// in sockaddr_un::sun_path.
@@ -645,18 +637,14 @@ private:
     /// The most recent machine state, kept so the remote-control interface can
     /// answer `state` without touching the emulator.
     MachineState m_lastState;
-    /// The dock and widget that host the emulator's display in embedded mode.
-    /// The dock is hidden in separate-window mode.
+    /// The dock and widget that host the emulator's picture.
     QDockWidget *m_displayDock = nullptr;
     EmulatorDisplayWidget *m_display = nullptr;
 
-    /// The embedded/separate display preference. Persisted via QSettings.
-    bool m_embeddedDisplay = false;
-
-    /// Whether the preference above is a stored choice or still the default:
-    /// only the default yields to a platform that cannot embed, and only until
-    /// the user chooses.
-    bool m_embeddedDisplayChosen = false;
+    /// The Emulator panel is where the picture lives. A subprocess is reparented
+    /// into it only when `canEmbedDisplay` is true; the in-process core draws
+    /// there regardless.
+    bool m_embeddedDisplay = true;
 
     /// True while the embedded video is input-transparent for an in-progress
     /// title-bar/tab drag, so the restore only runs once and only when needed.
@@ -806,7 +794,6 @@ private:
     QAction *m_actBuild = nullptr;
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
-    QAction *m_actEmbedDisplay = nullptr;
     QAction *m_actNextDiagnostic = nullptr;
     QAction *m_actPrevDiagnostic = nullptr;
     QAction *m_actStep = nullptr;

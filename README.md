@@ -405,11 +405,10 @@ ticking a pre-shifted block is what makes the motion fine (2 px with 8 copies).
 
 ## Emulator embedding
 
-`PiST` can run the emulator's display **inside the IDE** instead of in a separate
-window: **View ▸ Embed emulator display**. Embedding is the default wherever it
-works, the preference is remembered, and a first run on a platform that cannot
-embed stays detached rather than opening a panel that can never fill. The
-mechanism differs by platform, because neither one generalises:
+The emulator's picture lives in the Emulator panel. An empty Hatari path draws
+it there from the in-process core. A project that names its own Hatari still
+reparents that process's window into the same panel where the platform can.
+The mechanism differs by platform, because neither one generalises:
 
 - **Linux / X11** — reparenting done by the emulator: `PiST` names the panel's X11
   window in `PARENT_WIN_ID`, and Hatari attaches its own SDL window to it. This
@@ -422,9 +421,8 @@ mechanism differs by platform, because neither one generalises:
 - **macOS** — not possible: a foreign process's window cannot be reparented there
   (`WId` is a process-local `NSView*`).
 
-Where embedding is not possible the option is unavailable and the emulator
-always runs as a separate window. A panel with nothing embedded says what it is
-waiting for, rather than showing an unexplained black rectangle.
+Where a subprocess cannot be reparented it keeps its own window. The panel
+says what it is waiting for, rather than showing an unexplained black rectangle.
 
 ## TOS ROMs
 

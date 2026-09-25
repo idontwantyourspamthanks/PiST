@@ -356,10 +356,9 @@ works, and the panel says so. Input queues are deliberately *not* attached (`Att
 Hatari pumps no messages while stopped in its debugger (`src/debug/debugui.c` never calls
 `SDL_PumpEvents`), so coupling the two queues would freeze the IDE at every breakpoint.
 
-The preference defaults to embedded. A first run with no stored choice on a platform that cannot
-embed (macOS, Wayland without XWayland) stays detached instead of opening a panel that can never
-fill: the toolchain probe reconciles the default against `canEmbedDisplay()` once, and a stored
-choice — either way — always wins (`m_embeddedDisplayChosen`).
+The Emulator panel is always where the picture lives. There is no menu toggle.
+The in-process core draws into it. A subprocess is reparented into it only when
+`canEmbedDisplay()` is true; otherwise that subprocess keeps its own window.
 
 ### Panels, docks and the event filter
 

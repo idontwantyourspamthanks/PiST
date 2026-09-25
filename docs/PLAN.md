@@ -440,6 +440,12 @@ These are the operational constraints the launch builder must encode.
    directory with a trailing separator, and the large-file CRT rejects a trailing `\`,
    so the program file was invisible. `host_dir_for_listing()` strips that separator
    before `opendir`. The AUTO line remains when the folder is absent.
+   With the drive correct, EmuTOS still reaches the desktop and never Pexecs the
+   program. The autostart text is a `tmpfile()` stream. This core is built with
+   `_FILE_OFFSET_BITS=64`, so GEMDOS sizes that stream with `fseeko` (`_fseeki64`
+   on UCRT), the seek fails, and the `C:\EMUDESK.INF` read comes back empty. The
+   `#Z` line is never seen. The Windows temp file is a normal file opened with
+   `FILE_FLAG_DELETE_ON_CLOSE`, and a failed 64-bit seek falls back to `fseek`.
 2. **`--gemdos-drive` takes a drive letter only** (`C`–`Z`, or `skip`). The host directory comes
    from the positional argument. Never pass a directory to it.
 3. **Autostart requires TOS ≥ 1.04.** Autostart is implemented via `C:\EMUDESK.INF`, and

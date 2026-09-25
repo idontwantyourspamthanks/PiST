@@ -144,6 +144,13 @@ def main():
                              "ship its notice without the marker check. The archive "
                              "verification then asserts the text is present in the "
                              "final artifact, so a broken deploy still fails loudly.")
+    parser.add_argument("--libretro-commit",
+                        help="full lowercase sha of the pist-libretro commit the "
+                             "macOS hatari_libretro dylib was built from. The copy "
+                             "into the app happens after this script, so the "
+                             "packaging job names the commit before the file is "
+                             "inside --root. Required when that dylib is already "
+                             "in the tree.")
     args = parser.parse_args()
 
     root = args.root
@@ -244,6 +251,26 @@ def main():
                                "source: https://www.hatari-emu.org/ (pinned tarball)"))
         if args.platform != "windows":
             found_libs.update(linked_libraries(hatari, args.platform))
+
+    # The macOS app ships hatari_libretro.dylib, not a Hatari executable, and
+    # the copy into the bundle happens after this script. --libretro-commit
+    # is how that archive's source offer names the pist-libretro commit.
+    libretro = find_binary(root, {"hatari_libretro.dylib", "hatari_libretro.so",
+                                  "hatari_libretro.dll"})
+    if libretro and not args.libretro_commit:
+        fail("hatari_libretro is in the bundle but --libretro-commit was not given: "
+             "the source offer has to name the commit it was built from")
+    if args.libretro_commit:
+        commit = args.libretro_commit.strip()
+        if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+            fail("--libretro-commit must be the full lowercase sha of the pist-libretro commit")
+        components.append(("Hatari (pist-libretro: in-process core hatari_libretro)",
+                           "GPL v2 as conveyed (upstream v2 or later)",
+                           ["GPL-2.0.txt"],
+                           "source: https://github.com/idontwantyourspamthanks/hatari "
+                           "— pinned commit " + commit))
+        if libretro and args.platform != "windows":
+            found_libs.update(linked_libraries(libretro, args.platform))
     found_libs.update(bundled_library_names(root))
 
     known_found = []

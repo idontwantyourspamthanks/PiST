@@ -44,8 +44,9 @@ does not drop a breakpoint arm that is already queued: the owner applies
 those arms before it lets the CPU run again.
 
 `pist_hatari_start` takes the session PiST already builds: TOS path, GEMDOS
-directory, program path, optional floppies, the Hatari `--machine` name, RAM in
-MiB. That is how a PRG is autostarted today. `retro_load_game` on the published
+directory, program path, optional floppies, the Hatari `--machine` name, the
+`--monitor` name (mono, rgb, vga or tv), and RAM in MiB. That is how a PRG
+is autostarted today. `retro_load_game` on the published
 core only understands disk images and a `.gem` directory that boots from
 `BOOT.ST`, which is the wrong shape for an IDE.
 
@@ -118,6 +119,7 @@ the dylib was built from. The audit and the conveyance rule are `docs/PLAN.md`
 7. Keys. The panel takes focus on a click. `qtKeyToSdlSym` turns the Qt key into the SDL keycode Hatari's keymap already maps, and `pist_hatari_key` runs on the owner thread. Hatari's shortcut table is cleared, so a function key is the ST's.
 8. Mouse. Motion over the picture is scaled into ST pixels and posted, with the left and right buttons, as `pist_hatari_mouse` on the owner thread. The host cursor is hidden while a frame is showing, because the ST draws its own; the cursor is a transparent pixmap, because `Qt::BlankCursor` on macOS stops move events after a key. The panel does not grab the pointer, and on macOS it is not a native view: either one stops moves after a key. Hover events carry the motion when mouse-move delivery has stopped. Entering the panel does not fling that pointer. Those deltas become ST packets only from the IKBD autosend interrupt. A frame ends by setting Hatari's quit flag, and that interrupt arms itself again anyway, so a frame boundary cannot retire it.
 9. Sound. `--sound off` is gone, so Hatari's mixer runs. The stub audio open succeeds and does not open a device; `pist_hatari_audio` is how the samples leave. On macOS, AudioQueue plays them. On Linux the same pull discards them, which keeps the mix ring from wrapping during a test. Playback waits for the user to resume past the entry stop, so that run stays fast. After that, the owner thread is paced by the queue.
+10. Colour. The core boots the session's monitor instead of a hardcoded mono. An empty monitor is mono. Anything other than mono, rgb, vga or tv fails the start. The panel already draws whatever size the frame is, so a low-resolution colour screen is just a smaller colour picture.
 
 Out of that slice: replacing the Linux and Windows subprocess, the console,
 profile save, IPF.

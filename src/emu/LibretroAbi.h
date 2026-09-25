@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 /* Bump when a field or a function signature changes. */
-#define PIST_HATARI_ABI 4
+#define PIST_HATARI_ABI 5
 
 /* Pixels are QImage::Format_RGB32: a native 32-bit word 0xFFRRGGBB.
  * `pixels` is valid until the next pist_hatari_run or pist_hatari_stop.
@@ -33,7 +33,8 @@ typedef struct PistHatariFrame {
 
 /* The session PiST already builds for a subprocess launch. Strings are
  * UTF-8, NUL-terminated, and may be NULL when that piece is absent.
- * `machine` is Hatari's --machine name (st, ste, megast, megaste, tt, falcon). */
+ * `machine` is Hatari's --machine name (st, ste, megast, megaste, tt, falcon).
+ * `monitor` is Hatari's --monitor name: mono, rgb, vga or tv. NULL is mono. */
 typedef struct PistHatariSession {
     int abi;
     const char *tosPath;
@@ -42,6 +43,7 @@ typedef struct PistHatariSession {
     const char *diskA;
     const char *diskB;
     const char *machine;
+    const char *monitor;
     int memSizeMiB;
 } PistHatariSession;
 

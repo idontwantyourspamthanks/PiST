@@ -94,8 +94,15 @@ hatari — the emulator
 
     This applies to the Linux AppImage and the Windows archive. The Windows
     build is compiled with MSYS2 ucrt64 from the same pinned commit and ships
-    its runtime DLLs (SDL2, libpng, zlib, the GCC runtime) beside the exe. The
-    macOS archive still requires the user to install Hatari themselves
+    its runtime DLLs (SDL2, libpng, zlib, the GCC runtime) beside the exe.
+
+    The macOS app does not ship that subprocess. It ships hatari_libretro.dylib,
+    the in-process core, built from the pist-libretro branch of
+    https://github.com/idontwantyourspamthanks/hatari
+    That core is a modified Hatari (its libretro frontend and the SDL stub).
+    Each macOS archive's generated THIRD-PARTY.txt names the commit the dylib
+    was built from; that commit is the corresponding source. A source build,
+    or a session that names its own Hatari, still uses a separate process
     (`brew install hatari` carries 2.6.1).
 
 readline — NOT redistributed

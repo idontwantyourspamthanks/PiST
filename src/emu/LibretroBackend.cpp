@@ -140,6 +140,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     const QByteArray diskA = diskAPath.toUtf8();
     const QByteArray diskB = config.floppyImages.value(1).toUtf8();
     const QByteArray machine = config.machine.toUtf8();
+    const QByteArray monitor = config.monitor.toUtf8();
     const auto cstr = [](const QString &text, const QByteArray &bytes) {
         return text.isEmpty() ? nullptr : bytes.constData();
     };
@@ -152,6 +153,7 @@ bool LibretroBackend::start(const SessionConfig &config, QString *error)
     session.diskA = cstr(diskAPath, diskA);
     session.diskB = config.floppyImages.value(1).isEmpty() ? nullptr : diskB.constData();
     session.machine = cstr(config.machine, machine);
+    session.monitor = cstr(config.monitor, monitor);
     session.memSizeMiB = config.memSizeMiB;
 
     char coreError[512] = {};

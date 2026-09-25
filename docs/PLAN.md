@@ -552,7 +552,9 @@ These are the operational constraints the launch builder must encode.
     its own. Sound is off during the fast run up to the entry stop, then each
     frame's samples are played at 44100 Hz. The owner waits when playback is
     ahead, and a key or a mouse move still runs during that wait. A stop lets
-    the queue drain.
+    the queue drain. The session's monitor is the core's `--monitor`, so a
+    colour monitor is a colour frame. The macOS archive's notices name the
+    pist-libretro commit that dylib was built from.
 
 ### 5.1 Bootstrap parse file
 
@@ -746,7 +748,9 @@ Remaining assessments:
   the **Linux AppImage and the Windows archive additionally bundle Hatari**,
   built from the pinned hrdb-main fork commit (upstream 2.6.1 plus the
   remote-debug listener) by the same action CI uses (see §2.4 for why no
-  distribution package will do). The macOS archive still does not bundle it. No
+  distribution package will do). The macOS disk image bundles
+  `hatari_libretro.dylib` instead, and that archive's notices name the
+  pist-libretro commit it was built from. No
   PiST source change was needed: tool discovery already looks beside the
   executable first, so the bundled copy is found on its own.
 - **Verified end to end from a downloaded archive**: the shipped assembler builds
@@ -977,9 +981,9 @@ Where each component comes from, kept deliberately separate from the source tree
 | Context | vasm | Hatari |
 |---|---|---|
 | **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; built from the checksum-pinned fork commit at packaging and CI time |
-| **Release artifacts** (Linux AppImage + deb/RPM; Windows archive + MSI; macOS dmg + archive) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage and the Windows archive — and the bundled build is the **hrdb-main fork** (upstream 2.6.1 + the remote-debug listener), built unmodified from a checksum-pinned commit tarball (MSYS2 ucrt64 on Windows, runtime DLLs beside the exe); the probe selects HRDB for it automatically. The macOS archive leaves the emulator to the user (`brew install hatari` carries 2.6.1) |
+| **Release artifacts** (Linux AppImage + deb/RPM; Windows archive + MSI; macOS dmg + archive) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage and the Windows archive — and the bundled build is the **hrdb-main fork** (upstream 2.6.1 + the remote-debug listener), built unmodified from a checksum-pinned commit tarball (MSYS2 ucrt64 on Windows, runtime DLLs beside the exe); the probe selects HRDB for it automatically. The macOS disk image bundles `hatari_libretro.dylib` from the pist-libretro commit named in that archive's THIRD-PARTY.txt. A source build still leaves Hatari to the user (`brew install hatari` carries 2.6.1) |
 | **Linux distro package** | Optional dependency; the distro's `vasm` package is used if present | Not usable as supplied: 22.04 ships 2.3.1 and 24.04 ships 2.4.1, below the 2.6.1 the IDE is verified against (§2.4) |
-| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the bundled archives need none. The unprompted startup prompt fires whenever *any* piece is missing — including the emulator, which is the only gap on the macOS archive — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
+| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the bundled archives need none. The unprompted startup prompt fires whenever *any* piece is missing — a source build on macOS still lacks an emulator — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
 
 This yields one-click setup on Linux and Windows — and on macOS for everything but the emulator —
 without placing non-free bytes in the repository, and without ever breaching vasm's no-modification
@@ -1316,10 +1320,11 @@ patched or linked in (§7).
 
 ### Not bundled
 
-Original Atari TOS ROMs remain user-supplied (proprietary). Hatari is bundled in the Linux AppImage
-and the Windows archive, but not in the macOS archive, nor in a source build; where it is absent, PiST reports it
-and points at where to get it. Everything else needed to build and run assembly out of the box is
-bundleable — see §7.
+Original Atari TOS ROMs remain user-supplied (proprietary). The Linux AppImage and the Windows
+archive bundle the hrdb Hatari executable. The macOS disk image bundles `hatari_libretro.dylib`,
+and its notices name that commit. A source build bundles neither; where the emulator is absent,
+PiST reports it and points at where to get it. Everything else needed to build and run assembly
+out of the box is bundleable — see §7.
 
 ---
 

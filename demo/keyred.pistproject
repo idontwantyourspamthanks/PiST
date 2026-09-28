@@ -1,0 +1,23 @@
+{
+    "build": {
+        "defines": [],
+        "includePaths": [],
+        "sources": [
+            "keyred.s"
+        ]
+    },
+    "emulator": {
+        "fastForward": true,
+        "floppyImages": [
+            "",
+            ""
+        ],
+        "hardDiskImage": "",
+        "hatariPath": "",
+        "machine": "st",
+        "memSizeMiB": 1,
+        "monitor": "rgb",
+        "tosPath": ""
+    },
+    "version": 1
+}

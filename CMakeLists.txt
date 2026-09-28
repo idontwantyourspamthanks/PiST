@@ -131,6 +131,7 @@ pist_module(pist_emu
     src/emu/ProfileData.h
     src/emu/EmulatorHost.cpp
     src/emu/EmulatorHost.h
+    src/emu/DebugBackend.cpp
     src/emu/DebugBackend.h
     src/emu/EmbedSocket.cpp
     src/emu/EmbedSocket.h

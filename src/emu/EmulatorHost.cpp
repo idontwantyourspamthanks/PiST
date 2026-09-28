@@ -153,30 +153,6 @@ EmulatorHost::EmulatorHost(QObject *parent)
     connect(&m_embedSocket, &EmbedSocket::logLine, this,
             [this](const QString &line) { emit logLine(line); });
 
-    // The media channel's frames and log lines join ours. Only the native
-    // backend has a server, so only this backend can emit mediaFrameReceived.
-    connect(&m_mediaServer, &MediaServer::frameReceived, this,
-            &IDebugBackend::mediaFrameReceived);
-    connect(&m_mediaServer, &MediaServer::logLine, this,
-            [this](const QString &line) { emit logLine(line); });
-    connect(&m_mediaServer, &MediaServer::audioReceived, this,
-            &IDebugBackend::mediaAudioReceived);
-
-    // A media session that never completes AUTH is a silent black panel with
-    // a running headless emulator behind it — the failure the flip to a
-    // default media display makes load-bearing. Say so, once, rather than
-    // waiting forever. clientConnected is the off switch.
-    m_mediaAuthWatchdog = new QTimer(this);
-    m_mediaAuthWatchdog->setSingleShot(true);
-    m_mediaAuthWatchdog->setInterval(10000);
-    connect(m_mediaAuthWatchdog, &QTimer::timeout, this, [this] {
-        emit logLine(tr("media: no authenticated client within 10 s — the "
-                        "emulator is running windowless but never completed "
-                        "the media handshake. Check that $PIST_HATARI (or the "
-                        "configured emulator) is a current hatari-pist build."));
-    });
-    connect(&m_mediaServer, &MediaServer::clientConnected, this,
-            [this] { m_mediaAuthWatchdog->stop(); });
 }
 
 EmulatorHost::~EmulatorHost()
@@ -256,28 +232,6 @@ bool EmulatorHost::openSocketServer(QString *error)
     return m_embedSocket.listen(m_config.controlSocketPath, error);
 }
 
-
-int EmulatorHost::mediaListen()
-{
-    QString error;
-    if (!m_mediaServer.listen(&error)) {
-        // Not fatal for the session — the caller falls back to a session
-        // without the media channel when it gets 0 back.
-        emit logLine(tr("Media channel unavailable: %1").arg(error));
-        return 0;
-    }
-    return m_mediaServer.port();
-}
-
-void EmulatorHost::mediaKey(quint8 scancode, bool down)
-{
-    m_mediaServer.sendKey(scancode, down);
-}
-
-void EmulatorHost::mediaMouse(qint16 dx, qint16 dy, quint8 buttons)
-{
-    m_mediaServer.sendMouse(dx, dy, buttons);
-}
 
 // Every per-session framing field is reset here rather than in start(), so the
 // next session cannot inherit the previous one's state. The fields that were

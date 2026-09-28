@@ -446,21 +446,21 @@ MainWindow::MainWindow(QWidget *parent)
     };
     // The media display (docs/PLAN.md §12). A media session must not embed, so
     // this is where the panel is shown for it, and the port it returns is what
-    // the emulator's argv will name. Only the native backend carries a server;
-    // a launch on HRDB simply gets 0 and embeds/separates as before.
+    // the emulator's argv will name. Every backend carries a media server:
+    // the hatari-pist fork speaks --pist-media no matter which debug
+    // transport the session runs on.
     launcherHost.engageMediaDisplay = [this](const HatariCapabilities &caps)
         -> SessionLauncher::Host::MediaEngagement {
-        auto *native = qobject_cast<EmulatorHost *>(m_host);
-        if (!native || !caps.hasPistMedia || !m_display)
+        if (!caps.hasPistMedia || !m_display)
             return {};
-        const int port = native->mediaListen();
+        const int port = m_host->mediaListen();
         if (port <= 0)
             return {};
         m_mediaDisplay = true;
         m_lastMediaFrame = QImage();
         m_displayDock->setVisible(true);
         m_display->setVisible(true);
-        return {port, native->mediaServer().token()};
+        return {port, m_host->mediaServer().token()};
     };
     launcherHost.quiet = [this] { return m_quietDialogs; };
     launcherHost.refuseRun = [this](const QString &title, const QString &reason, bool critical) {

@@ -151,9 +151,22 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
     m_buffer.clear();
     m_stderrText.clear();
     m_stderrConsumed = 0;
+    // The media client (and any partial frame it left) belongs to the session
+    // that just ended. The listener is kept: mediaListen() bound it before
+    // this start() and its port is already in the argv we are about to spawn.
+    m_mediaServer.resetClient();
 
     if (!paths::ensureDirectory(config.sessionDir, error))
         return false;
+
+    // Media mode (docs/PLAN.md §12): the launcher called mediaListen() before
+    // start(), so the server is already bound and its port is in the argv
+    // below — the listen-before-spawn rule. A session with no media port,
+    // though, must not leave a listener from an earlier session behind.
+    if (config.mediaPort == 0)
+        m_mediaServer.close();
+    else
+        m_mediaAuthWatchdog->start();
     m_sessionDir = config.sessionDir;
 
     m_process = new QProcess(this);

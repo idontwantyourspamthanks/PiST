@@ -14,6 +14,8 @@
 #include <QProcessEnvironment>
 #include <QString>
 
+class QTimer;
+
 namespace pist {
 
 // Must be `struct` to match emu/HatariProbe.h — MSVC mangles the mismatch
@@ -98,6 +100,16 @@ inline QProcessEnvironment makeSessionEnvironment(const SessionConfig &config)
         // cannot produce it. Travels the environment like PARENT_WIN_ID.
         env.insert(QStringLiteral("PIST_MEDIA_TOKEN"),
                    QString::fromLatin1(config.mediaToken.toHex()));
+    if (config.mediaPort > 0)
+        // PiST plays the guest's audio itself (the media channel tees the mix
+        // to EmuAudio), so the fork's own output device is pure cost: a real
+        // device that stalls (suspended sink, driver hiccup) stops draining
+        // the sound ring, the "system too slow" reset then fires every few
+        // VBLs and those VBLs' spans are dropped from the stream. The dummy
+        // driver still runs the callback — the ring keeps flowing — and is
+        // never audible, which also removes the double output (fork and IDE
+        // playing the same mix).
+        env.insert(QStringLiteral("SDL_AUDIODRIVER"), QStringLiteral("dummy"));
     return env;
 }
 
@@ -125,7 +137,7 @@ class IDebugBackend : public QObject
     Q_OBJECT
 
 public:
-    using QObject::QObject;
+    explicit IDebugBackend(QObject *parent = nullptr);
     ~IDebugBackend() override = default;
 
     /// Version-gating for the native bootstrap script. Only the native
@@ -146,16 +158,26 @@ public:
     /// Nothing else needs the id.
     virtual qint64 emulatorProcessId() const { return -1; }
 
+    /// Bind the media channel's listener (docs/PLAN.md §12), ahead of a media
+    /// session's start() — the listen-before-spawn rule, same as the control
+    /// socket. Returns the port, or 0 on failure (the caller then runs the
+    /// session without the channel). Every backend owns a server: the
+    /// hatari-pist fork speaks --pist-media regardless of which debug
+    /// transport drives it.
+    int mediaListen();
+
+    /// The server, for the per-session auth token the launcher passes to the
+    /// fork. The integration tests observe it directly.
+    MediaServer &mediaServer() { return m_mediaServer; }
+
     /// One ST scancode for the media channel's KEY path (docs/PLAN.md §12),
-    /// down or up. Only the native backend owns a MediaServer, so only
-    /// EmulatorHost acts on it; the default is a no-op, which is also the
-    /// answer for any session without a media client.
-    virtual void mediaKey(quint8 /*scancode*/, bool /*down*/) {}
+    /// down or up. A no-op for a session without a media client.
+    virtual void mediaKey(quint8 scancode, bool down);
 
     /// Relative mouse deltas (guest pixels) plus button state for the media
     /// channel's MOUSE path (docs/PLAN.md §12). Same coverage rule as
-    /// mediaKey: only EmulatorHost acts; the default is a no-op.
-    virtual void mediaMouse(qint16 /*dx*/, qint16 /*dy*/, quint8 /*buttons*/) {}
+    /// mediaKey.
+    virtual void mediaMouse(qint16 dx, qint16 dy, quint8 buttons);
 
     virtual void step() = 0;
     virtual void stepOver() = 0;
@@ -340,15 +362,23 @@ signals:
     void embeddedSizeChanged(int width, int height);
 
     /// One complete frame from the emulator's media channel (docs/PLAN.md §12),
-    /// in the order the fork sent it. Only the native backend owns a
-    /// MediaServer, so only EmulatorHost emits this; HRDB never does. The
-    /// payload stays raw (MediaFrame, not QImage) because `pist_emu` links no
-    /// QtGui — the UI converts it.
+    /// in the order the fork sent it. The payload stays raw (MediaFrame, not
+    /// QImage) because `pist_emu` links no QtGui — the UI converts it.
     void mediaFrameReceived(const pist::MediaFrame &frame);
 
     /// One chunk of mixed guest audio from the media channel (s16le stereo
-    /// at `rate` Hz). Only the native backend emits it.
+    /// at `rate` Hz).
     void mediaAudioReceived(quint32 rate, const QByteArray &samples);
+
+protected:
+    /// The media channel's server: listener, auth, framing, input. Every
+    /// backend owns one — the hatari-pist fork speaks --pist-media no matter
+    /// which debug transport the session runs on, and the panel is useless
+    /// without input either way.
+    MediaServer m_mediaServer;
+    /// AUTH must complete soon after the fork connects, or the panel is a
+    /// silent black rectangle over a running headless emulator — say so once.
+    QTimer *m_mediaAuthWatchdog = nullptr;
 
 };
 

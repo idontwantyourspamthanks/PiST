@@ -131,6 +131,14 @@ QByteArray MediaServer::token() const
     return isListening() ? m_token : QByteArray();
 }
 
+void MediaServer::sendKey(quint8 scancode, bool down)
+{
+    if (!m_client || !m_authed)
+        return;
+    const char msg[3] = {'K', char(scancode), char(down ? 1 : 0)};
+    m_client->write(msg, sizeof(msg));
+}
+
 void MediaServer::close()
 {
     dropClient();

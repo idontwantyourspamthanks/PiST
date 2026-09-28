@@ -266,6 +266,8 @@ pist_module(pist_ui
     src/ui/ProfilerView.h
     src/ui/StackView.cpp
     src/ui/StackView.h
+    src/ui/StKeyboard.cpp
+    src/ui/StKeyboard.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
     src/ui/SetupDialog.cpp

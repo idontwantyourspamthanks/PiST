@@ -93,6 +93,11 @@ public:
     /// that opens with it is answered. Empty when not listening.
     QByteArray token() const;
 
+    /// Send one KEY message ('K', scancode, down) to the fork (protocol v2).
+    /// No-op unless a client has completed AUTH. The caller maps host keys to
+    /// ST scancodes (ui/StKeyboard); this just puts bytes on the wire.
+    void sendKey(quint8 scancode, bool down);
+
 signals:
     /// One complete frame; never emitted for a partially arrived payload.
     void frameReceived(const pist::MediaFrame &frame);

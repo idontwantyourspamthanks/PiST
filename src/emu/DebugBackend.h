@@ -146,6 +146,12 @@ public:
     /// Nothing else needs the id.
     virtual qint64 emulatorProcessId() const { return -1; }
 
+    /// One ST scancode for the media channel's KEY path (docs/PLAN.md §12),
+    /// down or up. Only the native backend owns a MediaServer, so only
+    /// EmulatorHost acts on it; the default is a no-op, which is also the
+    /// answer for any session without a media client.
+    virtual void mediaKey(quint8 /*scancode*/, bool /*down*/) {}
+
     virtual void step() = 0;
     virtual void stepOver() = 0;
     virtual void resume() = 0;
@@ -327,6 +333,7 @@ signals:
     /// payload stays raw (MediaFrame, not QImage) because `pist_emu` links no
     /// QtGui — the UI converts it.
     void mediaFrameReceived(const pist::MediaFrame &frame);
+
 };
 
 /// Create the backend for a kind. Defined where both implementations are

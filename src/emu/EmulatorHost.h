@@ -71,6 +71,9 @@ public:
     /// A session started with mediaPort == 0 has no media channel at all.
     int mediaListen();
 
+    /// Forward one ST scancode to the fork over the media channel.
+    void mediaKey(quint8 scancode, bool down) override;
+
     /// The frame server this host owns. The launcher reaches it through
     /// mediaListen(); the integration test observes it directly.
     MediaServer &mediaServer() { return m_mediaServer; }

@@ -438,6 +438,9 @@ private slots:
     /// A client that cannot produce the session's AUTH token is dropped
     /// without a word — no HELLO, no frames (protocol v2's eavesdrop gate).
     void mediaServerRejectsClientWithoutAuth();
+    /// A KEY message over the media channel reaches the guest: a program
+    /// waiting on Cconin wakes and repaints (docs/PLAN.md §12, phase 2).
+    void keyInjectionReachesTheGuest();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -2562,7 +2565,110 @@ void TstEmulatorHost::mediaServerRejectsClientWithoutAuth()
         QTRY_VERIFY_WITH_TIMEOUT(sock.bytesAvailable() >= 12, 5000);
         const QByteArray hello = sock.read(12);
         QVERIFY(hello.startsWith("PSH1"));
+
+        // KEY messages reach the authenticated client — and only it.
+        server.sendKey(0x1E, true);
+        QTRY_VERIFY_WITH_TIMEOUT(sock.bytesAvailable() >= 3, 3000);
+        const QByteArray key = sock.read(3);
+        QCOMPARE(key, QByteArray("K\x1e\x01", 3));
     }
+}
+
+// Red-dominant fraction of the whole frame, sampled from the payload: how
+// the guest's Setcolor(0,$0700) reaction is observed. Full frame, not the
+// centre — the reaction paints the background, which dominates the full
+// image; the centre can be a GEM window's own interior.
+static double frameRedFraction(const MediaFrame &frame)
+{
+    if (!frame.w || !frame.h)
+        return 0.0;
+    int red = 0, total = 0;
+    for (quint32 y = 0; y < frame.h; y += 4) {
+        const uchar *row = reinterpret_cast<const uchar *>(frame.pixels.constData())
+            + qint64(y) * frame.pitch;
+        for (quint32 x = 0; x < frame.w; x += 4) {
+            const quint32 p = qFromLittleEndian<quint32>(row + qint64(x) * 4);
+            ++total;
+            if (qRed(p) > 150 && qGreen(p) < 110 && qBlue(p) < 110)
+                ++red;
+        }
+    }
+    return total ? double(red) / total : 0.0;
+}
+
+void TstEmulatorHost::keyInjectionReachesTheGuest()
+{
+    const ToolInfo fork = toolchain::findEmulator();
+    const QString hatari = fork.found() ? fork.path : m_hatari;
+    HatariCapabilities caps = probeHatari(hatari);
+    QVERIFY(caps.valid);
+    if (!caps.hasPistMedia)
+        QSKIP("the emulator has no --pist-media (set $PIST_HATARI to a hatari-pist build)");
+    if (m_tos.isEmpty())
+        QSKIP("needs a TOS ROM");
+
+    // A program that waits for one keypress, then paints the background red —
+    // the guest-visible proof the injected scancode arrived.
+    const QString source = m_work->path() + QStringLiteral("/keyred.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmove.w\t#1,-(sp)\n"        // Cconin
+              "\ttrap\t#1\n"
+              "\taddq.l\t#2,sp\n"
+              "\tmove.w\t#$0700,-(sp)\n"          // full red, STfm layout
+              "\tmove.w\t#0,-(sp)\n"              // palette register 0
+              "\tmove.w\t#7,-(sp)\n"              // XBIOS Setcolor
+              "\ttrap\t#14\n"
+              "\taddq.l\t#6,sp\n"
+              "loop:\tbra.s\tloop\n"
+              "\tend\n");
+    src.close();
+    const QString program = m_work->path() + QStringLiteral("/keyred.prg");
+    QProcess vasm;
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"), QStringLiteral("-o"),
+                        program, source});
+    QVERIFY(vasm.waitForFinished(20000));
+    QCOMPARE(vasm.exitCode(), 0);
+
+    qputenv("PIST_MEDIA_DISPLAY", "1");
+
+    SessionConfig config;
+    config.hatariPath = hatari;
+    config.programPath = program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/keyred-session");
+    config.gemdosDir = m_work->path();
+    // rgb, not the mono default: a mono shifter has no palette, so the
+    // program's Setcolor would change nothing and the reaction is invisible.
+    config.monitor = QStringLiteral("rgb");
+    config.controlSocketPath.clear();
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this, [this](const QString &l) { m_log.append(l); });
+    const int port = host.mediaListen();
+    QVERIFY(port > 0);
+    config.mediaPort = port;
+    config.mediaToken = host.mediaServer().token();
+
+    QSignalSpy frames(&host, &IDebugBackend::mediaFrameReceived);
+    QString error;
+    QVERIFY2(host.start(config, &error), qPrintable(error));
+
+    // Presses during the TOS boot are flushed before the program's Cconin, so
+    // inject 'A' (scancode $1E) on a cadence until a frame goes red.
+    bool red = false;
+    for (int i = 0; i < 40 && !red; ++i) {
+        host.mediaKey(0x1E, true);
+        host.mediaKey(0x1E, false);
+        QTest::qWait(500);
+        if (!frames.isEmpty())
+            red = frameRedFraction(frames.last().at(0).value<MediaFrame>()) > 0.30;
+    }
+    QVERIFY2(red, "the guest never reacted to the injected keypress");
+
+    host.stop();
+    qunsetenv("PIST_MEDIA_DISPLAY");
 }
 
 QTEST_MAIN(TstEmulatorHost)

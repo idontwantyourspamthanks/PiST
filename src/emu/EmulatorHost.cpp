@@ -251,6 +251,11 @@ int EmulatorHost::mediaListen()
     return m_mediaServer.port();
 }
 
+void EmulatorHost::mediaKey(quint8 scancode, bool down)
+{
+    m_mediaServer.sendKey(scancode, down);
+}
+
 // Every per-session framing field is reset here rather than in start(), so the
 // next session cannot inherit the previous one's state. The fields that were
 // missed before each corrupt framing in its own way: a stale m_owedPrompts

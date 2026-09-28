@@ -43,6 +43,7 @@
 #include "toolchain/Toolchain.h"
 #include "emu/HrdbBackend.h"
 #include "ui/StackView.h"
+#include "ui/StKeyboard.h"
 #include "toolchain/ToolFetch.h"
 
 #include <QAction>
@@ -369,6 +370,7 @@ private slots:
     /// The Emulator panel hosts another process's window, or nothing at all
     /// before a session: it must say which, rather than show a black void.
     void emulatorPanelExplainsItselfWhenEmpty();
+    void stKeyboardMapsQtKeysToStScancodes();
     void mediaDisplayFeedsThePanel();
     /// Embedding is the default, but only where it can happen: with no stored
     /// choice a platform that cannot embed stays detached, while a stored
@@ -3857,6 +3859,37 @@ void TstGui::emulatorPanelExplainsItselfWhenEmpty()
         }
     }
     QVERIFY2(lit > 100, "an empty emulator panel paints its explanation, not a black void");
+}
+
+// The media channel's KEY messages carry ST scancodes (docs/PLAN.md §12), and
+// the mapping is the contract: letters/digits by identity (TOS applies its
+// own shift state), the standard layout for the rest, and -1 for anything
+// with no ST equivalent — which must include F12, PiST's own release key.
+void TstGui::stKeyboardMapsQtKeysToStScancodes()
+{
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_A), 0x1E);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Z), 0x2C);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_1), 0x02);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_0), 0x0B);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Return), 0x1C);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Enter), 0x72); // keypad Enter
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Space), 0x39);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Backspace), 0x0E);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F1), 0x3B);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F10), 0x44);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Up), 0x48);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Down), 0x50);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Left), 0x4B);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Right), 0x4D);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Delete), 0x53);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Shift), 0x2A);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Control), 0x1D);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Alt), 0x38);
+    // Never forwarded: F11/F12 have no ST scancode, and F12 releases the
+    // grab — it must stay PiST's.
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F11), -1);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F12), -1);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_unknown), -1);
 }
 
 // A frame as an 8x8 grid of cell-mean grays, straight from the transport

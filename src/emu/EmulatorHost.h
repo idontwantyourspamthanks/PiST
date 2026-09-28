@@ -279,6 +279,10 @@ private:
     /// non-media session never leaves a listener behind.
     MediaServer m_mediaServer;
 
+    /// One-shot warning when a media session never completes AUTH (10 s);
+    /// stopped by MediaServer::clientConnected.
+    QTimer *m_mediaAuthWatchdog = nullptr;
+
     QByteArray m_stderrBuffer;
 
     QQueue<Pending> m_queue;

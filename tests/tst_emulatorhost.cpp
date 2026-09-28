@@ -2565,9 +2565,14 @@ void TstEmulatorHost::mediaServerRejectsClientWithoutAuth()
         sock.connectToHost(QHostAddress::LocalHost, port);
         QVERIFY(sock.waitForConnected(3000));
         sock.write(QByteArray("PSA1") + server.token());
-        QTRY_VERIFY_WITH_TIMEOUT(sock.bytesAvailable() >= 12, 5000);
-        const QByteArray hello = sock.read(12);
+        QByteArray hello;
+        QTRY_VERIFY_WITH_TIMEOUT((hello.append(sock.readAll()), hello.size()) >= 12, 5000);
+        hello.truncate(12);
         QVERIFY(hello.startsWith("PSH1"));
+        // The full negotiation, not just its magic: version 2, video + input.
+        const uchar *p = reinterpret_cast<const uchar *>(hello.constData());
+        QCOMPARE(qFromLittleEndian<quint32>(p + 4), 2u);
+        QCOMPARE(qFromLittleEndian<quint32>(p + 8), 3u);
 
         // KEY messages reach the authenticated client — and only it.
         server.sendKey(0x1E, true);

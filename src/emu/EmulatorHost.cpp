@@ -159,6 +159,22 @@ EmulatorHost::EmulatorHost(QObject *parent)
             &IDebugBackend::mediaFrameReceived);
     connect(&m_mediaServer, &MediaServer::logLine, this,
             [this](const QString &line) { emit logLine(line); });
+
+    // A media session that never completes AUTH is a silent black panel with
+    // a running headless emulator behind it — the failure the flip to a
+    // default media display makes load-bearing. Say so, once, rather than
+    // waiting forever. clientConnected is the off switch.
+    m_mediaAuthWatchdog = new QTimer(this);
+    m_mediaAuthWatchdog->setSingleShot(true);
+    m_mediaAuthWatchdog->setInterval(10000);
+    connect(m_mediaAuthWatchdog, &QTimer::timeout, this, [this] {
+        emit logLine(tr("media: no authenticated client within 10 s — the "
+                        "emulator is running windowless but never completed "
+                        "the media handshake. Check that $PIST_HATARI (or the "
+                        "configured emulator) is a current hatari-pist build."));
+    });
+    connect(&m_mediaServer, &MediaServer::clientConnected, this,
+            [this] { m_mediaAuthWatchdog->stop(); });
 }
 
 EmulatorHost::~EmulatorHost()
@@ -310,6 +326,8 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     // though, must not leave a listener from an earlier session behind.
     if (config.mediaPort == 0)
         m_mediaServer.close();
+    else
+        m_mediaAuthWatchdog->start();
 
     // A socket is optional: it is unavailable on Windows, and the session works
     // over stdin/stderr without it.
@@ -391,6 +409,8 @@ void EmulatorHost::stop()
     // because completeCurrent checks m_haveCurrent.
     if (m_settleTimer)
         m_settleTimer->stop();
+    if (m_mediaAuthWatchdog)
+        m_mediaAuthWatchdog->stop();
 
     if (m_process) {
         killAndRelease(m_process, this);

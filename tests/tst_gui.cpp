@@ -94,6 +94,7 @@
 #include <QTextLayout>
 #include <QTreeWidget>
 
+#include <clocale>
 #include <cmath>
 #include <functional>
 
@@ -553,6 +554,8 @@ private slots:
     /// The Atari logo pixmap still draws both glyphs after the outline was
     /// parsed once per pixmap instead of once per draw.
     void atariLogoRendersBothGlyphs();
+    /// The logo outline parses under a comma-decimal LC_NUMERIC.
+    void atariLogoParsesUnderCommaDecimalLocale();
     void editorGotoIndentAndShortcutScheme();
     void quietColoursClearTheirBackground();
     void instructionStripFollowsTheCaret();
@@ -5267,6 +5270,29 @@ void TstGui::atariLogoRendersBothGlyphs()
 
     for (int size : {16, 20, 24, 32})
         QVERIFY(!appearance::atariLogoIcon().pixmap(size, size).isNull());
+}
+
+// QCoreApplication adopts the environment's locale, and the logo's SVG
+// numbers used to go through strtod, which follows LC_NUMERIC: under is_IS or
+// de_DE ".001" consumed nothing and the parse loop spun forever, so the IDE
+// hung building its menu bar before any window appeared. Under the fix the
+// logo draws exactly as it does in the C locale.
+void TstGui::atariLogoParsesUnderCommaDecimalLocale()
+{
+    const QImage expected = appearance::atariLogoPixmap(88, true).toImage();
+    const QByteArray saved = std::setlocale(LC_NUMERIC, nullptr);
+    const char *found = nullptr;
+    for (const char *name : {"is_IS.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "nl_NL.UTF-8"}) {
+        if (std::setlocale(LC_NUMERIC, name)) {
+            found = name;
+            break;
+        }
+    }
+    if (!found)
+        QSKIP("no comma-decimal locale is installed");
+    const QImage actual = appearance::atariLogoPixmap(88, true).toImage();
+    std::setlocale(LC_NUMERIC, saved.constData());
+    QVERIFY2(actual == expected, found);
 }
 
 // Ctrl+G is a one-line bar, Return copies the indent it just left, and the

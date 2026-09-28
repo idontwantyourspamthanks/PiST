@@ -6,49 +6,29 @@
 
 #include <QAudioFormat>
 #include <QAudioSink>
-#include <QBuffer>
 #include <QIODevice>
+#include <QTimer>
 
 namespace pist {
 
 namespace {
 
-/// A push-side ring the sink pulls from. Bounds latency by construction: new
-/// audio past the cap overwrites the unplayed tail (a gap over a growing
-/// delay — the fork's clock and the sound card's will never agree exactly).
-class AudioRing : public QIODevice
-{
-public:
-    qint64 readData(char *data, qint64 maxSize) override
-    {
-        const qint64 n = qMin(maxSize, qint64(m_buf.size()));
-        if (n > 0) {
-            memcpy(data, m_buf.constData(), size_t(n));
-            m_buf.remove(0, int(n));
-        }
-        return n;
-    }
-    qint64 writeData(const char *data, qint64 maxSize) override
-    {
-        m_buf.append(data, int(maxSize));
-        // ~200 ms of 44.1 kHz s16 stereo: 176400 bytes per second.
-        constexpr int kCap = 176400 / 5;
-        if (m_buf.size() > kCap)
-            m_buf.remove(0, m_buf.size() - kCap);
-        return maxSize;
-    }
-    bool isSequential() const override { return true; }
-    qint64 bytesAvailable() const override { return m_buf.size(); }
+/// ~200 ms of 44.1 kHz s16le stereo (176400 bytes/s). New audio past the cap
+/// overwrites the unplayed tail: a gap over a growing delay, since the fork's
+/// clock and the sound card's will never agree exactly.
+constexpr int kQueueCap = 176400 / 5;
 
-private:
-    QByteArray m_buf;
-};
+/// How long to wait for more sink space before pumping again.
+constexpr int kPumpIntervalMs = 10;
 
 } // namespace
 
 EmuAudio::EmuAudio(QObject *parent)
     : QObject(parent)
 {
+    m_pumpTimer = new QTimer(this);
+    m_pumpTimer->setInterval(kPumpIntervalMs);
+    connect(m_pumpTimer, &QTimer::timeout, this, &EmuAudio::pump);
 }
 
 EmuAudio::~EmuAudio()
@@ -69,23 +49,56 @@ void EmuAudio::writeChunk(quint32 rate, const QByteArray &samples)
         format.setSampleRate(int(rate));
         format.setChannelCount(2);
         format.setSampleFormat(QAudioFormat::Int16);
-        m_sink = new QAudioSink(format, this);
-        auto *ring = new AudioRing;
-        ring->open(QIODevice::ReadWrite);
-        m_device = ring;
-        m_sink->start(ring);
+        m_sink = new QAudioSink(m_deviceInfo, format, this);
+        // Push mode: we write bounded by bytesFree(). A pull-mode sink whose
+        // device starves goes Idle and never resumes — the silent-output
+        // failure push mode avoids; and when an underrun does idle it, new
+        // data brings it back.
+        m_io = m_sink->start();
+        connect(m_sink, &QAudioSink::stateChanged, this,
+                [this](QAudio::State state) {
+                    if (state == QAudio::IdleState)
+                        pump();
+                });
         m_rate = rate;
     }
-    m_device->write(samples);
+
+    m_pending.append(samples);
+    if (m_pending.size() > kQueueCap)
+        m_pending.remove(0, m_pending.size() - kQueueCap);
+    pump();
+}
+
+void EmuAudio::pump()
+{
+    if (!m_sink || !m_io)
+        return;
+    while (!m_pending.isEmpty() && m_sink->bytesFree() > 0) {
+        const qint64 n = qMin(qint64(m_pending.size()), m_sink->bytesFree());
+        m_io->write(m_pending.constData(), n);
+        m_pending.remove(0, int(n));
+    }
+    if (!m_pending.isEmpty() && !m_pumpTimer->isActive())
+        m_pumpTimer->start();
+    else if (m_pending.isEmpty())
+        m_pumpTimer->stop();
+}
+
+void EmuAudio::setOutputDevice(const QAudioDevice &device)
+{
+    m_deviceInfo = device;
+    reset();
 }
 
 void EmuAudio::reset()
 {
+    m_pumpTimer->stop();
+    m_pending.clear();
     if (m_sink) {
         m_sink->stop();
         m_sink->deleteLater();
         m_sink = nullptr;
-        m_device = nullptr;
+        m_io = nullptr;
     }
     m_rate = 0;
 }

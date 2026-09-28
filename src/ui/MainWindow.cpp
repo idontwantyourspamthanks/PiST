@@ -45,6 +45,10 @@
 #include "ui/EmulatorDisplayWidget.h"
 #include "ui/EmuAudio.h"
 #include "ui/EmbedX11.h"
+
+#include <QAudioDevice>
+#include <QMediaDevices>
+#include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
 #include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
@@ -1791,6 +1795,7 @@ void MainWindow::buildPanels()
     }
 
     m_audio = new EmuAudio(this);
+    applyAudioOutputDevice();
     // --- right, top: the emulator display, which wants to be prominent --------
     // It lives in a dock shown only when the embedded-display option is on; in
     // separate-window mode it is hidden and the widget is unused.
@@ -2518,6 +2523,7 @@ void MainWindow::applyAppearance()
 {
     applyShortcutScheme();
     appearance::applyTheme();
+    applyAudioOutputDevice();
     setWindowIcon(appearance::windowIcon());
     applyIcons();
     appearance::applyMonoFonts(this);
@@ -2548,6 +2554,28 @@ void MainWindow::applyAppearance()
         m_symbolsView->applyAppearance();
     if (m_profiler)
         m_profiler->applyAppearance();
+}
+
+void MainWindow::applyAudioOutputDevice()
+{
+    // The audio output device is an application-wide preference (the media
+    // channel's sound, phase 3): resolve the stored id against the current
+    // outputs, falling back to the system default when it is gone (a
+    // default-constructed QAudioDevice means exactly that).
+    if (!m_audio)
+        return;
+    QAudioDevice chosen;
+    const QByteArray wanted =
+        QSettings().value(QLatin1String(kAudioOutputDeviceKey)).toByteArray();
+    if (!wanted.isEmpty()) {
+        const QList<QAudioDevice> devices = QMediaDevices::audioOutputs();
+        for (const QAudioDevice &d : devices)
+            if (d.id() == wanted) {
+                chosen = d;
+                break;
+            }
+    }
+    m_audio->setOutputDevice(chosen);
 }
 
 void MainWindow::createStatusBar()

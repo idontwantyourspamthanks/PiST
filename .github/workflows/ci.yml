@@ -114,7 +114,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.1'
-          modules: ''
+          modules: 'qtmultimedia'
 
       # vasm is the assembler PiST drives. It is built from the author's source
       # rather than downloaded, because no binaries are published for host

@@ -2761,11 +2761,56 @@ void TstEmulatorHost::audioStreamArrivesInMediaSession()
     if (m_tos.isEmpty())
         QSKIP("needs a TOS ROM");
 
+    // A guest that wakes on Cconin, repaints red and plays a PSG beep
+    // (Supexec-wrapped — user mode may not touch $FFFF8800). The beep is
+    // deterministic sound content, unlike TOS's keyclick, whose 6301 bell
+    // Hatari does not emulate (ikbd.c has no bell path).
+    const QString source = m_work->path() + QStringLiteral("/keyred.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmove.w\t#1,-(sp)\n"
+              "\ttrap\t#1\n"
+              "\taddq.l\t#2,sp\n"
+              "\tmove.w\t#$0700,-(sp)\n"
+              "\tmove.w\t#0,-(sp)\n"
+              "\tmove.w\t#7,-(sp)\n"
+              "\ttrap\t#14\n"
+              "\taddq.l\t#6,sp\n"
+              "\tpea\tbeep\n"
+              "\tmove.w\t#38,-(sp)\n"
+              "\ttrap\t#14\n"
+              "\taddq.l\t#6,sp\n"
+              "\tbra.s\tstart\n"
+              "beep:\tmove.b\t#0,$FFFF8800\n"
+              "\tmove.b\t#$1C,$FFFF8802\n"
+              "\tmove.b\t#1,$FFFF8800\n"
+              "\tmove.b\t#$01,$FFFF8802\n"
+              "\tmove.b\t#7,$FFFF8800\n"
+              "\tmove.b\t#$3E,$FFFF8802\n"
+              "\tmove.b\t#8,$FFFF8800\n"
+              "\tmove.b\t#15,$FFFF8802\n"
+              "\tmove.w\t#200,d0\n"
+              ".outer:\tmove.w\t#$FFFF,d1\n"
+              ".inner:\tdbra\td1,.inner\n"
+              "\tdbra\td0,.outer\n"
+              "\tmove.b\t#8,$FFFF8800\n"
+              "\tmove.b\t#0,$FFFF8802\n"
+              "\trts\n"
+              "\tend\n");
+    src.close();
+    const QString program = m_work->path() + QStringLiteral("/keyred.prg");
+    QProcess vasm;
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"), QStringLiteral("-o"),
+                        program, source});
+    QVERIFY(vasm.waitForFinished(20000));
+    QCOMPARE(vasm.exitCode(), 0);
+
     qputenv("PIST_MEDIA_DISPLAY", "1");
 
     SessionConfig config;
     config.hatariPath = hatari;
-    config.programPath = m_program;
+    config.programPath = program;
     config.tosPath = m_tos;
     config.sessionDir = m_work->path() + QStringLiteral("/audio-session");
     config.gemdosDir = m_sourceDir;
@@ -2801,6 +2846,25 @@ void TstEmulatorHost::audioStreamArrivesInMediaSession()
         QVERIFY(c.at(1).toByteArray().size() > 0);
         QCOMPARE(c.at(1).toByteArray().size() % 4, 0);
     }
+
+    // And it is not all zeros: the guest's PSG beep must leave samples in
+    // the stream. Chunks before the key are not asserted (boot may be
+    // silent), but after one, something non-zero must arrive.
+    bool audible = false;
+    for (int i = 0; i < 20 && !audible; ++i) {
+        host.mediaKey(0x1E, true);
+        host.mediaKey(0x1E, false);
+        QTest::qWait(400);
+        for (int c = chunks.count() - 1; c >= 0 && c >= chunks.count() - 8 && !audible; --c) {
+            const QByteArray payload = chunks.at(c).at(1).toByteArray();
+            for (int b = 0; b < payload.size(); b += 2)
+                if (payload.at(b) != 0 || payload.at(b + 1) != 0) {
+                    audible = true;
+                    break;
+                }
+        }
+    }
+    QVERIFY2(audible, "no non-zero samples after a keypress — the stream is silent");
 
     host.stop();
     qunsetenv("PIST_MEDIA_DISPLAY");

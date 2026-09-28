@@ -610,6 +610,7 @@ private:
     /// Re-apply theme, icons, and monospace fonts after appearance preferences
     /// change, and once at construction so the first window is already themed.
     void applyAppearance();
+    void applyAudioOutputDevice();
     void applyIcons();
 
     /// PiST or Common debug keys. F5 is shared by Run and Continue in the

@@ -42,8 +42,9 @@ Media demo — what to do once it is up:
      while the machine is running.
   2. Click the emulator panel: an accent border and "Input captured —
      F12 releases" appear. Keys and mouse now belong to the guest.
-  3. Type any letter: the guest wakes from Cconin, echoes it, and the
-     background turns red.
+  3. Type any letter: the guest wakes from Cconin, echoes it, the
+     background turns red — and you should hear a beep. If it is
+     silent, check Settings > Appearance > Audio output.
   4. F12 releases the grab (or Run > Release Input, or just switch windows).
 
 EOF

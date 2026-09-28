@@ -9,9 +9,12 @@
 #include "ui/FileBrowser.h"
 #include "ui/SetupDialog.h"
 
+#include "ui/EmuAudio.h"
 
+#include <QAudioDevice>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QMediaDevices>
 #include <QFileDialog>
 #include <QFont>
 #include <QFontDatabase>
@@ -373,6 +376,23 @@ void SettingsDialog::buildUi()
         m_shortcutScheme->setCurrentIndex(schemeIndex);
     appearanceLayout->addRow(tr("Shortcut scheme:"), m_shortcutScheme);
 
+    m_audioOutput = new QComboBox(appearanceTab);
+    m_audioOutput->setObjectName(QStringLiteral("audioOutput"));
+    m_audioOutput->addItem(tr("System default"), QByteArray());
+    {
+        const QByteArray current =
+            QSettings().value(QLatin1String(pist::kAudioOutputDeviceKey)).toByteArray();
+        int index = 0;
+        const QList<QAudioDevice> devices = QMediaDevices::audioOutputs();
+        for (int i = 0; i < devices.size(); ++i) {
+            m_audioOutput->addItem(devices[i].description(), devices[i].id());
+            if (devices[i].id() == current)
+                index = i + 1;
+        }
+        m_audioOutput->setCurrentIndex(index);
+    }
+    appearanceLayout->addRow(tr("Audio output:"), m_audioOutput);
+
     tabs->addTab(scrollableTab(appearanceTab), tr("Appearance"));
 
     layout->addWidget(tabs);
@@ -403,6 +423,8 @@ void SettingsDialog::accept()
     QSettings().setValue(appearance::fontSizeKey(), m_fontSize->value());
     QSettings().setValue(appearance::shortcutSchemeKey(),
                          m_shortcutScheme->currentData().toString());
+    QSettings().setValue(QLatin1String(pist::kAudioOutputDeviceKey),
+                         m_audioOutput->currentData().toByteArray());
     QDialog::accept();
 }
 

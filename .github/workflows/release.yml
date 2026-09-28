@@ -251,6 +251,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
+          modules: 'qtmultimedia'
 
       # The licence terms of the bundled assembler and linker live only in
       # their source tarballs' manuals, and they must travel with the binaries

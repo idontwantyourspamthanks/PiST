@@ -284,19 +284,21 @@ jobs:
       # test suites ran against. On Windows this is the MSYS2 ucrt64 build and
       # the action stages its runtime DLLs beside the exe; on Linux the
       # AppImage deploy step bundles its libraries.
-      - name: 'Build Hatari (the bundled emulator: hrdb fork)'
+      - name: 'Build Hatari (the bundled emulator: hatari-pist fork)'
         if: matrix.emulator
         uses: ./.github/actions/build-hatari
         with:
-          # The bundled emulator is the hrdb-main FORK, installed as `hatari`:
-          # one emulator, and PiST's content probe selects HRDB automatically
-          # for it. The fork is upstream 2.6.1 plus the remote-debug listener,
-          # so emulation is identical to what CI tests against upstream; the
-          # native backend remains for user-supplied stock Hatari. Conveyed as
-          # GPLv2: three of the files it compiles in grant version 2 alone, so
-          # the source offer names the pinned fork commit and no GPLv3 library
-          # joins it (NOTICE, docs/PLAN.md §10).
-          variant: hrdb
+          # The bundled emulator is the hatari-pist FORK, installed as
+          # `hatari`: one emulator, and PiST's content probe selects HRDB for
+          # the debugger and the media channel for the display automatically.
+          # The fork is upstream 2.6.1 plus the media channel and tattlemuss's
+          # HRDB listener; the native backend remains for user-supplied stock
+          # Hatari. Conveyed as GPLv2: three of the files it compiles in grant
+          # version 2 alone, so the source offer names the pinned fork commit
+          # and no GPLv3 library joins it (NOTICE, docs/PLAN.md §10). The pin
+          # lands when the fork is published; until then the action's
+          # variant=pist guard fails the build loudly.
+          variant: pist
           destination: ${{ github.workspace }}/bundle/bin
 
       - uses: actions/download-artifact@v4

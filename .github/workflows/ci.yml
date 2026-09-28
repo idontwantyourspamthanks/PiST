@@ -229,16 +229,20 @@ jobs:
           PY
           echo "$RUNNER_TEMP/hatari-stock/hatari-2.6.1_windows64" >> "$GITHUB_PATH"
 
-      # The HRDB fork: on Linux/macOS side by side with the upstream build, on
-      # Windows built with MSYS2 by the same action. The tst_hrdb suite and the
-      # gui transport-swap tests run against it, and the bundled emulator in a
-      # release *is* this fork (release.yml), so CI must exercise the transport
-      # that ships — on Windows it is also the only build with working pause.
-      - name: Build Hatari (hrdb fork)
+      # The hatari-pist fork: on Linux/macOS side by side with the upstream
+      # build, on Windows built with MSYS2 by the same action. The tst_hrdb
+      # suite and the gui transport-swap tests run against it, and the bundled
+      # emulator in a release *is* this fork (release.yml), so CI must exercise
+      # the transport that ships — on Windows it is also the only build with
+      # working pause. The pin lands when the fork is published; until then
+      # this step fails loudly rather than building tattlemuss again (that
+      # fork has no --pist-media, and the panel would silently lose the media
+      # channel in everything CI ships).
+      - name: Build Hatari (hatari-pist fork)
         if: matrix.emulator
         uses: ./.github/actions/build-hatari
         with:
-          variant: hrdb
+          variant: pist
           binary-name: hatari-hrdb
           destination: ${{ runner.temp }}/hatari-hrdb-bin
       - name: Verify the emulator build

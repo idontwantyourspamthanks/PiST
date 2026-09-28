@@ -41,8 +41,9 @@ inputs:
 
   variant:
     description: >-
-      'upstream' (the pinned hatari release tarball) or 'hrdb' (the tattlemuss
-      fork at a pinned commit, adding the HRDB remote-debug listener).
+      'upstream' (the pinned hatari release tarball) or 'pist' (the hatari-pist
+      fork at a pinned commit: the HRDB remote-debug listener plus the
+      --pist-media frame/input/audio channel the IDE's panel needs).
     required: false
     default: 'upstream'
   binary-name:
@@ -52,14 +53,21 @@ inputs:
       the fork AS 'hatari' (it is the only emulator bundled).
     required: false
     default: 'hatari'
-  hrdb-commit:
-    description: 'tattlemuss/hatari commit the hrdb variant is pinned to.'
+  pist-url:
+    description: 'The hatari-pist repository the fork tarball is fetched from.'
     required: false
-    default: '21aa4cb76783eb1b141b917fa1976c9c01331d66'
-  hrdb-sha256:
-    description: 'SHA-256 of the pinned fork tarball at hrdb-commit.'
+    default: 'https://github.com/idontwantyourspamthanks/hatari-pist'
+  pist-commit:
+    description: >-
+      hatari-pist commit the pist variant is pinned to. Required for that
+      variant; the fetch fails loudly on an empty pin rather than silently
+      building something else.
     required: false
-    default: '61be3f026ff6e930a5bdf7fd25e5b755126ec678cea0c483d93a71f916be7a05'
+    default: ''
+  pist-sha256:
+    description: 'SHA-256 of the pinned hatari-pist tarball at pist-commit.'
+    required: false
+    default: ''
 outputs:
   path:
     description: Absolute path to the built `hatari` binary.
@@ -84,31 +92,36 @@ runs:
 
     # Version and checksum arrive as inputs, so the pin lives in one place and
     # every caller gets the same build. Pinned by checksum: an upstream change
-    # should fail loudly rather than quietly alter what is tested. The hrdb
-    # variant builds the tattlemuss fork at a pinned commit — the same
+    # should fail loudly rather than quietly alter what is tested. The pist
+    # variant builds the hatari-pist fork at a pinned commit — the same
     # discipline, different upstream.
     - name: Fetch Hatari ${{ inputs.version }} (${{ inputs.variant }})
       shell: bash
       env:
         HATARI_VERSION: ${{ inputs.version }}
         HATARI_SHA256: ${{ inputs.sha256 }}
-        HRDB_COMMIT: ${{ inputs.hrdb-commit }}
-        HRDB_SHA256: ${{ inputs.hrdb-sha256 }}
+        PIST_URL: ${{ inputs.pist-url }}
+        PIST_COMMIT: ${{ inputs.pist-commit }}
+        PIST_SHA256: ${{ inputs.pist-sha256 }}
       run: |
         set -euo pipefail
         # Both variants normalise to a variant-keyed source directory. The
         # obvious alternative — extracting as hatari-<version> and symlinking
-        # that name for the hrdb variant — silently breaks when the action is
+        # that name for the fork variant — silently breaks when the action is
         # invoked twice in one workspace (as ci.yml does): `ln -s` into an
         # existing real directory creates the link *inside* it, and the second
         # invocation then builds upstream again, producing a "fork" binary
         # with no HRDB listener. That exact failure cost a CI cycle.
-        if [ "${{ inputs.variant }}" = "hrdb" ]; then
-          curl -fsSL -o hatari.tar.gz "https://github.com/tattlemuss/hatari/archive/$HRDB_COMMIT.tar.gz"
-          echo "$HRDB_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
-            || echo "$HRDB_SHA256  hatari.tar.gz" | sha256sum -c -
+        if [ "${{ inputs.variant }}" = "pist" ]; then
+          if [ -z "$PIST_COMMIT" ] || [ -z "$PIST_SHA256" ]; then
+            echo "::error::variant=pist needs pist-commit and pist-sha256 set to the published hatari-pist pin."
+            exit 1
+          fi
+          curl -fsSL -o hatari.tar.gz "$PIST_URL/archive/$PIST_COMMIT.tar.gz"
+          echo "$PIST_SHA256  hatari.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$PIST_SHA256  hatari.tar.gz" | sha256sum -c -
           tar xzf hatari.tar.gz
-          mv "hatari-$HRDB_COMMIT" "hatari-src-hrdb"
+          mv "hatari-pist-$PIST_COMMIT" "hatari-src-pist"
         else
           HATARI_URL="https://github.com/hatari/hatari/archive/refs/tags/v$HATARI_VERSION.tar.gz"
           curl -fsSL -o hatari.tar.gz "$HATARI_URL"
@@ -287,3 +300,21 @@ runs:
         ls -l "$HATARI_DEST"
         echo "$(cygpath -m "$HATARI_DEST")" >> "$GITHUB_PATH"
         echo "path=$(cygpath -m "$HATARI_DEST")/$BINARY_NAME.exe" >> "$GITHUB_OUTPUT"
+
+    - name: Verify the fork carries the media channel (pist variant)
+      if: inputs.variant == 'pist'
+      shell: bash
+      env:
+        HATARI_DEST: ${{ inputs.destination }}
+        BINARY_NAME: ${{ inputs.binary-name }}
+      run: |
+        set -euo pipefail
+        BIN="$HATARI_DEST/$BINARY_NAME"
+        [ -f "$BIN" ] || BIN="$BIN.exe"
+        # The content probe the IDE itself uses (HatariProbe): a binary without
+        # the marker cannot drive the panel, and shipping one silently would
+        # put every release's emulator display back in a separate window.
+        grep -aq "protocol v2: input" "$BIN" \
+          || { echo "::error::$BIN lacks the --pist-media channel (protocol v2 marker not found)"; exit 1; }
+        grep -aq "Remote Debug Listening on port" "$BIN" \
+          || { echo "::error::$BIN lacks the HRDB listener (banner not found)"; exit 1; }

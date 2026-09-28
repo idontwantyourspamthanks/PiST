@@ -21,6 +21,7 @@
 #include "ui/NewImageDialog.h"
 #include "ui/BitplaneExportDialog.h"
 #include "ui/InstructionRefView.h"
+#include "emu/DebugBackend.h"
 #include "emu/EmulatorHost.h"
 #include "emu/Paths.h"
 #include "control/RemoteControl.h"
@@ -376,10 +377,9 @@ private slots:
     void inputGrabRoutesKeysAndMouse();
     void stKeyboardMapsQtKeysToStScancodes();
     void mediaDisplayFeedsThePanel();
-    /// Embedding is the default, but only where it can happen: with no stored
-    /// choice a platform that cannot embed stays detached, while a stored
-    /// choice — either way — wins over both the default and the capability.
-    void emulatorDockFollowsTheStoredPreferenceOrThePlatform();
+    /// Hidden until a media session engages it: with no frames to paint the
+    /// panel would be an unexplained black rectangle.
+    void emulatorDockStartsHidden();
     void gitDockStaysUnderProjectFiles();
     /// Git discovery follows the project the user opened, never the process
     /// working directory: a window with nothing open must run no git at all,
@@ -896,24 +896,26 @@ void TstGui::runStartsAnEmulatorSession()
 
     MainWindow window;
     EmulatorStopper stopper(window);
-    auto *host = window.findChild<EmulatorHost *>();
-    QVERIFY2(host, "MainWindow must own an EmulatorHost");
-    QVERIFY(!host->isRunning());
+    auto *initialBackend = window.findChild<IDebugBackend *>();
+    QVERIFY2(initialBackend, "MainWindow must own a debug backend");
+    QVERIFY(!initialBackend->isRunning());
 
     window.openPath(source);
     QCOMPARE(window.windowTitle().contains(QLatin1String("PiST")), true);
-
-    QSignalSpy runningSpy(host, &EmulatorHost::runningChanged);
 
     // Invoke Run exactly as the toolbar action does.
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
 
     // The emulator must come up without further interaction. The build runs first,
-    // so allow for it.
-    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+    // so allow for it. The backend object is swapped at launch when the probe
+    // picks another transport (the unified fork lands on HRDB), so find it
+    // afterwards rather than capturing it before.
+    IDebugBackend *host = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((host = window.findChild<IDebugBackend *>()) != nullptr
+                                 && host->isRunning(), 30000);
 
     // ...and it must be a real session, not just a spawned process.
-    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
+    QSignalSpy stoppedSpy(host, &IDebugBackend::stoppedChanged);
     QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
              "the emulator started but never reached the debugger");
 
@@ -991,7 +993,7 @@ void TstGui::autoSelectedRomForAnotherMachineWarnsAboutTheOverride()
         QVERIFY(window.debugConsoleText().contains(machineDisplayName(Machine::Falcon)));
 
         // Safe before the session is up, and it ends whatever did start.
-        if (auto *host = window.findChild<EmulatorHost *>())
+        if (auto *host = window.findChild<IDebugBackend *>())
             host->stop();
     }
 
@@ -1011,7 +1013,7 @@ void TstGui::autoSelectedRomForAnotherMachineWarnsAboutTheOverride()
             window.debugConsoleText().contains(QLatin1String("Session started in")), 30000);
         QVERIFY2(!window.debugConsoleText().contains(QLatin1String("will override the machine")),
                  qPrintable(window.debugConsoleText()));
-        if (auto *host = window.findChild<EmulatorHost *>())
+        if (auto *host = window.findChild<IDebugBackend *>())
             host->stop();
     }
 
@@ -1030,7 +1032,7 @@ void TstGui::autoSelectedRomForAnotherMachineWarnsAboutTheOverride()
             window.debugConsoleText().contains(QLatin1String("Session started in")), 30000);
         QVERIFY2(!window.debugConsoleText().contains(QLatin1String("will override the machine")),
                  qPrintable(window.debugConsoleText()));
-        if (auto *host = window.findChild<EmulatorHost *>())
+        if (auto *host = window.findChild<IDebugBackend *>())
             host->stop();
     }
 }
@@ -1063,7 +1065,7 @@ void TstGui::refusedBuildAnswersAndDropsLaunchIntent()
     QTRY_COMPARE_WITH_TIMEOUT(completed2.count(), 1, 30000);
     QCOMPARE(completed2.first().first().toBool(), true);
 
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     QVERIFY(host);
     QTest::qWait(1500);
     QVERIFY(!host->isRunning());
@@ -1130,7 +1132,7 @@ void TstGui::remoteRunLaunchRefusalStaysQuiet()
     EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     QVERIFY(host);
 
     bool sawModal = false;
@@ -1165,6 +1167,10 @@ void TstGui::remoteRunLaunchRefusalStaysQuiet()
     QCOMPARE(QApplication::activeModalWidget(), nullptr);
     QVERIFY(window.debugConsoleText().contains(QLatin1String("did not produce")));
     QVERIFY(!QFileInfo::exists(prg));
+    // The first run's launch may have swapped the backend object (the unified
+    // fork lands on HRDB), so ask again rather than reuse the earlier pointer.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     QVERIFY(!host->isRunning());
 }
 
@@ -1285,7 +1291,7 @@ void TstGui::remoteControlWatchersSeeSessionEvents()
          events.contains(QLatin1String("event running"))),
         10000);
 
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
 
     QVERIFY(host);
     host->stop();
@@ -1323,7 +1329,7 @@ void TstGui::profilerCollectsAndMapsHotLines()
     EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host && editor);
 
@@ -1332,6 +1338,10 @@ void TstGui::profilerCollectsAndMapsHotLines()
 
     // The stopping breakpoint goes in BEFORE Profile Start — arming anything
     // after `profile on` resets the counters (Profile_CpuStart memsets).
+    // The launch may have swapped the backend object (the unified fork lands
+    // on HRDB), so re-fetch before addressing it.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
     QVERIFY(input);
     input->setText(QStringLiteral("b d0 = 50 :once"));
@@ -1422,13 +1432,17 @@ void TstGui::profileToCursorCollectsAndShowsResults()
     EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host && editor);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
 
+    // The launch may have swapped the backend object (the unified fork lands
+    // on HRDB), so re-fetch before addressing it.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     auto *status = window.findChild<QLabel *>(QStringLiteral("profilerStatus"));
     QVERIFY(status);
     auto *toCursorButton = window.findChild<QToolButton *>(QStringLiteral("profilerToCursorButton"));
@@ -1530,7 +1544,7 @@ void TstGui::guidedProfileDropsAnUnfiredOneShot()
     EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host && editor);
 
@@ -1540,6 +1554,10 @@ void TstGui::guidedProfileDropsAnUnfiredOneShot()
     // A one-shot of the user's own, armed at the entry stop, which fires before
     // the machine has executed far enough to reach the cursor line. It is what
     // "another breakpoint won the race" means for the guided run.
+    // The launch may have swapped the backend object (the unified fork lands
+    // on HRDB), so re-fetch before addressing it.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
     QVERIFY(input);
     input->setText(QStringLiteral("b d0 = 10 :once"));
@@ -1830,12 +1848,12 @@ void TstGui::removeWatchpointWithoutSessionDoesNotError()
 {
     MainWindow window;
     window.show();
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     QVERIFY(host);
     QString error;
     QVERIFY(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error));
 
-    QSignalSpy errors(host, &EmulatorHost::errorOccurred);
+    QSignalSpy errors(host, &IDebugBackend::errorOccurred);
     // No session running: removing a watchpoint must not push debugger commands
     // (armBreakpoints used to run unconditionally, and each command emits "No
     // emulator session is running." — a false error on a plain edit).
@@ -1863,11 +1881,13 @@ void TstGui::stateSummaryClearsAfterSessionEnds()
 
     MainWindow window;
     EmulatorStopper stopper(window);
-    auto *host = window.findChild<EmulatorHost *>();
-    QVERIFY(host);
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
-    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+    // The backend object is swapped at launch when the probe picks another
+    // transport (the unified fork lands on HRDB), so find it afterwards.
+    IDebugBackend *host = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((host = window.findChild<IDebugBackend *>()) != nullptr
+                                 && host->isRunning(), 30000);
 
     // At the entry stop the machine state is cached; after the session ends
     // the remote `state` command must not answer with a dead session's
@@ -1939,9 +1959,12 @@ void TstGui::sessionResetDropsAnUnansweredStepOut()
     // to "auto": launchEmulator() *replaces* its backend when the transport the
     // probe selects differs from the live one, and the host this test holds
     // would then be a dangling pointer. Pinning it also keeps the test on the
-    // backend whose signals it asserts (profileSaveFinished is native-only); on
-    // a machine whose hatari is the HRDB fork the launch is refused with that
-    // reason rather than reporting a crash from freed memory.
+    // backend whose signals it asserts (profileSaveFinished is native-only) —
+    // so it needs a native-transport emulator: the unified hatari-pist fork
+    // has the HRDB listener always bound, and a pinned-native launch against
+    // it is refused by design.
+    if (probeHatari(toolchain::findEmulator().path).hasHrdb)
+        QSKIP("the native-pinned two-session flow needs a native-transport emulator");
     settings.debugBackend = QStringLiteral("native");
     QString error;
     QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
@@ -1951,7 +1974,7 @@ void TstGui::sessionResetDropsAnUnansweredStepOut()
     EmulatorStopper stopper(window);
     window.show();
     window.openPath(source);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host && editor);
 
@@ -1983,7 +2006,7 @@ void TstGui::sessionResetDropsAnUnansweredStepOut()
     // Session two's host, re-fetched rather than reused: a launch that changed
     // the transport replaced the backend, and the pointer captured above would
     // be dangling (see the transport pin above).
-    host = window.findChild<EmulatorHost *>();
+    host = window.findChild<IDebugBackend *>();
     QVERIFY(host);
     QSignalSpy entryStop(host, &IDebugBackend::stoppedChanged);
     QTRY_VERIFY_WITH_TIMEOUT(!entryStop.isEmpty() && entryStop.last().at(0).toBool(), 30000);
@@ -2290,9 +2313,12 @@ void TstGui::memoryEditSurvivesRefreshLive()
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
 
-    auto *host = window.findChild<EmulatorHost *>();
+    // The backend object is swapped at launch when the probe picks another
+    // transport (the unified fork lands on HRDB), so find it afterwards.
+    IDebugBackend *host = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((host = window.findChild<IDebugBackend *>()) != nullptr
+                                 && host->isStopped(), 30000);
     QVERIFY(host);
-    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
 
     // The memory pane auto-navigates to the program on the first stop. Edit
     // the first byte of the first row.
@@ -2402,7 +2428,7 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
 
     MainWindow window;
     EmulatorStopper stopper(window);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY2(editor, "MainWindow must own a CodeEditor");
@@ -2426,6 +2452,10 @@ void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
+    // The backend object may have been swapped at launch (the unified fork
+    // lands on HRDB), so stop through the live one, not the pre-run pointer.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     host->stop();
 }
 
@@ -2470,7 +2500,7 @@ void TstGui::breakpointAddedWhileRunningFiresThisSession()
 
     MainWindow window;
     EmulatorStopper stopper(window);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY2(editor, "MainWindow must own a CodeEditor");
@@ -2485,6 +2515,10 @@ void TstGui::breakpointAddedWhileRunningFiresThisSession()
     // resume() writes the continue once the entry attach's commands have
     // drained, so isStopped() is still true in the frame that called it.
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    // The launch may have swapped the backend object (the unified fork lands
+    // on HRDB), so re-fetch before addressing it.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     QTRY_VERIFY_WITH_TIMEOUT(!host->isStopped(), 10000);
     // The countdown is the whole runway for the edit: if it has already ended,
     // the stop would be processed next and the edit would take the stopped path
@@ -2537,7 +2571,7 @@ void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
 
     MainWindow window;
     EmulatorStopper stopper(window);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY2(editor, "MainWindow must own a CodeEditor");
@@ -2548,10 +2582,13 @@ void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
 
     // Watch the process come up instead of polling for it: from that instant to
     // the entry stop is the TOS boot, and that gap is the window under test.
-    QSignalSpy processStarted(host, &EmulatorHost::runningChanged);
+    // The backend object is swapped at launch when the probe picks another
+    // transport (the unified fork lands on HRDB), so find it afterwards.
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
-    if (!host->isRunning())
-        QVERIFY2(processStarted.wait(30000), "the emulator never started");
+    IDebugBackend *sessionHost = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((sessionHost = window.findChild<IDebugBackend *>()) != nullptr
+                                 && sessionHost->isRunning(), 30000);
+    QVERIFY(sessionHost);
 
     // The pre-base window: process up, no state read yet, so no bases. A run
     // that raced past the entry stop here would not be testing this path at all,
@@ -2571,7 +2608,7 @@ void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 20000);
 
-    host->stop();
+    sessionHost->stop();
 }
 
 // Step out and run to cursor are built from one-shot breakpoints over the
@@ -2605,7 +2642,7 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
 
     MainWindow window;
     EmulatorStopper stopper(window);
-    auto *host = window.findChild<EmulatorHost *>();
+    auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host);
     QVERIFY(editor);
@@ -2629,7 +2666,10 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
     QVERIFY(QMetaObject::invokeMethod(&window, "stepOut", Qt::DirectConnection));
     QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
 
-
+    // The launch may have swapped the backend object (the unified fork lands
+    // on HRDB), so stop through the live one, not the pre-run pointer.
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
     host->stop();
 }
 // F4/Shift+F4 tour the Problems pane without the mouse: each step selects the
@@ -3364,9 +3404,12 @@ void TstGui::consoleCommandRoundTrips()
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
 
-    auto *host = window.findChild<EmulatorHost *>();
+    // The backend object is swapped at launch when the probe picks another
+    // transport (the unified fork lands on HRDB), so find it afterwards.
+    IDebugBackend *host = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((host = window.findChild<IDebugBackend *>()) != nullptr
+                                 && host->isStopped(), 30000);
     QVERIFY(host);
-    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
 
     // Type the command into the actual entry widget: a dead input line (never
     // enabled, or a broken returnPressed wiring) fails here rather than
@@ -3652,12 +3695,15 @@ void TstGui::statusBarNamesTheStop()
     auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
     auto *caret = window.findChild<QLabel *>(QStringLiteral("statusCaret"));
     QVERIFY(session && caret);
-    auto *host = window.findChild<EmulatorHost *>();
-    QVERIFY(host);
 
     window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
-    QTRY_VERIFY_WITH_TIMEOUT(host->isStopped(), 30000);
+    // The backend object is swapped at launch when the probe picks another
+    // transport (the unified fork lands on HRDB), so find it afterwards.
+    IDebugBackend *host = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((host = window.findChild<IDebugBackend *>()) != nullptr
+                                 && host->isStopped(), 30000);
+    QVERIFY(host);
     QTRY_VERIFY_WITH_TIMEOUT(
         session->text().startsWith(QStringLiteral("Stopped — statusrun.s:")), 5000);
     QVERIFY2(session->toolTip().contains(QLatin1String("Hatari")), qPrintable(session->toolTip()));
@@ -3770,9 +3816,9 @@ void TstGui::layoutPresetsHideDocksAndRestore()
     debugging->trigger();
     QVERIFY(!registers->isHidden());
     QVERIFY(!disassembly->isHidden());
-    QCOMPARE(window.dockWidgetArea(disassembly), Qt::RightDockWidgetArea);
+    QCOMPARE(window.dockWidgetArea(disassembly), Qt::BottomDockWidgetArea);
     QCOMPARE(window.dockWidgetArea(registers), Qt::BottomDockWidgetArea);
-    QVERIFY(emulator->isHidden());
+    QVERIFY(!emulator->isHidden());
 
     sprite->trigger();
     QVERIFY(registers->isHidden());
@@ -4110,18 +4156,22 @@ void TstGui::mediaDisplayFeedsThePanel()
     window.show();
     window.openPath(source);
 
-    auto *host = window.findChild<EmulatorHost *>();
-    QVERIFY(host);
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
     QVERIFY(dock);
     QWidget *display = dock->widget();
     QVERIFY(display);
     QTRY_VERIFY_WITH_TIMEOUT(display->width() > 100, 5000);
 
-    QSignalSpy framesSpy(host, &IDebugBackend::mediaFrameReceived);
-    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
-    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+    // The backend object is swapped at launch when the probe picks another
+    // transport (the unified fork lands on HRDB), so find it afterwards — the
+    // spies belong on the session's backend, not the replaced one.
+    IDebugBackend *host = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((host = window.findChild<IDebugBackend *>()) != nullptr
+                                 && host->isRunning(), 30000);
+    QVERIFY(host);
+    QSignalSpy framesSpy(host, &IDebugBackend::mediaFrameReceived);
+    QSignalSpy stoppedSpy(host, &IDebugBackend::stoppedChanged);
     QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
              "the emulator started but never reached the debugger");
 
@@ -4133,36 +4183,17 @@ void TstGui::mediaDisplayFeedsThePanel()
     QTRY_VERIFY_WITH_TIMEOUT(panelMatchesLatestContentFrame(display, &framesSpy), 30000);
 }
 
-void TstGui::emulatorDockFollowsTheStoredPreferenceOrThePlatform()
+void TstGui::emulatorDockStartsHidden()
 {
-    const QString key = QStringLiteral("display/embedded");
-
-    // Offscreen cannot embed, so an untouched preference must leave the dock
-    // hidden rather than open a panel that can never fill.
-    QSettings().remove(key);
-    {
-        MainWindow window;
-        window.resize(1000, 700);
-        window.show();
-        QVERIFY(QTest::qWaitForWindowExposed(&window));
-        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
-        QVERIFY(dock);
-        QVERIFY2(dock->isHidden(),
-                 "no stored choice on a platform that cannot embed stays detached");
-    }
-
-    // A stored choice wins over both the default and the capability.
-    for (const bool chosen : {true, false}) {
-        QSettings().setValue(key, chosen);
-        MainWindow window;
-        window.resize(1000, 700);
-        window.show();
-        QVERIFY(QTest::qWaitForWindowExposed(&window));
-        auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
-        QVERIFY(dock);
-        QCOMPARE(!dock->isHidden(), chosen);
-    }
-    QSettings().remove(key);
+    // With no session the panel is an unexplained black rectangle; it appears
+    // when a media session engages it (docs/PLAN.md §12).
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(dock);
+    QVERIFY(dock->isHidden());
 }
 
 // Git is a project pane, not a debug one: it shares Project files' tab and

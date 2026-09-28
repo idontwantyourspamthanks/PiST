@@ -31,12 +31,12 @@ Everything else in this document is a consequence of that rule. The debug transp
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | Entry point. Pins `QT_QPA_PLATFORM=xcb` when `DISPLAY` is set (needed for X11 embedding), parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
-| `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor) and `ConsoleInput` (the debug console's history/completion line edit) — the X11 display embedding (`EmulatorDisplayWidget`, `EmbedX11`), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`). |
+| `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor) and `ConsoleInput` (the debug console's history/completion line edit) — the emulator display panel (`EmulatorDisplayWidget`, media frames and the input grab), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`). |
 | `src/editor/` | `CodeEditor` (the editor widget: line-number gutter with breakpoint dots, execution-line highlight, error markers and profiler heat, an optional git blame lane to the left of that gutter, find/replace bar), `AsmHighlighter` (m68k Motorola syntax, painted with the `EditorTheme` it is handed), `EditorTheme` (the monospace font, the effective darkness and exactly the colours the editor and its highlighter read — the value `ui/` builds and hands over, so `editor/` includes nothing from `ui/`), `InstrRef` (the instruction-reference table and lookup behind the dock), `OsCallRef`/`OsCallScan` (the GEMDOS/BIOS/XBIOS table and the trap-sequence scanner behind the same dock), `OsCallBinding` (the canonical insertable call sequence — argument pushes, function number, trap, stack cleanup — and the stack byte count beside it) and `IncludeNav` (include-target/label resolution behind Ctrl+click). |
 | `src/git/` | `GitService` drives `git` as a subprocess (argument lists only: status, blame, commit, pull, push, `switch` / `switch -c`, `diff`, `log`, `show`) and `GitParse` reads porcelain. The panel is `ui/GitPanel`. |
 | `src/image/` | Sprite document and ST graphics: `ImageDocument` (v2 `.pim` JSON: phases own their frames and cell size and carry sprite-sheet placement; `StFormats::composeSheet()`/`sliceSheetCells()` move between placed phases and sheet images), `Palette` (STfm 512 / STe 4096 cubes and colour words — the 4-bit-per-channel machine words, with `rgbFromStfmWord`/`stfmColourWord` for the 3-bit words the file formats actually store), `Tools` (brush/line/rect/fill), `Transform` (flip, rotate, region cut/stamp/move, onion/phase math), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include, plus `spriteSafeDocument()` — the palette shift that keeps colour 0 as background so an export re-imports losslessly — and `bitplaneLayout()`/`exportBitplaneData()` for the sprite editor's `.dat` — the selected blocks of one phase, every frame of it, laid out so a frame and a pre-shift are strides — plus `exportScrollDemo()`, which writes an `incbin`ing scroller that animates and scrolls them). |
 | `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — `SymbolTable` (labels/equates from a vasm listing, feeding the Symbols dock and console completion) and `FloppyImage` (AUTO-folder FAT12 writer for pre-1.04 TOS, plus `.st` / `.msa` listing, export, and in-place edits — `readFileRaw` extracts a file's bytes and `updateImage` rewrites an existing image with entries added and removed) with `FloppyTransfer` (`floppy::Transfer` — the one implementation of the three disk/host/between-disk transfers the browser runs, widget-free behind a `Host` interface). |
-| `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hrdb-main fork over TCP 56001); `EmbedSocket` (the `QLocalServer` on Hatari's `--control-socket` — the `hatari-debug` channel and the embedded display's video-size reports; invariant 14), `MachineState` (the per-stop snapshot the typed reads fill and `stateUpdated` carries), `HatariTextParse` (their shared `d` parser: the `$`-optional address, a byte column that is a run of single-space-separated hex words — so a hex-only mnemonic like `dbf` is never absorbed into it, and a ten-byte instruction's `23+` cut token stays with the bytes — and the instruction text), `SessionConfig` (one session's argv), `HatariProbe` (capability detection; content-scans the binary on Windows, where Hatari's info options print to a fresh console, not the pipe), `ProfileData` (the `profile save` parser behind the Profiler dock), `AttributedProfile` (the attribution of a parsed profile to routines and source lines, with the ROM/TOS row — MAJ-44), `TosRom` (ROM discovery + version), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
+| `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hatari-pist fork over TCP 56001); `EmbedSocket` (the `QLocalServer` on Hatari's `--control-socket` — the `hatari-debug` channel; invariant 14), `MachineState` (the per-stop snapshot the typed reads fill and `stateUpdated` carries), `HatariTextParse` (their shared `d` parser: the `$`-optional address, a byte column that is a run of single-space-separated hex words — so a hex-only mnemonic like `dbf` is never absorbed into it, and a ten-byte instruction's `23+` cut token stays with the bytes — and the instruction text), `SessionConfig` (one session's argv), `HatariProbe` (capability detection; content-scans the binary on Windows, where Hatari's info options print to a fresh console, not the pipe), `ProfileData` (the `profile save` parser behind the Profiler dock), `AttributedProfile` (the attribution of a parsed profile to routines and source lines, with the ROM/TOS row — MAJ-44), `TosRom` (ROM discovery + version), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
 | `src/model/` | `Machine` — the machine vocabulary shared by `emu/` and `project/`: the `Machine` enum, its display/CLI name mapping and TOS-acceptance. ROM discovery stays in `emu/`; this leaf exists so `project/` no longer includes `emu/` (MIN-56). |
 | `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). |
@@ -51,7 +51,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 - **`ui/MainWindow.{h,cpp}`** — the central controller and by far the largest file. It owns the
   document tabs (`CodeEditor` and `ImageEditor`), every dock, the `BuildService`, the debug backend
   (`m_host`, an `IDebugBackend` — `EmulatorHost` or `HrdbBackend`) and the `ProgramLineMap`; creates
-  the actions/menus/toolbar/status bar; persists the layout and the embedded-display preference;
+  the actions/menus/toolbar/status bar; persists the layout;
   owns the app-level event filter (dock move menu + drag pass-through); and wires the panels to the
   backend. Almost everything is routed through here.
   Five seams hold the state that used to be spread across it, and each is an ordinary child of the
@@ -83,21 +83,12 @@ Everything else in this document is a consequence of that rule. The debug transp
   `MainWindow` is also the control layer's `control::ControlHost` (`control/ControlHost.h`): the
   remote-control verbs are its own methods, so `RemoteControl` drives the IDE through an interface
   `src/control/` owns instead of including this header (MIN-86).
-- **`ui/EmulatorDisplayWidget.{h,cpp}`** — the `WA_NativeWindow` container the emulator's display
-  lands in. On X11 its `winId()` is handed to Hatari, which reparents itself into it; on Windows it
-  adopts the emulator's own window by process id (`attachEmulatorProcess()` starts a poll that ends
-  when that window appears, or says on the panel that it never did). Tracks the video size,
-  aspect-fits it inside the dock, and paints a "Paused" badge when stopped.
-  Since the hatari-pist fork (PLAN.md §12) it is also the media panel: `setFrame()` hands it one
-  `QImage` per transported frame and it paints that aspect-fit instead of hosting a window.
-- **`ui/EmbedX11.{h,cpp}`** — free X11 functions over Qt's `QX11Application` native interface:
-  `mapEmbeddedWindowChildren`, `embeddedContainerSize`, `resizeEmbeddedChild`,
-  `setEmbeddedChildrenInputTransparent`, `captureWindowImage`. All no-ops without
-  `PIST_HAVE_X11`/`PIST_HAVE_XEXT`.
-- **`ui/EmbedWin32.{h,cpp}`** — the Windows half: `findEmulatorWindow` (by process id, nothing else
-  names the emulator's window), `embedForeignWindow` / `releaseForeignWindow` (`SetParent`, with the
-  window styles set in the order MSDN requires of it), `windowHandleValid`, `windowClientSize`,
-  `moveEmbeddedChild`. All no-ops off Windows.
+- **`ui/EmulatorDisplayWidget.{h,cpp}`** — the emulator's display panel (docs/PLAN.md §12). The
+  hatari-pist fork runs windowless and pushes its frames over the media channel; the panel paints
+  the latest one aspect-fit, owns the VirtualBox-style input grab (click captures, F12 releases,
+  §12.4) and paints a "Paused" badge when stopped. The X11-reparenting and Windows-adoption
+  embedding paths that used to live here were deleted in the phase-4 cutover — the media channel
+  is the only embedded display.
 - **Debug panels** (`ui/`): `RegistersView` (editable D0–D7/A0–A7, PC, SR, USP/ISP, flags),
   `DisassemblyView` (current PC highlighted), `MemoryView` (hex, byte editing, address navigation),
   `StackView` (longs at SP, return-address annotation), `HardwareView` (`info <subject>` output —
@@ -177,8 +168,8 @@ Everything else in this document is a consequence of that rule. The debug transp
   `control::ControlHost *`. Each connection line is marshalled onto that thread with a queued
   `QMetaObject::invokeMethod`, then dispatched: verbs call the interface directly, and the
   asynchronous ones wait on its event hooks (a nested `QEventLoop`, as before) instead of on
-  `MainWindow` signals. The screenshot verb hands the path to the host: the capture is the UI's
-  (XGetImage, `ui/EmbedX11.h`), since only the UI has the window handle.
+  `MainWindow` signals. The screenshot verb hands the path to the host: a media session's capture
+  is the last streamed frame, anything else's is `QScreen::grabWindow` of the IDE window.
 
 ### The build graph
 
@@ -262,10 +253,9 @@ linked). Editor error markers are set for the currently open file only.
 `EmulatorHost::writeBootstrapScript()` to write the per-session `boot.ini` (which arms the entry
 breakpoint — native only, per `IDebugBackend::setCapabilities`), validates the TOS ROM can
 autostart, and calls `m_host->start(config)`.
-`start()` isolates the child (`HOME`/`XDG_CONFIG_HOME` point at a per-session dir), optionally pins
-`PARENT_WIN_ID` + `SDL_VIDEODRIVER=x11` for embedding, opens the control socket
-(`EmbedSocket::listen`, invariant 14) **before** spawning (Hatari is the `connect()`ing client, so
-the IDE must already be listening), and runs `SessionConfig::toArgv()`.
+`start()` isolates the child (`HOME`/`XDG_CONFIG_HOME` point at a per-session dir), opens the
+control socket (`EmbedSocket::listen`, invariant 14) **before** spawning (Hatari is the
+`connect()`ing client, so the IDE must already be listening), and runs `SessionConfig::toArgv()`.
 
 ### The debug transport (read this before touching EmulatorHost)
 
@@ -333,35 +323,14 @@ panes are created by `addMemoryPane()`, each routed by an integer tag so concurr
 right pane. Watchpoints are address-based change-tracking conditional breakpoints (`b ($a).w ! ($a).w`)
 and can arm before any stop.
 
-### Embedding the emulator display
+### Embedding the emulator display (removed)
 
-On X11, Hatari reparents its own SDL window into `EmulatorDisplayWidget` (Hatari does the reparent;
-PiST only supplies the window ID). Two sides must both be X11: the app is pinned to `xcb`, and the
-child to `SDL_VIDEODRIVER=x11`; otherwise the option is disabled. Hatari creates its SDL window
-*hidden and never maps it*, so `mapEmbeddedWindowChildren()` must map it or the display stays black.
-Sizing uses `embeddedContainerSize()` (the real X11 window size) as ground truth — Qt's geometry for
-a native dock can disagree — and `resizeEmbeddedChild()` letterboxes the video. During a dock drag
-that crosses the video, `setEmbeddedChildrenInputTransparent()` gives the foreign window an empty
-input region so the drag keeps tracking (a foreign window otherwise swallows the pointer events).
-
-On Windows there is no handshake to answer. Hatari's reparenting is compiled in only under
-`HAVE_X11 && SDL_VIDEO_DRIVER_X11` upstream (`src/sdl/screen.c`, `Screen_ReparentWindow`), while the
-`PARENT_WIN_ID` check that creates the SDL window *hidden* (`screen.c:439`) is not inside that guard
-at all — so naming the panel in the environment would leave the user with no emulator window
-whatsoever if the adoption then failed. PiST therefore leaves the environment alone and adopts the
-window Hatari already showed: `findEmulatorWindow()` polls by process id
-(`IDebugBackend::emulatorProcessId()`), `embedForeignWindow()` clears `WS_POPUP` and the caption,
-sets `WS_CHILD`, and calls `SetParent` in MSDN's order, and `moveEmbeddedChild()` letterboxes it in
-the container's physical pixels. The poll stays alive at 500 ms because the emulator replaces its
-window on a guest resolution change; every failure path ends at the detached window that already
-works, and the panel says so. Input queues are deliberately *not* attached (`AttachThreadInput`):
-Hatari pumps no messages while stopped in its debugger (`src/debug/debugui.c` never calls
-`SDL_PumpEvents`), so coupling the two queues would freeze the IDE at every breakpoint.
-
-The preference defaults to embedded. A first run with no stored choice on a platform that cannot
-embed (macOS, Wayland without XWayland) stays detached instead of opening a panel that can never
-fill: the toolchain probe reconciles the default against `canEmbedDisplay()` once, and a stored
-choice — either way — always wins (`m_embeddedDisplayChosen`).
+The media channel (next section) is the only embedded display now. The two older mechanisms —
+X11 reparenting (Hatari's `PARENT_WIN_ID` handshake) and Windows window adoption (`SetParent`)
+— were deleted in the phase-4 cutover, along with the Shape passthrough hack, the
+`hatari-embed-info` size reports and the `xcb` platform pin: the channel does everything they
+did, on every platform, with no window-manager involvement. An emulator without the channel
+keeps its own top-level window, and the launcher says so for the session.
 
 ### The media channel (hatari-pist fork)
 
@@ -369,18 +338,24 @@ With a `--pist-media`-capable emulator (probed by option name, `HatariCapabiliti
 the emulator runs windowless and PiST owns the pixels. Since phase 2 the media display is the
 *default* when the capability pair holds — the option and the "protocol v2: input" marker in its
 help text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fork. `SessionLauncher` calls
-`EmulatorHost::mediaListen()` (binds `MediaServer` on 127.0.0.1, a random port in 20000–32767 —
+`IDebugBackend::mediaListen()` (binds `MediaServer` on 127.0.0.1, a random port in 20000–32767 —
 below the ephemeral floor, PLAN §12.7's self-connect finding) **before** the spawn and puts the
 port in `SessionConfig.mediaPort`, whose `toArgv()` emits `--pist-media <port> --frameskips 0`.
 The fork opens with AUTH and the IDE answers HELLO; the fork streams nothing until HELLO arrives. Frames arrive change-gated
 (content or geometry), 32bpp with the masks in the header, cropped to the ST screen area.
 `MainWindow` converts `MediaFrame` → `QImage` (`mediaFrameImage`, the conversion lives in ui/
 because `pist_emu` links no QtGui) and hands it to `EmulatorDisplayWidget::setFrame()`;
-`saveScreenshot` saves the last frame in media mode. The debug transport (stdin + control socket)
-is unchanged — the control socket is serviced from Hatari's main loop (`main.c:591` in 2.6.1), so
-it works windowless unmodified. `hatari-stop`/`hatari-cont` is the one trap: under the dummy driver
+`saveScreenshot` saves the last frame in media mode.
+
+The unified fork (phase 4) carries both channels in one binary: the HRDB debugger on 56001 and
+the media channel on the session port. The media server therefore lives on `IDebugBackend`, so
+both transports drive the panel; the probe picks HRDB for the debugger when the fork offers it.
+The control socket stays too — serviced from Hatari's main loop (`main.c:591` in 2.6.1), so it
+works windowless unmodified. `hatari-stop`/`hatari-cont` is the one trap: under the dummy driver
 the paused event handler blocks in `SDL_WaitEvent` and the socket is never serviced again — PiST's
-pause is `hatari-debug`, so this is unreachable; don't "fix" pause by switching it.
+pause is `hatari-debug`, so this is unreachable; don't "fix" pause by switching it. The session
+environment sets `SDL_AUDIODRIVER=dummy` in media mode: PiST plays the mix itself, and a stalled
+real device would stop draining the fork's sound ring and drop spans from the stream.
 
 Protocol v2 adds authentication and input. The fork speaks first with `AUTH` ('PSA1' + a 16-byte
 per-session token `MediaServer` generates at listen and passes as `PIST_MEDIA_TOKEN` in the
@@ -521,7 +496,7 @@ There are two kinds of test:
   offscreen (`QT_QPA_PLATFORM=offscreen`), drive `MainWindow`, and `QSKIP` themselves unless
   Hatari, `vasmm68k_mot` and a TOS ROM are available (set `PIST_TOS_DIR`;
   `PIST_REQUIRE_EMULATOR=1` turns a skip into a failure for CI). `tst_hrdb` skips unless
-  `$PIST_HRDB_HATARI` names the hrdb-main fork binary, which CI supplies. GUI tests synthesize
+  `$PIST_HRDB_HATARI` names an HRDB-capable emulator (the hatari-pist fork), which CI supplies.
   input through `QApplication::notify`, which is what the app-level event filter listens on — so
   dock menus and similar are testable without a display.
 

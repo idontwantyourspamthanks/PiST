@@ -198,13 +198,13 @@ control socket is absent.
 
 | Path | Contents |
 |---|---|
-| `src/main.cpp` | Entry point: platform pinning, `--diagnose`, `--control-port`, the single `MainWindow` |
-| `src/ui/` | `MainWindow` (the shell) and every debug panel; X11 display embedding (`EmbedX11`, `EmulatorDisplayWidget`) |
+| `src/main.cpp` | Entry point: `--diagnose`, `--control-port`, the single `MainWindow` |
+| `src/ui/` | `MainWindow` (the shell), every debug panel, and the emulator display panel (`EmulatorDisplayWidget` — media frames, the input grab) |
 | `src/editor/` | `CodeEditor` (gutter, execution line, error markers) and `AsmHighlighter` (m68k Motorola syntax) |
 | `src/build/` | `BuildService` (drives vasm/vlink), `Diagnostic`, the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — and `FloppyImage` (`.st`/`.msa` plus the AUTO-folder writer) |
 | `src/image/` | The sprite document and ST graphics: `ImageDocument` (v2 `.pim`), `Palette`, `Tools`, `Transform`, `StFormats` (PI1/NEO/IFF/MBK/PNG codecs, the `.dat`/scroller exporters) |
 | `src/git/` | `GitService` (drives `git`, argument lists only) and `GitParse` (porcelain); the panel is `src/ui/GitPanel` |
-| `src/emu/` | `IDebugBackend` (the transport contract) with `EmulatorHost` (stock Hatari, stdin/prompt framing) and `HrdbBackend` (hrdb-main fork, TCP 56001); `EmbedSocket` (the control socket), `MachineState`, `HatariTextParse`, `SessionConfig`, `HatariProbe`, `ProfileData`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
+| `src/emu/` | `IDebugBackend` (the transport contract) with `EmulatorHost` (stock Hatari, stdin/prompt framing) and `HrdbBackend` (hatari-pist fork, TCP 56001); `EmbedSocket` (the control socket), `MediaServer` (the frame/audio/input channel), `MachineState`, `HatariTextParse`, `SessionConfig`, `HatariProbe`, `ProfileData`, `TosRom`, `Machine`, `MemoryDump`, `Paths` |
 | `src/debug/` | `Breakpoint` (file:line model + arming plan) and `Watchpoint` |
 | `src/control/` | `RemoteControl` — the localhost TCP line protocol that drives the IDE — and `mcp/`, the `pist-mcp` shim that exposes it as MCP tools |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON |
@@ -408,28 +408,19 @@ the 320×200 four-bitplane screen needs — PiST's default project settings use 
 boots TOS in high resolution, and there it says so and waits for a key instead of drawing. The step it moves in is the pre-shift step, so
 ticking a pre-shifted block is what makes the motion fine (2 px with 8 copies).
 
-## Emulator embedding
+## The emulator display
 
-`PiST` can run the emulator's display **inside the IDE** instead of in a separate
-window: **View ▸ Embed emulator display**. Embedding is the default wherever it
-works, the preference is remembered, and a first run on a platform that cannot
-embed stays detached rather than opening a panel that can never fill. The
-mechanism differs by platform, because neither one generalises:
+`PiST` runs the emulator's display **inside the IDE**: the bundled **hatari-pist**
+emulator runs windowless and streams its frames, sound and input over a local
+channel, and the panel paints the picture, plays the audio and owns the
+keyboard/mouse. Input works the VirtualBox way: **click the panel to capture**
+(an accent border and a hint show), **F12 releases**; the host pointer hides
+over the panel because the guest's cursor is drawn into every frame.
 
-- **Linux / X11** — reparenting done by the emulator: `PiST` names the panel's X11
-  window in `PARENT_WIN_ID`, and Hatari attaches its own SDL window to it. This
-  also covers a Wayland session through XWayland, which is why `PiST` prefers the
-  `xcb` platform whenever an X display is reachable.
-- **Windows** — reparenting done by `PiST`: Hatari's side of that handshake is
-  compiled in only for X11, so `PiST` finds the emulator's window by process id
-  and moves it into the panel with `SetParent`. Should that ever fail, the
-  emulator keeps the separate window it already had.
-- **macOS** — not possible: a foreign process's window cannot be reparented there
-  (`WId` is a process-local `NSView*`).
-
-Where embedding is not possible the option is unavailable and the emulator
-always runs as a separate window. A panel with nothing embedded says what it is
-waiting for, rather than showing an unexplained black rectangle.
+This works on every platform — there is no window reparenting anywhere, so no
+X11-only or Windows-only caveat. A *different* emulator (a stock Hatari you
+configured yourself) simply keeps its own separate window, and `PiST` says so
+when a session starts.
 
 ## TOS ROMs
 

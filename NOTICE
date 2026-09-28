@@ -61,30 +61,32 @@ hatari — the emulator
     reason PiST runs it as a separate process.
     https://www.hatari-emu.org/
 
-    Redistribution: release archives of PiST *do* include a Hatari binary,
-    compiled by the release workflow from the upstream, unmodified source
-    tarball, pinned by checksum. The basis for this is the licence above: the
-    GPL, version 2 or later, permits redistribution of the compiled binary.
+    Redistribution: release archives of PiST *do* include a Hatari binary:
+    the hatari-pist fork. The basis for this is the licence above: the GPL,
+    version 2 or later, permits redistribution of the compiled binary.
     The binary itself is conveyed under version 2 rather than "or later",
     because three of the files Hatari compiles in grant version 2 alone — the
     "or later" option on the other files cannot lift the combined work. See
     the readline entry below, and docs/PLAN.md §10.
 
-    Two commitments follow from that basis:
-      - the binary is NEVER patched or modified. PiST drives Hatari purely
-        through command-line arguments.
-      - it is NEVER committed to the PiST source repository. It is produced by
-        the release workflow at release time only.
+    hatari-pist is Hatari 2.6.1 plus:
+      - PiST's media-channel patches (`--pist-media`: frames, audio and input
+        over a local socket), maintained in the hatari-pist repository;
+      - the HRDB remote-debug listener from tattlemuss/hatari, ported from
+        https://github.com/tattlemuss/hatari/tree/21aa4cb76783eb1b141b917fa1976c9c01331d66
+        (GPL v2-or-later, like the rest of Hatari).
+    It is built by the release workflow from the fork's source at a pinned
+    commit, pinned by SHA-256, with SDL2 (zlib licence) and libpng (libpng
+    licence). PiST's debug transport and display channel select themselves
+    from the emulator binary's content, so the bundle carries exactly one
+    emulator: this one.
 
-    Version and source: the hrdb-main fork of Hatari — upstream 2.6.1 plus the
-    remote-debug listener PiST's HRDB transport uses — built from the
-    unmodified source at the pinned commit
-    https://github.com/tattlemuss/hatari/tree/21aa4cb76783eb1b141b917fa1976c9c01331d66
-    whose tarball is pinned by SHA-256
-    61be3f026ff6e930a5bdf7fd25e5b755126ec678cea0c483d93a71f916be7a05
-    It is built with SDL2 (zlib licence) and libpng (libpng licence).
-    (PiST's debug transport selects itself from the emulator binary's content,
-    so the bundle carries exactly one emulator: this one.)
+    Two commitments follow:
+      - PiST itself never patches a Hatari *binary*: an emulator it did not
+        build is driven purely through command-line arguments. The fork is
+        source we maintain, which is why the media channel can exist at all.
+      - the binary is NEVER committed to the PiST source repository. It is
+        produced by the release workflow at release time only.
 
     Bundling is necessary because no distribution package is a usable version.
     Ubuntu 22.04 ships 2.3.1 and Ubuntu 24.04 ships 2.4.1, while PiST is

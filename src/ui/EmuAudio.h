@@ -50,6 +50,8 @@ private:
     QTimer *m_pumpTimer = nullptr;
     QByteArray m_pending;
     quint32 m_rate = 0;
+    qint64 m_pendingSinceMs = 0; // when m_pending first became non-empty
+    bool m_starting = false;     // inside QAudioSink::start()
 };
 
 } // namespace pist

@@ -6,6 +6,7 @@
 
 #include <QAudioFormat>
 #include <QAudioSink>
+#include <QDateTime>
 #include <QIODevice>
 #include <QMediaDevices>
 #include <QTimer>
@@ -21,6 +22,18 @@ constexpr int kQueueCap = 176400 / 5;
 
 /// How long to wait for more sink space before pumping again.
 constexpr int kPumpIntervalMs = 10;
+
+/// Audio held before the sink is started. Chunks arrive once per guest VBL
+/// (~20 ms); a sink started empty underruns on its first period and the
+/// device output breaks up — a single beep arrives as a train of blips
+/// (measured against a real ST, which plays the same stream as one tone).
+constexpr int kPrebufferBytes = 176400 / 10; // 100 ms
+/// If the stream ends before the prebuffer fills (a click, a very short
+/// effect), don't wait forever: play what there is.
+constexpr qint64 kPrebufferMaxWaitMs = 250;
+/// The sink's own buffer: room for the arrival jitter plus the prebuffer, so
+/// a late chunk never drains the device.
+constexpr int kSinkBufferBytes = 176400 / 4; // 250 ms
 
 } // namespace
 
@@ -60,7 +73,7 @@ void EmuAudio::writeChunk(quint32 rate, const QByteArray &samples)
         // device starves goes Idle and never resumes — the silent-output
         // failure push mode avoids; and when an underrun does idle it, new
         // data brings it back.
-        m_io = m_sink->start();
+        m_sink->setBufferSize(kSinkBufferBytes);
         connect(m_sink, &QAudioSink::stateChanged, this,
                 [this](QAudio::State state) {
                     if (state == QAudio::IdleState)
@@ -69,6 +82,8 @@ void EmuAudio::writeChunk(quint32 rate, const QByteArray &samples)
         m_rate = rate;
     }
 
+    if (m_pending.isEmpty())
+        m_pendingSinceMs = QDateTime::currentMSecsSinceEpoch();
     m_pending.append(samples);
     if (m_pending.size() > kQueueCap)
         m_pending.remove(0, m_pending.size() - kQueueCap);
@@ -77,12 +92,31 @@ void EmuAudio::writeChunk(quint32 rate, const QByteArray &samples)
 
 void EmuAudio::pump()
 {
-    if (!m_sink || !m_io)
+    if (!m_sink)
         return;
-    while (!m_pending.isEmpty() && m_sink->bytesFree() > 0) {
-        const qint64 n = qMin(qint64(m_pending.size()), m_sink->bytesFree());
-        m_io->write(m_pending.constData(), n);
-        m_pending.remove(0, int(n));
+
+    // Hold playback until enough audio is buffered to ride out the jitter of
+    // per-VBL arrival; starting an empty sink underruns on its first period.
+    // A stream too short to fill the prebuffer starts on a deadline instead,
+    // so a single short effect still plays.
+    if (!m_io && !m_starting && !m_pending.isEmpty()
+        && (m_pending.size() >= kPrebufferBytes
+            || QDateTime::currentMSecsSinceEpoch() - m_pendingSinceMs
+                   >= kPrebufferMaxWaitMs)) {
+        // start() can report Idle synchronously, which re-enters pump()
+        // through stateChanged() before m_io is assigned; without this guard
+        // the sink is started twice.
+        m_starting = true;
+        m_io = m_sink->start();
+        m_starting = false;
+    }
+
+    if (m_io) {
+        while (!m_pending.isEmpty() && m_sink->bytesFree() > 0) {
+            const qint64 n = qMin(qint64(m_pending.size()), m_sink->bytesFree());
+            m_io->write(m_pending.constData(), n);
+            m_pending.remove(0, int(n));
+        }
     }
     if (!m_pending.isEmpty() && !m_pumpTimer->isActive())
         m_pumpTimer->start();
@@ -100,6 +134,8 @@ void EmuAudio::reset()
 {
     m_pumpTimer->stop();
     m_pending.clear();
+    m_pendingSinceMs = 0;
+    m_starting = false;
     if (m_sink) {
         m_sink->stop();
         m_sink->deleteLater();

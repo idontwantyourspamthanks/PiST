@@ -18,6 +18,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -162,6 +163,7 @@ private slots:
     void reportsMissingToolAsMissing();
     void explicitPathWinsOverDiscovery();
     void missingExplicitPathIsReported();
+    void emulatorEnvOverride();
 };
 
 void TstSettings::roundTripsEverything()
@@ -819,6 +821,54 @@ void TstSettings::missingExplicitPathIsReported()
 {
     const ToolInfo info = toolchain::findEmulator(QStringLiteral("/gone/hatari"));
     QVERIFY2(!info.found(), "a stale configured path must not silently fall back");
+}
+
+// $PIST_HATARI names the emulator directly — how a developer or CI points PiST
+// at a hatari-pist build tree. It wins over PATH discovery, an explicit
+// settings path wins over it, and a stale value is reported rather than
+// silently substituted, exactly like a stale settings path.
+void TstSettings::emulatorEnvOverride()
+{
+    const QByteArray saved = qgetenv(toolchain::kEmulatorPathEnvVar);
+    const auto restore = qScopeGuard([&] {
+        if (saved.isNull())
+            qunsetenv(toolchain::kEmulatorPathEnvVar);
+        else
+            qputenv(toolchain::kEmulatorPathEnvVar, saved);
+    });
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+#ifdef Q_OS_WIN
+    const QString fake = dir.filePath(QStringLiteral("hatari.exe"));
+#else
+    const QString fake = dir.filePath(QStringLiteral("hatari"));
+#endif
+    QFile f(fake);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("#!/bin/sh\nexit 0\n");
+    f.close();
+    QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                             | QFileDevice::ExeOwner));
+    QVERIFY2(QFileInfo(fake).isExecutable(), "the fixture must look executable");
+
+    qputenv(toolchain::kEmulatorPathEnvVar, fake.toUtf8());
+
+    const ToolInfo fromEnv = toolchain::findEmulator();
+    QVERIFY(fromEnv.found());
+    QCOMPARE(fromEnv.path, fake);
+
+    // An explicit settings path still wins outright over the variable.
+    const ToolInfo fromSettings = toolchain::findEmulator(QStringLiteral("/gone/hatari"));
+    QVERIFY(!fromSettings.found());
+    QVERIFY(!fromSettings.reason.isEmpty());
+
+    // A variable that does not resolve is reported, not substituted from PATH.
+    qputenv(toolchain::kEmulatorPathEnvVar, "/gone/hatari-pist");
+    const ToolInfo stale = toolchain::findEmulator();
+    QVERIFY2(!stale.found(), "a stale $PIST_HATARI must not silently fall back");
+    QVERIFY(!stale.reason.isEmpty());
 }
 
 /// The session-directory cases delete recursively, and their subject is real

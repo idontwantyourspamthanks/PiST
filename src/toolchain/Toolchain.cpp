@@ -173,7 +173,12 @@ ToolInfo findAssembler(const QString &overridePath)
 
 ToolInfo findEmulator(const QString &overridePath)
 {
-    return locate(QString::fromLatin1(kEmulatorName), overridePath);
+    // $PIST_HATARI names a binary directly — a hatari-pist build tree on a
+    // developer machine or in CI. An explicit settings path still wins; an env
+    // value that does not resolve is reported, like a stale settings path.
+    const QString envPath = qEnvironmentVariable(kEmulatorPathEnvVar);
+    return locate(QString::fromLatin1(kEmulatorName),
+                  !overridePath.isEmpty() ? overridePath : envPath);
 }
 
 ToolInfo findLinker(const QString &overridePath)

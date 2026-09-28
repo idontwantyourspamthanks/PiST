@@ -295,6 +295,11 @@ common case:
    bundled copy would live;
 4. the system `PATH`.
 
+For the emulator there is also a named escape hatch, like `$PIST_TOS_DIR` for
+ROMs: `$PIST_HATARI` names a binary directly — outranked only by the explicit
+settings path — which is how a developer or CI points PiST at a `hatari-pist`
+build tree without installing it.
+
 If one is missing, PiST says which and where to get it rather than failing later
 with a process error.
 

@@ -33,6 +33,12 @@ struct ToolInfo
 /// Where to look, in priority order, and what to do when nothing is found.
 namespace toolchain {
 
+/// Environment variable naming the emulator binary directly, ahead of discovery
+/// (but behind an explicit settings path): how a developer or CI points PiST at
+/// a hatari-pist build tree without installing it — the `PIST_HRDB_HATARI`
+/// pattern the hrdb test suite already uses.
+inline constexpr const char *kEmulatorPathEnvVar = "PIST_HATARI";
+
 /// The assembler. `overridePath` (from project or user settings) wins when set.
 ToolInfo findAssembler(const QString &overridePath = QString());
 

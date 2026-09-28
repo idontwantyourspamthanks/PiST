@@ -48,7 +48,6 @@ public:
 
     bool isRunning() const override;
     bool isStopped() const override { return m_stopped; }
-    qint64 emulatorProcessId() const override;
 
     BackendKind kind() const override { return BackendKind::Hrdb; }
 

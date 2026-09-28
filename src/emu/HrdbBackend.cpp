@@ -115,10 +115,7 @@ HrdbBackend::HrdbBackend(QObject *parent)
         emit commandFinished(command, QString());
         m_owedReply = true; // a late reply to this failed command must be swallowed
     });
-    // The control socket carries the embedded display's video-size reports on
-    // the fork (its debugger channels are HRDB's; the socket is upstream's).
-    connect(&m_embedSocket, &EmbedSocket::sizeReported, this,
-            [this](int width, int height) { emit embeddedSizeChanged(width, height); });
+    // The control socket's log lines join ours.
     connect(&m_embedSocket, &EmbedSocket::logLine, this,
             [this](const QString &line) { emit logLine(line); });
 }
@@ -133,10 +130,6 @@ bool HrdbBackend::isRunning() const
     return m_process && m_process->state() != QProcess::NotRunning;
 }
 
-qint64 HrdbBackend::emulatorProcessId() const
-{
-    return m_process ? m_process->processId() : -1;
-}
 
 bool HrdbBackend::start(const SessionConfig &config, QString *error)
 {
@@ -185,20 +178,15 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
     m_process->setReadChannel(QProcess::StandardError);
 
     // The session argv is the stock one, control socket included: the fork
-    // keeps the upstream option, and it carries the embedded display's
-    // video-size reports. HRDB replaces only the debugger channels. The
-    // bootstrap parse file stays too: the fork runs --parse at launch, and
-    // the entry breakpoint it arms fires into the remote break loop, which
-    // then waits for our connect — airtight, unlike a socket-armed
+    // keeps the upstream option. HRDB replaces only the debugger channels.
+    // The bootstrap parse file stays too: the fork runs --parse at launch,
+    // and the entry breakpoint it arms fires into the remote break loop,
+    // which then waits for our connect — airtight, unlike a socket-armed
     // `bp pc = TEXT …`, which races TOS boot.
     //
     // The IDE listens before the process starts (Hatari connects; it never
-    // binds). The embed-info request goes out on every HRDB session that has
-    // the socket, not only embedded ones: the reply is how the seam is
-    // exercised headlessly, and it costs one informational log line. (Native
-    // keeps the parentWindowId gate in EmulatorHost::openSocketServer.)
+    // binds).
     if (!config.controlSocketPath.isEmpty()) {
-        m_embedSocket.setRequestOnConnect(true);
         if (!m_embedSocket.listen(config.controlSocketPath, error))
             return false;
     }
@@ -330,8 +318,9 @@ void HrdbBackend::enqueue(Pending pending)
 
 void HrdbBackend::dispatchNext()
 {
-    if (m_haveCurrent || m_queue.isEmpty() || !m_ready || !m_socket)
+    if (m_haveCurrent || m_queue.isEmpty() || !m_ready || !m_socket) {
         return;
+    }
 
     // A command timed out and its reply is still owed: the next reply that
     // arrives belongs to it, not to anything sent now, so hold the queue until
@@ -339,8 +328,9 @@ void HrdbBackend::dispatchNext()
     // guard — MIN-2). Without this, a *missing* reply (the link is silent, not
     // merely late) makes the next command's reply get swallowed as the owed one
     // and every command afterwards is answered by its predecessor.
-    if (m_owedReply)
+    if (m_owedReply) {
         return;
+    }
 
     // Commands that run from the fork's remote break loop are held while the
     // emulator runs: HRDB services the socket either way, unlike the native
@@ -353,7 +343,27 @@ void HrdbBackend::dispatchNext()
     // outstanding at a time, so the reorder is safe.
     int next = -1;
     for (int i = 0; i < m_queue.size(); ++i) {
-        if (m_stopped || !m_queue.at(i).needsStop) {
+        const Pending &p = m_queue.at(i);
+        // Run-state commands serialize with the machine's *observed* state,
+        // which only !status reports: `run` dispatches only from the head of
+        // the queue — once every request ahead of it has been answered, so a
+        // resume's kept arms and clears land first, in order, like the native
+        // transport's "b, b, then c" on one stdin — and `break` only against
+        // a machine observed running (the fork NGs a break that is already
+        // active). m_stopped is written by the !status handler alone, so a
+        // command queued behind a not-yet-effective `run` can never evaluate
+        // against the stale stopped state.
+        if (p.wire == QLatin1String("run")) {
+            if (i == 0 && m_stopped)
+                next = i;
+            break;
+        }
+        if (p.wire == QLatin1String("break")) {
+            if (!m_stopped)
+                next = i;
+            continue;
+        }
+        if (!p.needsStop || m_stopped) {
             next = i;
             break;
         }
@@ -450,10 +460,10 @@ void HrdbBackend::handleNotification(const QByteArray &message)
             return;
         m_stopped = stopped;
         emit stoppedChanged(stopped);
-        if (stopped)
-            // Deferred state reads can now be answered against a stopped
-            // machine.
-            dispatchNext();
+        // Both edges can release work: a stop releases the held debugger
+        // commands; a running edge releases a `break` that was queued behind
+        // the resume now in effect.
+        dispatchNext();
         return;
     }
 
@@ -693,10 +703,12 @@ QList<MemoryRow> HrdbBackend::memoryRows(quint32 address, quint32 memBytes,
 void HrdbBackend::clearBreakpoints()
 {
     // No typed clear-all exists, but `b all` is a debugui command and the
-    // console runs those. Not stop-gated: arming after a rebuild must not
-    // wait for a stop.
+    // console runs those. Stop-gated like every other console request: an
+    // immediate `b all` on a booting machine deletes the entry breakpoint
+    // itself, which the --parse bootstrap armed at launch — the pre-base
+    // window's whole point is that re-arms *wait* for that stop (the native
+    // transport gets the holding for free from its starved stdin).
     Pending p = consoleRequest(QStringLiteral("b all"), QStringLiteral("b all"));
-    p.needsStop = false;
     p.keepOnResume = true;
     enqueue(p);
 }
@@ -717,6 +729,12 @@ void HrdbBackend::armBreakpoint(const QString &condition)
     Pending p;
     p.text = condition;
     p.wire = QStringLiteral("bp ") + condition.mid(2);
+    // Held to the next stop like the native transport (nothing reads its
+    // stdin while running): the clear-then-re-arm of an edit must land as one
+    // ordered batch, or an arm sent now is wiped by the clear that was
+    // waiting for the stop — and a clear sent now would delete the entry
+    // breakpoint itself before it ever fires.
+    p.needsStop = true;
     p.keepOnResume = true;
     enqueue(p);
 }
@@ -957,8 +975,10 @@ void HrdbBackend::stepOver()
                 run.text = QStringLiteral("c");
                 run.wire = QStringLiteral("run");
                 m_queue.enqueue(run);
-                m_stopped = false;
-                emit stoppedChanged(false);
+                // m_stopped stays !status-driven here too: the one-shot is a
+                // control command and goes out now, `run` follows from the
+                // head of the queue, and the machine's own !status(running)
+                // reports the transition.
                 dispatchNext();
                 return;
             }
@@ -970,11 +990,22 @@ void HrdbBackend::stepOver()
 
 void HrdbBackend::pause()
 {
-    if (m_stopped || !isRunning())
+    if (!isRunning())
         return;
+    if (m_stopped) {
+        // A stopped machine with no resume in flight takes no break (the fork
+        // NGs one that is already active). But a stop that is only the
+        // pre-dispatch side of a queued `run` is about to be running: the
+        // break belongs behind that run, and the gate releases it when
+        // !status reports the machine going.
+        bool runPending = m_haveCurrent && m_current.wire == QLatin1String("run");
+        for (const Pending &queued : std::as_const(m_queue))
+            runPending |= queued.wire == QLatin1String("run");
+        if (!runPending)
+            return;
+    }
     // Serviced at the next VBL; the resulting !status notification marks the
-    // stop. The fork NGs a break that is already active, which the stopped
-    // guard above prevents.
+    // stop.
     Pending p;
     p.text = QStringLiteral("break");
     p.wire = QStringLiteral("break");
@@ -1031,8 +1062,12 @@ void HrdbBackend::resume()
     }
     m_queue = kept;
 
-    m_stopped = false;
-    emit stoppedChanged(false);
+    // `run` goes behind the kept requests and is dispatched only from the
+    // head of the queue, so the kept stop-gated arms and clears are answered
+    // first, in order — the same "b, b, then c" ordering the native transport
+    // gets from one stdin. m_stopped is left to the machine's own !status:
+    // flipping it here is what let commands queued behind the resume evaluate
+    // against a machine that had not actually resumed yet.
 
     Pending p;
     p.text = QStringLiteral("c");

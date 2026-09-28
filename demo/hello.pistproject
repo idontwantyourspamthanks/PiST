@@ -16,7 +16,7 @@
         "debugBackend": "auto",
         "extraArgs": [
         ],
-        "fastForward": true,
+        "fastForward": false,
         "floppyImages": [
             "",
             ""

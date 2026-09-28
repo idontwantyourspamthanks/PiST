@@ -558,9 +558,9 @@ These are the operational constraints the launch builder must encode.
     live at a stop before arming finishes), when the project wants real speed. The audio
     queue is reset
     at the same moment, or up to ~450 ms of turbo-chopped boot audio plays over the program's
-    first real-time instants. Note the fork only resyncs its own sound ring on the keyboard
-    shortcut's FF exit, not the `setopt` one, so ~170 ms of stale ring content can still reach
-    the wire once per session.
+    first real-time instants. The fork resyncs its sound ring on either FF exit — the
+    shortcut's and the `setopt` one (upstream only had the former; without the latter the
+    ring's stale span streamed over the program's first real-time instants).
 
 ### 5.1 Bootstrap parse file
 

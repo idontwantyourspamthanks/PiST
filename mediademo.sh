@@ -25,7 +25,7 @@ if [ -z "${PIST_HATARI:-}" ]; then
 fi
 if [ ! -x "$BIN" ] || [ -n "$(find src CMakeLists.txt -newer "$BIN" -print -quit 2>/dev/null)" ]; then
     echo "Building PiST..."
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
     cmake --build build --parallel
 fi
 

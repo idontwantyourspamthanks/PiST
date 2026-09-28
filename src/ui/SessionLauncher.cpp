@@ -78,6 +78,12 @@ void SessionLauncher::launch()
     config.machine = machineCliName(m_host.settings().machine);
     config.monitor = m_host.settings().monitor;
     config.memSizeMiB = m_host.settings().memSizeMiB;
+    // The project's speed preference. Without this the field kept its default
+    // (fast-forward on), so every media session ran the guest ~40x faster than
+    // real time: audio, produced once per guest VBL, arrived far faster than
+    // the sink could play it and had to be dropped (heard as a chopped tone),
+    // and the wall-clock pacing the input/echo path assumes was gone.
+    config.fastForward = m_host.settings().fastForward;
     config.extraArgs = m_host.settings().extraEmulatorArgs;
     if (!m_host.settings().hardDiskImage.isEmpty()) {
         // ACSI is the safe default: it exists on every ST-family machine, unlike

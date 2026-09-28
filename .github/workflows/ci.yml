@@ -234,10 +234,9 @@ jobs:
       # suite and the gui transport-swap tests run against it, and the bundled
       # emulator in a release *is* this fork (release.yml), so CI must exercise
       # the transport that ships — on Windows it is also the only build with
-      # working pause. The pin lands when the fork is published; until then
-      # this step fails loudly rather than building tattlemuss again (that
-      # fork has no --pist-media, and the panel would silently lose the media
-      # channel in everything CI ships).
+      # working pause. The action's pist variant is pinned to the fork's
+      # published commit by SHA-256, and its install step asserts the binary
+      # carries both the HRDB listener and the media channel by content.
       - name: Build Hatari (hatari-pist fork)
         if: matrix.emulator
         uses: ./.github/actions/build-hatari

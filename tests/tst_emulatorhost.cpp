@@ -38,6 +38,7 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTcpServer>
+#include <QtEndian>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QtTest>

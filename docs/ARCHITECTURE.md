@@ -372,7 +372,7 @@ help text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fo
 `EmulatorHost::mediaListen()` (binds `MediaServer` on 127.0.0.1, a random port in 20000–32767 —
 below the ephemeral floor, PLAN §12.7's self-connect finding) **before** the spawn and puts the
 port in `SessionConfig.mediaPort`, whose `toArgv()` emits `--pist-media <port> --frameskips 0`.
-PiST sends HELLO on accept; the fork streams nothing without it. Frames arrive change-gated
+The fork opens with AUTH and the IDE answers HELLO; the fork streams nothing until HELLO arrives. Frames arrive change-gated
 (content or geometry), 32bpp with the masks in the header, cropped to the ST screen area.
 `MainWindow` converts `MediaFrame` → `QImage` (`mediaFrameImage`, the conversion lives in ui/
 because `pist_emu` links no QtGui) and hands it to `EmulatorDisplayWidget::setFrame()`;

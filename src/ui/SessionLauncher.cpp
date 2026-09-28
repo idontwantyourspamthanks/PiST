@@ -145,19 +145,21 @@ void SessionLauncher::launch()
     // Display mode, decided once the transport is known because only the
     // native backend owns a media server. Two mutually exclusive paths:
     //
-    //   media  phase 1 (docs/PLAN.md §12): the emulator runs windowless and
-    //          pushes frames to a server PiST binds *before* the process
-    //          starts (Hatari connects and never binds). Gated three ways:
-    //          the native backend, `--pist-media` in the launched binary's
-    //          option table, and the PIST_MEDIA_DISPLAY dev gate — input does
-    //          not exist yet, so the capability-pair default flip is phase 2.
+    //   media  the hatari-pist media channel (docs/PLAN.md §12): the emulator
+    //          runs windowless and pushes frames to a server PiST binds
+    //          *before* the process starts (Hatari connects and never binds).
+    //          The default once the capability *pair* holds — the option
+    //          (video) and its "protocol v2: input" marker (KEY/MOUSE) — so a
+    //          video-only intermediate fork never replaces a panel that
+    //          already had input (§12.5). PIST_MEDIA_DISPLAY remains as the
+    //          dev gate for a video-only (phase-1) fork.
     //   embed  the existing handshake: name the container's window so Hatari
     //          reparents its SDL window into it.
     //
     // A media launch must not also embed: an empty parentWindowId is what keeps
     // PARENT_WIN_ID and the x11 pinning out of the child's environment.
-    const bool wantMedia = launchedCaps.hasPistMedia
-        && qEnvironmentVariableIsSet("PIST_MEDIA_DISPLAY");
+    const bool wantMedia = launchedCaps.hasPistMediaInput
+        || (launchedCaps.hasPistMedia && qEnvironmentVariableIsSet("PIST_MEDIA_DISPLAY"));
     Host::MediaEngagement media;
     if (wantMedia)
         media = m_host.engageMediaDisplay(launchedCaps);

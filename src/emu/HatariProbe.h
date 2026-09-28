@@ -37,6 +37,12 @@ struct HatariCapabilities
     /// so no content scan is needed to tell it apart.
     bool hasPistMedia = false;
 
+    /// The media capability pair's second half (PLAN §12.5): the same
+    /// binary's help text marks "protocol v2: input", meaning it also speaks
+    /// KEY/MOUSE. The media display becomes the default only when this is
+    /// true; hasPistMedia alone (video-only) keeps the embedding fallback.
+    bool hasPistMediaInput = false;
+
     /// The HRDB remote-debug protocol (the tattlemuss hrdb-main fork). The fork
     /// is version-identical to upstream and adds no CLI option, so neither a
     /// version nor an option probe can find it; the listener's banner string is

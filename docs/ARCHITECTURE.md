@@ -381,6 +381,26 @@ it works windowless unmodified. `hatari-stop`/`hatari-cont` is the one trap: und
 the paused event handler blocks in `SDL_WaitEvent` and the socket is never serviced again — PiST's
 pause is `hatari-debug`, so this is unreachable; don't "fix" pause by switching it.
 
+Protocol v2 adds authentication and input. The fork speaks first with `AUTH` ('PSA1' + a 16-byte
+per-session token `MediaServer` generates at listen and passes as `PIST_MEDIA_TOKEN` in the
+session environment); the server drops any client whose first 20 bytes are not a matching AUTH
+without a byte in reply, and only then sends HELLO. The port is random in 20000–32767 (below the
+ephemeral floor, not pre-bindable). Input flows back on the same socket: `KEY` (ST scancodes from
+`ui/StKeyboard`'s Qt-key table; autorepeat is left to the 6301's typematic) and `MOUSE` (relative
+deltas, scaled from host pixels through `ui/MouseScaling`'s sub-pixel accumulator because the
+panel aspect-fits, plus button state). While any media session runs, the host cursor hides over
+the panel — the guest cursor is baked into every frame (PLAN §12.3).
+
+The input grab is the VirtualBox model, Qt-owned (PLAN §12.4): a click on the panel captures
+(`grabMouse`/`grabKeyboard` — never an OS-level grab, so the release key and IDE shortcuts keep
+working; the grabbing click and its release are consumed), F12 releases (it has no ST scancode
+and is intercepted before forwarding), an accent border and the release hint show while captured,
+the Run menu's "Release Input" is the always-visible path, and focus loss or session end releases
+too. The widget translates (`keyIntent`/`mouseIntent`), `MainWindow` routes to
+`IDebugBackend::mediaKey`/`mediaMouse`, and the default flipped at phase 2: media is the default
+when the capability pair holds — `--pist-media` and the "protocol v2: input" marker in its help
+text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fork.
+
 ### Panels, docks and the event filter
 
 `MainWindow::createDocks()` enables nesting, installs the app-level event filter, and builds docks

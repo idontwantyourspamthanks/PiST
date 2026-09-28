@@ -43,6 +43,8 @@ void scanBinaryContent(const QString &hatariPath, HatariCapabilities *caps)
             caps->hasDebugExcept = true;
         if (!caps->hasPistMedia && chunk.contains(QByteArrayLiteral("--pist-media")))
             caps->hasPistMedia = true;
+        if (!caps->hasPistMediaInput && chunk.contains(QByteArrayLiteral("protocol v2: input")))
+            caps->hasPistMediaInput = true;
         if (caps->version.isEmpty()) {
             const auto m = versionRe.match(QString::fromLatin1(chunk));
             if (m.hasMatch()) {
@@ -138,6 +140,11 @@ HatariCapabilities probeHatari(const QString &hatariPath)
         caps.hasSymbolAutoloadOption = help.contains(QLatin1String("--symload"));
         caps.hasDebugExcept = help.contains(QLatin1String("--debug-except"));
         caps.hasPistMedia = help.contains(QLatin1String("--pist-media"));
+        // The media capability *pair* (PLAN §12.5): the option means video;
+        // the "protocol v2: input" marker in its help text means the build
+        // also speaks KEY/MOUSE — a video-only intermediate fork must not
+        // become the default display, or the panel loses input it had.
+        caps.hasPistMediaInput = help.contains(QLatin1String("protocol v2: input"));
     }
 
     // The HRDB fork is version-identical to upstream and adds no CLI option,

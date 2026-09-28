@@ -61,6 +61,13 @@ public:
         /// for a separate window, which is also the answer when embedding is
         /// off, unsupported, or the widget is absent.
         std::function<QString(const HatariCapabilities &)> embedDisplayWindowId;
+        /// Engage the media display (docs/PLAN.md §12) for a session that can
+        /// use it: bind the frame server *before* the session starts (the
+        /// listen-before-spawn rule), show the panel that will paint the
+        /// frames, and return the port the emulator must connect to. 0 means
+        /// the session cannot use media (backend is not the native one, or the
+        /// server could not bind) and the launch falls back to embedding.
+        std::function<int(const HatariCapabilities &)> engageMediaDisplay;
         /// True while the run was started by the quiet (remote-invoked) entry
         /// point: then a refusal must not open a modal nobody can dismiss.
         std::function<bool()> quiet;

@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// PiST - an IDE for Atari ST assembly development
+
+#pragma once
+
+#include <QByteArray>
+#include <QObject>
+#include <QString>
+
+class QTcpServer;
+class QTcpSocket;
+
+namespace pist {
+
+/// One frame from the emulator's media channel (protocol v1, docs/PLAN.md §12).
+///
+/// Plain data on purpose: `pist_emu` links no QtGui, so the payload crosses the
+/// backend signal exactly as the fork sent it and the UI converts it to a
+/// QImage (MainWindow's mediaFrameImage). `pixels` is `pitch * h` bytes — the
+/// fork has already cropped the statusbar, so this is the ST screen area.
+///
+/// `pitch` may exceed `w * 4` (row padding), and the masks name the pixel
+/// layout: the dummy driver's RGB32 (rmask 0x00ff0000, gmask 0x0000ff00,
+/// bmask 0x000000ff) is little-endian B,G,R,X, which is exactly
+/// QImage::Format_RGB32.
+struct MediaFrame
+{
+    quint32 w = 0;
+    quint32 h = 0;
+    quint32 pitch = 0;
+    quint32 bpp = 0;
+    quint32 rmask = 0;
+    quint32 gmask = 0;
+    quint32 bmask = 0;
+    /// The fork's per-frame counter; it increments for every frame sent.
+    quint32 seq = 0;
+    QByteArray pixels; // exactly pitch * h bytes
+};
+
+/// The media channel's server side: Hatari is again the *client*, so PiST must
+/// already be listening when the process starts (the same listen-before-spawn
+/// rule the control socket follows, docs/PLAN.md §5 rule 10).
+///
+/// Protocol v1, all integers little-endian. On accept PiST sends HELLO once
+/// (`P S H 1`, u32 version = 1, u32 caps with bit0 = wants video; 12 bytes).
+/// The fork streams nothing until HELLO arrives, which is also what makes a
+/// loopback self-connect (a fork's ephemeral port colliding with the server
+/// port) inert — such a socket never produces the handshake. After that the
+/// fork sends, whenever the content or geometry changed, a 36-byte header
+/// (u32 magic 0x46524D31, w, h, pitch, seq, bpp, rmask, gmask, bmask) followed
+/// by pitch * h bytes of pixels.
+///
+/// The reader is defensive by construction: a partial frame is buffered and
+/// never emitted, and bytes that are not a plausible frame are discarded a
+/// byte at a time, so a stray HELLO/KEY fragment or a self-connected echo
+/// cannot wedge the stream.
+class MediaServer : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit MediaServer(QObject *parent = nullptr);
+    ~MediaServer() override;
+
+    /// Listen on 127.0.0.1, first free port in 29200..29209. The range sits
+    /// below the 32768 ephemeral floor on purpose: a fork whose connect()
+    /// source port collided with the listener produced a socket connected to
+    /// itself, which looks healthy while nothing is delivered (docs/PLAN.md
+    /// §12.7). Closes any previous listener first; a failure leaves the server
+    /// closed.
+    bool listen(QString *error);
+    void close();
+
+    /// Drop the connected client and any partially received frame, keeping the
+    /// listener. This is the per-session state a second session must not
+    /// inherit.
+    void resetClient();
+
+    bool isListening() const;
+    /// The bound port, or 0 when not listening.
+    int port() const;
+
+signals:
+    /// One complete frame; never emitted for a partially arrived payload.
+    void frameReceived(const pist::MediaFrame &frame);
+    /// A fork connected and was sent HELLO.
+    void clientConnected();
+    void logLine(const QString &line);
+
+private:
+    void onNewConnection();
+    void onReadyRead();
+    void parseBuffer();
+    void dropClient();
+
+    QTcpServer *m_server = nullptr;
+    QTcpSocket *m_client = nullptr;
+    QByteArray m_buffer;
+};
+
+} // namespace pist
+
+Q_DECLARE_METATYPE(pist::MediaFrame)

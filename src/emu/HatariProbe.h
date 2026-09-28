@@ -31,6 +31,12 @@ struct HatariCapabilities
     /// `--debug-except`: breaks in on CPU exceptions.
     bool hasDebugExcept = false;
 
+    /// `--pist-media <port>`: the hatari-pist fork runs windowless and pushes
+    /// converted frames to the IDE over localhost TCP (docs/PLAN.md §12).
+    /// Probed by option name like the rest — the fork adds a real CLI option,
+    /// so no content scan is needed to tell it apart.
+    bool hasPistMedia = false;
+
     /// The HRDB remote-debug protocol (the tattlemuss hrdb-main fork). The fork
     /// is version-identical to upstream and adds no CLI option, so neither a
     /// version nor an option probe can find it; the listener's banner string is

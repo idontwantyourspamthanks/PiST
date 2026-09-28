@@ -22,14 +22,17 @@
 #include "emu/HatariProbe.h"
 #include "emu/HatariTextParse.h"
 #include "emu/MachineState.h"
+#include "emu/MediaServer.h"
 #include "emu/SessionConfig.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "toolchain/Toolchain.h"
 
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
 #include <QHostAddress>
+#include <QImage>
 #include <QProcess>
 #include <QLocalSocket>
 #include <QSignalSpy>
@@ -426,6 +429,12 @@ private slots:
     /// A split "<w>x<h>" report must complete, not emit the implausible partial
     /// (finding C9).
     void embedSocketCompletesSplitSizeReport();
+    /// The media channel (docs/PLAN.md §12): a windowless hatari-pist run
+    /// connects to the port PiST listened on before the spawn and streams
+    /// framed 32bpp frames, which must convert into real pixels. Skips unless
+    /// the probed emulator carries `--pist-media` (set $PIST_HATARI to the
+    /// fork's build tree).
+    void mediaChannelDeliversFrames();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -2383,6 +2392,130 @@ void TstEmulatorHost::embedSocketCompletesSplitSizeReport()
     QTRY_COMPARE_WITH_TIMEOUT(sizes.count(), 2, 2000);
     QCOMPARE(sizes.at(1).at(0).toInt(), 640);
     QCOMPARE(sizes.at(1).at(1).toInt(), 480);
+}
+
+/// One media-channel frame as pixels, the way the UI does it (MainWindow's
+/// mediaFrameImage): RGB32's little-endian B,G,R,X is Format_RGB32, anything
+/// else is expanded through the header's masks. Duplicated here because the
+/// test target does not link pist_ui.
+QImage frameImage(const MediaFrame &frame)
+{
+    if (frame.w == 0 || frame.h == 0 || frame.bpp != 32)
+        return {};
+    if (frame.pitch < frame.w * 4 || frame.pixels.size() < qint64(frame.pitch) * frame.h)
+        return {};
+
+    if (frame.rmask == 0x00ff0000u && frame.gmask == 0x0000ff00u
+        && frame.bmask == 0x000000ffu) {
+        // copy(): the const-uchar QImage constructor borrows the buffer.
+        return QImage(reinterpret_cast<const uchar *>(frame.pixels.constData()),
+                      int(frame.w), int(frame.h), int(frame.pitch), QImage::Format_RGB32)
+            .copy();
+    }
+
+    const auto component = [](quint32 pixel, quint32 mask) -> int {
+        if (mask == 0)
+            return 0;
+        int shift = 0;
+        while (((mask >> shift) & 1u) == 0)
+            ++shift;
+        return int(((pixel & mask) >> shift) * 255u / (mask >> shift));
+    };
+
+    QImage image(int(frame.w), int(frame.h), QImage::Format_RGB32);
+    for (quint32 y = 0; y < frame.h; ++y) {
+        const uchar *row =
+            reinterpret_cast<const uchar *>(frame.pixels.constData()) + qint64(y) * frame.pitch;
+        QRgb *out = reinterpret_cast<QRgb *>(image.scanLine(int(y)));
+        for (quint32 x = 0; x < frame.w; ++x) {
+            const quint32 pixel = qFromLittleEndian<quint32>(row + qint64(x) * 4);
+            out[x] = qRgb(component(pixel, frame.rmask), component(pixel, frame.gmask),
+                          component(pixel, frame.bmask));
+        }
+    }
+    return image;
+}
+
+void TstEmulatorHost::mediaChannelDeliversFrames()
+{
+    // --pist-media is a fork option; the suite's PATH `hatari` is a stock build
+    // and does not have it. Toolchain is what $PIST_HATARI feeds, which is how
+    // a developer or CI points this at a hatari-pist build tree.
+    const ToolInfo fork = toolchain::findEmulator();
+    const QString hatari = fork.found() ? fork.path : m_hatari;
+
+    HatariCapabilities caps = probeHatari(hatari);
+    QVERIFY(caps.valid);
+    if (!caps.hasPistMedia)
+        QSKIP("the emulator has no --pist-media (set $PIST_HATARI to a hatari-pist build)");
+    if (m_tos.isEmpty())
+        QSKIP("needs a TOS ROM");
+
+    // The launcher's dev gate: media mode exists only under it while input
+    // (KEY messages) does not.
+    qputenv("PIST_MEDIA_DISPLAY", "1");
+
+    SessionConfig config;
+    config.hatariPath = hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/media");
+    config.gemdosDir = m_sourceDir;
+    // No bootstrap script: its entry breakpoint would stop emulation, and the
+    // fork pushes frames only while it runs. Nothing here needs the debugger.
+    config.controlSocketPath.clear();
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this, [this](const QString &l) { m_log.append(l); });
+
+    // Listen before the spawn: Hatari connects and never binds.
+    const int port = host.mediaListen();
+    QVERIFY2(port > 0, "the media server must bind one of ports 29200-29209");
+    config.mediaPort = port;
+
+    // The media session adds exactly these two options, and a session without a
+    // media port grows neither.
+    const QStringList argv = config.toArgv();
+    QCOMPARE(argv.count(QStringLiteral("--pist-media")), 1);
+    QVERIFY(argv.contains(QString::number(port)));
+    QCOMPARE(argv.count(QStringLiteral("--frameskips")), 1);
+    QVERIFY(argv.contains(QStringLiteral("0")));
+    SessionConfig without = config;
+    without.mediaPort = 0;
+    QVERIFY(!without.toArgv().contains(QStringLiteral("--pist-media")));
+    QVERIFY(!without.toArgv().contains(QStringLiteral("--frameskips")));
+
+    QSignalSpy connected(&host.mediaServer(), &MediaServer::clientConnected);
+    QSignalSpy frames(&host, &IDebugBackend::mediaFrameReceived);
+
+    QString error;
+    QVERIFY2(host.start(config, &error), qPrintable(error));
+
+    // The fork connects and streams as soon as it is up; the boot sequence
+    // changes the screen repeatedly, so several frames follow.
+    QTRY_VERIFY_WITH_TIMEOUT(connected.count() > 0, 15000);
+    QTRY_VERIFY_WITH_TIMEOUT(frames.count() >= 2, 20000);
+
+    const MediaFrame first = frames.at(0).at(0).value<MediaFrame>();
+    QVERIFY2(first.w >= 320 && first.h >= 200, "a frame must carry the ST screen area");
+    QVERIFY(first.pitch >= first.w * 4);
+    QCOMPARE(first.bpp, 32u);
+    QCOMPARE(first.pixels.size(), qsizetype(first.pitch) * qsizetype(first.h));
+
+    const MediaFrame last = frames.at(frames.count() - 1).at(0).value<MediaFrame>();
+    QVERIFY2(last.seq > first.seq, "the frame sequence must advance");
+
+    // A screenshot taken from the frame must be a real image, not nothing.
+    const QImage image = frameImage(first);
+    QVERIFY2(!image.isNull(), "the frame must convert to an image");
+    QCOMPARE(image.size(), QSize(int(first.w), int(first.h)));
+    const QString png = m_work->path() + QStringLiteral("/frame.png");
+    QVERIFY(image.save(png));
+    QVERIFY(QFileInfo(png).size() > 0);
+    QVERIFY(!QImage(png).isNull());
+
+    host.stop();
+    qunsetenv("PIST_MEDIA_DISPLAY");
 }
 
 QTEST_MAIN(TstEmulatorHost)

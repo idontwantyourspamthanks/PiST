@@ -41,6 +41,8 @@ void scanBinaryContent(const QString &hatariPath, HatariCapabilities *caps)
             caps->hasSymbolAutoloadOption = true;
         if (!caps->hasDebugExcept && chunk.contains(QByteArrayLiteral("--debug-except")))
             caps->hasDebugExcept = true;
+        if (!caps->hasPistMedia && chunk.contains(QByteArrayLiteral("--pist-media")))
+            caps->hasPistMedia = true;
         if (caps->version.isEmpty()) {
             const auto m = versionRe.match(QString::fromLatin1(chunk));
             if (m.hasMatch()) {
@@ -135,6 +137,7 @@ HatariCapabilities probeHatari(const QString &hatariPath)
         caps.hasControlSocket = help.contains(QLatin1String("--control-socket"));
         caps.hasSymbolAutoloadOption = help.contains(QLatin1String("--symload"));
         caps.hasDebugExcept = help.contains(QLatin1String("--debug-except"));
+        caps.hasPistMedia = help.contains(QLatin1String("--pist-media"));
     }
 
     // The HRDB fork is version-identical to upstream and adds no CLI option,

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <QImage>
 #include <QWidget>
 
 namespace pist {
@@ -51,6 +52,13 @@ public slots:
     /// Record the emulator's native video size, which drives the aspect-preserved
     /// fit. Called when the emulator reports it, right after the reparent.
     void setVideoSize(int width, int height);
+
+    /// Draw one frame of the media channel (docs/PLAN.md §12): the emulator
+    /// runs windowless and sends its own pixels, so this panel paints them
+    /// instead of hosting a foreign window. The frame is drawn aspect-fit and
+    /// centred like the embedded window is; a null image forgets it and returns
+    /// the panel to its empty state.
+    void setFrame(const QImage &frame);
 
     /// Show the embedded window and fit it within this widget.
     void showEmbedded();
@@ -114,6 +122,9 @@ private:
     /// Real video has landed here, on either platform. Until then the panel
     /// says what it is, rather than being an unexplained black rectangle.
     bool m_videoAttached = false;
+    /// The latest media-channel frame, null when the panel is not in frame mode
+    /// (the embedded paths own a foreign window instead).
+    QImage m_frame;
     /// The Windows adoption was attempted and did not happen.
     bool m_attachFailed = false;
 };

@@ -97,10 +97,64 @@
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QtEndian>
 
 namespace pist {
 
 namespace {
+
+/// One media-channel frame (docs/PLAN.md §12) as pixels to paint.
+///
+/// The fork's normal stream is 32 bpp RGB32 from the dummy driver — masks
+/// r=0x00ff0000, g=0x0000ff00, b=0x000000ff — which in little-endian memory is
+/// B,G,R,X, exactly QImage::Format_RGB32, so that case is a direct wrap plus
+/// the one copy that makes the image own the frame's pixels. Any other mask
+/// layout is expanded component by component, because the header carries the
+/// masks precisely so a different driver renders instead of producing garbage.
+QImage mediaFrameImage(const MediaFrame &frame)
+{
+    if (frame.w == 0 || frame.h == 0 || frame.bpp != 32)
+        return {};
+    const qint64 bytes = qint64(frame.pitch) * frame.h;
+    if (frame.pitch < frame.w * 4 || frame.pixels.size() < bytes)
+        return {};
+
+    if (frame.rmask == 0x00ff0000u && frame.gmask == 0x0000ff00u
+        && frame.bmask == 0x000000ffu) {
+        // The const-uchar constructor *borrows* its buffer (verified: the
+        // image's bits are the caller's pointer), and the frame is gone when
+        // the signal handler returns — copy() is what makes the image own its
+        // pixels.
+        return QImage(reinterpret_cast<const uchar *>(frame.pixels.constData()),
+                      int(frame.w), int(frame.h), int(frame.pitch),
+                      QImage::Format_RGB32)
+            .copy();
+    }
+
+    const auto component = [](quint32 pixel, quint32 mask) -> int {
+        if (mask == 0)
+            return 0;
+        int shift = 0;
+        while (((mask >> shift) & 1u) == 0)
+            ++shift;
+        const quint32 max = mask >> shift;
+        return int(((pixel & mask) >> shift) * 255u / max);
+    };
+
+    QImage image(int(frame.w), int(frame.h), QImage::Format_RGB32);
+    for (quint32 y = 0; y < frame.h; ++y) {
+        const uchar *row = reinterpret_cast<const uchar *>(frame.pixels.constData())
+            + qint64(y) * frame.pitch;
+        QRgb *out = reinterpret_cast<QRgb *>(image.scanLine(int(y)));
+        for (quint32 x = 0; x < frame.w; ++x) {
+            const quint32 pixel = qFromLittleEndian<quint32>(row + qint64(x) * 4);
+            out[x] = qRgb(component(pixel, frame.rmask),
+                          component(pixel, frame.gmask),
+                          component(pixel, frame.bmask));
+        }
+    }
+    return image;
+}
 
 bool isPristineEditor(CodeEditor *editor)
 {
@@ -355,6 +409,10 @@ MainWindow::MainWindow(QWidget *parent)
     // is known to be able to embed one: winId() has to be a live native window
     // before Hatari starts, or there is nothing to reparent into.
     launcherHost.embedDisplayWindowId = [this](const HatariCapabilities &caps) -> QString {
+        // This is the non-media display path, so any media mode a previous
+        // launch engaged (including one that was then refused) ends here.
+        m_mediaDisplay = false;
+        m_lastMediaFrame = QImage();
         if (!(m_embeddedDisplay && canEmbedDisplay(caps) && m_display))
             return QString();
         m_displayDock->setVisible(true);
@@ -371,6 +429,23 @@ MainWindow::MainWindow(QWidget *parent)
 #else
         return QString::number(m_display->winId());
 #endif
+    };
+    // The media display (docs/PLAN.md §12). A media session must not embed, so
+    // this is where the panel is shown for it, and the port it returns is what
+    // the emulator's argv will name. Only the native backend carries a server;
+    // a launch on HRDB simply gets 0 and embeds/separates as before.
+    launcherHost.engageMediaDisplay = [this](const HatariCapabilities &caps) -> int {
+        auto *native = qobject_cast<EmulatorHost *>(m_host);
+        if (!native || !caps.hasPistMedia || !m_display)
+            return 0;
+        const int port = native->mediaListen();
+        if (port <= 0)
+            return 0;
+        m_mediaDisplay = true;
+        m_lastMediaFrame = QImage();
+        m_displayDock->setVisible(true);
+        m_display->setVisible(true);
+        return port;
     };
     launcherHost.quiet = [this] { return m_quietDialogs; };
     launcherHost.refuseRun = [this](const QString &title, const QString &reason, bool critical) {
@@ -1112,8 +1187,9 @@ void MainWindow::wireBackend()
             // Windows: the emulator has just made its own window, and the
             // container adopts it now that there is a process to look for. A
             // no-op elsewhere, where Hatari reparents itself into the container
-            // and reports its video size over the control socket.
-            if (m_display && m_embeddedDisplay)
+            // and reports its video size over the control socket. A media
+            // session has no window to adopt at all.
+            if (m_display && m_embeddedDisplay && !m_mediaDisplay)
                 m_display->attachEmulatorProcess(m_host->emulatorProcessId());
             return;
         }
@@ -1141,6 +1217,11 @@ void MainWindow::wireBackend()
         // last frame that reads as the emulator's current one.
         if (m_display)
             m_display->clearEmbedded();
+        // The last media frame belonged to the session that just ended too;
+        // keeping it would make a later screenshot show a stale screen, and the
+        // media mode itself ends with the session.
+        m_lastMediaFrame = QImage();
+        m_mediaDisplay = false;
         // Both transcripts describe the session that just ended, and neither is
         // re-requested without one: left on screen they read as the hardware's
         // current state. The views' own `clear()` documents the no-session state.
@@ -1218,6 +1299,20 @@ void MainWindow::wireBackend()
                 // video's native resolution, which the fit uses to keep aspect.
                 m_display->setVideoSize(width, height);
                 m_display->showEmbedded();
+            });
+
+    // The media channel's frames (docs/PLAN.md §12): convert once, keep the
+    // latest for the screenshot verb, and hand the panel its pixels. The
+    // conversion is here, not in emu/, because pist_emu links no QtGui.
+    connect(m_host, &IDebugBackend::mediaFrameReceived, this,
+            [this](const pist::MediaFrame &frame) {
+                if (!m_display)
+                    return;
+                const QImage image = mediaFrameImage(frame);
+                if (image.isNull())
+                    return;
+                m_lastMediaFrame = image;
+                m_display->setFrame(image);
             });
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
@@ -4370,6 +4465,12 @@ bool MainWindow::writeMemoryByte(quint32 address, quint32 value)
 
 bool MainWindow::saveScreenshot(const QString &path)
 {
+    // A media session's emulator is windowless, so there is no window for the
+    // capture below to see — the panel's pixels exist only as the last frame it
+    // streamed, which is exactly what a screenshot should be.
+    if (m_mediaDisplay && !m_lastMediaFrame.isNull())
+        return m_lastMediaFrame.save(path);
+
     // Raise first, so the capture is this window and not whatever is on top of
     // it, and pump once so the raise has landed before the frame buffer is
     // read. XGetImage (ui/EmbedX11.h) rather than QScreen::grabWindow, which

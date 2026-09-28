@@ -39,6 +39,7 @@
 #include "ui/SetupDialog.h"
 #include "ui/SettingsDialog.h"
 #include "ui/Appearance.h"
+#include "emu/HatariProbe.h"
 #include "toolchain/Toolchain.h"
 #include "emu/HrdbBackend.h"
 #include "ui/StackView.h"
@@ -368,6 +369,7 @@ private slots:
     /// The Emulator panel hosts another process's window, or nothing at all
     /// before a session: it must say which, rather than show a black void.
     void emulatorPanelExplainsItselfWhenEmpty();
+    void mediaDisplayFeedsThePanel();
     /// Embedding is the default, but only where it can happen: with no stored
     /// choice a platform that cannot embed stays detached, while a stored
     /// choice — either way — wins over both the default and the capability.
@@ -3857,6 +3859,164 @@ void TstGui::emulatorPanelExplainsItselfWhenEmpty()
     QVERIFY2(lit > 100, "an empty emulator panel paints its explanation, not a black void");
 }
 
+// A frame as an 8x8 grid of cell-mean grays, straight from the transport
+// payload (RGB32 layout, sampled). Cell means are the right statistic here:
+// a dithered desktop (the ST's 50% fill pattern) and letterbox scaling both
+// survive them, while a single global mean cannot tell a dithered desktop
+// from the empty panel's light-text-on-dark layout — both average to the
+// same mid-gray, which is how a mean-based version of this test passed with
+// the paint path stubbed out.
+static QVector<int> frameCellMeans(const MediaFrame &frame)
+{
+    QVector<int> cells(64, 0);
+    if (!frame.w || !frame.h)
+        return cells;
+    for (int cy = 0; cy < 8; ++cy) {
+        const quint32 y0 = frame.h * cy / 8, y1 = frame.h * (cy + 1) / 8;
+        for (int cx = 0; cx < 8; ++cx) {
+            const quint32 x0 = frame.w * cx / 8, x1 = frame.w * (cx + 1) / 8;
+            qint64 sum = 0, n = 0;
+            for (quint32 y = y0; y < y1; y += 2) {
+                const uchar *row =
+                    reinterpret_cast<const uchar *>(frame.pixels.constData())
+                    + qint64(y) * frame.pitch;
+                for (quint32 x = x0; x < x1; x += 2) {
+                    const quint32 p = qFromLittleEndian<quint32>(row + qint64(x) * 4);
+                    sum += (qRed(p) + qGreen(p) + qBlue(p)) / 3;
+                    ++n;
+                }
+            }
+            cells[cy * 8 + cx] = n ? int(sum / n) : 0;
+        }
+    }
+    return cells;
+}
+
+// The same grid over the panel's painted frame area. The widget aspect-fits
+// and centres the frame, so the fitted rect is recomputed here with the same
+// math and the grid is sampled inside it — clear of the letterbox and the
+// Paused badge.
+static QVector<int> panelCellMeans(QWidget *display, quint32 fw, quint32 fh)
+{
+    QVector<int> cells(64, 0);
+    const QImage image = display->grab().toImage();
+    if (image.isNull() || !fw || !fh)
+        return cells;
+    const qreal scale = qMin(qreal(image.width()) / fw, qreal(image.height()) / fh);
+    const int w = int(fw * scale), h = int(fh * scale);
+    const QRect fit((image.width() - w) / 2, (image.height() - h) / 2, w, h);
+    for (int cy = 0; cy < 8; ++cy) {
+        const int y0 = fit.y() + fit.height() * cy / 8, y1 = fit.y() + fit.height() * (cy + 1) / 8;
+        for (int cx = 0; cx < 8; ++cx) {
+            const int x0 = fit.x() + fit.width() * cx / 8, x1 = fit.x() + fit.width() * (cx + 1) / 8;
+            qint64 sum = 0, n = 0;
+            for (int y = y0; y < y1; y += 2)
+                for (int x = x0; x < x1; x += 2) {
+                    sum += qGray(image.pixel(x, y));
+                    ++n;
+                }
+            cells[cy * 8 + cx] = n ? int(sum / n) : 0;
+        }
+    }
+    return cells;
+}
+
+// True once the latest transported frame has real structure (its cell grid
+// has spread — a flat black fill fails this, so a black frame at the entry
+// stop cannot pass vacuously) AND the panel's painted cells match it. Both
+// halves in one helper so QTRY retries the pair as a unit while the stream
+// settles.
+static bool panelMatchesLatestContentFrame(QWidget *display, QSignalSpy *framesSpy)
+{
+    if (framesSpy->isEmpty())
+        return false;
+    const MediaFrame frame = framesSpy->last().at(0).value<MediaFrame>();
+    if (!frame.w || !frame.h)
+        return false;
+    const QVector<int> want = frameCellMeans(frame);
+    int lo = 255, hi = 0;
+    for (int v : want) {
+        lo = qMin(lo, v);
+        hi = qMax(hi, v);
+    }
+    if (hi - lo < 32)
+        return false;
+    const QVector<int> got = panelCellMeans(display, frame.w, frame.h);
+    int matched = 0;
+    for (int i = 0; i < 64; ++i)
+        matched += qAbs(got[i] - want[i]) <= 24 ? 1 : 0;
+    return matched >= 58; // ~90%: resampling blends cell edges
+}
+
+// The media channel's full UI path (docs/PLAN.md §12): with the dev gate set
+// and a --pist-media-capable emulator, the session runs windowless and the
+// panel paints what the fork pushes — its pixels come from the emulator, not
+// an embedded window. Asserted as fidelity: the panel's painted centre must
+// match the last transported frame's centre. (What the guest shows at the
+// entry stop is its own business — the desktop switch clears the screen
+// first, so "black at entry" is genuine guest output, not a bug.)
+void TstGui::mediaDisplayFeedsThePanel()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+    const ToolInfo fork = toolchain::findEmulator();
+    if (!fork.found())
+        QSKIP("no emulator found");
+    const HatariCapabilities caps = probeHatari(fork.path);
+    if (!caps.hasPistMedia)
+        QSKIP("the emulator has no --pist-media (set $PIST_HATARI to a hatari-pist build)");
+    const EnvScope mediaGate("PIST_MEDIA_DISPLAY");
+    qputenv("PIST_MEDIA_DISPLAY", "1");
+
+    const QString source = m_work->path() + QStringLiteral("/media.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tmoveq\t#1,d0\n"
+              "loop:\tbra.s\tloop\n"
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    // rgb, not mono: the colour desktop is bright and structured, so a content
+    // frame's cell grid is far from the dark empty-state panel's. Mono's
+    // post-autostart frame can stay black, which no fidelity check can use.
+    settings.monitor = QStringLiteral("rgb");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.resize(1000, 700);
+    window.show();
+    window.openPath(source);
+
+    auto *host = window.findChild<EmulatorHost *>();
+    QVERIFY(host);
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(dock);
+    QWidget *display = dock->widget();
+    QVERIFY(display);
+    QTRY_VERIFY_WITH_TIMEOUT(display->width() > 100, 5000);
+
+    QSignalSpy framesSpy(host, &IDebugBackend::mediaFrameReceived);
+    QSignalSpy stoppedSpy(host, &EmulatorHost::stoppedChanged);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(host->isRunning(), 30000);
+    QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
+             "the emulator started but never reached the debugger");
+
+    // The entry stop's last frame can genuinely be black (the desktop switch
+    // clears the screen first), so a mean match there proves nothing. Resume
+    // past it: the desktop then appears, and once the change-gated stream
+    // quiets the panel holds that last, content-bearing frame.
+    host->resume();
+    QTRY_VERIFY_WITH_TIMEOUT(panelMatchesLatestContentFrame(display, &framesSpy), 30000);
+}
+
 void TstGui::emulatorDockFollowsTheStoredPreferenceOrThePlatform()
 {
     const QString key = QStringLiteral("display/embedded");
@@ -5111,8 +5271,12 @@ void TstGui::setupDialogShowsMissingPieces()
     // suite looking at a stripped environment.
     const EnvScope pathScope("PATH");
     const EnvScope tosDirScope("PIST_TOS_DIR");
+    // PIST_HATARI names an emulator directly (a hatari-pist build tree); it
+    // outranks discovery, so it must be stripped too or "missing" isn't.
+    const EnvScope hatariScope("PIST_HATARI");
     qputenv("PATH", "");
     qputenv("PIST_TOS_DIR", "");
+    qputenv("PIST_HATARI", "");
     const TestModeScope testMode;
 
     // Other suites' fixtures may have left an "installed" fake tool or ROM in
@@ -5169,8 +5333,10 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
     // restored by the scopes on every path out.
     const EnvScope pathScope("PATH");
     const EnvScope tosDirScope("PIST_TOS_DIR");
+    const EnvScope hatariScope("PIST_HATARI");
     qputenv("PATH", "");
     qputenv("PIST_TOS_DIR", "");
+    qputenv("PIST_HATARI", "");
     const TestModeScope testMode;
     QDir(toolchain::suggestedInstallDir()).removeRecursively();
     QDir(paths::suggestedRomDir()).removeRecursively();

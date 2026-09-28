@@ -15,6 +15,7 @@
 #include <QStringList>
 
 #include "emu/EmbedSocket.h"
+#include "emu/MediaServer.h"
 
 class QProcess;
 class QTimer;
@@ -59,6 +60,20 @@ public:
     qint64 emulatorProcessId() const override;
 
     BackendKind kind() const override { return BackendKind::Native; }
+
+    /// Bind the media channel's server (docs/PLAN.md §12) and return the port
+    /// it holds, or 0 when the range is exhausted. The caller does this
+    /// *before* start(), because Hatari connects and never binds — the same
+    /// listen-before-spawn rule the control socket follows — and puts the
+    /// returned port into SessionConfig::mediaPort, which is what makes
+    /// `--pist-media <port>` appear in the session's argv exactly once.
+    ///
+    /// A session started with mediaPort == 0 has no media channel at all.
+    int mediaListen();
+
+    /// The frame server this host owns. The launcher reaches it through
+    /// mediaListen(); the integration test observes it directly.
+    MediaServer &mediaServer() { return m_mediaServer; }
 
     /// Queue a *free text* debugger command — the user's console and the remote
     /// `cmd` verb — delivered over stdin, so it works while the debugger is
@@ -250,6 +265,13 @@ private:
     /// The control-socket server (embed size reports + `hatari-debug` lines
     /// for pause). Shared with the HRDB backend.
     EmbedSocket m_embedSocket;
+
+    /// The media channel's server (docs/PLAN.md §12), owned here because only
+    /// the native backend carries one in this phase. Its lifetime spans
+    /// sessions: mediaListen() binds it before a media session's start(), and
+    /// start() closes it for a session launched with mediaPort == 0, so a
+    /// non-media session never leaves a listener behind.
+    MediaServer m_mediaServer;
 
     QByteArray m_stderrBuffer;
 

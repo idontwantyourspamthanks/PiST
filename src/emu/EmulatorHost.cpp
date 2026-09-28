@@ -130,6 +130,7 @@ EmulatorHost::EmulatorHost(QObject *parent)
     // queued connection or a QSignalSpy can carry them.
     qRegisterMetaType<QList<MemoryRow>>("QList<MemoryRow>");
     qRegisterMetaType<HardwareSummary>("HardwareSummary");
+    qRegisterMetaType<MediaFrame>("pist::MediaFrame");
 
     m_commandTimeout = new QTimer(this);
     m_commandTimeout->setSingleShot(true);
@@ -150,6 +151,13 @@ EmulatorHost::EmulatorHost(QObject *parent)
                 emit embeddedSizeChanged(width, height);
             });
     connect(&m_embedSocket, &EmbedSocket::logLine, this,
+            [this](const QString &line) { emit logLine(line); });
+
+    // The media channel's frames and log lines join ours. Only the native
+    // backend has a server, so only this backend can emit mediaFrameReceived.
+    connect(&m_mediaServer, &MediaServer::frameReceived, this,
+            &IDebugBackend::mediaFrameReceived);
+    connect(&m_mediaServer, &MediaServer::logLine, this,
             [this](const QString &line) { emit logLine(line); });
 }
 
@@ -231,6 +239,18 @@ bool EmulatorHost::openSocketServer(QString *error)
 }
 
 
+int EmulatorHost::mediaListen()
+{
+    QString error;
+    if (!m_mediaServer.listen(&error)) {
+        // Not fatal for the session — the caller falls back to a session
+        // without the media channel when it gets 0 back.
+        emit logLine(tr("Media channel unavailable: %1").arg(error));
+        return 0;
+    }
+    return m_mediaServer.port();
+}
+
 // Every per-session framing field is reset here rather than in start(), so the
 // next session cannot inherit the previous one's state. The fields that were
 // missed before each corrupt framing in its own way: a stale m_owedPrompts
@@ -255,6 +275,10 @@ void EmulatorHost::resetTransport()
     m_stderrAtDispatch = 0;
     m_continueWhenIdle = false;
     m_embedSocket.close();
+    // The media client (and any partial frame it left) belongs to the session
+    // that just ended. The listener is kept: mediaListen() bound it before
+    // this start() and its port is already in the argv we are about to spawn.
+    m_mediaServer.resetClient();
     m_commandTimeout->stop();
     m_settleTimer->stop();
 }
@@ -269,6 +293,13 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
 
     if (!paths::ensureDirectory(config.sessionDir, error))
         return false;
+
+    // Media mode (docs/PLAN.md §12): the launcher called mediaListen() before
+    // start(), so the server is already bound and its port is in the argv
+    // below — the listen-before-spawn rule. A session with no media port,
+    // though, must not leave a listener from an earlier session behind.
+    if (config.mediaPort == 0)
+        m_mediaServer.close();
 
     // A socket is optional: it is unavailable on Windows, and the session works
     // over stdin/stderr without it.

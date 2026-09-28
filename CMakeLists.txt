@@ -141,6 +141,8 @@ pist_module(pist_emu
     src/emu/HatariProbe.cpp
     src/emu/HatariProbe.h
     src/emu/MachineState.h
+    src/emu/MediaServer.cpp
+    src/emu/MediaServer.h
     src/emu/MemoryDump.cpp
     src/emu/MemoryDump.h
     src/emu/Paths.cpp
@@ -689,7 +691,7 @@ set_tests_properties(mcp PROPERTIES TIMEOUT 120)
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
 )
-target_link_libraries(tst_emulatorhost PRIVATE pist_emu pist_build pist_debug pist_project pist_toolchain Qt6::Test)
+target_link_libraries(tst_emulatorhost PRIVATE pist_emu pist_build pist_debug pist_project pist_toolchain Qt6::Test Qt6::Gui)
 add_test(NAME emulatorhost COMMAND tst_emulatorhost)
 set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 

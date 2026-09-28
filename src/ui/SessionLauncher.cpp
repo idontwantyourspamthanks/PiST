@@ -98,14 +98,6 @@ void SessionLauncher::launch()
     else
         config.controlSocketPath.clear();
 
-    // Embedded display: name the container's X11 window so Hatari reparents its
-    // SDL window into it. Gated on the platform and the control socket, so a
-    // Wayland-native session or a socket-less build falls back to a separate
-    // window even when the option is on. The dock is shown and the widget
-    // realized by the window, because winId() has to be a live X11 window
-    // before Hatari starts or there is nothing to reparent into.
-    config.parentWindowId = m_host.embedDisplayWindowId(launchedCaps);
-
     if (!launchedCaps.hasDebugExcept)
         config.debugExceptions.clear();
 
@@ -149,6 +141,34 @@ void SessionLauncher::launch()
         wanted = launchedCaps.hasHrdb ? BackendKind::Hrdb : BackendKind::Native;
     }
     m_host.selectBackend(wanted);
+
+    // Display mode, decided once the transport is known because only the
+    // native backend owns a media server. Two mutually exclusive paths:
+    //
+    //   media  phase 1 (docs/PLAN.md §12): the emulator runs windowless and
+    //          pushes frames to a server PiST binds *before* the process
+    //          starts (Hatari connects and never binds). Gated three ways:
+    //          the native backend, `--pist-media` in the launched binary's
+    //          option table, and the PIST_MEDIA_DISPLAY dev gate — input does
+    //          not exist yet, so the capability-pair default flip is phase 2.
+    //   embed  the existing handshake: name the container's window so Hatari
+    //          reparents its SDL window into it.
+    //
+    // A media launch must not also embed: an empty parentWindowId is what keeps
+    // PARENT_WIN_ID and the x11 pinning out of the child's environment.
+    const bool wantMedia = launchedCaps.hasPistMedia
+        && qEnvironmentVariableIsSet("PIST_MEDIA_DISPLAY");
+    int mediaPort = 0;
+    if (wantMedia)
+        mediaPort = m_host.engageMediaDisplay(launchedCaps);
+    if (mediaPort > 0) {
+        config.mediaPort = mediaPort;
+    } else {
+        if (wantMedia)
+            m_host.log(MainWindow::tr("[run] media display unavailable; "
+                                     "using the embedded display instead."));
+        config.parentWindowId = m_host.embedDisplayWindowId(launchedCaps);
+    }
 
     config.bootstrapScriptPath =
         EmulatorHost::writeBootstrapScript(sessionDir, launchedCaps, &error);

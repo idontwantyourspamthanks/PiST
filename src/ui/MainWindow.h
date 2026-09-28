@@ -17,6 +17,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QImage>
 #include <QMainWindow>
 
 class QTabWidget;
@@ -652,6 +653,15 @@ private:
 
     /// The embedded/separate display preference. Persisted via QSettings.
     bool m_embeddedDisplay = false;
+
+    /// The session runs in media mode (docs/PLAN.md §12): windowless emulator,
+    /// frames over the media channel. Set when the launch engages it, cleared
+    /// with the session.
+    bool m_mediaDisplay = false;
+
+    /// The most recent media-channel frame, for a screenshot from the
+    /// framebuffer (the emulator has no window to capture).
+    QImage m_lastMediaFrame;
 
     /// Whether the preference above is a stored choice or still the default:
     /// only the default yields to a platform that cannot embed, and only until

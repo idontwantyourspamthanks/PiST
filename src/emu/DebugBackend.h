@@ -6,6 +6,7 @@
 
 #include "emu/HatariTextParse.h"
 #include "emu/MachineState.h"
+#include "emu/MediaServer.h"
 #include "emu/MemoryDump.h"
 #include "emu/SessionConfig.h"
 
@@ -313,6 +314,13 @@ signals:
     /// uses the same EmbedSocket, upstream's socket being part of its argv), so
     /// either transport emits it — a build without the socket never does.
     void embeddedSizeChanged(int width, int height);
+
+    /// One complete frame from the emulator's media channel (docs/PLAN.md §12),
+    /// in the order the fork sent it. Only the native backend owns a
+    /// MediaServer, so only EmulatorHost emits this; HRDB never does. The
+    /// payload stays raw (MediaFrame, not QImage) because `pist_emu` links no
+    /// QtGui — the UI converts it.
+    void mediaFrameReceived(const pist::MediaFrame &frame);
 };
 
 /// Create the backend for a kind. Defined where both implementations are

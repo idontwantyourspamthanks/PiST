@@ -97,6 +97,15 @@ QStringList SessionConfig::toArgv() const
     if (!controlSocketPath.isEmpty())
         argv << QStringLiteral("--control-socket") << hostPath(controlSocketPath);
 
+    // Media mode (docs/PLAN.md §12): the fork runs windowless and pushes frames
+    // to the port the IDE is listening on. `--frameskips 0` goes with it or
+    // fast-forward starves the frame stream. Only emitted for a positive port,
+    // so the default session's argv is untouched.
+    if (mediaPort > 0) {
+        argv << QStringLiteral("--pist-media") << QString::number(mediaPort);
+        argv << QStringLiteral("--frameskips") << QStringLiteral("0");
+    }
+
     argv << extraArgs;
 
     // Exactly one positional argument, and it must be the program: this is the

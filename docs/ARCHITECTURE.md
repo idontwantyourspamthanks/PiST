@@ -42,7 +42,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). |
 | `src/control/` | `ControlHost` (`ControlHost.h`, the interface the IDE implements for the protocol: the verbs it serves and the events its verbs wait on) and `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent, with `watch`/`unwatch` event subscriptions — plus `mcp/`, the `pist-mcp` stdio MCP shim that bridges MCP clients to it. Nothing here includes or names a `src/ui/` type: the control layer depends on `ControlHost`, and `MainWindow` is one of its implementers (MIN-86). |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings). |
-| `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
+| `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → `$PIST_HATARI` (emulator only; names a hatari-pist build tree, PLAN.md §12) → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
 | `tests/` | Parser and image unit tests (always run) and the offscreen GUI/emulator integration tests (gated on tools being present). |
 | `demo/` | `hello.s` — a tiny program opened by `run.sh` (and by `run.sh` only; the first run itself is the setup dialog), plus `hello.pistproject`, `demo.pim` — a sample sprite set (two phases, v2 format) — and `spritedemo/`. |
 
@@ -88,6 +88,8 @@ Everything else in this document is a consequence of that rule. The debug transp
   adopts the emulator's own window by process id (`attachEmulatorProcess()` starts a poll that ends
   when that window appears, or says on the panel that it never did). Tracks the video size,
   aspect-fits it inside the dock, and paints a "Paused" badge when stopped.
+  Since the hatari-pist fork (PLAN.md §12) it is also the media panel: `setFrame()` hands it one
+  `QImage` per transported frame and it paints that aspect-fit instead of hosting a window.
 - **`ui/EmbedX11.{h,cpp}`** — free X11 functions over Qt's `QX11Application` native interface:
   `mapEmbeddedWindowChildren`, `embeddedContainerSize`, `resizeEmbeddedChild`,
   `setEmbeddedChildrenInputTransparent`, `captureWindowImage`. All no-ops without
@@ -360,6 +362,24 @@ The preference defaults to embedded. A first run with no stored choice on a plat
 embed (macOS, Wayland without XWayland) stays detached instead of opening a panel that can never
 fill: the toolchain probe reconciles the default against `canEmbedDisplay()` once, and a stored
 choice — either way — always wins (`m_embeddedDisplayChosen`).
+
+### The media channel (hatari-pist fork)
+
+With a `--pist-media`-capable emulator (probed by option name, `HatariCapabilities.hasPistMedia`)
+and the `PIST_MEDIA_DISPLAY` dev gate — input is phase 2, so embedding remains the default until
+then — the emulator runs windowless and PiST owns the pixels. `SessionLauncher` calls
+`EmulatorHost::mediaListen()` (binds `MediaServer` on 127.0.0.1, first free of 29200–29209 —
+below the ephemeral floor, PLAN §12.7's self-connect finding) **before** the spawn and puts the
+port in `SessionConfig.mediaPort`, whose `toArgv()` emits `--pist-media <port> --frameskips 0`.
+PiST sends HELLO on accept; the fork streams nothing without it. Frames arrive change-gated
+(content or geometry), 32bpp with the masks in the header, cropped to the ST screen area.
+`MainWindow` converts `MediaFrame` → `QImage` (`mediaFrameImage`, the conversion lives in ui/
+because `pist_emu` links no QtGui) and hands it to `EmulatorDisplayWidget::setFrame()`;
+`saveScreenshot` saves the last frame in media mode. The debug transport (stdin + control socket)
+is unchanged — the control socket is serviced from Hatari's main loop (`main.c:591` in 2.6.1), so
+it works windowless unmodified. `hatari-stop`/`hatari-cont` is the one trap: under the dummy driver
+the paused event handler blocks in `SDL_WaitEvent` and the socket is never serviced again — PiST's
+pause is `hatari-debug`, so this is unreachable; don't "fix" pause by switching it.
 
 ### Panels, docks and the event filter
 

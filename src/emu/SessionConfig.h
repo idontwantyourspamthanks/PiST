@@ -66,6 +66,16 @@ struct SessionConfig
     /// probe rather than setting this unconditionally.
     QString controlSocketPath;
 
+    /// Port of PiST's media channel (docs/PLAN.md §12): the hatari-pist fork
+    /// runs windowless under `--pist-media <port>` and pushes converted frames
+    /// over localhost TCP. 0 means off, which is every session that is not
+    /// deliberately launched in media mode — the option is only ever emitted
+    /// when this is positive, so a build without the fork's flag never sees it.
+    ///
+    /// Setting it also emits `--frameskips 0`: fast-forward otherwise starves
+    /// the frame stream, so the panel would show a screen that never updates.
+    int mediaPort = 0;
+
     /// AUTO-folder floppy image for TOS 1.00/1.02. When set, the session
     /// boots from this image instead of the GEMDOS HD: no positional program
     /// argument and no `-d` (GEMDOS HD does not exist below TOS 1.04 — Hatari

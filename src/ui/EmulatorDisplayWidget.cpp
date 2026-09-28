@@ -114,6 +114,24 @@ void EmulatorDisplayWidget::setVideoSize(int width, int height)
     }
 }
 
+void EmulatorDisplayWidget::setFrame(const QImage &frame)
+{
+    if (frame.isNull()) {
+        if (m_frame.isNull())
+            return;
+        m_frame = QImage();
+        m_videoAttached = false;
+        update();
+        return;
+    }
+
+    if (m_frame.size() != frame.size())
+        setVideoSize(frame.width(), frame.height());
+    m_frame = frame;
+    m_videoAttached = true;
+    update();
+}
+
 void EmulatorDisplayWidget::showEmbedded()
 {
     // Hatari never maps the window it created hidden, so map it, then fit it.
@@ -230,6 +248,9 @@ void EmulatorDisplayWidget::clearEmbedded()
     m_videoAttached = false;
     m_lastFitW = 0;
     m_lastFitH = 0;
+    // A media session's last frame described that session; leaving it on the
+    // panel would read as the emulator's current screen.
+    m_frame = QImage();
     update();
 }
 
@@ -303,6 +324,13 @@ void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
                        : tr("The emulator's display appears here when a session runs "
                             "with the display embedded."));
         return;
+    }
+
+    // Media mode: the panel owns the pixels, so draw the latest frame with the
+    // same aspect-preserving fit the embedded window gets.
+    if (!m_frame.isNull()) {
+        QPainter p(this);
+        p.drawImage(fittedRect(width(), height(), m_frame.width(), m_frame.height()), m_frame);
     }
 
     if (!m_paused)

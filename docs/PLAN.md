@@ -265,12 +265,15 @@ socket is not serviced while the debugger is stopped.
 | stdout | Hatari → IDE | The debugger prompt (readline builds), `--conout` guest console | |
 | `logfile <f>` | Hatari → file | Registers, memory, disassembly dumps only | Avoids mixing bulk output with logs |
 
-**The control socket is starved while stopped.** `Control_CheckUpdates()` has exactly one call site —
-`src/sdl/gui_event.c:134`, the SDL event pump — and none under `src/debug/`. When the debugger is
-waiting for input, nothing services the socket, so `hatari-debug` commands sent while stopped are
-never read. Verified: with the debugger stopped at entry, a socket `hatari-debug e TEXT` produced
-**zero bytes** on stderr, while the same command over stdin worked immediately; resuming emulation
-made the socket deliver again.
+**The control socket is starved while stopped.** `Control_CheckUpdates()` has exactly one call site
+in 2.6.1 — `src/main.c:591`, in `Main_EventHandler()`, the SDL event pump that runs from the
+emulation main loop each frame (the `src/sdl/gui_event.c:134` citation in earlier drafts refers to
+upstream `main`'s layout; that file does not exist in 2.6.1 — see §9). The socket is therefore
+serviced whenever emulation runs, windowless included. When the debugger is waiting for input,
+however, `DebugUI_GetCommand` blocks on stdin, the main loop isn't iterating, and nothing services
+the socket, so `hatari-debug` commands sent while stopped are never read. Verified: with the
+debugger stopped at entry, a socket `hatari-debug e TEXT` produced **zero bytes** on stderr, while
+the same command over stdin worked immediately; resuming emulation made the socket deliver again.
 
 Consequence: the split is **not** "socket = commands, stdin = stepping". It is
 **stdin = everything while stopped**, socket = control commands while running. This also means the
@@ -1236,6 +1239,13 @@ project; everything before it was either Linux-only or read from source.
    glob behind it), which the re-cut run proved end to end: the family landed in
    `bundle/bin` and `collect-notices` listed msvcp140, _1, _2, atomic_wait and
    codecvt_ids from it.
+8. ~~`Control_CheckUpdates()` call site is `src/sdl/gui_event.c:134`~~ — **corrected 2026-09-27**:
+   that path is upstream `main`'s layout and does not exist in 2.6.1. In the forked tree the sole
+   call site is `src/main.c:591` (`Main_EventHandler()`, the per-frame SDL pump in the emulation
+   main loop), so the control socket is serviced windowless with no fork change. The verified
+   behaviour the citation supported (socket starved while the debugger blocks on stdin) stands and
+   is re-stated with the correct mechanism in §3.3; §12.2's "pump must move" bullet is withdrawn.
+
 
 ---
 
@@ -1374,6 +1384,246 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+
+
+---
+
+## 12. hatari-pist: the emulator fork (agreed 2026-09-27, in progress)
+
+The foreign-window embedding (§3.2) is the wrong architecture, and the known failures are one root
+cause — the display belongs to a foreign process: Windows focus/DPI behaviour unverifiable (§9.5),
+macOS cannot embed at all, Wayland needs the `xcb` pin and XWayland, dock drags need an XShape
+input-transparency hack, guest resolution changes replace the emulator's window (hence the 500 ms
+adoption poll), screenshots need `XGetImage` because `grabWindow` is black under XWayland, the
+embedded SDL GUI can rewrite config from inside our dock (§9.3), and a modal `DlgAlert` inside that
+window hangs a headless IDE (§5 rule 8). Patching each symptom keeps the cause. The fork removes it:
+**Hatari never creates a window; PiST renders the framebuffer, plays the audio, and injects the
+input.**
+
+### 12.1 The fork
+
+- **Base:** upstream **2.6.1** (the verified baseline §2.4's drift table is written against), not
+  `main`. Sources live at `../hatari-pist` (a sibling of this repo). Diff discipline follows the
+  hrdb-main precedent: one self-contained new file plus small hooks, so rebasing is a bounded job.
+- **Pin:** the tree is `hatari-v2.6.1.tar.bz2` from framagit, sha256
+  `de2fd445c48ab1c79aebdebf722e1c9e6c8b9cc291a777409d8eb01d145da4f1` — recorded beside the tree
+  (`../hatari-pist/HATARI-PIST.md`) with the exact build command; a tag-name archive is only
+  reproducible because the hash is written down.
+- **Build rules:** no GNU Readline — a *licensing* constraint, not a preference (MAJ-58): readline
+  is GPLv3+, the three `src/cpu/uae/` headers cap the binary at GPLv2, and v3 code does not join a
+  v2-capped work. Enforcement already exists at `.github/actions/build-hatari/action.yml`
+  (`-DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON` on every platform, so the flag — not the runner's
+  package set — decides), and `release.yml` records that `libreadline` was *removed* from the
+  Windows bundle list once the emulator was built without it. The fork's build recipe inherits the
+  same flag. It is also load-bearing for the transport: which stream carries the `> ` prompt is
+  build-dependent (readline → stdout, non-readline → stderr, ARCHITECTURE invariants), so pinning
+  our build non-readline makes the prompt location deterministic until the structured protocol
+  deletes the whole ambiguity. New files carry upstream's "GPL v2 or at your option any later
+  version" header, but the fork as a whole can only be conveyed under **GPLv2** while
+  `src/cpu/uae/{attributes,types,vm}.h` remain GPL-2.0-only (§10) — the fork's README states this.
+- **The binary keeps the name `hatari`.** `canProbeByProcess()` (Toolchain.cpp) hard-matches that
+  literal, and the exclusion is what stops `findEmulator()` from freezing the GUI thread probing a
+  GUI binary that waits for Enter. Install the fork as `hatari-pist` and every override-path lookup
+  hangs and pops a window. One line, recorded here because packaging is where it would go wrong.
+- **Licence restatement, in the same change:** invariant 1 becomes "*stock* tools are never patched;
+  hatari-pist is our own GPL-2.0 component, pinned by commit+checksum, built in CI, shipped with a
+  source offer." AGENTS.md rule 1, `NOTICE`, the metainfo and the release workflow are updated at
+  cutover — not silently absorbed. TOS ROMs remain non-redistributable; `TosRom` discovery is
+  unchanged.
+
+### 12.2 The media channel
+
+- New flag `--pist-media <port>`: the fork runs windowless and connects to a `QTcpServer` in PiST
+  (the IDE is the server — same rule as the control socket, §5 rule 10). Framed, versioned binary
+  protocol. Fork→IDE: `FRAME` (converted 32bpp, per-frame w/h/format/sequence — resolution changes
+  need no side channel, killing the size-report path and the window-replacement poll) and `AUDIO`
+  (s16le, rate declared at hello). IDE→fork: `KEY` (ST scancodes — PiST owns the Qt→scancode table;
+  layout-independent and unit-testable) and `MOUSE` (relative deltas, buttons).
+- **Backpressure (target design — NOT implemented in the spike, whose `WriteAll` blocks):** the
+  fork drops frames when the socket is full and never blocks emulation; sequence numbers let PiST
+  drop stale frames. Blocking was measured cheap (~0.14 ms/frame, §12.7), so drop-on-full is a
+  phase-1 requirement, not a spike-discovered emergency. Fast-forward keeps working.
+- **Transport: localhost TCP — decided by the spike (§12.7), not open.** Measured
+  3.86 GB/s sustained on loopback (832×588×32bpp at ~2700 VBL/s under fast-forward — a *transport
+  ceiling*, not the 50 Hz operating rate) against a 23 MB/s worst case, ~0.14 ms/frame blocked in
+  `send()`, both sides' counters agreeing exactly (4000/4000 frames, `sent + dropped ≈ VBLs`, so no
+  frameskipping engaged in that configuration). Shared memory is retired: it bought zero-copy at
+  the price of platform-divergent sync primitives, and there is no case for it at 165× headroom.
+  The dummy-driver surface is RGB32 (`ff0000/ff00/ff`) as measured; the `bpp`/mask header fields
+  exist so a different driver fails named instead of rendering garbage.
+- **Loopback self-connect — measured (§12.7).** Sequence observed with clean process control: peer
+  killed by its socket-resolved PID (death verified with `kill -0`); the old socket errored and
+  closed correctly (fd changed); the reconnect storm then got an ephemeral port *equal to* the
+  server port (56010 ∈ ephemeral range 32768–60999) and TCP simultaneous-open produced a socket
+  connected to itself — captured live as `ESTAB 127.0.0.1:56010 → 127.0.0.1:56010` with Send-Q
+  1.5 MB and 131 KB of the fork's own frames in its Recv-Q. From then on `send()` always succeeds
+  and every counter looks healthy while nothing is delivered. Guards, in order of robustness:
+  (1) **HELLO handshake before streaming** — the IDE sends `HELLO` on accept and the fork pushes
+  nothing until it arrives; a self-connected socket can never produce one, and the same mechanism
+  doubles as the liveness/ack channel, since kernel error reporting cannot distinguish "IDE wedged"
+  from "IDE gone" (with the peer verified gone, Send-Q held 1507275 bytes — *less than* one
+  1.96 MB frame — and a 4 MB `SO_SNDBUF` holds a couple of frames' worth before `send()` pushes
+  back);
+  (2) PiST listens on a port **below 32768** — outside the ephemeral range, removing the collision
+  class entirely; (3) belt and braces in the fork: `getsockname()` port ≠ server port after
+  `connect()`, and inbound frame magic on the input stream means tear down and reconnect;
+  (4) reconnect throttled (finding §12.7), which also shrinks the collision window.
+  `sent` is a write counter, never a delivery counter.
+- **Converted frames, not raw bitplanes:** the fork pushes the post-conversion 32bpp image, so
+  overscan/hscroll/mono are correct by construction and PiST does not duplicate shifter logic.
+- **Authentication: decided 2026-09-27.** The media listener (127.0.0.1, ports 29200–29209) has
+  **no credential in phase 1** — any local process can connect and receive the screen stream;
+  loopback is not per-user, unlike the unix-domain control socket whose per-session directory
+  gates it by filesystem permissions. Accepted knowingly for video-only phase 1: the screen
+  stream is the same content the embedded window shows. **A per-session token is a hard gate on
+  phase 2** (input): PiST generates it, passes it to the fork via the environment (the
+  `PARENT_WIN_ID` mechanism), `HELLO` carries it and the fork pushes nothing until it matches;
+  the IDE drops a connection whose first message is not a matching HELLO. Port pre-binding
+  (impersonating the IDE) is mitigated until then by the port *range* scan, and properly by
+  randomising within the sub-32768 band when the token lands.
+- **The control-socket pump needs no move** (corrected during phase 1, §9): in 2.6.1
+  `Control_CheckUpdates()` is already called from `Main_EventHandler()` (`src/main.c:591`), which
+  runs from the emulation main loop every frame — so the control socket works windowless under
+  `--pist-media` with no fork change. Phase 1 proves this with a test (`hatari-stop`/`hatari-option`
+  in a headless session) rather than assuming it. What remains true: while the debugger break loop
+  blocks on stdin, nothing services the socket — that is the actual mechanism behind invariant 2's
+  split, and if it ever needs fixing the fix is `select()` over stdin+socket in
+  `DebugUI_GetCommand`, not a moved call. Deferred: PiST never sends control verbs while stopped.
+- **Windows has no control socket** (`--control-socket` is compiled under
+  `HAVE_UNIX_DOMAIN_SOCKETS`, §9), so the media channel is the only transport that exists on all
+  three platforms. The target topology is therefore: control verbs (`hatari-stop`,
+  `hatari-option`, floppy insert/eject) become structured media-socket messages on every platform,
+  and the unix-domain control socket survives only as the transition path for stock Hatari. The
+  phase-1 protocol header fixes this message set, so it is decided now — otherwise phase 4 deletes
+  EmbedWin32 and discovers Windows has no `hatari-stop` at all.
+
+### 12.3 The cursor is a machine detail
+
+The ST has **no hardware cursor** (that is the Amiga): TOS draws the pointer in software into the
+framebuffer at VBL, so the guest cursor is baked into every frame and can neither be suppressed nor
+hidden host-side. Consequences:
+
+- **Ungrabbed display:** the host cursor is hidden whenever it is over the panel while a session
+  runs, so only the guest cursor is ever visible (host-side compositing is infeasible for software
+  cursors; auto-grab-on-hover is surprising). The fork exports the guest pointer position from the
+  IKBD/6301 emulation state (it tracks absolute position internally) for the click affordance.
+- **Scaling:** the panel paints aspect-fit, so host pixels ≠ guest pixels. Deltas are divided by the
+  effective `fittedRect` scale with a sub-pixel accumulator, or a small/HiDPI panel makes the guest
+  cursor outrun the hand continuously.
+- **Resync:** the fork provides an absolute mouse-position *write* path (a setter beside the IKBD
+  injection hook); PiST resyncs at session start and on guest resolution change.
+
+### 12.4 The grab (VirtualBox model, Qt-owned)
+
+**No OS-level grab anywhere** (`SDL_SetRelativeMouseMode`/`XGrabKeyboard` would steal the release
+hotkey and every Qt shortcut, and don't exist on Wayland/macOS). The fork is a pure machine +
+transport; the grab is ordinary Qt code: click on the panel → keyboard focus + `grabMouse()` +
+`grabKeyboard()` + hidden cursor + relative-motion deltas. **F12 releases** (user decision,
+2026-09-27 — avoids the left/right-Ctrl `nativeScanCode` platform table; PiST binds F3–F11 but
+never F12, and the widget intercepts F12 before forwarding while grabbed). Two caveats recorded:
+F12 is *stock* Hatari's SDL-GUI key, so on the transition's fallback path an F12 pressed inside the
+dock still opens Hatari's own options dialog (the §9.3 hazard — not a new bug), and the fork must
+bind nothing to F12 under `--pist-media`; and on macOS the top row defaults to media keys, so a
+bare F12 may never arrive. The release key is therefore a *setting* (F12 default on Linux/Windows)
+and the hotkey is only the fast path: auto-ungrab on focus-out and a "Release Input" menu item are
+the always-available paths, and **ungrab on child death too, or the user is trapped.** Indicator:
+accent border + transient overlay ("Input captured — F12 releases") + status-bar hint. macOS and
+Wayland come along for free.
+
+### 12.5 Capability gating and the backend end-state
+
+- The fallback to today's embedding is gated on a capability **pair** reported in the media
+  handshake (frame push *and* input verbs), not on `--pist-media` presence alone — a video-only
+  intermediate build must fall back, or phases 1–2 ship a panel that lost input.
+- hatari-pist **subsumes HRDB**: `remotedebug.c` (one self-contained file) merges into the fork at
+  cutover. The IDE keeps two backends (native transport, HRDB TCP), never three.
+- **Windows already debugs over TCP.** The only Windows build CI makes is the hrdb fork, "whose
+  debugger channels are HRDB's TCP socket — its stdin is never read"
+  (`actions/build-hatari/action.yml`). So debugging ships over TCP on Windows today, and the
+  fork's stdin-transport path is Linux/macOS-only until the HRDB merge — phases 1–2 can claim
+  nothing about Windows debugging before then. (Also: releases already ship a fork — the hrdb-main
+  build, installed as `hatari` per `release.yml` — so hatari-pist extends an accepted shipping
+  model rather than breaking invariant 1 for the first time, and independently confirms the
+  naming constraint above.)
+- The debug transport itself (prompt framing, stdin wire format) is unchanged in this project; a
+  structured request/response protocol replacing it is deferred work (FUTURE.md). What changes now
+  is only *where* the control socket is serviced (§12.2).
+
+### 12.6 Phases
+
+| Phase | Scope | Proof |
+|---|---|---|
+| 0 | Unmodified fork at `../hatari-pist`, built; `$PIST_HATARI` names it (Toolchain) | **Done 2026-09-27:** `emulatorhost`, `gui`, `remotecontrol` and `hrdb` all green with `PIST_HATARI=<fork>` + `PIST_REQUIRE_EMULATOR=1` (so a skip fails) — the fork drove real debug sessions; the two `tst_gui` HRDB cases needed the hrdb fork built locally (`tmp/hatari-build-hrdb-linux`, pinned source `tmp/hatari-src-hrdb`) because their missing-prerequisite contract is fail-loud (MIN-66). Tarball pinned by sha256 in `../hatari-pist/HATARI-PIST.md` |
+| S | **Spike, before any UI:** one frame into a `QImage`, one injected keypress into the guest, loopback throughput measured | **PASS 2026-09-27 — see §12.7** (measured findings, incl. the TCP verdict and the self-connect finding) |
+| 1 | `--pist-media` headless + frame push; PiST media server; panel paints frames; screenshot from framebuffer. Push rules (from the spike + source read): **never `--disable-video`** (`Screen_DrawFrame` early-returns before conversion, screen.c:1229 — frames would arrive but never change, reading as a transport bug); push gated on `bScreenContentsChanged` plus a forced frame after `Screen_DidResolutionChange` (a static desktop is not 50 full frames/s); **crop to `STScreenRect`** — the statusbar strip persists in the surface from the previous frame's `Statusbar_Update`, so hook placement alone cannot exclude it (spike finding d); the 832×588 frame includes borders/overscan margins — **keep them** (overscan demos need them; the panel letterboxes anyway). Control-pump move: **withdrawn** (§9 item 8 — the pump is already main-loop in 2.6.1; windowless control socket verified headless) | **Done 2026-09-27.** Fork: `pistmedia.c` hardened (HELLO gate, 1 Hz reconnect backoff — measured 6 attempts in 5.9 s vs 16000 pre-fix, non-blocking drop-on-full with one pending frame, `getsockname` self-connect guard, STScreenRect crop, change-gating — 11 frames per 4000 VBLs on a static desktop, port validation, dummy drivers implied, frameskips capped). PiST: `emu/MediaServer` (ports 29200–29209, HELLO on accept, resync-by-magic parsing), `HatariProbe.hasPistMedia`, `SessionConfig.mediaPort` (`--pist-media` + `--frameskips 0`), `EmulatorHost::mediaListen()` listen-before-spawn, panel frame mode + screenshot-from-frame, `PIST_MEDIA_DISPLAY` dev gate (input is phase 2). Tests: `mediaChannelDeliversFrames` (transport), `mediaDisplayFeedsThePanel` (UI fidelity: panel centre matches the last content-bearing frame after resume — the entry stop's black frame is genuine guest output, so the check resumes past it). Full suite (15/15) green as `PIST_HATARI=<fork> PIST_HRDB_HATARI=<hrdb> PIST_TOS_DIR=/usr/share/hatari PIST_REQUIRE_EMULATOR=1 ctest` |
+| 2 | Input: scancode table (+ unit test), scaled relative mouse, cursor export + resync, grab with F12 release + indicator | manual: type in GEM, mouse in `demo/spritedemo`; auto-release on stop/focus-out |
+| 3 | Audio stream → `QAudioSink`; `--sound off` no longer unconditional when media is active | audible desktop; fast-forward still paced |
+| 4 | Cutover: HRDB merge, fork required for the panel, embedding path deleted (EmbedX11/EmbedWin32, `PARENT_WIN_ID`, Shape hack, `hatari-embed-info`, the `xcb` pin), docs + licence restatement | full suite green with the fallback gone |
+
+Spike-first ordering was deliberate: phases 1–4 were scheduled only after the spike demonstrated
+frame and keypress round-trips. That gate passed 2026-09-27 (§12.7).
+
+### 12.7 Spike findings (measured 2026-09-27)
+
+Harness: `pistmedia.c` in the fork (frame push after `Screen_UnLock()` in `Screen_DrawFrame`;
+input via `IKBD_PressSTKey`), a Qt spike receiver (`/tmp/pist-spike`), and KEYRED.PRG (waits on
+`Cconin`, then `Setcolor(0,$0700)`), TOS 1.04, `SDL_VIDEODRIVER=dummy`, `--fast-forward yes`,
+`--run-vbls N` for deterministic self-exit with reconciling counters. (`--benchmark` was used in
+one run; it takes the same no-wait path as fast-forward and does not disable drawing — its doc
+string's "disable audio/video for best results" is advice to the user. Both flag combinations
+produced exact count agreement.)
+
+- **Delivery:** 4000/4000 and 8000/8000 frames — receiver tally == `--run-vbls` count == fork
+  `sent`, zero drops, both ends alive throughout.
+- **Throughput:** 3.86 GB/s loopback ceiling (~2700 VBL/s under fast-forward — a ceiling, not the
+  50 Hz operating rate); ~0.14 ms/frame blocked in `send()`. **TCP confirmed; shm retired.**
+- **Injection proof:** after the injected scancode, the guest's own `KEYRED.PRG` desktop window
+  shows the echoed `a` and the background goes red (`before.png`/`after.png`).
+- **One push per VBL:** `sent + dropped ≈ VBLs` in every run, so frameskipping never engaged here —
+  but fast-forward can raise it (`Main_WaitOnVbl`), so media mode must force `--frameskips 0` or
+  surface a "video skipped" state, or the panel silently starves.
+- **Reconnect storm:** a self-exited receiver left the fork calling `connect()` every frame (32689
+  failures in 68 s). Reconnect backoff (~1 Hz) is a phase-1 requirement.
+- **Loopback self-connect (the session's deep finding):** measured in a run with clean process
+  control — listener PID resolved from `ss -ltnp` *before* launch; a healthy both-ends capture at
+  t=10 s (Hatari `36900→56010` fd 10, receiver `56010→36900`, queues empty); then `kill -9` of that
+  PID, `kill -0` confirming death, no listener; then Hatari's *new* socket (fd 9 — the old one
+  errored and closed correctly) at `ESTAB 56010→56010` with Send-Q 1507275 and its own frames in
+  Recv-Q 131002. The before/after contrast within one run rules out a misread column: the reconnect
+  storm got an ephemeral port equal to the server port and TCP simultaneous-open self-connected.
+  Guards in §12.2. Process-control lesson: the harness's `ready pid` for a supervised service is a
+  *wrapper*, not the child — two kill attempts this session hit wrappers while the real receiver
+  kept draining; peer-death experiments must resolve the PID from `ss -ltnp` and verify with
+  `kill -0`.
+- **Control socket, windowless (phase 1):** verified headless — `--control-socket` connects and
+  `hatari-option` is serviced in a `--pist-media` session with no display (the pump is
+  `main.c:591` in the main loop, §3.3). One windowless-only trap: `hatari-stop`/`hatari-cont`
+  deadlocks — `Main_EventHandler` blocks in `SDL_WaitEvent` while paused, and the dummy driver
+  produces no events, so the socket is never serviced again. Unreachable from PiST (pause is
+  `hatari-debug` with an always-true breakpoint, EmulatorHost.cpp) — recorded so nobody "fixes"
+  pause by switching to `hatari-stop`. If ever needed: poll the socket instead of SDL_WaitEvent
+  when `PistMedia_Enabled()`.
+- **Colour fidelity (phase 1 proof gap, closed):** a media screenshot is pixel-identical to
+  Hatari's own debugger `screenshot` of the same stopped session minus the statusbar — RMSE 0
+  over 832×552, media path vs two independent renderers. The "green frame" from earlier runs was
+  genuine guest output (EmuTOS's dithered desktop), not a channel error. Lesson recorded for the
+  test suite: mean/brightness assertions can't distinguish render paths — the test that caught
+  itself (`mediaDisplayFeedsThePanel`) now compares 8×8 cell-mean grids of the panel's fitted
+  rect against the transported frame, gated on cell spread (dither survives cell means; a black
+  frame fails the guard), and was proven falsifiable: with `setFrame` stubbed it FAILS, unstubbed
+  it PASSES. Earlier mean-based variants passed vacuously twice before this.
+- **`sent` is a write counter, not a delivery counter.** Liveness must come from the protocol
+  (HELLO + ack), not socket errors.
+- **First frame at connect** in every clean run. Run 2's ~31 s of refused connects against an
+  already-listening receiver is *unexplained* (that session's process control was unreliable, and
+  self-connect cannot produce refused connects) — re-check with the in-process media server in
+  phase 1.
+- **Statusbar:** the pushed frame includes Hatari's statusbar (painted by the *previous* frame's
+  `Statusbar_Update`, so hook placement can't exclude it) — media mode crops to `STScreenRect`.
+- **Boot-time keypresses are flushed** before an autostarted PRG's `Cconin`; the spike re-injected
+  every 100 frames. Irrelevant to real sessions, which are running when input matters.
+- **The spike's sends block** (measured cheap at this size); drop-on-full is the target design and
+  a phase-1 requirement, not an emergency.
 
 ---
 

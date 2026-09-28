@@ -76,6 +76,7 @@ public:
     void infoSubject(const QString &subject) override;
     void readBasepage() override;
     void setDisasmEngine(DisasmEngine engine) override;
+    void dropBootTurbo() override;
     void profileOn() override;
     void profileOff() override;
     void profileSave(const QString &path) override;

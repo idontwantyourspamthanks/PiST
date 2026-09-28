@@ -1036,6 +1036,13 @@ void EmulatorHost::setDisasmEngine(DisasmEngine engine)
                                               : QStringLiteral("setopt --disasm uae"));
 }
 
+void EmulatorHost::dropBootTurbo()
+{
+    // Queued first in the entry-stop attach, so it lands before any Continue
+    // the user presses there: the program runs at the project's speed.
+    enqueueIntent(QStringLiteral("setopt --fast-forward off"));
+}
+
 void EmulatorHost::profileOn()
 {
     // Kept across a resume(): collection starts at the continue itself, so a

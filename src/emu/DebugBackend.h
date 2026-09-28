@@ -218,6 +218,13 @@ public:
     enum class DisasmEngine { Ext, Uae };
     virtual void setDisasmEngine(DisasmEngine engine) = 0;
 
+    /// Leave fast-forward. Sessions boot with fast-forward on regardless of
+    /// the project's setting — a real-speed TOS boot is ~30 s of floppy
+    /// seeks and desktop building — and the project's preference is applied
+    /// here, at the entry stop, before the program runs (`setopt
+    /// --fast-forward off`). A no-op when fast-forward is already off.
+    virtual void dropBootTurbo() = 0;
+
     /// CPU profile collection. It takes effect on the next continue
     /// (Profile_CpuStart runs in DebugCpu_SetDebugging), so a queued control
     /// command must survive a resume().

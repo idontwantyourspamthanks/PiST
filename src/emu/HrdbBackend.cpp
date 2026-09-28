@@ -796,6 +796,14 @@ void HrdbBackend::setDisasmEngine(DisasmEngine engine)
     enqueue(consoleRequest(command, command));
 }
 
+void HrdbBackend::dropBootTurbo()
+{
+    // Queued first in the entry-stop attach, so it lands before any Continue
+    // the user presses there: the program runs at the project's speed.
+    const QString command = QStringLiteral("setopt --fast-forward off");
+    enqueue(consoleRequest(command, command));
+}
+
 void HrdbBackend::profileOn()
 {
     // Kept across a resume(): collection starts at the continue itself, so a

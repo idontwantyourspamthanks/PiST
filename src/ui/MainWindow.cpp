@@ -386,6 +386,15 @@ MainWindow::MainWindow(QWidget *parent)
     sessionHost.breakpoints = [this] { return m_bpModel; };
     sessionHost.programMap = programMapNow;
     sessionHost.bases = [this]() -> const LineMap::SectionBases & { return m_bases; };
+    // The session boots with fast-forward on either way (a real-speed TOS
+    // boot is ~30 s); the project's preference is applied at the entry stop.
+    // The audio queue must shed the boot's chopped debris at the same moment,
+    // or it plays over the program's first real-time instants.
+    sessionHost.bootTurboToDrop = [this] { return !m_settings.fastForward; };
+    sessionHost.bootTurboDropped = [this] {
+        if (m_audio)
+            m_audio->reset();
+    };
     sessionHost.lastState = [this]() -> const MachineState & { return m_lastState; };
     sessionHost.log = logLine;
     sessionHost.showWatchpoints = showWatchpoints;

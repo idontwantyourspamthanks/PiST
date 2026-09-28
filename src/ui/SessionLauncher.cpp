@@ -78,12 +78,16 @@ void SessionLauncher::launch()
     config.machine = machineCliName(m_host.settings().machine);
     config.monitor = m_host.settings().monitor;
     config.memSizeMiB = m_host.settings().memSizeMiB;
-    // The project's speed preference. Without this the field kept its default
-    // (fast-forward on), so every media session ran the guest ~40x faster than
-    // real time: audio, produced once per guest VBL, arrived far faster than
-    // the sink could play it and had to be dropped (heard as a chopped tone),
-    // and the wall-clock pacing the input/echo path assumes was gone.
-    config.fastForward = m_host.settings().fastForward;
+    // Every session boots with fast-forward on: a real-speed TOS boot is
+    // ~30 s of floppy seeks and desktop building, which reads as "the IDE
+    // hung" (measured). The project's speed preference is applied at the
+    // entry stop instead — DebugSessionController queues
+    // `setopt --fast-forward off` first in the attach batch, ahead of any
+    // Continue, so the program itself runs at the speed the project asked
+    // for. toArgv() still suppresses the flag when a user floppy is mounted
+    // (floppy I/O misses sectors under turbo), and that session's drop is a
+    // harmless no-op.
+    config.fastForward = true;
     config.extraArgs = m_host.settings().extraEmulatorArgs;
     if (!m_host.settings().hardDiskImage.isEmpty()) {
         // ACSI is the safe default: it exists on every ST-family machine, unlike

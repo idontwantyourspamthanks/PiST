@@ -547,6 +547,18 @@ These are the operational constraints the launch builder must encode.
     Windows embedding instead adopts the window Hatari already showed (`ui/EmbedWin32.h`), which
     makes every failure path end at the mode that works today.
 
+15. **Boot with fast-forward on; apply the project's speed at the entry stop.** A real-speed
+    TOS boot is ~30 s of floppy seeks and desktop building (measured, TOS 1.04 + GEMDOS HD),
+    which reads as the IDE hanging. So `SessionLauncher` always emits `--fast-forward yes`
+    (still suppressed with a user floppy mounted — turbo misses sectors), and the entry-stop
+    attach in `DebugSessionController::onDebuggerStopped()` queues `setopt --fast-forward off`
+    *first*, ahead of any Continue the user presses there (rule: Continue is live at the entry
+    stop before arming finishes), when the project wants real speed. The audio queue is reset
+    at the same moment, or up to ~450 ms of turbo-chopped boot audio plays over the program's
+    first real-time instants. Note the fork only resyncs its own sound ring on the keyboard
+    shortcut's FF exit, not the `setopt` one, so ~170 ms of stale ring content can still reach
+    the wire once per session.
+
 ### 5.1 Bootstrap parse file
 
 Generated per session into the temp config dir (`EmulatorHost::writeBootstrapScript()`):

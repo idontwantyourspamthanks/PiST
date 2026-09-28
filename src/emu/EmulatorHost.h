@@ -141,6 +141,7 @@ public:
     void infoSubject(const QString &subject) override;      // `info <subject>`
     void readBasepage() override;                           // `info basepage`
     void setDisasmEngine(DisasmEngine engine) override;     // `setopt --disasm ext|uae`
+    void dropBootTurbo() override;                          // `setopt --fast-forward off`
     void profileOn() override;                              // `profile on`
     void profileOff() override;                             // `profile off`
     void profileSave(const QString &path) override;         // `profile save <path>`

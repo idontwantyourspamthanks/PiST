@@ -64,6 +64,17 @@ public:
         /// The section bases the last `info basepage` installed. The arming
         /// gate is whether they are live yet (CRIT-4).
         std::function<const LineMap::SectionBases &()> bases;
+        /// The session booted with fast-forward on (every session does — a
+        /// real-speed TOS boot is ~30 s) and the project wants real speed, so
+        /// the turbo must be dropped at the entry stop, before the program
+        /// runs. False when the project's setting is fast-forward on: the
+        /// session keeps its turbo.
+        std::function<bool()> bootTurboToDrop = [] { return false; };
+        /// Notification that the drop was just queued, so views can shed
+        /// state that only makes sense at the boot's speed — the audio
+        /// queue, which otherwise plays up to ~450 ms of chopped boot
+        /// debris over the program's first real-time moments.
+        std::function<void()> bootTurboDropped = [] {};
         /// The cached machine state of the last stop (the step-out read).
         std::function<const MachineState &()> lastState;
         /// One line on the console.

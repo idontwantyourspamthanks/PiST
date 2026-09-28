@@ -124,6 +124,9 @@ void DebugSessionController::onDebuggerStopped()
     // The two-phase attach, in order. The program's load address is only known
     // once it has been executed, so:
     //
+    //   0. if the session booted under fast-forward but the project wants real
+    //      speed, drop the turbo — first, so it is ahead of any Continue the
+    //      user presses at this stop (rule 4 makes Continue live here)
     //   1. stop at entry (armed at launch via --parse, using the TEXT variable,
     //      which needs no symbols)
     //   2. load symbols, which relocates them against the live base page
@@ -131,6 +134,10 @@ void DebugSessionController::onDebuggerStopped()
     //
     // Only then can a source line be turned into an address
     // (docs/PLAN.md §5 rules 5 and 6).
+    if (m_host.bootTurboToDrop()) {
+        m_host.backend()->dropBootTurbo();
+        m_host.bootTurboDropped();
+    }
     m_host.backend()->loadSymbols();
     m_host.backend()->readBasepage();
     m_host.backend()->dumpRegisters();

@@ -1,6 +1,6 @@
 {
     "emulator": {
-        "fastForward": true,
+        "fastForward": false,
         "floppyImages": [
             "",
             ""

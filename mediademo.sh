@@ -37,6 +37,10 @@ cat <<'EOF'
 
 Media demo — what to do once it is up:
 
+  (This demo runs at real speed on purpose: with fast-forward a brief tap
+   is seconds of held key in guest time, and TOS's typematic fires. If
+   your keypresses beep in trains elsewhere, that is why.)
+
   1. F5 (Run), then F9 (Continue) when the session stops at the entry
      breakpoint — the grab releases on a stop, so capture only shows
      while the machine is running.

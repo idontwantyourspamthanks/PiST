@@ -48,4 +48,4 @@ Media demo — what to do once it is up:
 
 EOF
 
-exec env -u QT_QPA_PLATFORM PIST_HATARI="$PWD/$FORKBIN" "$BIN" "$@"
+exec env -u QT_QPA_PLATFORM PIST_HATARI="$PIST_HATARI" "$BIN" "$@"

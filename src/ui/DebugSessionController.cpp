@@ -86,6 +86,7 @@ void DebugSessionController::resetSessionState()
     m_breakpointsArmedThisSession = false;
     m_stepOutPending = false;
     m_stopEventPending = false;
+    m_bootTurboDropped = false;
 }
 
 void DebugSessionController::onDebuggerStopped()
@@ -94,6 +95,20 @@ void DebugSessionController::onDebuggerStopped()
     // display always shows where the machine actually stopped — on a step, on a
     // breakpoint, or on an exception. The entry stop additionally runs the
     // two-phase attach below, once per session.
+
+    // Drop the boot's fast-forward at the first stop of any kind when the
+    // project wants real speed. Deliberately not tied to the entry stop: a
+    // program whose symbols give the entry breakpoint no TEXT never stops
+    // there and would otherwise run the whole session turbo — the media
+    // session's audio chop would return with no sign of why. Ahead of any
+    // Continue the user presses at this stop (rule 4 makes Continue live
+    // here), so the program runs at the project's speed from the first
+    // instruction onward.
+    if (!m_bootTurboDropped && m_host.bootTurboToDrop()) {
+        m_bootTurboDropped = true;
+        m_host.backend()->dropBootTurbo();
+        m_host.bootTurboDropped();
+    }
     if (m_sessionArmed) {
         m_host.backend()->refresh();
         if (m_host.profiler()->guided()) {
@@ -124,9 +139,6 @@ void DebugSessionController::onDebuggerStopped()
     // The two-phase attach, in order. The program's load address is only known
     // once it has been executed, so:
     //
-    //   0. if the session booted under fast-forward but the project wants real
-    //      speed, drop the turbo — first, so it is ahead of any Continue the
-    //      user presses at this stop (rule 4 makes Continue live here)
     //   1. stop at entry (armed at launch via --parse, using the TEXT variable,
     //      which needs no symbols)
     //   2. load symbols, which relocates them against the live base page
@@ -134,10 +146,6 @@ void DebugSessionController::onDebuggerStopped()
     //
     // Only then can a source line be turned into an address
     // (docs/PLAN.md §5 rules 5 and 6).
-    if (m_host.bootTurboToDrop()) {
-        m_host.backend()->dropBootTurbo();
-        m_host.bootTurboDropped();
-    }
     m_host.backend()->loadSymbols();
     m_host.backend()->readBasepage();
     m_host.backend()->dumpRegisters();

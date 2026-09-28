@@ -193,6 +193,9 @@ private:
     bool m_stopEventPending = false;
     bool m_profileSavePending = false;
     bool m_launchAfterBuild = false;
+    /// The boot's fast-forward was dropped (or never needed dropping) this
+    /// session; guards doing it exactly once, at the first stop of any kind.
+    bool m_bootTurboDropped = false;
 };
 
 } // namespace pist

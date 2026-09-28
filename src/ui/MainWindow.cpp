@@ -434,18 +434,19 @@ MainWindow::MainWindow(QWidget *parent)
     // this is where the panel is shown for it, and the port it returns is what
     // the emulator's argv will name. Only the native backend carries a server;
     // a launch on HRDB simply gets 0 and embeds/separates as before.
-    launcherHost.engageMediaDisplay = [this](const HatariCapabilities &caps) -> int {
+    launcherHost.engageMediaDisplay = [this](const HatariCapabilities &caps)
+        -> SessionLauncher::Host::MediaEngagement {
         auto *native = qobject_cast<EmulatorHost *>(m_host);
         if (!native || !caps.hasPistMedia || !m_display)
-            return 0;
+            return {};
         const int port = native->mediaListen();
         if (port <= 0)
-            return 0;
+            return {};
         m_mediaDisplay = true;
         m_lastMediaFrame = QImage();
         m_displayDock->setVisible(true);
         m_display->setVisible(true);
-        return port;
+        return {port, native->mediaServer().token()};
     };
     launcherHost.quiet = [this] { return m_quietDialogs; };
     launcherHost.refuseRun = [this](const QString &title, const QString &reason, bool critical) {

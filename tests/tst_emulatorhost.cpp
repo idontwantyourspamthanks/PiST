@@ -435,6 +435,9 @@ private slots:
     /// the probed emulator carries `--pist-media` (set $PIST_HATARI to the
     /// fork's build tree).
     void mediaChannelDeliversFrames();
+    /// A client that cannot produce the session's AUTH token is dropped
+    /// without a word — no HELLO, no frames (protocol v2's eavesdrop gate).
+    void mediaServerRejectsClientWithoutAuth();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -2468,10 +2471,14 @@ void TstEmulatorHost::mediaChannelDeliversFrames()
     EmulatorHost host;
     connect(&host, &EmulatorHost::logLine, this, [this](const QString &l) { m_log.append(l); });
 
-    // Listen before the spawn: Hatari connects and never binds.
+    // Listen before the spawn: Hatari connects and never binds. The token is
+    // what lets it past the server's AUTH gate (protocol v2).
     const int port = host.mediaListen();
-    QVERIFY2(port > 0, "the media server must bind one of ports 29200-29209");
+    QVERIFY2(port >= 20000 && port <= 32767,
+             "the media server must bind a random port in 20000-32767");
     config.mediaPort = port;
+    config.mediaToken = host.mediaServer().token();
+    QVERIFY2(config.mediaToken.size() == 16, "listen() must generate the AUTH token");
 
     // The media session adds exactly these two options, and a session without a
     // media port grows neither.
@@ -2516,6 +2523,46 @@ void TstEmulatorHost::mediaChannelDeliversFrames()
 
     host.stop();
     qunsetenv("PIST_MEDIA_DISPLAY");
+}
+
+void TstEmulatorHost::mediaServerRejectsClientWithoutAuth()
+{
+    pist::MediaServer server;
+    QString error;
+    QVERIFY2(server.listen(&error), qPrintable(error));
+    const int port = server.port();
+    QVERIFY(port > 0);
+
+    // Wrong token: the server must drop the client without sending a byte —
+    // a HELLO would hand an eavesdropper the session.
+    {
+        QTcpSocket sock;
+        sock.connectToHost(QHostAddress::LocalHost, port);
+        QVERIFY(sock.waitForConnected(3000));
+        sock.write(QByteArray("PSA1") + QByteArray(16, '\x7f'));
+        QTRY_VERIFY_WITH_TIMEOUT(sock.state() == QAbstractSocket::UnconnectedState, 5000);
+        QCOMPARE(sock.bytesAvailable(), qint64(0));
+    }
+
+    // Silence: same outcome once the AUTH window closes (3 s in MediaServer).
+    {
+        QTcpSocket sock;
+        sock.connectToHost(QHostAddress::LocalHost, port);
+        QVERIFY(sock.waitForConnected(3000));
+        QTRY_VERIFY_WITH_TIMEOUT(sock.state() == QAbstractSocket::UnconnectedState, 6000);
+        QCOMPARE(sock.bytesAvailable(), qint64(0));
+    }
+
+    // And the right token still works: the server answers with HELLO v2.
+    {
+        QTcpSocket sock;
+        sock.connectToHost(QHostAddress::LocalHost, port);
+        QVERIFY(sock.waitForConnected(3000));
+        sock.write(QByteArray("PSA1") + server.token());
+        QTRY_VERIFY_WITH_TIMEOUT(sock.bytesAvailable() >= 12, 5000);
+        const QByteArray hello = sock.read(12);
+        QVERIFY(hello.startsWith("PSH1"));
+    }
 }
 
 QTEST_MAIN(TstEmulatorHost)

@@ -158,11 +158,12 @@ void SessionLauncher::launch()
     // PARENT_WIN_ID and the x11 pinning out of the child's environment.
     const bool wantMedia = launchedCaps.hasPistMedia
         && qEnvironmentVariableIsSet("PIST_MEDIA_DISPLAY");
-    int mediaPort = 0;
+    Host::MediaEngagement media;
     if (wantMedia)
-        mediaPort = m_host.engageMediaDisplay(launchedCaps);
-    if (mediaPort > 0) {
-        config.mediaPort = mediaPort;
+        media = m_host.engageMediaDisplay(launchedCaps);
+    if (media.port > 0) {
+        config.mediaPort = media.port;
+        config.mediaToken = media.token;
     } else {
         if (wantMedia)
             m_host.log(MainWindow::tr("[run] media display unavailable; "

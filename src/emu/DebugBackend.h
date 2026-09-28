@@ -92,6 +92,12 @@ inline QProcessEnvironment makeSessionEnvironment(const SessionConfig &config)
         env.insert(QStringLiteral("PARENT_WIN_ID"), config.parentWindowId);
         env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("x11"));
     }
+    if (!config.mediaToken.isEmpty())
+        // Media channel auth (protocol v2): the fork must open with an AUTH
+        // carrying this token; MediaServer says nothing to a client that
+        // cannot produce it. Travels the environment like PARENT_WIN_ID.
+        env.insert(QStringLiteral("PIST_MEDIA_TOKEN"),
+                   QString::fromLatin1(config.mediaToken.toHex()));
     return env;
 }
 

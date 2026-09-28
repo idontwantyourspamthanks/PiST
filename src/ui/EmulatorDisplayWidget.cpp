@@ -430,6 +430,9 @@ void EmulatorDisplayWidget::setInputCaptured(bool captured)
         // Releasing over the panel while a session runs re-hides the cursor
         // on the next enter; for now restore it wherever it is.
         unsetCursor();
+        // …and a grab that ends between the grabbing press and its release
+        // must not swallow the next capture's first button-up.
+        m_swallowGrabRelease = false;
     }
     emit inputCaptureChanged(captured);
     update();

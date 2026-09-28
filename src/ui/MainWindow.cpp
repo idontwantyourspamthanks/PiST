@@ -1361,6 +1361,12 @@ void MainWindow::wireBackend()
         // its paused hint rather than look frozen.
         if (m_display)
             m_display->setPaused(stopped);
+        // A stop is also when the user wants their keyboard back: a machine
+        // halted in its debugger cannot consume input, so anything typed
+        // would sit in the media socket until a resume replayed it (seen
+        // live in the phase-2 desktop proof). §12.4's stop edge.
+        if (stopped && m_display)
+            m_display->setInputCaptured(false);
         // Registers are only writable while stopped, through the debugger.
         if (m_actPause)
             m_actPause->setEnabled(!stopped && m_host->isRunning());

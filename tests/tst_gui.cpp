@@ -3889,6 +3889,14 @@ void TstGui::stKeyboardMapsQtKeysToStScancodes()
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Shift), 0x2A);
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Control), 0x1D);
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Alt), 0x38);
+    // The punctuation cluster — the rows that differ between AT set variants.
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Semicolon), 0x27);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Apostrophe), 0x28);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_QuoteLeft), 0x29);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Backslash), 0x2B);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Comma), 0x33);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Period), 0x34);
+    QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_Slash), 0x35);
     // Never forwarded: F11/F12 have no ST scancode, and F12 releases the
     // grab — it must stay PiST's.
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F11), -1);

@@ -366,9 +366,10 @@ choice — either way — always wins (`m_embeddedDisplayChosen`).
 ### The media channel (hatari-pist fork)
 
 With a `--pist-media`-capable emulator (probed by option name, `HatariCapabilities.hasPistMedia`)
-and the `PIST_MEDIA_DISPLAY` dev gate — input is phase 2, so embedding remains the default until
-then — the emulator runs windowless and PiST owns the pixels. `SessionLauncher` calls
-`EmulatorHost::mediaListen()` (binds `MediaServer` on 127.0.0.1, first free of 29200–29209 —
+the emulator runs windowless and PiST owns the pixels. Since phase 2 the media display is the
+*default* when the capability pair holds — the option and the "protocol v2: input" marker in its
+help text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fork. `SessionLauncher` calls
+`EmulatorHost::mediaListen()` (binds `MediaServer` on 127.0.0.1, a random port in 20000–32767 —
 below the ephemeral floor, PLAN §12.7's self-connect finding) **before** the spawn and puts the
 port in `SessionConfig.mediaPort`, whose `toArgv()` emits `--pist-media <port> --frameskips 0`.
 PiST sends HELLO on accept; the fork streams nothing without it. Frames arrive change-gated

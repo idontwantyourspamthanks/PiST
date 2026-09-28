@@ -1612,6 +1612,9 @@ produced exact count agreement.)
   rect against the transported frame, gated on cell spread (dither survives cell means; a black
   frame fails the guard), and was proven falsifiable: with `setFrame` stubbed it FAILS, unstubbed
   it PASSES. Earlier mean-based variants passed vacuously twice before this.
+- **Suite skips explained:** the two `tst_gui` profile tests skip under the fork binary because
+  the local fork build has no Capstone ("capstone: not found" at configure) — a build-config
+  difference, not a media-gate regression. CI's build-hatari action builds Capstone in.
 - **`sent` is a write counter, not a delivery counter.** Liveness must come from the protocol
   (HELLO + ack), not socket errors.
 - **First frame at connect** in every clean run. Run 2's ~31 s of refused connects against an

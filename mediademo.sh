@@ -14,14 +14,15 @@ cd "$(dirname "$0")"
 BIN=build/pist
 FORK=../hatari-pist
 FORKBIN="$FORK/build/src/hatari"
-
-if [ ! -x "$FORKBIN" ]; then
-    echo "Building hatari-pist..."
-    cmake -S "$FORK" -B "$FORK/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON
-    cmake --build "$FORK/build" --parallel
+if [ -z "${PIST_HATARI:-}" ]; then
+    PIST_HATARI="$PWD/$FORKBIN"
+    if [ ! -x "$PIST_HATARI" ]; then
+        echo "Building hatari-pist..."
+        cmake -S "$FORK" -B "$FORK/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON
+        cmake --build "$FORK/build" --parallel
+    fi
 fi
-
 if [ ! -x "$BIN" ] || [ -n "$(find src CMakeLists.txt -newer "$BIN" -print -quit 2>/dev/null)" ]; then
     echo "Building PiST..."
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug

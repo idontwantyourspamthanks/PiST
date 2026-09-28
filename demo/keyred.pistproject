@@ -1,11 +1,4 @@
 {
-    "build": {
-        "defines": [],
-        "includePaths": [],
-        "sources": [
-            "keyred.s"
-        ]
-    },
     "emulator": {
         "fastForward": true,
         "floppyImages": [

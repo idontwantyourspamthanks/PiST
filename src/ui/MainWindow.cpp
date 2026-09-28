@@ -1100,6 +1100,16 @@ void MainWindow::createActions()
     m_actPause->setEnabled(false);
     connect(m_actPause, &QAction::triggered, this, &MainWindow::pauseSession);
 
+    m_actReleaseInput = new QAction(tr("Release &Input"), this);
+    m_actReleaseInput->setToolTip(
+        tr("Give the keyboard and mouse back from the emulated machine "
+           "(the media display's input grab; F12 does the same)"));
+    m_actReleaseInput->setEnabled(false);
+    connect(m_actReleaseInput, &QAction::triggered, this, [this] {
+        if (m_display)
+            m_display->setInputCaptured(false);
+    });
+
     m_actStep = new QAction(tr("&Step"), this);
     m_actStep->setObjectName(QStringLiteral("stepAction"));
     m_actStep->setShortcut(QKeySequence(Qt::Key_F10));
@@ -1192,8 +1202,14 @@ void MainWindow::wireBackend()
             // session has no window to adopt at all.
             if (m_display && m_embeddedDisplay && !m_mediaDisplay)
                 m_display->attachEmulatorProcess(m_host->emulatorProcessId());
-            return;
         }
+        // The panel's media-session state (cursor hiding, the input grab) is
+        // simply "media display engaged and a session is up" — false again
+        // here on the way down, which also releases any capture (§12.4).
+        if (m_display)
+            m_display->setMediaSession(m_mediaDisplay && running);
+        if (running)
+            return;
         if (m_consoleInput)
             m_consoleInput->setEnabled(running);
         updateSessionChip();
@@ -1473,6 +1489,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actRun);
     runMenu->addAction(m_actStop);
     runMenu->addAction(m_actPause);
+    runMenu->addAction(m_actReleaseInput);
     runMenu->addSeparator();
     runMenu->addAction(m_actResume);
     runMenu->addAction(m_actStep);
@@ -1759,6 +1776,32 @@ void MainWindow::buildPanels()
     m_display = new EmulatorDisplayWidget(this);
     m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
     m_displayDock->setVisible(m_embeddedDisplay);
+    // The input grab (docs/PLAN.md §12.4): the panel translates, the backend
+    // forwards. Keys arrive as ST scancodes already (ui/StKeyboard); mouse
+    // deltas arrive scaled to guest pixels.
+    if (m_display) {
+        connect(m_display, &EmulatorDisplayWidget::keyIntent, this,
+                [this](int scancode, bool down) {
+                    m_host->mediaKey(quint8(scancode), down);
+                });
+        connect(m_display, &EmulatorDisplayWidget::mouseIntent, this,
+                [this](qint16 dx, qint16 dy, quint8 buttons) {
+                    m_host->mediaMouse(dx, dy, buttons);
+                });
+        // A focus change releases the grab: the user Alt-Tabbing away must
+        // not leave their keyboard held by a window they can't see.
+        connect(qApp, &QApplication::applicationStateChanged, this,
+                [this](Qt::ApplicationState state) {
+                    if (state != Qt::ApplicationActive && m_display)
+                        m_display->setInputCaptured(false);
+                });
+        connect(m_display, &EmulatorDisplayWidget::inputCaptureChanged, this,
+                [this](bool captured) {
+                    if (m_actReleaseInput)
+                        m_actReleaseInput->setEnabled(captured);
+                });
+    }
+
     m_profiler = new ProfilerView(this);
     m_profiler->setActions(m_actProfileStart, m_actProfileStop, m_actProfileToCursor);
     addDockWidget(Qt::RightDockWidgetArea, m_displayDock);

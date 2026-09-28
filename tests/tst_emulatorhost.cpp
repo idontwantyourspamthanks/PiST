@@ -441,6 +441,9 @@ private slots:
     /// A KEY message over the media channel reaches the guest: a program
     /// waiting on Cconin wakes and repaints (docs/PLAN.md §12, phase 2).
     void keyInjectionReachesTheGuest();
+    /// MOUSE deltas over the media channel move the guest's cursor, seen on
+    /// the frame stream (docs/PLAN.md §12.3, phase 2).
+    void mouseInjectionMovesTheGuestCursor();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
     /// Sidebar Change while stopped at entry must reach Hatari via `setopt`,
@@ -2666,6 +2669,73 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
             red = frameRedFraction(frames.last().at(0).value<MediaFrame>()) > 0.30;
     }
     QVERIFY2(red, "the guest never reacted to the injected keypress");
+
+    host.stop();
+    qunsetenv("PIST_MEDIA_DISPLAY");
+}
+
+void TstEmulatorHost::mouseInjectionMovesTheGuestCursor()
+{
+    const ToolInfo fork = toolchain::findEmulator();
+    const QString hatari = fork.found() ? fork.path : m_hatari;
+    HatariCapabilities caps = probeHatari(hatari);
+    QVERIFY(caps.valid);
+    if (!caps.hasPistMedia)
+        QSKIP("the emulator has no --pist-media (set $PIST_HATARI to a hatari-pist build)");
+    if (m_tos.isEmpty())
+        QSKIP("needs a TOS ROM");
+
+    qputenv("PIST_MEDIA_DISPLAY", "1");
+
+    SessionConfig config;
+    config.hatariPath = hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/mouse-session");
+    config.gemdosDir = m_sourceDir;
+    config.monitor = QStringLiteral("rgb");
+    config.controlSocketPath.clear();
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this, [this](const QString &l) { m_log.append(l); });
+    const int port = host.mediaListen();
+    QVERIFY(port > 0);
+    config.mediaPort = port;
+    config.mediaToken = host.mediaServer().token();
+
+    QSignalSpy frames(&host, &IDebugBackend::mediaFrameReceived);
+    QString error;
+    QVERIFY2(host.start(config, &error), qPrintable(error));
+
+    // Let the boot finish and the change-gated stream quieten, or a differing
+    // frame later proves nothing about the mouse: settled means no new frame
+    // for a full second.
+    QTRY_VERIFY_WITH_TIMEOUT(frames.count() > 0, 15000);
+    bool settled = false;
+    for (int i = 0; i < 40 && !settled; ++i) {
+        const int before = frames.count();
+        QTest::qWait(1000);
+        settled = frames.count() == before;
+    }
+    QVERIFY2(settled, "the frame stream never quietened after boot");
+
+    const MediaFrame before = frames.last().at(0).value<MediaFrame>();
+
+    // TOS's cursor follows the IKBD's relative deltas; enough of them must
+    // redraw the sprite somewhere on screen.
+    bool moved = false;
+    for (int i = 0; i < 10 && !moved; ++i) {
+        host.mediaMouse(30, 20, 0);
+        QTest::qWait(300);
+        if (frames.count() > 0) {
+            const MediaFrame now = frames.last().at(0).value<MediaFrame>();
+            if (now.seq > before.seq
+                && now.pixels.size() == before.pixels.size()
+                && now.pixels != before.pixels)
+                moved = true;
+        }
+    }
+    QVERIFY2(moved, "no frame changed after injected mouse deltas");
 
     host.stop();
     qunsetenv("PIST_MEDIA_DISPLAY");

@@ -43,6 +43,8 @@
 #include "toolchain/Toolchain.h"
 #include "emu/HrdbBackend.h"
 #include "ui/StackView.h"
+#include "ui/EmulatorDisplayWidget.h"
+#include "ui/MouseScaling.h"
 #include "ui/StKeyboard.h"
 #include "toolchain/ToolFetch.h"
 
@@ -370,6 +372,8 @@ private slots:
     /// The Emulator panel hosts another process's window, or nothing at all
     /// before a session: it must say which, rather than show a black void.
     void emulatorPanelExplainsItselfWhenEmpty();
+    void mouseScalerAccumulatesSubPixelDeltas();
+    void inputGrabRoutesKeysAndMouse();
     void stKeyboardMapsQtKeysToStScancodes();
     void mediaDisplayFeedsThePanel();
     /// Embedding is the default, but only where it can happen: with no stored
@@ -3890,6 +3894,77 @@ void TstGui::stKeyboardMapsQtKeysToStScancodes()
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F11), -1);
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_F12), -1);
     QCOMPARE(stkbd::scancodeFromQtKey(Qt::Key_unknown), -1);
+}
+
+// Host pixels are not guest pixels (docs/PLAN.md §12.3): the scaler must
+// carry the fraction across events, or a scaled panel makes the guest cursor
+// drift against the hand on every move.
+void TstGui::mouseScalerAccumulatesSubPixelDeltas()
+{
+    MouseScaler s;
+    s.setScale(0.4);
+    QCOMPARE(s.mapDelta(QPoint(1, 0)).x(), 0); // 0.4
+    QCOMPARE(s.mapDelta(QPoint(1, 0)).x(), 0); // 0.8
+    QCOMPARE(s.mapDelta(QPoint(1, 0)).x(), 1); // 1.2 -> 1, carry 0.2
+    QCOMPARE(s.mapDelta(QPoint(1, 0)).x(), 0); // 0.6
+    QCOMPARE(s.mapDelta(QPoint(1, 0)).x(), 1); // 1.0 -> 1
+    QCOMPARE(s.mapDelta(QPoint(1, 0)).x(), 0); // 0.4 again
+
+    MouseScaler big;
+    big.setScale(2.0);
+    QCOMPARE(big.mapDelta(QPoint(-3, 2)), QPoint(-6, 4));
+}
+
+// The input grab, widget level (docs/PLAN.md §12.4): a click captures, keys
+// arrive as ST scancode intents, F12 releases and is never forwarded, and
+// movement emits scaled deltas with button state. No emulator needed — the
+// widget's capture logic is what is under test.
+void TstGui::inputGrabRoutesKeysAndMouse()
+{
+    MainWindow window;
+    window.resize(1000, 700);
+    window.show();
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(dock);
+    auto *display = qobject_cast<EmulatorDisplayWidget *>(dock->widget());
+    QVERIFY(display);
+    display->setMediaSession(true);
+
+    QSignalSpy keys(display, &EmulatorDisplayWidget::keyIntent);
+    QSignalSpy mice(display, &EmulatorDisplayWidget::mouseIntent);
+
+    // The grabbing click captures and is consumed: no button state reaches
+    // the guest for it.
+    QTest::mouseClick(display, Qt::LeftButton);
+    QVERIFY(display->inputCaptured());
+    QCOMPARE(mice.count(), 0);
+
+    // 'A' arrives as scancode $1E, down then up.
+    QTest::keyClick(display, Qt::Key_A);
+    QCOMPARE(keys.count(), 2);
+    QCOMPARE(keys.at(0).at(0).toInt(), 0x1E);
+    QCOMPARE(keys.at(0).at(1).toBool(), true);
+    QCOMPARE(keys.at(1).at(0).toInt(), 0x1E);
+    QCOMPARE(keys.at(1).at(1).toBool(), false);
+
+    // F12 releases the grab and stays PiST's: no key intent for it.
+    QTest::keyClick(display, Qt::Key_F12);
+    QVERIFY(!display->inputCaptured());
+    QCOMPARE(keys.count(), 2);
+
+    // Re-capture, then movement emits deltas and a button press emits state.
+    QTest::mouseClick(display, Qt::LeftButton);
+    QVERIFY(display->inputCaptured());
+    mice.clear();
+    QTest::mouseMove(display, QPoint(display->width() / 2 + 40,
+                                     display->height() / 2));
+    QTRY_VERIFY_WITH_TIMEOUT(mice.count() > 0, 2000);
+    QTest::mousePress(display, Qt::LeftButton);
+    const QVariantList last = mice.last();
+    QCOMPARE(last.at(2).value<quint8>() & 0x01, 0x01);
+
+    display->setMediaSession(false);
+    QVERIFY(!display->inputCaptured());
 }
 
 // A frame as an 8x8 grid of cell-mean grays, straight from the transport

@@ -828,6 +828,7 @@ private:
     QAction *m_actToggleBreakpoint = nullptr;
     QAction *m_actGotoLine = nullptr;
     QAction *m_actPause = nullptr;
+    QAction *m_actReleaseInput = nullptr;
     QAction *m_actAddWatchpoint = nullptr;
 };
 

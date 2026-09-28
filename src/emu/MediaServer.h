@@ -98,6 +98,11 @@ public:
     /// ST scancodes (ui/StKeyboard); this just puts bytes on the wire.
     void sendKey(quint8 scancode, bool down);
 
+    /// Send one MOUSE message ('M', s16 dx, s16 dy, u8 buttons) to the fork
+    /// (protocol v2): relative deltas in guest pixels plus the button state
+    /// (bit0 left, bit1 right). No-op unless a client has completed AUTH.
+    void sendMouse(qint16 dx, qint16 dy, quint8 buttons);
+
 signals:
     /// One complete frame; never emitted for a partially arrived payload.
     void frameReceived(const pist::MediaFrame &frame);

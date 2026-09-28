@@ -74,6 +74,9 @@ public:
     /// Forward one ST scancode to the fork over the media channel.
     void mediaKey(quint8 scancode, bool down) override;
 
+    /// Forward relative mouse deltas and button state over the media channel.
+    void mediaMouse(qint16 dx, qint16 dy, quint8 buttons) override;
+
     /// The frame server this host owns. The launcher reaches it through
     /// mediaListen(); the integration test observes it directly.
     MediaServer &mediaServer() { return m_mediaServer; }

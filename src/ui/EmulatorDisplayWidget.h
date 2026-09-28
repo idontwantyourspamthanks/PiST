@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QImage>
+#include "ui/MouseScaling.h"
 #include <QWidget>
 
 namespace pist {
@@ -60,6 +61,22 @@ public slots:
     /// the panel to its empty state.
     void setFrame(const QImage &frame);
 
+    /// Tell the panel whether a media session is running. While one is, the
+    /// host cursor hides over the panel (docs/PLAN.md §12.3: the guest
+    /// cursor is baked into every frame, so a visible host cursor would be a
+    /// second pointer arguing with it). Ending the session also releases any
+    /// input capture and restores the cursor.
+    void setMediaSession(bool running);
+
+    /// The VirtualBox-style input grab (docs/PLAN.md §12.4), for a media
+    /// session: while captured the panel holds the keyboard and mouse for the
+    /// guest — grabMouse/grabKeyboard, blank cursor, events translated and
+    /// emitted as keyIntent/mouseIntent. Clicking the panel captures; F12
+    /// releases (it is never forwarded to the guest); a focus change or a
+    /// session end releases too, because a trapped user is the failure mode.
+    void setInputCaptured(bool captured);
+    bool inputCaptured() const { return m_inputCaptured; }
+
     /// Show the embedded window and fit it within this widget.
     void showEmbedded();
 
@@ -88,10 +105,25 @@ signals:
     /// what happened when it could not be. The console is the only record of
     /// which branch ran on a machine this code cannot be tested on.
     void embedEvent(const QString &message);
+    /// One key for the guest, already translated to an ST scancode
+    /// (ui/StKeyboard). Emitted only while input is captured.
+    void keyIntent(int scancode, bool down);
+    /// One mouse move (guest pixels) or button change for the guest, deltas
+    /// already scaled through MouseScaler; buttons bit0 = left, bit1 = right.
+    void mouseIntent(qint16 dx, qint16 dy, quint8 buttons);
+    /// Capture state changed (for the "Release Input" action's enablement).
+    void inputCaptureChanged(bool captured);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
 private:
     /// One tick of the Windows adoption poll: adopt the emulator's window when
@@ -127,6 +159,18 @@ private:
     QImage m_frame;
     /// The Windows adoption was attempted and did not happen.
     bool m_attachFailed = false;
+    /// A media session is running (drives host-cursor hiding and the grab).
+    bool m_mediaSession = false;
+    /// The VirtualBox-style grab is active (docs/PLAN.md §12.4).
+    bool m_inputCaptured = false;
+    /// Host→guest delta scaling with a sub-pixel accumulator (§12.3).
+    MouseScaler m_mouseScaler;
+    /// Last cursor position used for deltas, widget coordinates.
+    QPoint m_lastMousePos;
+    /// Current button state as the MOUSE message carries it (bit0 L, bit1 R).
+    quint8 m_mouseButtons = 0;
+    /// The release belonging to the grabbing click is swallowed with it.
+    bool m_swallowGrabRelease = false;
 };
 
 } // namespace pist

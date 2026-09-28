@@ -152,6 +152,11 @@ public:
     /// answer for any session without a media client.
     virtual void mediaKey(quint8 /*scancode*/, bool /*down*/) {}
 
+    /// Relative mouse deltas (guest pixels) plus button state for the media
+    /// channel's MOUSE path (docs/PLAN.md §12). Same coverage rule as
+    /// mediaKey: only EmulatorHost acts; the default is a no-op.
+    virtual void mediaMouse(qint16 /*dx*/, qint16 /*dy*/, quint8 /*buttons*/) {}
+
     virtual void step() = 0;
     virtual void stepOver() = 0;
     virtual void resume() = 0;

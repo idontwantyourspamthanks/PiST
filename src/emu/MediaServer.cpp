@@ -139,6 +139,16 @@ void MediaServer::sendKey(quint8 scancode, bool down)
     m_client->write(msg, sizeof(msg));
 }
 
+void MediaServer::sendMouse(qint16 dx, qint16 dy, quint8 buttons)
+{
+    if (!m_client || !m_authed)
+        return;
+    char msg[6] = {'M', 0, 0, 0, 0, char(buttons)};
+    qToLittleEndian<qint16>(dx, reinterpret_cast<uchar *>(msg) + 1);
+    qToLittleEndian<qint16>(dy, reinterpret_cast<uchar *>(msg) + 3);
+    m_client->write(msg, sizeof(msg));
+}
+
 void MediaServer::close()
 {
     dropClient();

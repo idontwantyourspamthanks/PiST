@@ -570,6 +570,13 @@ MainWindow::MainWindow(QWidget *parent)
         m_log->appendPlainText(line);
     });
 
+
+    // EmuAudio is a plain QObject with no widget dependency, and it must
+    // exist before wireBackend() connects the backend's mediaAudioReceived —
+    // created down in createDocks() it would never exist in time, which is
+    // exactly where it started life (and why no audio was routed).
+    m_audio = new EmuAudio(this);
+    applyAudioOutputDevice();
     m_host = createBackend(BackendKind::Native, this);
     wireBackend();
 
@@ -1794,8 +1801,6 @@ void MainWindow::buildPanels()
         projectDock->raise();
     }
 
-    m_audio = new EmuAudio(this);
-    applyAudioOutputDevice();
     // --- right, top: the emulator display, which wants to be prominent --------
     // It lives in a dock shown only when the embedded-display option is on; in
     // separate-window mode it is hidden and the widget is unused.
@@ -2559,23 +2564,24 @@ void MainWindow::applyAppearance()
 void MainWindow::applyAudioOutputDevice()
 {
     // The audio output device is an application-wide preference (the media
-    // channel's sound, phase 3): resolve the stored id against the current
-    // outputs, falling back to the system default when it is gone (a
-    // default-constructed QAudioDevice means exactly that).
+    // channel's sound, phase 3). Only a stored id that resolves to a real
+    // device changes anything: an empty or vanished id must leave the
+    // system default alone — a default-constructed QAudioDevice is a *null*
+    // device in Qt6, and handing one to the sink opens no stream at all.
     if (!m_audio)
         return;
-    QAudioDevice chosen;
     const QByteArray wanted =
         QSettings().value(QLatin1String(kAudioOutputDeviceKey)).toByteArray();
-    if (!wanted.isEmpty()) {
-        const QList<QAudioDevice> devices = QMediaDevices::audioOutputs();
-        for (const QAudioDevice &d : devices)
-            if (d.id() == wanted) {
-                chosen = d;
-                break;
-            }
-    }
-    m_audio->setOutputDevice(chosen);
+    if (wanted.isEmpty())
+        return;
+    const QList<QAudioDevice> devices = QMediaDevices::audioOutputs();
+    for (const QAudioDevice &d : devices)
+        if (d.id() == wanted) {
+            m_audio->setOutputDevice(d);
+            return;
+        }
+    // A stored device that no longer exists: fall back to the real default.
+    m_audio->setOutputDevice(QMediaDevices::defaultAudioOutput());
 }
 
 void MainWindow::createStatusBar()

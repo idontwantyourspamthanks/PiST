@@ -2790,7 +2790,7 @@ void TstEmulatorHost::audioStreamArrivesInMediaSession()
               "\tmove.b\t#$3E,$FFFF8802\n"
               "\tmove.b\t#8,$FFFF8800\n"
               "\tmove.b\t#15,$FFFF8802\n"
-              "\tmove.w\t#200,d0\n"
+              "\tmove.w\t#6,d0\n"
               ".outer:\tmove.w\t#$FFFF,d1\n"
               ".inner:\tdbra\td1,.inner\n"
               "\tdbra\td0,.outer\n"
@@ -2852,10 +2852,14 @@ void TstEmulatorHost::audioStreamArrivesInMediaSession()
     // silent), but after one, something non-zero must arrive.
     bool audible = false;
     for (int i = 0; i < 20 && !audible; ++i) {
+        // Scan only the chunks this keypress produces: under fast-forward
+        // hundreds arrive per real second, and a ~0.5 s beep is a brief
+        // window inside them.
+        const int mark = chunks.count();
         host.mediaKey(0x1E, true);
         host.mediaKey(0x1E, false);
         QTest::qWait(400);
-        for (int c = chunks.count() - 1; c >= 0 && c >= chunks.count() - 8 && !audible; --c) {
+        for (int c = mark; c < chunks.count() && !audible; ++c) {
             const QByteArray payload = chunks.at(c).at(1).toByteArray();
             for (int b = 0; b < payload.size(); b += 2)
                 if (payload.at(b) != 0 || payload.at(b + 1) != 0) {

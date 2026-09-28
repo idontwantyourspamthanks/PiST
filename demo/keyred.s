@@ -38,7 +38,8 @@ beep:
 	move.b	#8,$FFFF8800
 	move.b	#15,$FFFF8802
 
-	move.w	#200,d0
+	move.w	#6,d0		; ~0.5 s at 8 MHz (d0=200 holds ~16 s and
+				; would eat every later keypress until it returns)
 .outer:	move.w	#$FFFF,d1
 .inner:	dbra	d1,.inner
 	dbra	d0,.outer

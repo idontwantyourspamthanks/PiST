@@ -7,6 +7,7 @@
 #include <QAudioFormat>
 #include <QAudioSink>
 #include <QIODevice>
+#include <QMediaDevices>
 #include <QTimer>
 
 namespace pist {
@@ -26,6 +27,11 @@ constexpr int kPumpIntervalMs = 10;
 EmuAudio::EmuAudio(QObject *parent)
     : QObject(parent)
 {
+    // A default-constructed QAudioDevice is a *null* device in Qt6, not
+    // "the system default" — a sink opened with it opens no stream at all
+    // (KDE's playback-streams list never shows the app). The real default
+    // must be named explicitly.
+    m_deviceInfo = QMediaDevices::defaultAudioOutput();
     m_pumpTimer = new QTimer(this);
     m_pumpTimer->setInterval(kPumpIntervalMs);
     connect(m_pumpTimer, &QTimer::timeout, this, &EmuAudio::pump);

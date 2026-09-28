@@ -114,19 +114,6 @@ int runDiagnose()
 
 int main(int argc, char *argv[])
 {
-#if defined(Q_OS_LINUX)
-    // Embedded display needs PiST to be an X11 client: the container widget's
-    // window ID is handed to Hatari as PARENT_WIN_ID, and that only exists on
-    // xcb. On a Wayland session Qt would otherwise choose the wayland platform,
-    // leaving no X11 window to embed into. Prefer xcb whenever an X display is
-    // reachable (native X11, or XWayland under Wayland); when there is none we
-    // stay native Wayland and the embedded option is simply unavailable. An
-    // explicit QT_QPA_PLATFORM always wins.
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")
-        && !qEnvironmentVariableIsEmpty("DISPLAY"))
-        qputenv("QT_QPA_PLATFORM", "xcb");
-#endif
-
     // The desktop entry's name is the window's identity on the desktop: Qt reads
     // it before the application object exists, and it becomes the Wayland app_id
     // and the D-Bus activation name. Left unset, Wayland derives it from the

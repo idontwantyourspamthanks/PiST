@@ -56,16 +56,15 @@ public:
         /// another kind it is stopped, replaced and re-wired. A no-op when it
         /// already is.
         std::function<void(BackendKind)> selectBackend;
-        /// Realize the embedded display container, when this session can embed
-        /// one, and return the X11 window id Hatari must reparent into. Empty
-        /// for a separate window, which is also the answer when embedding is
-        /// off, unsupported, or the widget is absent.
-        std::function<QString(const HatariCapabilities &)> embedDisplayWindowId;
+        /// A launch that will not use the media display: any media mode a
+        /// previous session engaged ends here. Default no-op for tests that
+        /// do not drive the display.
+        std::function<void()> leaveMediaDisplay = [] {};
         /// What engageMediaDisplay returns: the port the emulator must connect
         /// to and the AUTH token it must open with (protocol v2). port == 0
-        /// means the session cannot use media (backend is not the native one,
-        /// or the server could not bind) and the launch falls back to
-        /// embedding; the token is then empty.
+        /// means the session cannot use media (the emulator is not
+        /// hatari-pist, or the server could not bind) and it runs in a
+        /// separate window instead; the token is then empty.
         struct MediaEngagement
         {
             int port = 0;

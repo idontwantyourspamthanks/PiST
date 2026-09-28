@@ -33,13 +33,6 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Multimedia)
 
-# X11 is needed only to map the embedded emulator's SDL window (see
-# src/ui/EmbedX11.cpp). It is optional: without it the build still succeeds and
-# the emulator simply runs as a separate window.
-if(UNIX AND NOT APPLE)
-    find_package(X11)
-endif()
-
 qt_standard_project_setup()
 
 # ---------------------------------------------------------------------------
@@ -243,10 +236,6 @@ pist_module(pist_ui
     src/ui/DisassemblyView.h
     src/ui/EmulatorDisplayWidget.cpp
     src/ui/EmulatorDisplayWidget.h
-    src/ui/EmbedX11.cpp
-    src/ui/EmbedX11.h
-    src/ui/EmbedWin32.cpp
-    src/ui/EmbedWin32.h
     src/ui/FileBrowser.cpp
     src/ui/FileBrowser.h
     src/ui/GitPanel.cpp
@@ -333,26 +322,6 @@ target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network Qt6::Multimedia
 target_link_libraries(pist_control PUBLIC Qt6::Network pist_emu)   # its verbs reuse emu/'s typed reads (MemoryDump, MachineState)
 target_link_libraries(pist_mcp PUBLIC Qt6::Core Qt6::Network)      # MCP stdio <-> remote-control socket, no Widgets
 
-if(X11_FOUND)
-    # Only the UI touches X11 (src/ui/EmbedX11.cpp). The define and the
-    # libraries ride on pist_ui, so the app and the GUI tests keep the compile
-    # line they had when this was one library.
-    target_compile_definitions(pist_ui PUBLIC PIST_HAVE_X11)
-    target_link_libraries(pist_ui PUBLIC X11::X11)
-    # X Shape (libXext) makes the embedded video input-transparent mid-drag.
-    if(TARGET X11::Xext)
-        target_compile_definitions(pist_ui PUBLIC PIST_HAVE_XEXT)
-        target_link_libraries(pist_ui PUBLIC X11::Xext)
-    endif()
-endif()
-
-if(WIN32)
-    # The Windows half of the embedded display (src/ui/EmbedWin32.cpp) moves the
-    # emulator's own window into the dock: EnumWindows, SetParent, MoveWindow
-    # and the window styles are all user32. Qt links it transitively, but the
-    # direct use is declared here so it does not depend on that.
-    target_link_libraries(pist_ui PUBLIC user32)
-endif()
 
 qt_add_executable(pist
     src/main.cpp

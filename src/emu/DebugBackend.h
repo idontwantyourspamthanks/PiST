@@ -86,18 +86,10 @@ inline QProcessEnvironment makeSessionEnvironment(const SessionConfig &config)
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("HOME"), config.sessionDir);
     env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);
-    if (!config.parentWindowId.isEmpty()) {
-        // Embedded display: Hatari reparents its SDL window into the container
-        // window named here (src/control.c, under HAVE_X11 && SDL_VIDEO_DRIVER_X11).
-        // Both processes must be X11 clients of the same display, which is why the
-        // child is pinned to the X11 driver and why PiST runs on the xcb platform.
-        env.insert(QStringLiteral("PARENT_WIN_ID"), config.parentWindowId);
-        env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("x11"));
-    }
     if (!config.mediaToken.isEmpty())
         // Media channel auth (protocol v2): the fork must open with an AUTH
         // carrying this token; MediaServer says nothing to a client that
-        // cannot produce it. Travels the environment like PARENT_WIN_ID.
+        // cannot produce it.
         env.insert(QStringLiteral("PIST_MEDIA_TOKEN"),
                    QString::fromLatin1(config.mediaToken.toHex()));
     if (config.mediaPort > 0)
@@ -151,12 +143,6 @@ public:
     virtual bool isRunning() const = 0;
     virtual bool isStopped() const = 0;
 
-    /// The emulator process's id, or -1 when no session is running. Windows
-    /// embedding has no window id to hand the emulator — Hatari's
-    /// `PARENT_WIN_ID` reparenting is compiled in only under X11 upstream — so
-    /// it finds the emulator's window by process instead (ui/EmbedWin32.h).
-    /// Nothing else needs the id.
-    virtual qint64 emulatorProcessId() const { return -1; }
 
     /// Bind the media channel's listener (docs/PLAN.md §12), ahead of a media
     /// session's start() — the listen-before-spawn rule, same as the control
@@ -355,11 +341,6 @@ signals:
     void logLine(const QString &line);
     void errorOccurred(const QString &message);
 
-    /// The emulator reported a new video size. It arrives over the control
-    /// socket, which both backends keep open when the session has one (HRDB
-    /// uses the same EmbedSocket, upstream's socket being part of its argv), so
-    /// either transport emits it — a build without the socket never does.
-    void embeddedSizeChanged(int width, int height);
 
     /// One complete frame from the emulator's media channel (docs/PLAN.md §12),
     /// in the order the fork sent it. The payload stays raw (MediaFrame, not

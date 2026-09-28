@@ -44,11 +44,9 @@
 #include "ui/DisassemblyView.h"
 #include "ui/EmulatorDisplayWidget.h"
 #include "ui/EmuAudio.h"
-#include "ui/EmbedX11.h"
 
 #include <QAudioDevice>
 #include <QMediaDevices>
-#include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
 #include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
@@ -264,12 +262,6 @@ bool suffixIsKnownBinary(const QString &suffix)
 /// used to lose a preference with nothing to point at. The window-state keys
 /// keep their historical names: they are what an existing installation's
 /// persisted layout lives under.
-const QString &embeddedDisplayKey()
-{
-    static const QString key = QStringLiteral("display/embedded");
-    return key;
-}
-
 const QString &gitBlameKey()
 {
     static const QString key = QStringLiteral("git/blame");
@@ -419,30 +411,11 @@ MainWindow::MainWindow(QWidget *parent)
         m_host = createBackend(wanted, this);
         wireBackend();
     };
-    // The embedded display container, realized and shown only once the session
-    // is known to be able to embed one: winId() has to be a live native window
-    // before Hatari starts, or there is nothing to reparent into.
-    launcherHost.embedDisplayWindowId = [this](const HatariCapabilities &caps) -> QString {
-        // This is the non-media display path, so any media mode a previous
-        // launch engaged (including one that was then refused) ends here.
+    // A launch that runs without the media display (a non-hatari-pist
+    // emulator) ends any media mode a previous session engaged.
+    launcherHost.leaveMediaDisplay = [this] {
         m_mediaDisplay = false;
         m_lastMediaFrame = QImage();
-        if (!(m_embeddedDisplay && canEmbedDisplay(caps) && m_display))
-            return QString();
-        m_displayDock->setVisible(true);
-        m_display->setVisible(true);
-#ifdef Q_OS_WIN
-        // Windows gets no window id in the environment. Hatari's reparenting is
-        // compiled in only under X11 upstream, while the PARENT_WIN_ID check
-        // that creates its SDL window *hidden* is not guarded at all — so
-        // naming our window there would leave the user with no emulator on
-        // screen if the adoption then failed. The container adopts Hatari's own
-        // window once the process is running instead (runningChanged, below),
-        // where every failure path ends at the detached window that works today.
-        return QString();
-#else
-        return QString::number(m_display->winId());
-#endif
     };
     // The media display (docs/PLAN.md §12). A media session must not embed, so
     // this is where the panel is shown for it, and the port it returns is what
@@ -588,15 +561,6 @@ MainWindow::MainWindow(QWidget *parent)
     applyAudioOutputDevice();
     m_host = createBackend(BackendKind::Native, this);
     wireBackend();
-
-    // Restore the display preference before any dock is created, so the dock's
-    // initial visibility matches it. With no stored choice the default is
-    // embedded — a docked display is the point of the IDE — and the probe below
-    // turns that default back off where the platform cannot embed, without
-    // storing anything, so a first run on macOS or Wayland-without-XWayland
-    // does not open with a panel that can never fill.
-    m_embeddedDisplayChosen = QSettings().contains(embeddedDisplayKey());
-    m_embeddedDisplay = QSettings().value(embeddedDisplayKey(), true).toBool();
 
     createActions();
     createMenus();
@@ -937,24 +901,8 @@ void MainWindow::refreshToolchain()
                                                 : QStringLiteral("vasmm68k_mot"));
     // Probe the emulator the session would actually run: with a project
     // override pointing elsewhere, the discovered binary's capabilities are
-    // the wrong answer for the status bar and the embed action.
+    // the wrong answer for the status bar.
     m_caps = probeHatari(toolchain::findEmulator(m_settings.hatariPath).path);
-    // A first run on a platform that cannot embed keeps the detached window:
-    // the default is not a choice, so it yields to capability, while a stored
-    // choice — including "off" — always wins.
-    if (!m_embeddedDisplayChosen && !canEmbedDisplay(m_caps)) {
-        m_embeddedDisplay = false;
-        if (m_displayDock)
-            m_displayDock->setVisible(false);
-        // createActions checked the box from the pre-probe default; uncheck it
-        // without emitting, or the toggled slot would persist a choice the user
-        // never made.
-        if (m_actEmbedDisplay) {
-            const QSignalBlocker blocker(m_actEmbedDisplay);
-            m_actEmbedDisplay->setChecked(false);
-        }
-    }
-    updateEmbedActionState();
     m_statusToolchain->setText(
         QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
     updateSessionChip();
@@ -1172,16 +1120,8 @@ void MainWindow::createActions()
     m_actResume->setEnabled(false);
     connect(m_actResume, &QAction::triggered, this, &MainWindow::resume);
 
-    // Checked state mirrors the persisted preference; the enabled state is set
-    // later, once the emulator's capabilities are known.
-    m_actEmbedDisplay = new QAction(tr("&Embed emulator display"), this);
-    m_actEmbedDisplay->setCheckable(true);
-    m_actEmbedDisplay->setChecked(m_embeddedDisplay);
-    connect(m_actEmbedDisplay, &QAction::toggled, this, &MainWindow::setDisplayEmbedded);
-
     // Off unless the user has asked for it: the lane is a view choice, so it
-    // lives in application settings rather than the project file. (The other
-    // view choice, the embedded display, defaults on where the platform can.)
+    // lives in application settings rather than the project file.
     m_actGitBlame = new QAction(tr("Git &blame"), this);
     m_actGitBlame->setObjectName(QStringLiteral("gitBlameAction"));
     m_actGitBlame->setCheckable(true);
@@ -1216,13 +1156,6 @@ void MainWindow::wireBackend()
                 m_actPause->setEnabled(!m_host->isStopped());
             if (m_consoleInput)
                 m_consoleInput->setEnabled(true);
-            // Windows: the emulator has just made its own window, and the
-            // container adopts it now that there is a process to look for. A
-            // no-op elsewhere, where Hatari reparents itself into the container
-            // and reports its video size over the control socket. A media
-            // session has no window to adopt at all.
-            if (m_display && m_embeddedDisplay && !m_mediaDisplay)
-                m_display->attachEmulatorProcess(m_host->emulatorProcessId());
         }
         // The panel's media-session state (cursor hiding, the input grab) is
         // simply "media display engaged and a session is up" — false again
@@ -1254,11 +1187,11 @@ void MainWindow::wireBackend()
         // into whatever happens next.
         m_session->resetSessionState();
         updateRegisterStrip();
-        // The embedded display belonged to the session that just ended: forget
-        // its window, so the panel paints its empty state rather than a stale
+        // The media display belonged to the session that just ended: forget
+        // its frame, so the panel paints its empty state rather than a stale
         // last frame that reads as the emulator's current one.
         if (m_display)
-            m_display->clearEmbedded();
+            m_display->setFrame(QImage());
         // The last media frame belonged to the session that just ended too;
         // keeping it would make a later screenshot show a stale screen, and the
         // media mode itself ends with the session.
@@ -1330,17 +1263,6 @@ void MainWindow::wireBackend()
                     m_pendingDebugCommand.clear();
                     emit debugCommandFinished(command, response);
                 }
-            });
-    connect(m_host, &IDebugBackend::embeddedSizeChanged, this,
-            [this](int width, int height) {
-                if (!m_display)
-                    return;
-                // The size report arrives right after the reparent, and Hatari
-                // never maps the SDL window it created hidden, so show it now —
-                // otherwise the display stays black. The reported size is the
-                // video's native resolution, which the fit uses to keep aspect.
-                m_display->setVideoSize(width, height);
-                m_display->showEmbedded();
             });
 
     // The media channel's frames (docs/PLAN.md §12): convert once, keep the
@@ -1506,7 +1428,6 @@ void MainWindow::createMenus()
 
     m_viewMenu = menuBar()->addMenu(tr("&View"));
     m_viewMenu->setObjectName(QStringLiteral("viewMenu"));
-    m_viewMenu->addAction(m_actEmbedDisplay);
     m_viewMenu->addAction(m_actGitBlame);
 
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
@@ -1645,9 +1566,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     // bars and the painted title bars:
     //   right-click -> offer a "Move to ..." menu, so moving a panel is a
     //                  discoverable choice rather than a hidden drag, and
-    //   left-press  -> the possible start of a native drag; make the embedded
-    //                  video input-transparent until the release, so the drag
-    //                  keeps tracking when the cursor crosses the video.
+    //   left-press  -> the possible start of a native drag.
     const QEvent::Type type = event->type();
 
     // A dock tab group's tab bar gets an open-hand cursor to advertise that a
@@ -1675,11 +1594,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
     auto *me = static_cast<QMouseEvent *>(event);
 
-    // Any release ends a possible drag, restoring the video's input region.
-    if (type == QEvent::MouseButtonRelease) {
-        setDragVideoPassthrough(false);
+    if (type == QEvent::MouseButtonRelease)
         return QMainWindow::eventFilter(watched, event);
-    }
 
     auto *w = qobject_cast<QWidget *>(watched);
 
@@ -1720,8 +1636,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         showDockMoveMenu(dock, me->globalPosition().toPoint());
         return true;
     }
-    if (me->button() == Qt::LeftButton)
-        setDragVideoPassthrough(true);
     return QMainWindow::eventFilter(watched, event);
 }
 
@@ -1756,16 +1670,6 @@ QDockWidget *MainWindow::dockAtPress(QWidget *pressed, const QPoint &globalPos)
     return nullptr;
 }
 
-void MainWindow::setDragVideoPassthrough(bool on)
-{
-    if (on == m_dragVideoPassthrough)
-        return;
-    m_dragVideoPassthrough = on;
-    // Only meaningful while the emulator is embedded and on screen; without an
-    // embedded child the helper simply finds no window to reshape.
-    if (m_embeddedDisplay && m_display)
-        setEmbeddedChildrenInputTransparent(m_display->winId(), on);
-}
 
 void MainWindow::createDocks()
 {
@@ -1811,11 +1715,11 @@ void MainWindow::buildPanels()
     }
 
     // --- right, top: the emulator display, which wants to be prominent --------
-    // It lives in a dock shown only when the embedded-display option is on; in
-    // separate-window mode it is hidden and the widget is unused.
+    // Hidden until a media session engages it (docs/PLAN.md §12): with no
+    // frames to paint it would be an unexplained black rectangle.
     m_display = new EmulatorDisplayWidget(this);
     m_displayDock = makeDock(tr("Emulator"), QStringLiteral("emulatorDisplayDock"), m_display);
-    m_displayDock->setVisible(m_embeddedDisplay);
+    m_displayDock->setVisible(false);
     // The input grab (docs/PLAN.md §12.4): the panel translates, the backend
     // forwards. Keys arrive as ST scancodes already (ui/StKeyboard); mouse
     // deltas arrive scaled to guest pixels.
@@ -1873,12 +1777,12 @@ void MainWindow::buildPanels()
     // tabifyDockWidget leaves the last dock on top, which made a first run
     // open on Profiler. Registers is the tab the debug group should show.
     debugTabs.first()->raise();
-    if (m_embeddedDisplay) {
-        // Vertical split: the first dock goes on top, the second underneath.
-        splitDockWidget(m_displayDock, debugTabs.first(), Qt::Vertical);
-        m_displayDock->raise();
-        debugTabs.first()->raise();
-    }
+    // Vertical split: the emulator display goes on top of the debug tab group,
+    // where a media session shows it. It starts hidden; the split decides where
+    // it lands when one engages it.
+    splitDockWidget(m_displayDock, debugTabs.first(), Qt::Vertical);
+    m_displayDock->raise();
+    debugTabs.first()->raise();
 
     // --- bottom: problems, console and memory, tabbed -------------------------
     // Problems and the console are ordinary docks rather than tabs in a
@@ -1937,13 +1841,6 @@ void MainWindow::buildPanels()
 
 void MainWindow::wirePanels()
 {
-    // The Windows adoption cannot be exercised on any machine this is built on,
-    // so its outcomes go to the console: one line says which branch ran when a
-    // user reports a docked display that is not there.
-    connect(m_display, &EmulatorDisplayWidget::embedEvent, this, [this](const QString &text) {
-        if (m_log)
-            m_log->appendPlainText(QStringLiteral("[embed] ") + text);
-    });
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
     connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
             [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });
@@ -2311,10 +2208,6 @@ void MainWindow::finalizeLayout()
     if (savedWidth >= 640 && savedHeight >= 400)
         m_restoredSize = QSize(savedWidth, savedHeight);
 
-    // The embedded-display toggle owns the Emulator dock's visibility, so it is
-    // applied after any restored layout, which would otherwise override it.
-    if (m_displayDock)
-        m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::resetToDefaultLayout()
@@ -2322,8 +2215,6 @@ void MainWindow::resetToDefaultLayout()
     if (m_defaultLayoutState.isEmpty())
         return;
     restoreState(m_defaultLayoutState);
-    // Keep the toggle authoritative over the Emulator dock's visibility.
-    m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::applyLayoutPreset(const QString &preset)
@@ -2337,12 +2228,6 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     QSettings().setValue(layoutPreviousKey(), saveState());
     if (m_restoreLayoutAction)
         m_restoreLayoutAction->setEnabled(true);
-
-    // Debugging is the preset that wants the picture. It may check the box
-    // when embedding is actually possible; it does not uncheck it, and every
-    // preset finishes by letting the box own the Emulator dock.
-    if (debugging && canEmbedDisplay(m_caps) && m_actEmbedDisplay && !m_actEmbedDisplay->isChecked())
-        m_actEmbedDisplay->setChecked(true);
 
     auto dockNamed = [this](const QString &name) -> QDockWidget * {
         return findChild<QDockWidget *>(name);
@@ -2375,31 +2260,27 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     if (console)
         console->setVisible(!sprite);
 
-    QDockWidget *disassembly = dockNamed(QStringLiteral("disassemblyDock"));
-    const bool disassemblyOnRight = debugging && !m_embeddedDisplay;
     for (QDockWidget *dock : findChildren<QDockWidget *>()) {
         if (!isDebugDockName(dock->objectName()))
             continue;
-        const bool onRight = disassemblyOnRight && dock == disassembly;
         dock->setVisible(debugging);
-        if (!debugging)
-            continue;
-        if (onRight) {
-            addDockWidget(Qt::RightDockWidgetArea, dock);
-            dock->raise();
-        } else if (console) {
+        if (debugging && console)
             tabifyDockWidget(console, dock);
-        }
     }
-    if (debugging && m_embeddedDisplay && m_displayDock)
+    // Debugging is the preset that wants the picture: the display dock joins
+    // the right area and shows — a media session paints it, and before one it
+    // says what it is.
+    if (debugging && m_displayDock) {
         addDockWidget(Qt::RightDockWidgetArea, m_displayDock);
+        m_displayDock->setVisible(true);
+    }
     if (debugging) {
         if (QDockWidget *regs = dockNamed(QStringLiteral("registersDock")))
             regs->raise();
     }
 
-    if (m_displayDock)
-        m_displayDock->setVisible(m_embeddedDisplay);
+    if (m_displayDock && !debugging)
+        m_displayDock->setVisible(false);
 }
 
 void MainWindow::restorePreviousLayout()
@@ -2411,8 +2292,6 @@ void MainWindow::restorePreviousLayout()
     QSettings().remove(layoutPreviousKey());
     if (m_restoreLayoutAction)
         m_restoreLayoutAction->setEnabled(false);
-    if (m_displayDock)
-        m_displayDock->setVisible(m_embeddedDisplay);
 }
 
 void MainWindow::createToolBar()
@@ -4514,45 +4393,6 @@ void MainWindow::onStateUpdated(const MachineState &state)
     updateRegisterStrip();
 }
 
-bool MainWindow::canEmbedDisplay(const HatariCapabilities &caps) const
-{
-    const QString platform = QGuiApplication::platformName();
-    // Windows: PiST adopts the emulator's own window with SetParent
-    // (ui/EmbedWin32.h), so all that is needed is a container to adopt it
-    // into. The video size comes from that window rather than from a
-    // control-socket report, so the socket is not a precondition here — a stock
-    // Windows Hatari does not have one.
-    if (platform == QLatin1String("windows"))
-        return true;
-    // X11: both ends must be clients of the same display, and the size report
-    // that sizes the container travels on the control socket.
-    return platform == QLatin1String("xcb") && caps.hasControlSocket;
-}
-
-void MainWindow::setDisplayEmbedded(bool on)
-{
-    m_embeddedDisplay = on;
-    m_embeddedDisplayChosen = true;
-    QSettings().setValue(embeddedDisplayKey(), on);
-    if (m_displayDock)
-        m_displayDock->setVisible(on);
-    // A running session keeps the display mode it was launched with; the change
-    // takes effect on the next Run.
-}
-
-void MainWindow::updateEmbedActionState()
-{
-    if (!m_actEmbedDisplay)
-        return;
-    const bool can = canEmbedDisplay(m_caps);
-    m_actEmbedDisplay->setEnabled(can);
-    m_actEmbedDisplay->setToolTip(
-        can ? tr("Run the emulator's display inside the IDE rather than in a "
-                 "separate window.")
-            : tr("Embedded display needs X11 (this session is on '%1') and an "
-                 "emulator with a control socket.")
-                  .arg(QGuiApplication::platformName()));
-}
 
 QString MainWindow::debugConsoleText() const
 {
@@ -4581,13 +4421,11 @@ bool MainWindow::saveScreenshot(const QString &path)
 
     // Raise first, so the capture is this window and not whatever is on top of
     // it, and pump once so the raise has landed before the frame buffer is
-    // read. XGetImage (ui/EmbedX11.h) rather than QScreen::grabWindow, which
-    // returns black for a top-level window under XWayland on this setup and
-    // cannot see the reparented foreign window the embedded emulator lives in.
+    // read.
     raise();
     activateWindow();
     QGuiApplication::processEvents();
-    const QImage image = captureWindowImage(winId());
+    const QImage image = screen()->grabWindow(winId()).toImage();
     return !image.isNull() && image.save(path);
 }
 

@@ -152,22 +152,17 @@ void SessionLauncher::launch()
     }
     m_host.selectBackend(wanted);
 
-    // Display mode, decided once the transport is known because only the
-    // native backend owns a media server. Two mutually exclusive paths:
+    // Display mode: the hatari-pist media channel (docs/PLAN.md §12) is the
+    // panel. The emulator runs windowless and pushes frames to a server PiST
+    // binds *before* the process starts (Hatari connects and never binds).
+    // It engages once the capability *pair* holds — the option (video) and
+    // its "protocol v2: input" marker (KEY/MOUSE) — so a video-only
+    // intermediate fork never replaces a panel that already had input (§12.5).
     //
-    //   media  the hatari-pist media channel (docs/PLAN.md §12): the emulator
-    //          runs windowless and pushes frames to a server PiST binds
-    //          *before* the process starts (Hatari connects and never binds).
-    //          The default once the capability *pair* holds — the option
-    //          (video) and its "protocol v2: input" marker (KEY/MOUSE) — so a
-    //          video-only intermediate fork never replaces a panel that
-    //          already had input (§12.5). PIST_MEDIA_DISPLAY remains as the
-    //          dev gate for a video-only (phase-1) fork.
-    //   embed  the existing handshake: name the container's window so Hatari
-    //          reparents its SDL window into it.
-    //
-    // A media launch must not also embed: an empty parentWindowId is what keeps
-    // PARENT_WIN_ID and the x11 pinning out of the child's environment.
+    // Any other emulator keeps its own window, exactly like a standalone
+    // Hatari launch — the embedding path that used to reparent that window is
+    // gone. The user is told once per launch, or the panel's silence reads as
+    // a bug.
     const bool wantMedia = launchedCaps.hasPistMediaInput
         || (launchedCaps.hasPistMedia && qEnvironmentVariableIsSet("PIST_MEDIA_DISPLAY"));
     Host::MediaEngagement media;
@@ -177,10 +172,11 @@ void SessionLauncher::launch()
         config.mediaPort = media.port;
         config.mediaToken = media.token;
     } else {
-        if (wantMedia)
-            m_host.log(MainWindow::tr("[run] media display unavailable; "
-                                     "using the embedded display instead."));
-        config.parentWindowId = m_host.embedDisplayWindowId(launchedCaps);
+        m_host.leaveMediaDisplay();
+        m_host.log(MainWindow::tr("[run] the emulator panel needs the hatari-pist "
+                                  "emulator; this session runs in a separate window."));
+        m_host.showStatus(MainWindow::tr("Emulator panel needs hatari-pist — "
+                                         "running in a separate window"), 10000);
     }
 
     config.bootstrapScriptPath =

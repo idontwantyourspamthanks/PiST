@@ -173,13 +173,6 @@ private slots:
     /// changed. A regression here fails silently as an NG on the release path.
     void memoryWriteReadsBack();
 
-    /// The shared control-socket helper parses a "<w>x<h>" report and ignores
-    /// noise — the parse that sizes the embedded display.
-    void embedSocketParsesSizeReports();
-
-    /// The seam that was silently broken twice: a fork session with a control
-    /// socket must deliver the video-size report as embeddedSizeChanged.
-    void embedSizeReportArrivesOnForkSession();
 
     /// MAJ-12, HRDB side: the response type is carried by the request, never
     /// inferred from the command text. `db` is a dspbreak, and a free-text
@@ -565,67 +558,6 @@ void TstHrdb::floppyInsertsWhileStopped()
     host.stop();
 }
 
-void TstHrdb::embedSocketParsesSizeReports()
-{
-    EmbedSocket server;
-    QString error;
-    const QString path = m_work->path() + QStringLiteral("/embed.sock");
-    QVERIFY2(server.listen(path, &error), qPrintable(error));
-
-    QSignalSpy spy(&server, &EmbedSocket::sizeReported);
-    QLocalSocket client;
-    client.connectToServer(path);
-    QVERIFY(client.waitForConnected(5000));
-    QTRY_VERIFY_WITH_TIMEOUT(server.connected(), 5000);
-
-    client.write("640x436");
-    QVERIFY(spy.wait(5000));
-    QCOMPARE(spy.first().at(0).toInt(), 640);
-    QCOMPARE(spy.first().at(1).toInt(), 436);
-
-
-    // Noise is not a size.
-    client.write("not-a-size");
-    QTest::qWait(200);
-    QCOMPARE(spy.size(), 1);
-}
-
-void TstHrdb::embedSizeReportArrivesOnForkSession()
-{
-    // The embed-size reports travel over the upstream control socket, which a
-    // Windows build of the fork does not have — so there is nothing to test
-    // there, and passing the option would fail the launch.
-    const HatariCapabilities probe = probeHatari(m_hatari);
-    if (!probe.hasControlSocket)
-        QSKIP("embed-size reports need the control socket");
-
-    SessionConfig config;
-    config.hatariPath = m_hatari;
-    config.programPath = m_program;
-    config.tosPath = m_tos;
-    config.machine = QStringLiteral("st");
-    config.fastForward = true;
-    config.sessionDir = m_work->path() + QStringLiteral("/s-embed");
-    config.gemdosDir = m_sourceDir;
-    config.controlSocketPath = config.sessionDir + QStringLiteral("/ctl.sock");
-
-    HrdbBackend host;
-    connect(&host, &IDebugBackend::logLine, this,
-            [this](const QString &l) { m_log.append(l); });
-    const HatariCapabilities caps = probeHatari(m_hatari);
-    config.bootstrapScriptPath =
-        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
-    QVERIFY(!config.bootstrapScriptPath.isEmpty());
-
-    QSignalSpy embedSpy(&host, &IDebugBackend::embeddedSizeChanged);
-    QVERIFY(host.start(config, nullptr));
-
-    // The fork answers hatari-embed-info while running — no display needed.
-    QVERIFY2(embedSpy.wait(20000), "no video-size report on the control socket");
-    QVERIFY(embedSpy.first().at(0).toInt() > 0);
-    QVERIFY(embedSpy.first().at(1).toInt() > 0);
-    host.stop();
-}
 
 void TstHrdb::memoryWriteReadsBack()
 {

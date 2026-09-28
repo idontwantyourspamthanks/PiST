@@ -144,12 +144,7 @@ EmulatorHost::EmulatorHost(QObject *parent)
             completeCurrent();
     });
 
-    // The embed socket forwards: size reports become embeddedSizeChanged for
-    // MainWindow's display fit, and its log lines join ours.
-    connect(&m_embedSocket, &EmbedSocket::sizeReported, this,
-            [this](int width, int height) {
-                emit embeddedSizeChanged(width, height);
-            });
+    // The control socket's log lines join ours.
     connect(&m_embedSocket, &EmbedSocket::logLine, this,
             [this](const QString &line) { emit logLine(line); });
 
@@ -165,10 +160,6 @@ bool EmulatorHost::isRunning() const
     return m_process && m_process->state() != QProcess::NotRunning;
 }
 
-qint64 EmulatorHost::emulatorProcessId() const
-{
-    return m_process ? m_process->processId() : -1;
-}
 
 QString EmulatorHost::writeBootstrapScript(const QString &directory,
                                            const HatariCapabilities &caps,
@@ -228,7 +219,6 @@ bool EmulatorHost::openSocketServer(QString *error)
     // only serviced from the SDL event pump while emulation is running, so it
     // carries control commands only, never debugger commands (docs/PLAN.md
     // §3.3). The server itself is shared with the HRDB backend.
-    m_embedSocket.setRequestOnConnect(!m_config.parentWindowId.isEmpty());
     return m_embedSocket.listen(m_config.controlSocketPath, error);
 }
 

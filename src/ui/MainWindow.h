@@ -151,10 +151,10 @@ public:
     /// write for the memory views.
     bool writeMemoryByte(quint32 address, quint32 value) override;
 
-    /// The remote `screenshot`: raise the window, capture it (XGetImage — see
-    /// ui/EmbedX11.h; QScreen::grabWindow returns black under XWayland here and
-    /// cannot see the reparented emulator window) and save it to `path`. False
-    /// when the capture or the write failed.
+    /// The remote `screenshot`: raise the window, capture it (a media
+    /// session's frame comes from the framebuffer, the emulator having no
+    /// window) and save it to `path`. False when the capture or the write
+    /// failed.
     bool saveScreenshot(const QString &path) override;
 
     // The control layer's event subscriptions (control/ControlHost.h): each is
@@ -225,10 +225,6 @@ private:
     /// press inside a dock but outside its content as a title-bar press.
     QDockWidget *dockAtPress(QWidget *pressed, const QPoint &globalPos);
 
-    /// While a title-bar/tab drag may be in progress, make the embedded
-    /// emulator's foreign window input-transparent so the drag keeps tracking
-    /// across the video; restore it when the press is released.
-    void setDragVideoPassthrough(bool on);
 
 private slots:
     void openFile();
@@ -557,20 +553,6 @@ private:
     /// produced, and load the linker's placement map when there was a link.
     void rebuildProgramMap();
 
-    /// Whether the emulator's display can be embedded in this session. Two
-    /// platforms, two mechanisms: on X11 (xcb) Hatari reparents itself into the
-    /// container and reports its video size over the control socket, so both are
-    /// preconditions there; on Windows PiST adopts Hatari's own window
-    /// (ui/EmbedWin32.h) and reads the size from it, so neither is. When false
-    /// the option is disabled and the emulator runs as a separate window
-    /// regardless of the setting.
-    bool canEmbedDisplay(const HatariCapabilities &caps) const;
-
-    /// The embedded/separate display preference. Applies on the next Run; a
-    /// running session keeps the mode it was launched with. Persisted as an
-    /// application setting, because it is a view choice, not a project one.
-    void setDisplayEmbedded(bool on);
-    void updateEmbedActionState();
 
     /// Per-session working directory, kept short so the control socket path fits
     /// in sockaddr_un::sun_path.
@@ -648,15 +630,12 @@ private:
     /// The most recent machine state, kept so the remote-control interface can
     /// answer `state` without touching the emulator.
     MachineState m_lastState;
-    /// The dock and widget that host the emulator's display in embedded mode.
-    /// The dock is hidden in separate-window mode.
+    /// The dock and widget that host the emulator's display (the media panel).
+    /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;
     EmulatorDisplayWidget *m_display = nullptr;
     /// The media channel's audio output (docs/PLAN.md §12, phase 3).
     EmuAudio *m_audio = nullptr;
-
-    /// The embedded/separate display preference. Persisted via QSettings.
-    bool m_embeddedDisplay = false;
 
     /// The session runs in media mode (docs/PLAN.md §12): windowless emulator,
     /// frames over the media channel. Set when the launch engages it, cleared
@@ -666,15 +645,6 @@ private:
     /// The most recent media-channel frame, for a screenshot from the
     /// framebuffer (the emulator has no window to capture).
     QImage m_lastMediaFrame;
-
-    /// Whether the preference above is a stored choice or still the default:
-    /// only the default yields to a platform that cannot embed, and only until
-    /// the user chooses.
-    bool m_embeddedDisplayChosen = false;
-
-    /// True while the embedded video is input-transparent for an in-progress
-    /// title-bar/tab drag, so the restore only runs once and only when needed.
-    bool m_dragVideoPassthrough = false;
 
     /// The factory dock arrangement, captured after the default tab groupings are
     /// applied, so "Reset layout" can restore it. Saved/restored via QSettings.
@@ -820,7 +790,6 @@ private:
     QAction *m_actBuild = nullptr;
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
-    QAction *m_actEmbedDisplay = nullptr;
     QAction *m_actNextDiagnostic = nullptr;
     QAction *m_actPrevDiagnostic = nullptr;
     QAction *m_actStep = nullptr;

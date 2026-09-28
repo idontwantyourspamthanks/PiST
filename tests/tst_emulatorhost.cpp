@@ -427,9 +427,6 @@ private slots:
     /// Both backends reject a refresh with no session with exactly one error
     /// (native used to emit three — C3 drift 2). Emulator-free.
     void refreshWithoutSessionEmitsOneError();
-    /// A split "<w>x<h>" report must complete, not emit the implausible partial
-    /// (finding C9).
-    void embedSocketCompletesSplitSizeReport();
     /// The media channel (docs/PLAN.md §12): a windowless hatari-pist run
     /// connects to the port PiST listened on before the spawn and streams
     /// framed 32bpp frames, which must convert into real pixels. Skips unless
@@ -2361,51 +2358,6 @@ void TstEmulatorHost::refreshWithoutSessionEmitsOneError()
     QCOMPARE(hrdbErrors.count(), 1);
 }
 
-void TstEmulatorHost::embedSocketCompletesSplitSizeReport()
-{
-    const QString path = m_work->path() + QStringLiteral("/embed-split.sock");
-    EmbedSocket server;
-    QString error;
-    QVERIFY2(server.listen(path, &error), qPrintable(error));
-
-    QSignalSpy sizes(&server, &EmbedSocket::sizeReported);
-    QLocalSocket client;
-    client.connectToServer(path);
-    QVERIFY(client.waitForConnected(2000));
-    // A positive wait for the acceptance, not a fixed sleep (MIN-60).
-    QTRY_VERIFY_WITH_TIMEOUT(server.connected(), 2000);
-
-    // Feed the report split across two writes, giving the server a chance to read
-    // the first before the second lands. "320x2" is an implausible height; the
-    // old parser accepted it as a real 320x2 and cleared the buffer, so the
-    // trailing "00" was lost and the reported size was wrong (finding C9).
-    client.write("320x2");
-    QVERIFY(client.waitForBytesWritten(2000));
-    // Negative: the partial must not be emitted. A fixed window is the only
-    // assertion available for "nothing happened".
-    QTest::qWait(150);
-    QCOMPARE(sizes.count(), 0); // held as a partial, not emitted
-
-    client.write("00");
-    QVERIFY(client.waitForBytesWritten(2000));
-    QTRY_COMPARE_WITH_TIMEOUT(sizes.count(), 1, 2000); // completed to 320x200
-    QCOMPARE(sizes.at(0).at(0).toInt(), 320);
-    QCOMPARE(sizes.at(0).at(1).toInt(), 200);
-
-    // The unbounded-buffer half: a blob longer than any single report that never
-    // parses must be dropped, so the next clean report still gets through.
-    client.write(QByteArray(200, '1')); // no 'x' — never a size
-    QVERIFY(client.waitForBytesWritten(2000));
-    QTest::qWait(150);
-    client.write("640x480");
-    QVERIFY(client.waitForBytesWritten(2000));
-    // Without the cap the 200 stray bytes stay and pollute "640x480" (its width
-    // field becomes an unparseable 200-digit number); with it the blob is dropped
-    // and the report parses, so a second size is reported.
-    QTRY_COMPARE_WITH_TIMEOUT(sizes.count(), 2, 2000);
-    QCOMPARE(sizes.at(1).at(0).toInt(), 640);
-    QCOMPARE(sizes.at(1).at(1).toInt(), 480);
-}
 
 /// One media-channel frame as pixels, the way the UI does it (MainWindow's
 /// mediaFrameImage): RGB32's little-endian B,G,R,X is Format_RGB32, anything

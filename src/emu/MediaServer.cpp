@@ -278,6 +278,27 @@ void MediaServer::parseBuffer()
         if (m_buffer.size() < 4)
             return;
 
+        // An AUDIO message: 'A', u32 rate, u32 stereo frame count, then
+        // count*4 bytes of s16le interleaved samples.
+        if (m_buffer.at(0) == 'A') {
+            if (m_buffer.size() < 9)
+                return;
+            const uchar *a = reinterpret_cast<const uchar *>(m_buffer.constData());
+            const quint32 rate = qFromLittleEndian<quint32>(a + 1);
+            const quint32 frames = qFromLittleEndian<quint32>(a + 5);
+            const qint64 bytes = qint64(frames) * 4;
+            if (rate < 6000 || rate > 96000 || bytes <= 0 || bytes > kMaxPayload) {
+                // Garbage that happened to start with 'A': step past it.
+                m_buffer.remove(0, 1);
+                continue;
+            }
+            if (m_buffer.size() < 9 + bytes)
+                return;
+            emit audioReceived(rate, m_buffer.mid(9, int(bytes)));
+            m_buffer.remove(0, 9 + int(bytes));
+            continue;
+        }
+
         const qsizetype start = [this] {
             const int last = m_buffer.size() - 4;
             for (int i = 0; i <= last; ++i) {

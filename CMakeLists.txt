@@ -31,7 +31,7 @@ endif()
 # self-contained deployment (macdeployqt, windeployqt) is separate work.
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Multimedia)
 
 # X11 is needed only to map the embedded emulator's SDL window (see
 # src/ui/EmbedX11.cpp). It is optional: without it the build still succeeds and
@@ -268,6 +268,8 @@ pist_module(pist_ui
     src/ui/StackView.h
     src/ui/StKeyboard.cpp
     src/ui/StKeyboard.h
+    src/ui/EmuAudio.cpp
+    src/ui/EmuAudio.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.h
     src/ui/SetupDialog.cpp
@@ -315,7 +317,7 @@ target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subproc
 # archive list to break a cycle (MIN-86); the only repeats left in a consumer's
 # link line are the ordinary direct-and-transitive ordering ones.
 target_link_libraries(pist_editor PUBLIC Qt6::Widgets pist_git pist_support)
-target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network
+target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network Qt6::Multimedia
     pist_image
     pist_build
     pist_debug

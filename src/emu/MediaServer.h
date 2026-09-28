@@ -106,6 +106,9 @@ public:
 signals:
     /// One complete frame; never emitted for a partially arrived payload.
     void frameReceived(const pist::MediaFrame &frame);
+    /// One chunk of mixed guest audio (protocol v2's AUDIO message): s16le
+    /// interleaved stereo at `rate` Hz, exactly nframes*4 bytes.
+    void audioReceived(quint32 rate, const QByteArray &samples);
     /// A fork connected and was sent HELLO.
     void clientConnected();
     void logLine(const QString &line);

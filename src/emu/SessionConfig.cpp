@@ -59,7 +59,12 @@ QStringList SessionConfig::toArgv() const
     // applied by relaunching instead (docs/PLAN.md §5 rule 8).
     argv << QStringLiteral("--alert-level") << QStringLiteral("fatal");
     argv << QStringLiteral("--confirm-quit") << QStringLiteral("off");
-    argv << QStringLiteral("--sound") << QStringLiteral("off");
+    // Sound is off for the embedding paths (the user hears nothing useful
+    // from a window they may not look at, and off paces the same), but a
+    // media session streams the mixed samples to PiST's own output
+    // (docs/PLAN.md §12, phase 3): 44100 Hz is what the IDE plays.
+    argv << QStringLiteral("--sound")
+         << (mediaPort > 0 ? QStringLiteral("44100") : QStringLiteral("off"));
 
     // Cover disks (and TOS floppy I/O in general) miss sectors under
     // fast-forward. Keep turbo only when no user image is mounted.

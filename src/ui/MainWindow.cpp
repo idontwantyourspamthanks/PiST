@@ -43,6 +43,7 @@
 #include "ui/BitplaneExportDialog.h"
 #include "ui/DisassemblyView.h"
 #include "ui/EmulatorDisplayWidget.h"
+#include "ui/EmuAudio.h"
 #include "ui/EmbedX11.h"
 #include "ui/FileBrowser.h"
 #include "ui/GitPanel.h"
@@ -1208,6 +1209,10 @@ void MainWindow::wireBackend()
         // here on the way down, which also releases any capture (§12.4).
         if (m_display)
             m_display->setMediaSession(m_mediaDisplay && running);
+        // The audio buffer belongs to the session too: a dead emulator's
+        // last samples must not keep playing into the next one.
+        if (m_audio && !running)
+            m_audio->reset();
         if (running)
             return;
         if (m_consoleInput)
@@ -1331,6 +1336,15 @@ void MainWindow::wireBackend()
                 m_lastMediaFrame = image;
                 m_display->setFrame(image);
             });
+
+    // The media channel's audio (phase 3): chunks of s16le stereo from the
+    // fork, played through PiST's own sink (EmuAudio owns pacing and the
+    // jitter buffer; it is created once, beside the display widget).
+    if (m_audio)
+        connect(m_host, &IDebugBackend::mediaAudioReceived, this,
+                [this](quint32 rate, const QByteArray &samples) {
+                    m_audio->writeChunk(rate, samples);
+                });
 
     connect(m_host, &IDebugBackend::stoppedChanged, this, [this](bool stopped) {
         // Watchers (remote-control `watch`, the MCP shim) learn the running
@@ -1776,6 +1790,7 @@ void MainWindow::buildPanels()
         projectDock->raise();
     }
 
+    m_audio = new EmuAudio(this);
     // --- right, top: the emulator display, which wants to be prominent --------
     // It lives in a dock shown only when the embedded-display option is on; in
     // separate-window mode it is hidden and the widget is unused.

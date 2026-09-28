@@ -339,6 +339,10 @@ signals:
     /// QtGui — the UI converts it.
     void mediaFrameReceived(const pist::MediaFrame &frame);
 
+    /// One chunk of mixed guest audio from the media channel (s16le stereo
+    /// at `rate` Hz). Only the native backend emits it.
+    void mediaAudioReceived(quint32 rate, const QByteArray &samples);
+
 };
 
 /// Create the backend for a kind. Defined where both implementations are

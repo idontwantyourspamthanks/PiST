@@ -444,6 +444,9 @@ private slots:
     void keyInjectionReachesTheGuest();
     /// MOUSE deltas over the media channel move the guest's cursor, seen on
     /// the frame stream (docs/PLAN.md §12.3, phase 2).
+    /// AUDIO chunks from the fork's mixed samples arrive in a media session,
+    /// at the rate PiST configured (docs/PLAN.md §12, phase 3).
+    void audioStreamArrivesInMediaSession();
     void mouseInjectionMovesTheGuestCursor();
     void watchpointFiresOnChangeAndNotOnSameValue();
     void floppyIsMountedInTheEmulator();
@@ -2742,6 +2745,62 @@ void TstEmulatorHost::mouseInjectionMovesTheGuestCursor()
         }
     }
     QVERIFY2(moved, "no frame changed after injected mouse deltas");
+
+    host.stop();
+    qunsetenv("PIST_MEDIA_DISPLAY");
+}
+
+void TstEmulatorHost::audioStreamArrivesInMediaSession()
+{
+    const ToolInfo fork = toolchain::findEmulator();
+    const QString hatari = fork.found() ? fork.path : m_hatari;
+    HatariCapabilities caps = probeHatari(hatari);
+    QVERIFY(caps.valid);
+    if (!caps.hasPistMedia)
+        QSKIP("the emulator has no --pist-media (set $PIST_HATARI to a hatari-pist build)");
+    if (m_tos.isEmpty())
+        QSKIP("needs a TOS ROM");
+
+    qputenv("PIST_MEDIA_DISPLAY", "1");
+
+    SessionConfig config;
+    config.hatariPath = hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/audio-session");
+    config.gemdosDir = m_sourceDir;
+    config.monitor = QStringLiteral("rgb");
+    config.controlSocketPath.clear();
+
+    // The argv contract flips with the port: media mode streams sound, every
+    // other session stays silent.
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this, [this](const QString &l) { m_log.append(l); });
+    const int port = host.mediaListen();
+    QVERIFY(port > 0);
+    config.mediaPort = port;
+    config.mediaToken = host.mediaServer().token();
+
+    const QStringList argv = config.toArgv();
+    QCOMPARE(argv.at(argv.indexOf(QStringLiteral("--sound")) + 1), QStringLiteral("44100"));
+    SessionConfig silent = config;
+    silent.mediaPort = 0;
+    const QStringList silentArgv = silent.toArgv();
+    QCOMPARE(silentArgv.at(silentArgv.indexOf(QStringLiteral("--sound")) + 1),
+             QStringLiteral("off"));
+
+    QSignalSpy chunks(&host, &IDebugBackend::mediaAudioReceived);
+    QString error;
+    QVERIFY2(host.start(config, &error), qPrintable(error));
+
+    // Chunks are per-VBL spans of s16le stereo; silence is samples too, so
+    // the stream exists from the first frame of the boot.
+    QTRY_VERIFY_WITH_TIMEOUT(chunks.count() >= 2, 15000);
+    for (const QVariantList &c : chunks) {
+        QCOMPARE(c.at(0).toUInt(), 44100u);
+        QVERIFY(c.at(1).toByteArray().size() > 0);
+        QCOMPARE(c.at(1).toByteArray().size() % 4, 0);
+    }
 
     host.stop();
     qunsetenv("PIST_MEDIA_DISPLAY");

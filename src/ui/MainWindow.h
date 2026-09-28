@@ -59,6 +59,7 @@ class RegistersView;
 class StackView;
 class HardwareView;
 class EmulatorDisplayWidget;
+class EmuAudio;
 
 /// The IDE's main window. It is the shell: it owns the docks, the tabs and the
 /// menus, and it is the one place the modules meet.
@@ -650,6 +651,8 @@ private:
     /// The dock is hidden in separate-window mode.
     QDockWidget *m_displayDock = nullptr;
     EmulatorDisplayWidget *m_display = nullptr;
+    /// The media channel's audio output (docs/PLAN.md §12, phase 3).
+    EmuAudio *m_audio = nullptr;
 
     /// The embedded/separate display preference. Persisted via QSettings.
     bool m_embeddedDisplay = false;

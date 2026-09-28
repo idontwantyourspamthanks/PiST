@@ -159,6 +159,8 @@ EmulatorHost::EmulatorHost(QObject *parent)
             &IDebugBackend::mediaFrameReceived);
     connect(&m_mediaServer, &MediaServer::logLine, this,
             [this](const QString &line) { emit logLine(line); });
+    connect(&m_mediaServer, &MediaServer::audioReceived, this,
+            &IDebugBackend::mediaAudioReceived);
 
     // A media session that never completes AUTH is a silent black panel with
     // a running headless emulator behind it — the failure the flip to a

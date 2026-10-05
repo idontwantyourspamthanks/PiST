@@ -704,6 +704,12 @@ jobs:
           set -euo pipefail
           sudo apt-get install -y -qq rpm
           V="$PIST_VERSION"
+          # The metadata version, which is not the release name. Debian and RPM
+          # read a hyphen as a package revision, so "0.9.0-alpha" would sort
+          # *after* a later "0.9.0" and shadow the final release. The tilde is
+          # the pre-release form both formats order before the plain version
+          # ("0.9.0~alpha" < "0.9.0"). Asset names keep the readable "$V".
+          PV="${V/-/~}"
 
           rm -rf PkgDir
           mkdir -p PkgDir/usr/lib/pist PkgDir/usr/lib/pist/share PkgDir/usr/bin
@@ -742,18 +748,17 @@ jobs:
           stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" PkgDir)
           COMMON=(-D "CPACK_INSTALLED_DIRECTORIES=${stage};/"
                   -D "CPACK_INSTALL_CMAKE_PROJECTS=")
-          # The build tree stamps CPACK_PACKAGE_VERSION from PROJECT_VERSION, and
-          # CMake's project(VERSION) must be numeric — so the v0.9.0-alpha tag
-          # produced a deb reporting "0.9.0" while this check, and the asset
-          # name, say "0.9.0-alpha". The tag is the one source of truth; pass it
-          # through. Debian takes the suffix verbatim (upstream "0.9.0",
-          # revision "alpha"); CPackRPM rewrites the "-" to "_" ("0.9.0_alpha"),
-          # which is the only form RPM's Version field accepts.
+          # The build tree stamps CPACK_PACKAGE_VERSION from PROJECT_VERSION,
+          # and CMake's project(VERSION) must be numeric — so without this the
+          # v0.9.0-alpha tag builds a deb reporting "0.9.0" while the check
+          # below, and the asset name, say otherwise. The tag is the single
+          # source of truth; "$PV" carries it in the form each format orders
+          # correctly.
           cpack -G DEB "${COMMON[@]}" --config build/CPackConfig.cmake \
-            -D CPACK_PACKAGE_VERSION="$V" \
+            -D CPACK_PACKAGE_VERSION="$PV" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-linux-amd64"
           cpack -G RPM "${COMMON[@]}" --config build/CPackConfig.cmake \
-            -D CPACK_PACKAGE_VERSION="$V" \
+            -D CPACK_PACKAGE_VERSION="$PV" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-linux-x86_64"
 
           DEB="PiST-$V-linux-amd64.deb"
@@ -762,7 +767,7 @@ jobs:
           # What a package manager reports. Debian policy requires the lowercase
           # package name; the product name and the author come from CPack and
           # from the AppStream file.
-          for field in "Package pist" "Maintainer Koala Software" "Version $V"; do
+          for field in "Package pist" "Maintainer Koala Software" "Version $PV"; do
             key=${field%% *}
             got=$(dpkg-deb -f "$DEB" "$key")
             if [ "$got" != "${field#* }" ]; then
@@ -1220,6 +1225,11 @@ jobs:
             ${{ env.ASSET_DMG }}
             ${{ env.ASSET_MSI }}
           generate_release_notes: true
+          # A pre-release tag ("v0.9.0-alpha") must not become the repository's
+          # "Latest" release: the action does not infer this from the tag, so
+          # without it an alpha would be served as the stable download. The
+          # hyphen is the pre-release marker in the tag.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           # The notes live in the tree, reviewed like any other doc, instead of
           # inline here where they drifted from the workflow's own behaviour
           # once already (docs/agents/release-report.md).

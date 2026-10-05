@@ -2540,10 +2540,28 @@ void TstEmulatorHost::mediaServerRejectsClientWithoutAuth()
     }
 }
 
-// Red-dominant fraction of the whole frame, sampled from the payload: how
-// the guest's Setcolor(0,$0700) reaction is observed. Full frame, not the
-// centre — the reaction paints the background, which dominates the full
-// image; the centre can be a GEM window's own interior.
+// One component of a pixel, scaled to 0..255 through its mask. The fork
+// forwards the SDL surface's own masks — it expands anything that is not the
+// usual layout — so reading a fixed byte order would sample the wrong channel
+// on a platform whose 32-bit surface differs. qRed/qGreen/qBlue assume
+// 0x00RRGGBB; these do not.
+static int frameComponent(quint32 pixel, quint32 mask)
+{
+    if (!mask)
+        return 0;
+    int shift = 0;
+    while (((mask >> shift) & 1u) == 0)
+        ++shift;
+    const quint32 scale = mask >> shift;
+    return int(((pixel & mask) >> shift) * 255u / scale);
+}
+
+// Red-dominant fraction of the whole frame, sampled from the payload and read
+// through the frame's own masks — the fork forwards the SDL surface's, so a
+// platform whose 32-bit layout is not 0x00RRGGBB still reads the right
+// channel. Full frame, not the centre: the guest's Setcolor reaction paints
+// the background, which dominates the image; the centre can be a GEM window's
+// own interior.
 static double frameRedFraction(const MediaFrame &frame)
 {
     if (!frame.w || !frame.h)
@@ -2555,31 +2573,14 @@ static double frameRedFraction(const MediaFrame &frame)
         for (quint32 x = 0; x < frame.w; x += 4) {
             const quint32 p = qFromLittleEndian<quint32>(row + qint64(x) * 4);
             ++total;
-            if (qRed(p) > 150 && qGreen(p) < 110 && qBlue(p) < 110)
+            const int r = frameComponent(p, frame.rmask);
+            const int g = frameComponent(p, frame.gmask);
+            const int b = frameComponent(p, frame.bmask);
+            if (r > 150 && g < 110 && b < 110)
                 ++red;
         }
     }
     return total ? double(red) / total : 0.0;
-}
-
-// Blue-dominant fraction of the whole frame: the guest's first action paints
-// the screen blue, so the test can tell the program actually started.
-static double frameBlueFraction(const MediaFrame &frame)
-{
-    if (!frame.w || !frame.h)
-        return 0.0;
-    int blue = 0, total = 0;
-    for (quint32 y = 0; y < frame.h; y += 4) {
-        const uchar *row = reinterpret_cast<const uchar *>(frame.pixels.constData())
-            + qint64(y) * frame.pitch;
-        for (quint32 x = 0; x < frame.w; x += 4) {
-            const quint32 p = qFromLittleEndian<quint32>(row + qint64(x) * 4);
-            ++total;
-            if (qBlue(p) > 150 && qRed(p) < 110 && qGreen(p) < 110)
-                ++blue;
-        }
-    }
-    return total ? double(blue) / total : 0.0;
 }
 
 void TstEmulatorHost::keyInjectionReachesTheGuest()
@@ -2593,19 +2594,13 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
     if (m_tos.isEmpty())
         QSKIP("needs a TOS ROM");
 
-    // A program that paints blue, waits for one keypress, then paints red.
-    // The blue frame is how the test knows the guest reached the program; red
-    // is the guest-visible proof the injected scancode arrived.
+    // A program that waits for one keypress, then paints the background red —
+    // the guest-visible proof the injected scancode arrived.
     const QString source = m_work->path() + QStringLiteral("/keyred.s");
     QFile src(source);
     QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
     src.write("\ttext\n"
-              "start:\tmove.w\t#$0007,-(sp)\n"    // blue: the program is up
-              "\tmove.w\t#0,-(sp)\n"
-              "\tmove.w\t#7,-(sp)\n"
-              "\ttrap\t#14\n"
-              "\taddq.l\t#6,sp\n"
-              "\tmove.w\t#1,-(sp)\n"              // Cconin
+              "start:\tmove.w\t#1,-(sp)\n"        // Cconin
               "\ttrap\t#1\n"
               "\taddq.l\t#2,sp\n"
               "\tmove.w\t#$0700,-(sp)\n"          // full red, STfm layout
@@ -2635,6 +2630,17 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
     // program's Setcolor would change nothing and the reaction is invisible.
     config.monitor = QStringLiteral("rgb");
     config.controlSocketPath.clear();
+    QString error;
+    // Arm the program-entry breakpoint, exactly as a PiST session does: the
+    // stop it produces is the readiness signal. Injecting during boot — which
+    // an earlier version of this test did, assuming the presses were merely
+    // flushed — makes EmuTOS abandon the autostart, so the program never runs
+    // and no key can reach a Cconin that was never called (PLAN.md §9). A
+    // media frame cannot serve instead: the stream is change-gated, so the
+    // guest's one early change may never be sent at all.
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, &error);
+    QVERIFY2(!config.bootstrapScriptPath.isEmpty(), qPrintable(error));
 
     EmulatorHost host;
     connect(&host, &EmulatorHost::logLine, this, [this](const QString &l) { m_log.append(l); });
@@ -2644,25 +2650,11 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
     config.mediaToken = host.mediaServer().token();
 
     QSignalSpy frames(&host, &IDebugBackend::mediaFrameReceived);
-    QString error;
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
     QVERIFY2(host.start(config, &error), qPrintable(error));
-
-    // Wait until the guest is genuinely running before injecting: its first
-    // action paints blue. Injecting during boot — which an earlier version of
-    // this test did, assuming the presses were merely flushed — makes EmuTOS
-    // abandon the autostart, so the program never starts and no later key can
-    // reach a Cconin that was never called. Under TOS the same early presses
-    // are harmless, which is why this only ever showed up against EmuTOS.
-    // Any blue frame, not only the newest: the guest paints it once and then
-    // blocks in Cconin, so a later non-blue frame must not hide that it was up.
-    auto guestIsUp = [&frames] {
-        for (int f = 0; f < frames.count(); ++f) {
-            if (frameBlueFraction(frames.at(f).at(0).value<MediaFrame>()) > 0.30)
-                return true;
-        }
-        return false;
-    };
-    QTRY_VERIFY_WITH_TIMEOUT(guestIsUp(), 30000);
+    QVERIFY2(stoppedSpy.wait(30000) || host.isStopped(),
+             "the emulator never reached the program entry");
+    host.resume();
 
     // Inject 'A' (scancode $1E) on a cadence until the guest paints red.
     bool red = false;

@@ -1202,6 +1202,15 @@ project; everything before it was either Linux-only or read from source.
   builds from the author's source in seconds with `make CPU=m68k SYNTAX=mot`
   (verified; tarball sha256 `c84b2de1...`), and does not implement `--version`,
   printing its banner when invoked with no arguments instead.
+- **A key injected while the guest is still booting aborts EmuTOS's autostart**: the program never
+  runs, so neither its own output nor the key is ever observed. Under TOS the same early presses are
+  merely flushed and the program launches. Verified against the EmuTOS 1.4 `etos1024k.img` CI
+  fetches — injecting from t=0 left the guest painting nothing but its desktop, and delaying the
+  first injection made the identical session pass, while real TOS passed either way. This contradicts
+  the phase-12 assumption that boot-time presses are harmless, and it is user-visible: with the
+  bundled EmuTOS, typing during a session's first second can stop the user's program from launching.
+  `keyInjectionReachesTheGuest` waits for the guest's own first frame before injecting for this
+  reason.
 
 ### Verified by reading source (not executed)
 

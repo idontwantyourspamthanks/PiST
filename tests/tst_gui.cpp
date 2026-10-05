@@ -4088,13 +4088,19 @@ static QVector<int> panelCellMeans(QWidget *display, quint32 fw, quint32 fh)
 // stop cannot pass vacuously) AND the panel's painted cells match it. Both
 // halves in one helper so QTRY retries the pair as a unit while the stream
 // settles.
-static bool panelMatchesLatestContentFrame(QWidget *display, QSignalSpy *framesSpy)
+static bool panelMatchesLatestContentFrame(QWidget *display, QSignalSpy *framesSpy,
+                                           QString *why = nullptr)
 {
-    if (framesSpy->isEmpty())
+    auto fail = [why](const QString &reason) {
+        if (why)
+            *why = reason;
         return false;
+    };
+    if (framesSpy->isEmpty())
+        return fail(QStringLiteral("no frames arrived"));
     const MediaFrame frame = framesSpy->last().at(0).value<MediaFrame>();
     if (!frame.w || !frame.h)
-        return false;
+        return fail(QStringLiteral("last frame is empty"));
     const QVector<int> want = frameCellMeans(frame);
     int lo = 255, hi = 0;
     for (int v : want) {
@@ -4102,12 +4108,14 @@ static bool panelMatchesLatestContentFrame(QWidget *display, QSignalSpy *framesS
         hi = qMax(hi, v);
     }
     if (hi - lo < 32)
-        return false;
+        return fail(QStringLiteral("last frame is flat (spread %1)").arg(hi - lo));
     const QVector<int> got = panelCellMeans(display, frame.w, frame.h);
     int matched = 0;
     for (int i = 0; i < 64; ++i)
         matched += qAbs(got[i] - want[i]) <= 24 ? 1 : 0;
-    return matched >= 58; // ~90%: resampling blends cell edges
+    if (matched < 58) // ~90%: resampling blends cell edges
+        return fail(QStringLiteral("panel shows a different frame (%1/64 cells)").arg(matched));
+    return true;
 }
 
 // The media channel's full UI path (docs/PLAN.md §12): with the dev gate set
@@ -4180,7 +4188,20 @@ void TstGui::mediaDisplayFeedsThePanel()
     // past it: the desktop then appears, and once the change-gated stream
     // quiets the panel holds that last, content-bearing frame.
     host->resume();
-    QTRY_VERIFY_WITH_TIMEOUT(panelMatchesLatestContentFrame(display, &framesSpy), 30000);
+    // 60 s, not 30: this suite already runs for minutes on a loaded CI runner,
+    // and the desktop can take that long to appear and settle after the entry
+    // stop. Report which half of the check failed — "the panel never matched"
+    // alone cannot say whether no frame arrived, the newest frame was still
+    // flat mid-change, or the panel genuinely disagreed.
+    QString why;
+    if (!QTest::qWaitFor(
+            [&] { return panelMatchesLatestContentFrame(display, &framesSpy, &why); }, 60000)) {
+        const MediaFrame last = framesSpy.isEmpty() ? MediaFrame()
+                                                    : framesSpy.last().at(0).value<MediaFrame>();
+        qWarning() << "the panel never matched the transported frame:" << why
+                   << "frames=" << framesSpy.count() << "w=" << last.w << "h=" << last.h;
+        QFAIL("the panel never painted the transported frame");
+    }
 }
 
 void TstGui::emulatorDockStartsHidden()

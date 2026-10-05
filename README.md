@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/idontwantyourspamthanks/PiST)](https://github.com/idontwantyourspamthanks/PiST/releases)
 [![Licence: GPL-2.0-or-later](https://img.shields.io/badge/licence-GPL--2.0--or--later-blue)](LICENSE)
 
+[<img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=%E2%98%95&slug=dadprg&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy Me A Coffee" height="36">](https://buymeacoffee.com/dadprg)
+
 **An IDE for Atari ST assembly development.**
 
 *Program in ST* — an IDE for writing 68000 assembly for the Atari ST.

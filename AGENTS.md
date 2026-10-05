@@ -36,9 +36,13 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 These are correctness requirements, learned from real failures (each is detailed, with evidence, in
 `docs/ARCHITECTURE.md` "Invariants" and `docs/PLAN.md` §5/§11):
 
-1. **Never patch, link, or write config for a third-party tool.** vasm and Hatari are driven as
-   subprocesses via command-line arguments only. Never write a symbol sidecar next to the `.PRG`;
-   never touch the user's `hatari.cfg`. This is a licensing *and* correctness constraint.
+1. **Never patch, link, or write config for a third-party tool.** vasm and *stock* Hatari are
+   driven as subprocesses via command-line arguments only. Never write a symbol sidecar next to
+   the `.PRG`; never touch the user's `hatari.cfg`. The one deliberate exception is
+   `hatari-pist`, our own fork of Hatari (separate repository, GPL-2.0, pinned by commit and
+   checksum, built in CI): the media channel that replaces the old window embedding lives in it,
+   so it is patched on purpose — but it too runs as a subprocess, never linked. This is a
+   licensing *and* correctness constraint.
 2. **The debug transport has a hard channel split:** stdin carries debugger commands (works while
    stopped); the control socket carries control commands (works only while running). Do not cross them.
 3. **Frame debugger responses on the `> ` prompt, not on content**, on both stdout and stderr; a

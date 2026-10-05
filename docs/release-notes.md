@@ -16,28 +16,27 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.8.7
+## What's new in 0.9.0-alpha
 
-macOS: open the disk image and drag PiST onto the Applications folder. The
-previous image also showed the ROM folder and a build-info file, and macOS
-refused to launch the app — *PiST is damaged and can't be opened. You should
-move it to the Bin* — because the bundle had been changed after it was signed.
+The emulator now runs inside PiST's own panel. Hatari runs windowless and
+streams its screen, sound, keyboard and mouse over a local channel; PiST
+paints the frames, plays the audio, and takes input with a VirtualBox-style
+grab — click the emulator panel to capture the keyboard and mouse, press F12
+to release. The old embedding (X11 window reparenting on Linux, window
+adoption on Windows) is gone. The Linux and Windows archives bundle the fork
+that provides the channel, so their embedded display now works the same way
+on both; macOS and source builds keep a stock Hatari, which has no media
+channel, so there the emulator opens in its own window.
 
-### Fixed
+This is an alpha of that change, hence the version. What to expect:
 
-- **The macOS disk image is a drag-install.** It contains PiST and a shortcut
-  to Applications. The ROM, the assembler, the linker and the notices are
-  inside the app, so dragging it across is the whole install. The `.tar.gz` is
-  that same app.
-- **The macOS app is signed after the bundle is finished.** Deploying Qt
-  rewrites the binaries, and the assembler was copied in afterwards, which
-  left a signature that did not match the app. That is the failure macOS
-  reports as damaged.
-
-Opening a downloaded copy may still ask for approval under *System Settings ▸
-Privacy & Security*. The signature lets the system see an intact app;
-notarization, which would skip that prompt, needs an Apple Developer ID and
-this release does not have one.
+- The bundled emulator is now the **hatari-pist** fork — Hatari 2.6.1 plus the
+  HRDB remote debugger and the media channel — built from a checksum-pinned
+  commit and conveyed under GPL version 2.
+- Emulator audio, with an output-device picker in Project Settings.
+- Source builds and macOS still need their own Hatari; without the fork's
+  media channel PiST shows the emulator in a separate window rather than the
+  panel.
 
 ### Worth knowing
 
@@ -59,20 +58,21 @@ permit; see `share/doc/pist/NOTICE`. PiST never patches them.
 are copyrighted and are not included — supply your own in Project Settings if
 you need one.
 
-**Emulator:** the Linux AppImage and the Windows archive bundle the hrdb-main
-fork of Hatari (upstream 2.6.1 plus the remote-debug listener PiST's HRDB
-transport uses), built unmodified from a checksum-pinned commit tarball (PiST
-never patches it and runs it as a separate process). The binary is conveyed
-under GPL version 2: three of the files Hatari compiles in grant version 2
-alone, so the "or later" on the rest cannot lift the combined work — which is
-also why the GPLv3 GNU Readline is not linked into it and travels in no
-archive. The Windows build is the same fork compiled with MSYS2 ucrt64, with
-its runtime DLLs beside the exe. The macOS archive does **not** include an
+**Emulator:** the Linux AppImage and the Windows archive bundle the
+**hatari-pist** fork of Hatari (upstream 2.6.1 plus the HRDB remote debugger
+and the media channel that drives PiST's embedded display), built from a
+checksum-pinned commit tarball and run as a separate process. The binary is
+conveyed under GPL version 2: three of the files Hatari compiles in grant
+version 2 alone, so the "or later" on the rest cannot lift the combined work —
+which is also why the GPLv3 GNU Readline is not linked into it and travels in
+no archive. The Windows build is the same fork compiled with MSYS2 ucrt64,
+with its runtime DLLs beside the exe. The macOS archive does **not** include an
 emulator: install one with `brew install hatari` (2.6.1 bottled), or point PiST
-at one in Project Settings. Use 2.5 or later — 2.4.1 returns truncated debugger
-responses that break source-line debugging, and Ubuntu 24.04 ships exactly
-that, so a distribution package is often not recent enough. See
-`share/doc/pist/NOTICE` for the full licence details.
+at one in Project Settings — but a stock Hatari has no media channel, so the
+emulator opens in its own window rather than PiST's panel. Use 2.5 or later —
+2.4.1 returns truncated debugger responses that break source-line debugging,
+and Ubuntu 24.04 ships exactly that, so a distribution package is often not
+recent enough. See `share/doc/pist/NOTICE` for the full licence details.
 
 ### Linux
 
@@ -118,19 +118,24 @@ separately and link with the bundled vlink (add sources in Project Settings).
 Projects keep their settings — include paths, defines, target CPU, machine,
 ROM, RAM and disk images — in a small JSON file beside the source.
 
+The emulator's display, sound and input live in PiST's own panel (with the
+bundled emulator): click the panel to grab the keyboard and mouse, F12 to
+release.
+
 ### Known limitations
 - **CI exercises the emulator integration on Linux and macOS** (both build the
-  pinned Hatari 2.6.1 and the hrdb-main fork from source and run the emulator
-  suites against both transports). Windows builds and unit-tests only: the
-  official Windows Hatari is a GUI-subsystem binary whose debugger never
-  answers over pipes, so the bundled Windows emulator — the same fork, built
-  with MSYS2 ucrt64 — is **experimental**; reports from real Windows machines
-  are particularly welcome.
-- **A user-installed *stock* Hatari on Windows** still cannot pause, change
-  breakpoints while running, or swap disks at runtime — Hatari compiles its
-  control channel only on POSIX systems. The bundled fork is unaffected (HRDB
-  is TCP), and breakpoints and stepping work regardless. See `docs/FUTURE.md`
-  for the upstream fix that would close this for stock Hatari.
+  hatari-pist fork from source and run the emulator suites against both
+  transports). Windows builds and unit-tests only: the official Windows Hatari
+  is a GUI-subsystem binary whose debugger never answers over pipes, so the
+  bundled Windows emulator — the same fork, built with MSYS2 ucrt64 — is
+  **experimental**; reports from real Windows machines are particularly
+  welcome.
+- **A user-installed *stock* Hatari** (source builds, and macOS, which ships
+  none) has no media channel, so PiST shows the emulator in a separate window
+  instead of the panel; on Windows it also cannot pause, change breakpoints
+  while running, or swap disks at runtime, because Hatari compiles its control
+  channel only on POSIX systems. The bundled fork is unaffected, and
+  breakpoints and stepping work regardless.
 - The interface is functional rather than polished.
 
 Run `pist --diagnose` to see which assembler, linker, emulator and ROMs PiST

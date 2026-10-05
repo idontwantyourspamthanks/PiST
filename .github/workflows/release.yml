@@ -709,7 +709,10 @@ jobs:
           # *after* a later "0.9.0" and shadow the final release. The tilde is
           # the pre-release form both formats order before the plain version
           # ("0.9.0~alpha" < "0.9.0"). Asset names keep the readable "$V".
-          PV="${V/-/~}"
+          # (A literal "~" written into the replacement would be tilde-expanded
+          # to $HOME, so it comes from a variable.)
+          tilde='~'
+          PV="${V/-/$tilde}"
 
           rm -rf PkgDir
           mkdir -p PkgDir/usr/lib/pist PkgDir/usr/lib/pist/share PkgDir/usr/bin

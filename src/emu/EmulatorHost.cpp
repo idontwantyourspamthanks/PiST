@@ -43,10 +43,13 @@ constexpr int kStderrDrainWaitMs = 20;
 /// for it. The drain is what keeps that tail out of the next command's response
 /// (MIN-1), and nothing is waiting on this path — the command was already
 /// reported as failed — so the window is wide enough to outlast a loaded
-/// machine's scheduling of the tail. A window the tail can miss is a coin flip:
-/// it lost on the macOS runner, where 20 ms did not cover a shell's `sleep` plus
-/// its output.
-constexpr int kOwedTailDrainWaitMs = 200;
+/// machine's scheduling of the tail. The margin between the tail's nominal
+/// delay and this cap is the whole robustness of the assertion: it lost on the
+/// macOS runner at both 20 ms and 200 ms, where a shell's `sleep 0.05` overshot
+/// under load. This is a cap, not a delay — the drain returns on the first byte,
+/// so a promptly-arriving tail costs nothing and only a genuinely late one waits
+/// it out.
+constexpr int kOwedTailDrainWaitMs = 1500;
 
 /// `  D0 00000000   D1 00000019   D2 00002304   D3 00000000`
 const QRegularExpression &dataRegRe()

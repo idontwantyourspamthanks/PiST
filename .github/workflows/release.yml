@@ -742,9 +742,18 @@ jobs:
           stage=$(python3 -c "import os,sys; print(os.path.abspath(sys.argv[1]).replace(chr(92), '/'))" PkgDir)
           COMMON=(-D "CPACK_INSTALLED_DIRECTORIES=${stage};/"
                   -D "CPACK_INSTALL_CMAKE_PROJECTS=")
+          # The build tree stamps CPACK_PACKAGE_VERSION from PROJECT_VERSION, and
+          # CMake's project(VERSION) must be numeric — so the v0.9.0-alpha tag
+          # produced a deb reporting "0.9.0" while this check, and the asset
+          # name, say "0.9.0-alpha". The tag is the one source of truth; pass it
+          # through. Debian takes the suffix verbatim (upstream "0.9.0",
+          # revision "alpha"); CPackRPM rewrites the "-" to "_" ("0.9.0_alpha"),
+          # which is the only form RPM's Version field accepts.
           cpack -G DEB "${COMMON[@]}" --config build/CPackConfig.cmake \
+            -D CPACK_PACKAGE_VERSION="$V" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-linux-amd64"
           cpack -G RPM "${COMMON[@]}" --config build/CPackConfig.cmake \
+            -D CPACK_PACKAGE_VERSION="$V" \
             -D CPACK_PACKAGE_FILE_NAME="PiST-$V-linux-x86_64"
 
           DEB="PiST-$V-linux-amd64.deb"

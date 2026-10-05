@@ -2653,9 +2653,14 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
     // abandon the autostart, so the program never starts and no later key can
     // reach a Cconin that was never called. Under TOS the same early presses
     // are harmless, which is why this only ever showed up against EmuTOS.
+    // Any blue frame, not only the newest: the guest paints it once and then
+    // blocks in Cconin, so a later non-blue frame must not hide that it was up.
     auto guestIsUp = [&frames] {
-        return !frames.isEmpty()
-            && frameBlueFraction(frames.last().at(0).value<MediaFrame>()) > 0.30;
+        for (int f = 0; f < frames.count(); ++f) {
+            if (frameBlueFraction(frames.at(f).at(0).value<MediaFrame>()) > 0.30)
+                return true;
+        }
+        return false;
     };
     QTRY_VERIFY_WITH_TIMEOUT(guestIsUp(), 30000);
 

@@ -4188,14 +4188,26 @@ void TstGui::mediaDisplayFeedsThePanel()
     // past it: the desktop then appears, and once the change-gated stream
     // quiets the panel holds that last, content-bearing frame.
     host->resume();
-    // 60 s, not 30: this suite already runs for minutes on a loaded CI runner,
-    // and the desktop can take that long to appear and settle after the entry
-    // stop. Report which half of the check failed — "the panel never matched"
-    // alone cannot say whether no frame arrived, the newest frame was still
-    // flat mid-change, or the panel genuinely disagreed.
+    // Compare only once the stream has settled. While frames are still arriving
+    // the newest one advances and the panel can lag a repaint behind, so the
+    // comparison races and cannot match however long it is retried — the test
+    // would be checking a moving target. A quiet window means the panel holds
+    // the last frame. Report which half of the check failed: a bare false
+    // cannot say whether no frame arrived, the newest was still flat
+    // mid-change, or the panel genuinely disagreed.
     QString why;
-    if (!QTest::qWaitFor(
-            [&] { return panelMatchesLatestContentFrame(display, &framesSpy, &why); }, 60000)) {
+    QElapsedTimer quiet;
+    quiet.start();
+    int seen = -1;
+    auto settled = [&] {
+        if (framesSpy.count() != seen) {
+            seen = framesSpy.count();
+            quiet.restart();
+            return false;
+        }
+        return quiet.elapsed() >= 400 && panelMatchesLatestContentFrame(display, &framesSpy, &why);
+    };
+    if (!QTest::qWaitFor(settled, 60000)) {
         const MediaFrame last = framesSpy.isEmpty() ? MediaFrame()
                                                     : framesSpy.last().at(0).value<MediaFrame>();
         qWarning() << "the panel never matched the transported frame:" << why

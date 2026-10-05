@@ -322,6 +322,11 @@ jobs:
           # skip (developer machines) rather than fail (they are not part of
           # the require-emulator contract, which is about upstream Hatari).
           PIST_HRDB_HATARI: ${{ matrix.emulator && format('{0}/hatari-hrdb-bin/hatari-hrdb{1}', runner.temp, runner.os == 'Windows' && '.exe' || '') || '' }}
+          # The media channel's suite needs the fork — the only build with
+          # --pist-media. Without this the media tests QSKIP, so the 0.9
+          # headline path (MediaServer, the panel, input, audio) would go
+          # untested on CI. Same binary the HRDB suites use.
+          PIST_HATARI: ${{ matrix.emulator && format('{0}/hatari-hrdb-bin/hatari-hrdb{1}', runner.temp, runner.os == 'Windows' && '.exe' || '') || '' }}
           # Runners have no display. Hatari uses SDL for video, so it needs the
           # dummy driver — the debugger transport and the emulated machine are
           # unaffected, which is all this suite exercises.

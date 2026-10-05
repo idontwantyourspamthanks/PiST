@@ -252,8 +252,10 @@ QString writeFakeHatariFlood(const QString &dir)
 /// (kOwedTailDrainWaitMs) is what closes it: a tail written *before* the prompt
 /// is usually already in Qt's hands when the prompt is processed, so removing
 /// the drain then changes nothing and the case proves nothing. Keep the gap well
-/// inside that window — the ratio between the two is this assertion's margin.
-/// Anything else gets an immediate reply.
+/// inside that window — the ratio between the two is this assertion's margin,
+/// and the window is deliberately generous (a 50 ms gap against a ~30x cap)
+/// because a loaded runner's scheduling is what erodes that ratio. Anything
+/// else gets an immediate reply.
 QString writeFakeHatariLateTail(const QString &dir)
 {
     return writeScript(dir, QStringLiteral("fake-hatari-late-tail.sh"),
@@ -2560,6 +2562,26 @@ static double frameRedFraction(const MediaFrame &frame)
     return total ? double(red) / total : 0.0;
 }
 
+// Blue-dominant fraction of the whole frame: the guest's first action paints
+// the screen blue, so the test can tell the program actually started.
+static double frameBlueFraction(const MediaFrame &frame)
+{
+    if (!frame.w || !frame.h)
+        return 0.0;
+    int blue = 0, total = 0;
+    for (quint32 y = 0; y < frame.h; y += 4) {
+        const uchar *row = reinterpret_cast<const uchar *>(frame.pixels.constData())
+            + qint64(y) * frame.pitch;
+        for (quint32 x = 0; x < frame.w; x += 4) {
+            const quint32 p = qFromLittleEndian<quint32>(row + qint64(x) * 4);
+            ++total;
+            if (qBlue(p) > 150 && qRed(p) < 110 && qGreen(p) < 110)
+                ++blue;
+        }
+    }
+    return total ? double(blue) / total : 0.0;
+}
+
 void TstEmulatorHost::keyInjectionReachesTheGuest()
 {
     const ToolInfo fork = toolchain::findEmulator();
@@ -2571,13 +2593,19 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
     if (m_tos.isEmpty())
         QSKIP("needs a TOS ROM");
 
-    // A program that waits for one keypress, then paints the background red —
-    // the guest-visible proof the injected scancode arrived.
+    // A program that paints blue, waits for one keypress, then paints red.
+    // The blue frame is how the test knows the guest reached the program; red
+    // is the guest-visible proof the injected scancode arrived.
     const QString source = m_work->path() + QStringLiteral("/keyred.s");
     QFile src(source);
     QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
     src.write("\ttext\n"
-              "start:\tmove.w\t#1,-(sp)\n"        // Cconin
+              "start:\tmove.w\t#$0007,-(sp)\n"    // blue: the program is up
+              "\tmove.w\t#0,-(sp)\n"
+              "\tmove.w\t#7,-(sp)\n"
+              "\ttrap\t#14\n"
+              "\taddq.l\t#6,sp\n"
+              "\tmove.w\t#1,-(sp)\n"              // Cconin
               "\ttrap\t#1\n"
               "\taddq.l\t#2,sp\n"
               "\tmove.w\t#$0700,-(sp)\n"          // full red, STfm layout
@@ -2619,8 +2647,19 @@ void TstEmulatorHost::keyInjectionReachesTheGuest()
     QString error;
     QVERIFY2(host.start(config, &error), qPrintable(error));
 
-    // Presses during the TOS boot are flushed before the program's Cconin, so
-    // inject 'A' (scancode $1E) on a cadence until a frame goes red.
+    // Wait until the guest is genuinely running before injecting: its first
+    // action paints blue. Injecting during boot — which an earlier version of
+    // this test did, assuming the presses were merely flushed — makes EmuTOS
+    // abandon the autostart, so the program never starts and no later key can
+    // reach a Cconin that was never called. Under TOS the same early presses
+    // are harmless, which is why this only ever showed up against EmuTOS.
+    auto guestIsUp = [&frames] {
+        return !frames.isEmpty()
+            && frameBlueFraction(frames.last().at(0).value<MediaFrame>()) > 0.30;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(guestIsUp(), 30000);
+
+    // Inject 'A' (scancode $1E) on a cadence until the guest paints red.
     bool red = false;
     for (int i = 0; i < 40 && !red; ++i) {
         host.mediaKey(0x1E, true);

@@ -367,6 +367,13 @@ jobs:
           set -euo pipefail
           V="${GITHUB_REF_NAME#v}"
           [ -n "$V" ] || V="dev"
+          # A slash in the version is a slash in every asset name, and asset
+          # names are file names: appimagetool writes its downloaded runtime to
+          # the destination path and the MSI step derives its file name from it,
+          # so a branch dispatch ("feature/x") failed both legs with "Could not
+          # create destination file" / "no MSI produced". Tags never contain
+          # one; branch dispatches do.
+          V="${V//\//-}"
           echo "PIST_VERSION=$V" >> "$GITHUB_ENV"
           echo "release version: $V"
 
@@ -483,13 +490,16 @@ jobs:
           printf '%s\n' "$ver" | grep -m1 "Hatari v"
           # Nothing may still point at the build host's prefix: a load path into
           # /opt/homebrew is a binary that will not run on a machine without
-          # Homebrew, which is most of them.
-          if otool -L "$APP/Contents/MacOS/hatari" "$FW"/*.dylib \
-             | grep -E '/opt/homebrew|/usr/local'; then
-            echo "ERROR: the bundled emulator still loads from the build host"
+          # Homebrew, which is most of them. Captured rather than left in a
+          # condition so a match is reported, not merely fatal.
+          hosts="$(otool -L "$APP/Contents/MacOS/hatari" "$FW"/*.dylib 2>&1 \
+                   | grep -E '/opt/homebrew|/usr/local' || true)"
+          if [ -n "$hosts" ]; then
+            echo "ERROR: the bundled emulator still loads from the build host:"
+            echo "$hosts"
             exit 1
           fi
-          "$APP/Contents/MacOS/hatari" --version | head -1
+          echo "OK: bundled emulator loads only bundled or system libraries"
 
       - name: Deploy Qt runtime (Windows)
         if: matrix.deployed && runner.os == 'Windows'

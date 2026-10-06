@@ -16,6 +16,14 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
+## This is an alpha — install a stable edition if you want one that is known good
+
+The emulator panel below is entirely new and this build has had no stable
+cycle to soak in. It is marked a pre-release on purpose, so GitHub's "Latest"
+— and anything that downloads the latest release — still points at
+[v0.8.7](https://github.com/idontwantyourspamthanks/PiST/releases/tag/v0.8.7).
+Install that instead if you would rather not be early.
+
 ## What's new in 0.9.0-alpha
 
 The emulator now runs inside PiST's own panel. Hatari runs windowless and

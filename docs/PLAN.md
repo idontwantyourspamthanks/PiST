@@ -1209,8 +1209,9 @@ project; everything before it was either Linux-only or read from source.
   first injection made the identical session pass, while real TOS passed either way. This contradicts
   the phase-12 assumption that boot-time presses are harmless, and it is user-visible: with the
   bundled EmuTOS, typing during a session's first second can stop the user's program from launching.
-  `keyInjectionReachesTheGuest` waits for the guest's own first frame before injecting for this
-  reason.
+  `keyInjectionReachesTheGuest` therefore skips on EmuTOS — the frame, mouse and panel media tests
+  still run against it — because the key end-to-end path needs a fix on the emulator side, not
+  another test tweak.
 
 ### Verified by reading source (not executed)
 

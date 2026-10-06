@@ -35,6 +35,15 @@ using namespace pist;
 
 namespace {
 
+/// How long a gate waits for git to answer.
+///
+/// Git on the Windows runners is intermittently slow: the suite took 56-64 s
+/// instead of its usual 7 s in three of ten CI runs, and passed in ~7 s on every
+/// immediate re-run, which is a chain of these gates expiring at once rather
+/// than anything git got wrong. A QTRY ceiling costs nothing when the answer
+/// arrives early, so it is sized for the slow runner and not the usual one.
+constexpr int kGitWaitMs = 60000;
+
 bool haveGit()
 {
     return !QStandardPaths::findExecutable(QStringLiteral("git")).isEmpty();
@@ -318,8 +327,10 @@ void TstGit::panelCommitsOnlyTheCheckedFile()
     panel.setDirectory(dir.path());
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
     QVERIFY(files);
-    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Untracked"), QStringLiteral("b.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")),
+                             kGitWaitMs);
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Untracked"), QStringLiteral("b.s")),
+                             kGitWaitMs);
 
     auto *commit = panel.findChild<QPushButton *>(QStringLiteral("gitCommit"));
     auto *message = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitMessage"));
@@ -335,7 +346,7 @@ void TstGit::panelCommitsOnlyTheCheckedFile()
     commit->click();
 
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit")), kGitWaitMs);
     QVERIFY2(output->toPlainText().contains(QStringLiteral("finished")),
              qPrintable(output->toPlainText()));
 
@@ -380,8 +391,10 @@ void TstGit::committingTheStagedHalfLeavesTheUnstagedEditsAlone()
     auto *commit = panel.findChild<QPushButton *>(QStringLiteral("gitCommit"));
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
     QVERIFY(files && message && commit && output);
-    QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")),
+                             kGitWaitMs);
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")),
+                             kGitWaitMs);
     QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s"))->checkState(0),
              Qt::Checked);
     QCOMPARE(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s"))->checkState(0),
@@ -390,25 +403,27 @@ void TstGit::committingTheStagedHalfLeavesTheUnstagedEditsAlone()
     // The staged half is already checked. Committing it must take the index
     // version, not the worktree edits that were never staged.
     message->setPlainText(QStringLiteral("staged half"));
-    QTRY_VERIFY(commit->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(commit->isEnabled(), kGitWaitMs);
     commit->click();
     QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit finished")),
-                             10000);
+                             kGitWaitMs);
     QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("staged\n"));
     QVERIFY2(porcelain(dir.path()).contains(QStringLiteral("a.s")), qPrintable(porcelain(dir.path())));
 
     // The unstaged half is still there. Wait for the panel to take in the
     // post-commit status (the staged row is gone) before ticking it, then
     // stage and commit the rest of the worktree.
-    QTRY_VERIFY(!findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(!findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")),
+                             kGitWaitMs);
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")),
+                             kGitWaitMs);
     findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s"))->setCheckState(0, Qt::Checked);
     message->setPlainText(QStringLiteral("worktree half"));
-    QTRY_VERIFY(commit->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(commit->isEnabled(), kGitWaitMs);
     commit->click();
     QTRY_VERIFY2_WITH_TIMEOUT(porcelain(dir.path()).trimmed().isEmpty(),
                               qPrintable(porcelain(dir.path()) + QLatin1String(" | ")
-                                         + output->toPlainText()), 10000);
+                                         + output->toPlainText()), kGitWaitMs);
     QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("worktree\n"));
 }
 
@@ -436,8 +451,10 @@ void TstGit::stagedOutsideTheSelectionBlocksTheCommit()
     auto *commit = panel.findChild<QPushButton *>(QStringLiteral("gitCommit"));
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
     QVERIFY(files && message && commit && output);
-    QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")),
+                             kGitWaitMs);
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s")),
+                             kGitWaitMs);
     QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s"))->checkState(0),
              Qt::Checked);
     QCOMPARE(findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->checkState(0),
@@ -447,10 +464,10 @@ void TstGit::stagedOutsideTheSelectionBlocksTheCommit()
     // unstaged to make the commit go through, and it must not ride along.
     findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->setCheckState(0, Qt::Unchecked);
     message->setPlainText(QStringLiteral("just a"));
-    QTRY_VERIFY(commit->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(commit->isEnabled(), kGitWaitMs);
     commit->click();
     QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit failed")),
-                             10000);
+                             kGitWaitMs);
     QVERIFY2(output->toPlainText().contains(QStringLiteral("b.s")),
              qPrintable(output->toPlainText()));
 
@@ -465,10 +482,10 @@ void TstGit::stagedOutsideTheSelectionBlocksTheCommit()
     // commits normally.
     findRow(files, QStringLiteral("Staged"), QStringLiteral("b.s"))->setCheckState(0, Qt::Checked);
     message->setPlainText(QStringLiteral("both"));
-    QTRY_VERIFY(commit->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(commit->isEnabled(), kGitWaitMs);
     commit->click();
     QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit finished")),
-                             10000);
+                             kGitWaitMs);
     QCOMPARE(committedFile(dir.path(), QStringLiteral("a.s")), QStringLiteral("one\n"));
     QCOMPARE(committedFile(dir.path(), QStringLiteral("b.s")), QStringLiteral("two\n"));
     QVERIFY(porcelain(dir.path()).trimmed().isEmpty());
@@ -506,7 +523,8 @@ void TstGit::conflictedMergeIsOneRowAndIsNeverCommitted()
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
     QVERIFY(files);
     // One row, in its own group — not a staged half and an unstaged half.
-    QTRY_VERIFY(findRow(files, QStringLiteral("Conflicts"), QStringLiteral("a.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Conflicts"), QStringLiteral("a.s")),
+                             kGitWaitMs);
     QVERIFY(!findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
     QVERIFY(!findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
     QTreeWidgetItem *row = findRow(files, QStringLiteral("Conflicts"), QStringLiteral("a.s"));
@@ -519,7 +537,7 @@ void TstGit::conflictedMergeIsOneRowAndIsNeverCommitted()
     QSignalSpy finished(service, &GitService::operationFinished);
     service->commit({QStringLiteral("a.s")}, {}, {QStringLiteral("a.s")},
                     QStringLiteral("resolve it"));
-    QTRY_VERIFY_WITH_TIMEOUT(finished.count() >= 1, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() >= 1, kGitWaitMs);
     QCOMPARE(finished.at(0).at(0).toString(), QStringLiteral("commit"));
     QCOMPARE(finished.at(0).at(1).toBool(), false);
     const QString why = finished.at(0).at(2).toString();
@@ -545,11 +563,11 @@ void TstGit::blameNamesTheAuthorAndADirtyLine()
     GitPanel panel;
     const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
-    QTRY_VERIFY(panel.inRepository());
+    QTRY_VERIFY_WITH_TIMEOUT(panel.inRepository(), kGitWaitMs);
 
     QSignalSpy blamed(&panel, &GitPanel::blameReady);
     panel.blame(path, 1, 2, "one\nTWO\n");
-    QTRY_VERIFY(blamed.count() >= 1);
+    QTRY_VERIFY_WITH_TIMEOUT(blamed.count() >= 1, kGitWaitMs);
     const auto lines = blamed.at(0).at(1).value<GitBlameMap>();
     QCOMPARE(lines.value(1).author, QStringLiteral("Ada Lovelace"));
     QVERIFY(!lines.value(1).uncommitted);
@@ -572,11 +590,11 @@ void TstGit::pullWithoutUpstreamShowsGitsError()
     const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *pull = panel.findChild<QPushButton *>(QStringLiteral("gitPull"));
-    QTRY_VERIFY(pull->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(pull->isEnabled(), kGitWaitMs);
     pull->click();
 
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Pull")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Pull")), kGitWaitMs);
     QVERIFY2(output->toPlainText().contains(QStringLiteral("failed")),
              qPrintable(output->toPlainText()));
     QVERIFY2(!output->toPlainText().trimmed().isEmpty(), qPrintable(output->toPlainText()));
@@ -603,17 +621,20 @@ void TstGit::pushReachesALocalBareRemote()
     const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")),
+                             kGitWaitMs);
     findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s"))->setCheckState(0, Qt::Checked);
     panel.findChild<QPlainTextEdit *>(QStringLiteral("gitMessage"))->setPlainText(QStringLiteral("send it"));
     panel.findChild<QPushButton *>(QStringLiteral("gitCommit"))->click();
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit finished")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Commit finished")),
+                             kGitWaitMs);
 
     auto *push = panel.findChild<QPushButton *>(QStringLiteral("gitPush"));
-    QTRY_VERIFY(push->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(push->isEnabled(), kGitWaitMs);
     push->click();
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Push finished")), 15000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Push finished")),
+                             kGitWaitMs);
 
     QString local;
     QString remote;
@@ -700,8 +721,8 @@ void TstGit::branchSelectorCreatesAndSwitches()
     auto *combo = panel.findChild<QComboBox *>(QStringLiteral("gitBranches"));
     auto *add = panel.findChild<QPushButton *>(QStringLiteral("gitNewBranch"));
     QVERIFY(combo && add);
-    QTRY_VERIFY(add->isEnabled());
-    QTRY_COMPARE(combo->currentText(), original);
+    QTRY_VERIFY_WITH_TIMEOUT(add->isEnabled(), kGitWaitMs);
+    QTRY_COMPARE_WITH_TIMEOUT(combo->currentText(), original, kGitWaitMs);
 
     QTimer::singleShot(0, [] {
         auto *dialog = QApplication::activeModalWidget();
@@ -719,17 +740,19 @@ void TstGit::branchSelectorCreatesAndSwitches()
     add->click();
 
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("New branch")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("New branch")),
+                             kGitWaitMs);
     QVERIFY2(output->toPlainText().contains(QStringLiteral("finished")),
              qPrintable(output->toPlainText()));
-    QTRY_COMPARE(combo->currentText(), QStringLiteral("feature"));
+    QTRY_COMPARE_WITH_TIMEOUT(combo->currentText(), QStringLiteral("feature"), kGitWaitMs);
 
     QString current;
     QVERIFY(runGit(dir.path(), {QStringLiteral("branch"), QStringLiteral("--show-current")}, &current));
     QCOMPARE(current.trimmed(), QStringLiteral("feature"));
 
     combo->setCurrentText(original);
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Switch finished")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Switch finished")),
+                             kGitWaitMs);
     QVERIFY(runGit(dir.path(), {QStringLiteral("branch"), QStringLiteral("--show-current")}, &current));
     QCOMPARE(current.trimmed(), original);
 }
@@ -761,17 +784,18 @@ void TstGit::switchRefusesToOverwriteLocalEdits()
     panel.setDirectory(dir.path());
     auto *combo = panel.findChild<QComboBox *>(QStringLiteral("gitBranches"));
     QVERIFY(combo);
-    QTRY_VERIFY(combo->findText(QStringLiteral("feature")) >= 0);
+    QTRY_VERIFY_WITH_TIMEOUT(combo->findText(QStringLiteral("feature")) >= 0, kGitWaitMs);
     QCOMPARE(combo->currentText(), original);
 
     combo->setCurrentText(QStringLiteral("feature"));
     auto *output = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitOutput"));
-    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Switch failed")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(output->toPlainText().contains(QStringLiteral("Switch failed")),
+                             kGitWaitMs);
 
     QString current;
     QVERIFY(runGit(dir.path(), {QStringLiteral("branch"), QStringLiteral("--show-current")}, &current));
     QCOMPARE(current.trimmed(), original);
-    QTRY_COMPARE(combo->currentText(), original);
+    QTRY_COMPARE_WITH_TIMEOUT(combo->currentText(), original, kGitWaitMs);
 }
 
 void TstGit::selectedRowShowsStagedUnstagedAndUntrackedDiffs()
@@ -796,25 +820,29 @@ void TstGit::selectedRowShowsStagedUnstagedAndUntrackedDiffs()
     auto *files = panel.findChild<QTreeWidget *>(QStringLiteral("gitFiles"));
     auto *diff = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitDiff"));
     QVERIFY(files && diff);
-    QTRY_VERIFY(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
-    QTRY_VERIFY(findRow(files, QStringLiteral("Untracked"), QStringLiteral("new.s")));
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")),
+                             kGitWaitMs);
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")),
+                             kGitWaitMs);
+    QTRY_VERIFY_WITH_TIMEOUT(findRow(files, QStringLiteral("Untracked"), QStringLiteral("new.s")),
+                             kGitWaitMs);
     QVERIFY(diff->isHidden());
 
     files->setCurrentItem(findRow(files, QStringLiteral("Staged"), QStringLiteral("a.s")));
     QVERIFY(!diff->isHidden());
-    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+moveq #1,d0")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+moveq #1,d0")),
+                             kGitWaitMs);
     QVERIFY(diff->toPlainText().contains(QStringLiteral("-nop")));
     QVERIFY(!diff->toPlainText().contains(QStringLiteral("+rts")));
 
     files->setCurrentItem(findRow(files, QStringLiteral("Changes"), QStringLiteral("a.s")));
-    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+rts")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+rts")), kGitWaitMs);
     QVERIFY(diff->toPlainText().contains(QStringLiteral("-moveq #1,d0")));
     QVERIFY(!diff->toPlainText().contains(QStringLiteral("-nop")));
 
     files->setCurrentItem(findRow(files, QStringLiteral("Untracked"), QStringLiteral("new.s")));
     QTRY_VERIFY2_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("+untracked-line")),
-                              qPrintable(diff->toPlainText()), 10000);
+                              qPrintable(diff->toPlainText()), kGitWaitMs);
     QVERIFY2(!diff->toPlainText().toLower().contains(QStringLiteral("failed")),
              qPrintable(diff->toPlainText()));
 }
@@ -841,17 +869,19 @@ void TstGit::historyListsCommitsNewestFirstAndShowsTheOneYouPick()
     auto *log = panel.findChild<QListWidget *>(QStringLiteral("gitLog"));
     auto *diff = panel.findChild<QPlainTextEdit *>(QStringLiteral("gitDiff"));
     QVERIFY(history && log && diff);
-    QTRY_VERIFY(history->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(history->isEnabled(), kGitWaitMs);
     history->click();
 
-    QTRY_VERIFY_WITH_TIMEOUT(log->count() >= 2, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(log->count() >= 2, kGitWaitMs);
     QVERIFY(log->item(0)->text().contains(QStringLiteral("second subject")));
     QVERIFY(log->item(1)->text().contains(QStringLiteral("first subject")));
-    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("second-line")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("second-line")),
+                             kGitWaitMs);
     QVERIFY(diff->toPlainText().contains(QStringLiteral("second subject")));
 
     log->setCurrentItem(log->item(1));
-    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("first subject")), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(diff->toPlainText().contains(QStringLiteral("first subject")),
+                             kGitWaitMs);
     QVERIFY(diff->toPlainText().contains(QStringLiteral("first-line")));
     QVERIFY(!diff->toPlainText().contains(QStringLiteral("second-line")));
 
@@ -874,11 +904,11 @@ void TstGit::emptyHistorySaysThereAreNoCommits()
     const IdleOnExit settle(panel);  // drive git to idle before the panel dies (MIN-80)
     panel.setDirectory(dir.path());
     auto *history = panel.findChild<QPushButton *>(QStringLiteral("gitHistory"));
-    QTRY_VERIFY(history->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(history->isEnabled(), kGitWaitMs);
     history->click();
 
     auto *log = panel.findChild<QListWidget *>(QStringLiteral("gitLog"));
-    QTRY_VERIFY_WITH_TIMEOUT(log->count() == 1, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(log->count() == 1, kGitWaitMs);
     QCOMPARE(log->item(0)->text(), QStringLiteral("No commits yet."));
 }
 

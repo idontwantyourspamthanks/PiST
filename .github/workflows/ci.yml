@@ -260,7 +260,9 @@ jobs:
             # headless runner --version dies before answering: this check has
             # printed a blank line and verified nothing. The dummy driver is
             # what makes it a check.
-            SDL_VIDEODRIVER=dummy hatari --version 2>&1 | sed -n '1p' || true
+            # The banner is line 2 (--version leads with a blank line) and the
+            # exit status is 1 by design, so match the banner, not the status.
+            SDL_VIDEODRIVER=dummy hatari --version 2>&1 | grep -m1 "Hatari v" || true
           fi
 
       - name: Fetch a ROM

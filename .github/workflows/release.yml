@@ -452,6 +452,15 @@ jobs:
           done
           install_name_tool -add_rpath "@executable_path/../Frameworks" \
             "$APP/Contents/MacOS/hatari"
+          # install_name_tool invalidates the code signature brew's bottles ship
+          # with, and dyld refuses to load a binary whose signature is invalid —
+          # which is what killed the first attempt's smoke check. Re-sign ad-hoc
+          # here; the seal step re-signs everything with the release identity.
+          codesign --force --sign - "$APP/Contents/MacOS/hatari"
+          for lib in "$FW"/*.dylib; do
+            [ -e "$lib" ] || continue
+            codesign --force --sign - "$lib"
+          done
           echo "bundled dylibs:${copied:- none}"
 
           # Nothing may still point at the build host's prefix, and the binary
@@ -573,7 +582,9 @@ jobs:
           # --expect-qt; the final artifact's notices are asserted below.
           python3 packaging/collect-notices.py --root AppDir/usr --platform linux \
             --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz \
-            --vlink-tarball vlink.tar.gz --expect-qt
+            --vlink-tarball vlink.tar.gz --expect-qt \
+            --hatari-repo "${{ steps.build-fork.outputs.pist-url }}" \
+            --hatari-commit "${{ steps.build-fork.outputs.pist-commit }}"
 
 
           export QMAKE="$(command -v qmake6 || command -v qmake)"

@@ -23,10 +23,10 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 > view and hardware registers, with the editor following the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
-> What is missing is breadth rather than core function: the macOS archive still expects you to
-> install Hatari (`brew install hatari`). The emulator integration is exercised in CI on Linux
-> and macOS — Windows unit-tests only, since its stock Hatari never enters the debugger over
-> pipes; see [Known limitations](#known-limitations).
+> What is missing is breadth rather than core function: every archive bundles the emulator, and
+> the emulator integration is exercised in CI on Linux and macOS — Windows unit-tests only, since
+> its stock Hatari never enters the debugger over pipes; see
+> [Known limitations](#known-limitations).
 > [docs/PLAN.md](docs/PLAN.md) has the full design.
 
 ---
@@ -103,8 +103,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 
 The goal is *batteries included*: the toolchain and emulator ship with the IDE where their licences
 allow and a usable version can be packaged, so there is nothing to assemble by hand before writing
-your first line of code. The Linux AppImage and the Windows archive meet that goal today
-(both bundle the emulator); the macOS archive still needs `brew install hatari`.
+your first line of code. All three archives meet that goal today: each bundles the hatari-pist
+fork, the macOS app carrying the fork's Homebrew dylib closure inside the bundle.
 
 On a machine with no assembler or ROM, the first run offers a **guided setup**: a
 checksum-pinned vasm source build and an EmuTOS download, each named with its URL and checksum
@@ -263,11 +263,11 @@ private `/usr/lib/pist/`, so none of it can be picked up by other applications; 
 application menu and cannot: that integration is AppImageLauncher's or `appimaged`'s job,
 or install a package.
 
-The macOS archive does not bundle the emulator (the fork links Homebrew SDL2, and
-rewiring those dylibs into the `.app` is unbuilt work), so install **Hatari** yourself
-there — `brew install hatari` carries 2.6.1 — or point PiST at one in Project Settings.
-Everything else is inside the app. Open the disk image and drag PiST to Applications;
-the IDE assembles out of the box once Hatari is present.
+The macOS app bundles the same hatari-pist fork as the other two. The release build copies the
+fork's Homebrew dylib closure — SDL2, libpng and SDL2's X11 neighbours — into
+`Contents/Frameworks` and rewires every load path to `@rpath`, so the embedded display and the
+HRDB transport work there exactly as on Linux and Windows. Everything else is inside the app.
+Open the disk image and drag PiST to Applications; the IDE assembles and runs out of the box.
 
 To install from source instead:
 

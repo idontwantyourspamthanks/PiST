@@ -189,7 +189,8 @@ compiled in (audited in §10). Two things nonetheless keep it a subprocess:
 In-process libretro remains possible for macOS later — the `libretro/hatari` core is a fork of
 exactly the tree audited in §10, so the same GPLv2 conveyance condition applies.
 
-**The bundled emulator is the hrdb-main fork** (upstream 2.6.1 plus the remote-debug listener).
+**The bundled emulator is the hatari-pist fork** (upstream 2.6.1 plus the HRDB remote-debug
+listener and the media channel).
 The full debug loop also works on stock Hatari via the native backend; the fork adds typed
 framing, pause-while-running, and a Windows-capable control path. The fork is bundled
 unmodified from a checksum-pinned commit and driven as a subprocess, so the licence boundary
@@ -749,10 +750,11 @@ Remaining assessments:
   carrying PiST, a vasm compiled from the author's unmodified source (pinned by
   sha256), and EmuTOS 1.4 (GPLv2) as a working default ROM, plus the licence and
   notices. Qt is deployed with macdeployqt/windeployqt on macOS and Windows, and
-  the **Linux AppImage and the Windows archive additionally bundle Hatari**,
-  built from the pinned hrdb-main fork commit (upstream 2.6.1 plus the
-  remote-debug listener) by the same action CI uses (see §2.4 for why no
-  distribution package will do). The macOS archive still does not bundle it. No
+  the **Linux AppImage, the Windows archive and the macOS app all additionally
+  bundle Hatari**, built from the pinned hatari-pist fork commit (upstream 2.6.1
+  plus the HRDB listener and the media channel) by the same action CI uses (see
+  §2.4 for why no distribution package will do); on macOS the fork's Homebrew
+  dylib closure is copied into the app and rewired to `@rpath`. No
   PiST source change was needed: tool discovery already looks beside the
   executable first, so the bundled copy is found on its own.
 - **Verified end to end from a downloaded archive**: the shipped assembler builds
@@ -938,7 +940,7 @@ directories now part of tool and ROM discovery (§7, "First run" row).
 | Component | License | Can we ship it? | Boundary |
 |---|---|---|---|
 | **PiST** (this project) | GPL-2.0-or-later | — | Chosen for compatibility with the emulator ecosystem; see §10 |
-| Hatari | GPL-2.0-or-later upstream, with an explicit statement that static **or dynamic** linking makes a combined work; the binary we convey is **GPLv2-capped** by three GPL-2.0-only files (§10) | Yes | **Separate process/binary**, bundled in the Linux AppImage and the Windows archive, built unmodified from a checksum-pinned tarball (the hrdb-main fork commit). Isolated in `IDebugBackend`'s implementations so the boundary stays auditable; see §10 |
+| Hatari | GPL-2.0-or-later upstream, with an explicit statement that static **or dynamic** linking makes a combined work; the binary we convey is **GPLv2-capped** by three GPL-2.0-only files (§10) | Yes | **Separate process/binary**, bundled in all three release artifacts, built unmodified from a checksum-pinned tarball (the hatari-pist fork commit). Isolated in `IDebugBackend`'s implementations so the boundary stays auditable; see §10 |
 | GNU Readline | GPL-3.0-or-later | **No — not redistributed** | The bundled Hatari is built without it (`-DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON`): a GPLv3 library cannot join a v2-capped work, so no readline travels in any archive and no `THIRD-PARTY.txt` lists it. Functionally free — the debugger's `fgets` fallback prompts on stderr, which §2.4 frames; see §10 |
 | libretro Hatari core | GPL-2.0-or-later (identical `readme.txt` blob to upstream) | Yes | Part of Hatari's tree; our build makes the standalone binary, not the core. Were it ever conveyed, `dlopen` does not escape the GPL |
 | libretro API header | MIT-style, per-file | Yes | Preserve notice |
@@ -983,13 +985,13 @@ Where each component comes from, kept deliberately separate from the source tree
 | Context | vasm | Hatari |
 |---|---|---|
 | **git repository** | **Never committed.** Keeps the repo 100% free software and DFSG-clean, so distributions and contributors never have to strip a non-free binary | Not vendored; built from the checksum-pinned fork commit at packaging and CI time |
-| **Release artifacts** (Linux AppImage + deb/RPM; Windows archive + MSI; macOS dmg + archive) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in the Linux AppImage and the Windows archive — and the bundled build is the **hrdb-main fork** (upstream 2.6.1 + the remote-debug listener), built unmodified from a checksum-pinned commit tarball (MSYS2 ucrt64 on Windows, runtime DLLs beside the exe); the probe selects HRDB for it automatically. The macOS archive leaves the emulator to the user (`brew install hatari` carries 2.6.1) |
+| **Release artifacts** (Linux AppImage + deb/RPM; Windows archive + MSI; macOS dmg + archive) | Bundled unmodified, with its `readme.txt`; non-commercial redistribution is expressly permitted | Bundled as a separate executable (mere aggregation) in all three artifacts — and the bundled build is the **hatari-pist fork** (upstream 2.6.1 + HRDB listener + media channel), built unmodified from a checksum-pinned commit tarball (MSYS2 ucrt64 on Windows, runtime DLLs beside the exe; on macOS the Homebrew dylib closure travels inside the app, rewired to `@rpath`); the probe selects HRDB and the media channel for it automatically |
 | **Linux distro package** | Optional dependency; the distro's `vasm` package is used if present | Not usable as supplied: 22.04 ships 2.3.1 and 24.04 ships 2.4.1, below the 2.6.1 the IDE is verified against (§2.4) |
-| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the bundled archives need none. The unprompted startup prompt fires whenever *any* piece is missing — including the emulator, which is the only gap on the macOS archive — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
+| **First run without a toolchain** | **Delivered** as the startup setup dialog (`ui/SetupDialog`): when the assembler is missing it fetches the author's pinned source tarball, verifies the sha256, builds it (`make CPU=m68k SYNTAX=mot`) and installs it into the per-user tools directory; when no ROM exists it fetches the pinned EmuTOS zip likewise into `paths::suggestedRomDir()`, which `tosSearchPaths()` now includes. The URL and checksum are shown before anything downloads — a *convenience*, never a silent download. The pins are those of ci.yml/release.yml, and tst_toolfetch pins the copies to each other | Reported with an install hint; the bundled archives need none. The unprompted startup prompt fires whenever *any* piece is missing — including the emulator, which no archive lacks now that macOS bundles the fork — and a persisted dismissal (`setup/promptDismissed`) makes it show once rather than nag |
 
-This yields one-click setup on Linux and Windows — and on macOS for everything but the emulator —
-without placing non-free bytes in the repository, and without ever breaching vasm's no-modification
-clause.
+This yields one-click setup on all three platforms — the bundled archives need none of it, macOS
+included now that the app carries the fork — without placing non-free bytes in the repository, and
+without ever breaching vasm's no-modification clause.
 
 **The remaining vasm caveat:** its commercial exception is scoped to AmigaOS, so anyone shipping a
 *commercial* product based on this IDE must supply their own `vasmm68k_mot` (or obtain the author's

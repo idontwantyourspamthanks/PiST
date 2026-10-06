@@ -56,7 +56,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QElapsedTimer>
 #include <QFileSystemModel>
 #include <QLineEdit>
 #include <QDockWidget>
@@ -86,6 +85,7 @@
 #include <QTreeView>
 #include <QAbstractItemModel>
 #include <QImage>
+#include <QPainter>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -4055,26 +4055,33 @@ static QVector<int> frameCellMeans(const MediaFrame &frame)
     return cells;
 }
 
-// The same grid over the panel's painted frame area. The widget aspect-fits
-// and centres the frame, so the fitted rect is recomputed here with the same
-// math and the grid is sampled inside it — clear of the letterbox and the
-// Paused badge.
-static QVector<int> panelCellMeans(QWidget *display, quint32 fw, quint32 fh)
+// The frame area inside the panel: the aspect-fit-and-centre math
+// EmulatorDisplayWidget::paintEvent uses, so the grid below samples the video
+// and not the letterbox around it.
+static QRect panelFitRect(QSize panel, quint32 fw, quint32 fh)
+{
+    if (!fw || !fh || panel.isEmpty())
+        return {};
+    const qreal scale = qMin(qreal(panel.width()) / fw, qreal(panel.height()) / fh);
+    const int w = int(fw * scale), h = int(fh * scale);
+    return {(panel.width() - w) / 2, (panel.height() - h) / 2, w, h};
+}
+
+// The 8x8 grid of cell-mean grays over `fit`, every pixel counted. Both sides
+// of the comparison are renders at the panel's own size, so there is nothing
+// left to alias and no stride is needed.
+static QVector<int> gridMeans(const QImage &image, const QRect &fit)
 {
     QVector<int> cells(64, 0);
-    const QImage image = display->grab().toImage();
-    if (image.isNull() || !fw || !fh)
+    if (image.isNull() || fit.isEmpty())
         return cells;
-    const qreal scale = qMin(qreal(image.width()) / fw, qreal(image.height()) / fh);
-    const int w = int(fw * scale), h = int(fh * scale);
-    const QRect fit((image.width() - w) / 2, (image.height() - h) / 2, w, h);
     for (int cy = 0; cy < 8; ++cy) {
         const int y0 = fit.y() + fit.height() * cy / 8, y1 = fit.y() + fit.height() * (cy + 1) / 8;
         for (int cx = 0; cx < 8; ++cx) {
             const int x0 = fit.x() + fit.width() * cx / 8, x1 = fit.x() + fit.width() * (cx + 1) / 8;
             qint64 sum = 0, n = 0;
-            for (int y = y0; y < y1; y += 2)
-                for (int x = x0; x < x1; x += 2) {
+            for (int y = y0; y < y1; ++y)
+                for (int x = x0; x < x1; ++x) {
                     sum += qGray(image.pixel(x, y));
                     ++n;
                 }
@@ -4084,51 +4091,102 @@ static QVector<int> panelCellMeans(QWidget *display, quint32 fw, quint32 fh)
     return cells;
 }
 
-// True once the panel paints a frame the channel delivered. The newest frame
-// is the obvious candidate, but the panel can sit a repaint behind it — the
-// stream is change-gated and the fork drops a frame it cannot drain whole — so
-// the last few are accepted: the assertion is that the panel shows a channel
-// frame, not that it has caught up to the newest one. A flat frame (mid-change,
-// or the black at the entry stop) is skipped for the same reason the spread
-// test exists: it would prove nothing either way.
-static bool panelMatchesLatestContentFrame(QWidget *display, QSignalSpy *framesSpy,
-                                           QString *why = nullptr)
+// A grid's spread, the "is there anything to compare" oracle: a flat grid —
+// the black at the entry stop, a frame caught mid-change, or a panel that was
+// never fed — proves nothing either way and is skipped.
+static int gridSpread(const QVector<int> &cells)
+{
+    int lo = 255, hi = 0;
+    for (int v : cells) {
+        lo = qMin(lo, v);
+        hi = qMax(hi, v);
+    }
+    return hi - lo;
+}
+
+// How the panel is specified to paint one frame: decoded here from the raw
+// transport payload rather than taken from the app's own conversion, so a wrong
+// mask or pitch in mediaFrameImage() still shows up as a mismatch — then
+// aspect-fit and centred into `panel` with the same drawImage the widget uses,
+// over the widget's black background.
+//
+// Rendering the expectation is what makes the comparison exact. Sampling the
+// 832x552 source at stride 2 and comparing that with the panel's own
+// nearest-neighbour downscale is not like for like: at the widths a dock can be
+// squeezed to, drawImage keeps a different subset of the source pixels than the
+// stride-2 walk does, so one and the same frame disagreed in half the cells on
+// CI ("panel shows a different frame, 34/64") while passing on a wider dock.
+static QImage expectedPanelImage(const MediaFrame &frame, QSize panel)
+{
+    if (frame.w == 0 || frame.h == 0 || frame.bpp != 32 || panel.isEmpty())
+        return {};
+    if (frame.pitch < frame.w * 4 || frame.pixels.size() < qint64(frame.pitch) * frame.h)
+        return {};
+    if (frame.rmask != 0x00ff0000u || frame.gmask != 0x0000ff00u || frame.bmask != 0x000000ffu)
+        return {}; // the oracle knows the dummy driver's RGB32 and nothing else
+    // Little-endian B,G,R,X is exactly Format_RGB32. The buffer is borrowed and
+    // the frame is gone when the signal handler returns, so the render below is
+    // the only use of it.
+    const QImage source(reinterpret_cast<const uchar *>(frame.pixels.constData()), int(frame.w),
+                        int(frame.h), int(frame.pitch), QImage::Format_RGB32);
+    QImage canvas(panel, QImage::Format_RGB32);
+    canvas.fill(Qt::black);
+    const QRect fit = panelFitRect(panel, frame.w, frame.h);
+    if (fit.isEmpty())
+        return canvas;
+    QPainter p(&canvas);
+    p.drawImage(fit, source);
+    p.end();
+    return canvas;
+}
+
+// True once the panel paints `frame`: the widget's own pixels inside the fit
+// rect, reduced to the same 8x8 grid as an independent render of that frame.
+// The threshold leaves room for the two renders to differ at cell edges; a
+// wrong frame, a wrong conversion or a wrong fit lands far outside it.
+static bool panelPaintsFrame(QWidget *display, const MediaFrame &frame, QString *why = nullptr)
 {
     auto fail = [why](const QString &reason) {
         if (why)
             *why = reason;
         return false;
     };
-    if (framesSpy->isEmpty())
-        return fail(QStringLiteral("no frames arrived"));
-
-    const int newest = framesSpy->count() - 1;
-    int best = 0;
-    bool structured = false;
-    for (int i = newest; i >= 0 && i > newest - 5; --i) {
-        const MediaFrame frame = framesSpy->at(i).at(0).value<MediaFrame>();
-        if (!frame.w || !frame.h)
-            continue;
-        const QVector<int> want = frameCellMeans(frame);
-        int lo = 255, hi = 0;
-        for (int v : want) {
-            lo = qMin(lo, v);
-            hi = qMax(hi, v);
-        }
-        if (hi - lo < 32)
-            continue;
-        structured = true;
-        const QVector<int> got = panelCellMeans(display, frame.w, frame.h);
-        int matched = 0;
-        for (int c = 0; c < 64; ++c)
-            matched += qAbs(got[c] - want[c]) <= 24 ? 1 : 0;
-        best = qMax(best, matched);
-        if (matched >= 58) // ~90%: resampling blends cell edges
-            return true;
+    const QImage got = display->grab().toImage();
+    if (got.isNull())
+        return fail(QStringLiteral("the panel grabbed as a null image"));
+    const QImage want = expectedPanelImage(frame, got.size());
+    if (want.isNull())
+        return fail(QStringLiteral("frame %1x%2 bpp %3 masks %4/%5/%6 is outside the oracle")
+                        .arg(frame.w)
+                        .arg(frame.h)
+                        .arg(frame.bpp)
+                        .arg(frame.rmask, 0, 16)
+                        .arg(frame.gmask, 0, 16)
+                        .arg(frame.bmask, 0, 16));
+    const QRect fit = panelFitRect(got.size(), frame.w, frame.h);
+    const QVector<int> wantCells = gridMeans(want, fit);
+    const QVector<int> gotCells = gridMeans(got, fit);
+    int matched = 0, worst = 0;
+    for (int c = 0; c < 64; ++c) {
+        const int d = qAbs(wantCells[c] - gotCells[c]);
+        worst = qMax(worst, d);
+        matched += d <= 24 ? 1 : 0;
     }
-    if (!structured)
-        return fail(QStringLiteral("no structured frame in the last five"));
-    return fail(QStringLiteral("panel shows none of the last five frames (best %1/64)").arg(best));
+    if (matched >= 58) // ~90%: two renders of one frame can differ at cell edges
+        return true;
+    // The panel's own spread names the usual failure: a panel that was never
+    // fed, or a dock squeezed to nothing, grabs flat and matches no frame.
+    return fail(QStringLiteral("panel shows %1x%2 as %3/64 cells (worst delta %4, fit %5x%6, "
+                                 "panel %7x%8 spread %9)")
+                    .arg(frame.w)
+                    .arg(frame.h)
+                    .arg(matched)
+                    .arg(worst)
+                    .arg(fit.width())
+                    .arg(fit.height())
+                    .arg(got.width())
+                    .arg(got.height())
+                    .arg(gridSpread(gridMeans(got, QRect(QPoint(0, 0), got.size())))));
 }
 
 // The media channel's full UI path (docs/PLAN.md §12): with the dev gate set
@@ -4196,37 +4254,77 @@ void TstGui::mediaDisplayFeedsThePanel()
     QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
              "the emulator started but never reached the debugger");
 
-    // The entry stop's last frame can genuinely be black (the desktop switch
-    // clears the screen first), so a mean match there proves nothing. Resume
-    // past it: the desktop then appears, and once the change-gated stream
-    // quiets the panel holds that last, content-bearing frame.
+    // Fidelity is asserted against the newest structured frame the channel
+    // delivered, and only once the session runs again: while the debugger is
+    // stopped the panel draws its Paused badge over the video (§12.3), and the
+    // badge is a fixed pixel size — whenever the fit rect reaches the widget's
+    // top-right corner it covers whole grid cells, so comparing then measures
+    // the badge rather than the frame. On a 320x200 panel that cost exactly the
+    // four corner cells, leaving a 60/64 pass two cells away from failing; CI
+    // reported 34/64 and never matched in a minute of retrying. Waiting for
+    // another frame is no escape either: after the entry stop a guest that loops
+    // forever redraws nothing, so the one structured frame the change-gated
+    // stream carries is delivered while the badge is still up.
+    //
+    // The expectation is rendered rather than sampled: the panel aspect-fits
+    // with drawImage, whose nearest-neighbour downscale keeps a different
+    // subset of the source pixels than a stride-2 walk of it does, so both
+    // sides have to be reduced the same way before their cells mean the same
+    // thing.
+    MediaFrame pending;
+    QString note = QStringLiteral("the channel delivered no structured frame");
+    const QMetaObject::Connection probe =
+        connect(host, &IDebugBackend::mediaFrameReceived, display, [&](const MediaFrame &frame) {
+            if (!frame.w || !frame.h)
+                return;
+            // A flat frame — the black of a screen clear, or one caught
+            // mid-change — would pass or fail vacuously, so it is not a
+            // candidate; the last structured one is what gets compared.
+            const int spread = gridSpread(frameCellMeans(frame));
+            if (spread < 32) {
+                note = QStringLiteral("frame %1x%2 seq %3 is flat (spread %4)")
+                           .arg(frame.w)
+                           .arg(frame.h)
+                           .arg(frame.seq)
+                           .arg(spread);
+                return;
+            }
+            pending = frame; // the payload is the copy the transport handed over
+            note = QStringLiteral("frame %1x%2 seq %3 never matched the panel")
+                       .arg(frame.w)
+                       .arg(frame.h)
+                       .arg(frame.seq);
+        });
+    // The entry stop's frame can genuinely be black (the desktop switch clears
+    // the screen first), so a match there proves nothing; resume past it.
     host->resume();
-    // Compare only once the stream has settled. While frames are still arriving
-    // the newest one advances and the panel can lag a repaint behind, so the
-    // comparison races and cannot match however long it is retried — the test
-    // would be checking a moving target. A quiet window means the panel holds
-    // the last frame. Report which half of the check failed: a bare false
-    // cannot say whether no frame arrived, the newest was still flat
-    // mid-change, or the panel genuinely disagreed.
-    QString why;
-    QElapsedTimer quiet;
-    quiet.start();
-    int seen = -1;
-    auto settled = [&] {
-        if (framesSpy.count() != seen) {
-            seen = framesSpy.count();
-            quiet.restart();
+    // The guest may never redraw after this — a program that loops forever
+    // leaves the screen as the boot left it, and the stream is change-gated —
+    // so the frame to compare is the one already delivered, and what the wait
+    // is really for is the badge to go away.
+    const bool painted = QTest::qWaitFor(
+        [&] {
+            if (!pending.w)
+                return false;
+            if (host->isStopped()) {
+                note = QStringLiteral("the session never resumed, so the Paused badge still "
+                                       "covers the panel");
+                return false;
+            }
+            QString reason;
+            if (panelPaintsFrame(display, pending, &reason))
+                return true;
+            note = reason;
             return false;
-        }
-        return quiet.elapsed() >= 120 && panelMatchesLatestContentFrame(display, &framesSpy, &why);
-    };
-    if (!QTest::qWaitFor(settled, 60000)) {
-        const MediaFrame last = framesSpy.isEmpty() ? MediaFrame()
-                                                    : framesSpy.last().at(0).value<MediaFrame>();
-        qWarning() << "the panel never matched the transported frame:" << why
-                   << "frames=" << framesSpy.count() << "w=" << last.w << "h=" << last.h;
-        QFAIL("the panel never painted the transported frame");
+        },
+        60000);
+    disconnect(probe);
+    if (!painted) {
+        qWarning() << "the panel never painted the transported frame:" << note
+                   << "frames=" << framesSpy.count() << "panel=" << display->size()
+                   << "visible=" << display->isVisible() << "stopped=" << host->isStopped();
     }
+    QVERIFY2(painted, qPrintable(note));
 }
 
 void TstGui::emulatorDockStartsHidden()

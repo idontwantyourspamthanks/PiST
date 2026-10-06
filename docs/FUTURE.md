@@ -208,7 +208,12 @@ unbuilt.
   restore, or a record/replay mechanism (relaunch + step forward N times), the latter being slow
   and state-lossy.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
-  the debugger is stopped, so a frozen frame is not mistaken for a crash.
+  the debugger is stopped, so a frozen frame is not mistaken for a crash. The badge is placed in
+  widget coordinates, so on a dock small enough for the fitted video to reach the widget's top-right
+  corner it overlaps the picture rather than the letterbox: measured at 320x200, where it covers four
+  of the 64 cells `tst_gui::mediaDisplayFeedsThePanel` samples, which is what made that check fail on
+  CI while passing on a wider dock. Clamping the badge inside the letterbox, or scaling it with the
+  panel, is the fix if the overlap ever bothers anyone.
 - **Profiler icons.** Redrawn in the hand-drawn toolbar style (`paintProfileStart`,
   `paintProfileStop`, `paintProfileToCursor` in `src/ui/Icons.cpp`). The three share a rising
   sample count: Start is the accent play mark over that count, Stop is the count on a baseline,

@@ -1252,9 +1252,14 @@ project; everything before it was either Linux-only or read from source.
    report names the branch that ran without a debugger. macOS embedding remains unimplemented
    (`WId` is a process-local `NSView*`).
 6. ~~Behaviour of `--control-socket` alternatives on Windows~~ — **resolved**: HRDB is the
-   alternative. The fork builds for Windows with MSYS2 ucrt64 (its listener is winsock-aware
-   upstream of us), CI exercises it there, and the Windows release archive bundles it. Stock
-   Windows Hatari remains stdin-only, which §5 rule 12 already treats as normal.
+   alternative. Recorded as resolved earlier than it was: "the fork builds for Windows and CI
+   exercises it there" was generalised from one winsock-aware file (`debug/remotedebug.c`) and
+   was false for the rest — `src/pistmedia.c` included the POSIX socket headers unconditionally,
+   so the fork did not compile for Windows at all until hatari-pist d7e3363, and three release
+   attempts died on `fatal error: sys/socket.h`. CI's Windows leg has `matrix.emulator` false, so
+   it downloads stock Hatari and never compiles the fork; the release workflow is the only thing
+   that builds it for Windows, and nothing in CI catches a regression there. Stock Windows Hatari
+   remains stdin-only, which §5 rule 12 already treats as normal.
 7. ~~Why the cache-derived CRT lookup failed~~ — **settled by the 0.8.6 re-cut**:
    the read was fine, the line was absent. The packaging job's own echo reports
    `note: no CMAKE_CXX_COMPILER line in build/CMakeCache.txt`, although the same
@@ -1270,6 +1275,13 @@ project; everything before it was either Linux-only or read from source.
    main loop), so the control socket is serviced windowless with no fork change. The verified
    behaviour the citation supported (socket starved while the debugger blocks on stdin) stands and
    is re-stated with the correct mechanism in §3.3; §12.2's "pump must move" bullet is withdrawn.
+9. ~~§12.3's absolute mouse-position resync~~ — **never implemented**: corrected 2026-10-06 while
+   chasing a Windows "no pointer" report. Neither side has the write path §12.3 described (relative
+   deltas only, no PiST call site), so the bullet was plan text from the start. It has not been
+   missed in practice: the IKBD's per-cycle relative autosend gives the guest a position from
+   reset, and a zero-input frame dump shows TOS's arrow on an idle desktop. The Windows report
+   remains open against the *input* direction, not this gap — keys reach the guest audibly while
+   the pointer is absent, which no platform-neutral path explains yet.
 
 
 ---
@@ -1533,8 +1545,14 @@ hidden host-side. Consequences:
 - **Scaling:** the panel paints aspect-fit, so host pixels ≠ guest pixels. Deltas are divided by the
   effective `fittedRect` scale with a sub-pixel accumulator, or a small/HiDPI panel makes the guest
   cursor outrun the hand continuously.
-- **Resync:** the fork provides an absolute mouse-position *write* path (a setter beside the IKBD
-  injection hook); PiST resyncs at session start and on guest resolution change.
+- **Resync:** *plan text, never implemented, and not yet needed.* Neither side has the absolute
+  mouse-position write path this bullet describes: the fork's `pistmedia.c` parses a 6-byte MOUSE
+  message of buttons plus two relative deltas and feeds `KeyboardProcessor.Mouse.dx/dy`, and PiST
+  has no resync call site. The guest nonetheless always holds a position, because the IKBD
+  autosends a relative report every cycle regardless of motion (`AUTOMODE_MOUSEREL`), and TOS
+  draws its arrow from the reset default — verified by a zero-input media frame dump showing the
+  pointer centred on an idle desktop. Revisit only if a session shows the pointer parked away
+  from the hand; see ledger item 9.
 
 ### 12.4 The grab (VirtualBox model, Qt-owned)
 

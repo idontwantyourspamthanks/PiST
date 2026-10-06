@@ -336,6 +336,27 @@ jobs:
             exit 0
           fi
 
+          # The failing run's own transcripts, quoted before the re-runs below
+          # overwrite them. Every suite also logs through QTest's file logger
+          # (CMakeLists' pist_add_test), which flushes each message as it happens
+          # and so survives whatever took the console output with it — a suite
+          # that failed here and then passed on the re-run used to leave nothing
+          # at all to read, which is how tst_git failed three times undiagnosed.
+          echo
+          echo "### per-suite logs from the failing run"
+          failed=build/Testing/Temporary/LastTestsFailed.log
+          if [ -f "$failed" ]; then
+            while IFS=: read -r _ name; do
+              name=${name%$'\r'}
+              log="build/Testing/TestLogs/$name.log"
+              [ -f "$log" ] || continue
+              echo "--- $log ---"
+              cat "$log"
+            done < "$failed"
+          else
+            echo "no LastTestsFailed.log naming the failed suites"
+          fi
+
           # ctest's output capture proved unreliable here — on Windows a failing
           # test reported no output at all — so re-run verbosely, which makes
           # ctest print each test's command line and its output.

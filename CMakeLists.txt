@@ -542,12 +542,27 @@ file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" PIST_SOURCE_DIR_CMAKE)
 # their sources: the modules own those compilations now (src/emu/Paths.cpp
 # used to appear in seven of the fifteen target lists).
 
+# Every suite logs to a file as well as to the console. ctest's own capture has
+# twice proved unreliable on Windows — a GUI-subsystem binary detached stdout
+# entirely (MIN-62), and a failing tst_git reported nothing at all, in a run
+# where the same binary passed seconds later — while QTest's file logger flushes
+# each message as it happens, so a red run leaves a transcript even when the
+# console capture, or the process, does not survive. `-o -,txt` keeps the
+# console output ctest and a developer expect; ci.yml quotes the files for
+# whichever suites failed.
+set(PIST_TEST_LOG_DIR "${CMAKE_BINARY_DIR}/Testing/TestLogs")
+file(MAKE_DIRECTORY "${PIST_TEST_LOG_DIR}")
+function(pist_add_test name)
+    add_test(NAME ${name} COMMAND tst_${name}
+             -o -,txt -o "${PIST_TEST_LOG_DIR}/${name}.log,txt")
+endfunction()
+
 qt_add_executable(tst_parsers
     tests/tst_parsers.cpp
 )
 target_link_libraries(tst_parsers PRIVATE pist_build pist_debug Qt6::Test)
 target_compile_definitions(tst_parsers PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
-add_test(NAME parsers COMMAND tst_parsers)
+pist_add_test(parsers)
 
 # Sprite document, ST palettes, paint tools and PI1/NEO/MBK/PNG codecs.
 # Always runs; no emulator or display required.
@@ -555,7 +570,7 @@ qt_add_executable(tst_image
     tests/tst_image.cpp
 )
 target_link_libraries(tst_image PRIVATE pist_image Qt6::Test)
-add_test(NAME image COMMAND tst_image)
+pist_add_test(image)
 
 # The OS-call reference table and the trap-sequence scanner: pure QtCore
 # code, so the suite needs no display and no emulator.
@@ -563,7 +578,7 @@ qt_add_executable(tst_oscall
     tests/tst_oscall.cpp
 )
 target_link_libraries(tst_oscall PRIVATE pist_editor Qt6::Test)
-add_test(NAME oscall COMMAND tst_oscall)
+pist_add_test(oscall)
 
 # TOS ROM identification: version must come from the image header, so the
 # autostart guard cannot be skipped by an unusual filename.
@@ -571,7 +586,7 @@ qt_add_executable(tst_tosrom
     tests/tst_tosrom.cpp
 )
 target_link_libraries(tst_tosrom PRIVATE pist_project pist_toolchain pist_emu Qt6::Test)
-add_test(NAME tosrom COMMAND tst_tosrom)
+pist_add_test(tosrom)
 
 # The profile save parser: header fields and the memory-area lines that feed
 # the profiler's TOS/ROM row. Pure QtCore; no display or emulator required.
@@ -579,14 +594,14 @@ qt_add_executable(tst_profile
     tests/tst_profile.cpp
 )
 target_link_libraries(tst_profile PRIVATE pist_emu pist_build Qt6::Test)
-add_test(NAME profile COMMAND tst_profile)
+pist_add_test(profile)
 
 # Breakpoint resolution and memory-dump parsing: pure functions, no emulator.
 qt_add_executable(tst_debug
     tests/tst_debug.cpp
 )
 target_link_libraries(tst_debug PRIVATE pist_build pist_debug pist_project pist_emu Qt6::Test)
-add_test(NAME debug COMMAND tst_debug)
+pist_add_test(debug)
 
 # Multi-module source mapping through a linker's map file. The end-to-end case
 # runs a real vasm+vlink when both are available and skips otherwise, so CI
@@ -595,14 +610,14 @@ qt_add_executable(tst_link
     tests/tst_link.cpp
 )
 target_link_libraries(tst_link PRIVATE pist_build Qt6::Test)
-add_test(NAME link COMMAND tst_link)
+pist_add_test(link)
 
 # Project settings persistence.
 qt_add_executable(tst_settings
     tests/tst_settings.cpp
 )
 target_link_libraries(tst_settings PRIVATE pist_project pist_toolchain pist_emu Qt6::Test)
-add_test(NAME settings COMMAND tst_settings)
+pist_add_test(settings)
 
 # First-run fetch/install: checksum verification, archive extraction, and the
 # claim that an installed tool lands where discovery actually looks. Needs no
@@ -614,7 +629,7 @@ qt_add_executable(tst_toolfetch
 target_link_libraries(tst_toolfetch PRIVATE pist_toolchain pist_emu Qt6::Test)
 # The pin guard reads the workflows' copies of the fetch pins.
 target_compile_definitions(tst_toolfetch PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
-add_test(NAME toolfetch COMMAND tst_toolfetch)
+pist_add_test(toolfetch)
 
 # Git status, blame, commit, branches, diff and history. The panel drives a
 # temporary repository; nothing here talks to a remote. Skips the live cases
@@ -623,7 +638,11 @@ qt_add_executable(tst_git
     tests/tst_git.cpp
 )
 target_link_libraries(tst_git PRIVATE pist_git pist_editor pist_ui Qt6::Test)
-add_test(NAME git COMMAND tst_git)
+pist_add_test(git)
+# Git drives a real repository through a panel; the gates inside are sized for a
+# slow runner (tst_git.cpp's kGitWaitMs), so bound the suite rather than let a
+# genuine hang run to the 45-minute step limit.
+set_tests_properties(git PROPERTIES TIMEOUT 600)
 
 # GUI-level: constructs MainWindow and verifies the line map against a real
 # vasm listing, covering the PC <-> source-line claim end to end.
@@ -636,7 +655,7 @@ target_link_libraries(tst_gui PRIVATE pist_ui Qt6::Test)
 # this it would skip silently in a parallel build, and a skipped test reads as a
 # pass in the summary.
 add_dependencies(tst_gui pist)
-add_test(NAME gui COMMAND tst_gui)
+pist_add_test(gui)
 set_tests_properties(gui PROPERTIES TIMEOUT 900)
 
 # Remote-control socket protocol: framing, block terminators, and the synchronous
@@ -647,7 +666,7 @@ qt_add_executable(tst_remotecontrol
 )
 target_link_libraries(tst_remotecontrol PRIVATE pist_control pist_ui Qt6::Test)
 add_dependencies(tst_remotecontrol pist)
-add_test(NAME remotecontrol COMMAND tst_remotecontrol)
+pist_add_test(remotecontrol)
 set_tests_properties(remotecontrol PROPERTIES TIMEOUT 120)
 
 # MCP shim: the JSON-RPC surface an agent talks to. Driven in-process through
@@ -658,7 +677,7 @@ qt_add_executable(tst_mcp
     tests/tst_mcp.cpp
 )
 target_link_libraries(tst_mcp PRIVATE pist_mcp Qt6::Test)
-add_test(NAME mcp COMMAND tst_mcp)
+pist_add_test(mcp)
 set_tests_properties(mcp PROPERTIES TIMEOUT 120)
 
 # Integration test: drives a real Hatari. Skips when its prerequisites are absent.
@@ -666,7 +685,7 @@ qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
 )
 target_link_libraries(tst_emulatorhost PRIVATE pist_emu pist_build pist_debug pist_project pist_toolchain Qt6::Test Qt6::Gui)
-add_test(NAME emulatorhost COMMAND tst_emulatorhost)
+pist_add_test(emulatorhost)
 set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 
 # HRDB backend against the tattlemuss/hatari hrdb-main fork. Gated on
@@ -676,7 +695,7 @@ qt_add_executable(tst_hrdb
     tests/tst_hrdb.cpp
 )
 target_link_libraries(tst_hrdb PRIVATE pist_emu pist_project Qt6::Test)
-add_test(NAME hrdb COMMAND tst_hrdb)
+pist_add_test(hrdb)
 set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 
 # Test binaries must be console applications on Windows. qt_add_executable marks

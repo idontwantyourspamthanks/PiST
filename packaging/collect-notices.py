@@ -144,6 +144,12 @@ def main():
                              "ship its notice without the marker check. The archive "
                              "verification then asserts the text is present in the "
                              "final artifact, so a broken deploy still fails loudly.")
+    parser.add_argument("--hatari-repo",
+                        help="repository the bundled hatari-pist fork was fetched from "
+                             "(reported by the build-hatari action)")
+    parser.add_argument("--hatari-commit",
+                        help="the hatari-pist commit the bundled fork was built from; "
+                             "a GPL source offer must name exactly what was built")
     args = parser.parse_args()
 
     root = args.root
@@ -233,11 +239,20 @@ def main():
         # alone, so the combined work this project conveys is capped at v2 —
         # which is also why no readline travels with it (NOTICE, PLAN §10).
         if b"Remote Debug Listening on port" in hatari.read_bytes():
-            components.append(("Hatari (hrdb-main fork: upstream 2.6.1 + remote-debug "
-                               "listener)", "GPL v2 as conveyed (upstream v2 or later)",
+            # The fork is conveyed GPL-v2-capped with a source offer, and the offer
+            # must name the repository and commit that were actually built. Both
+            # come from the build-hatari action, which owns the pin; a fork binary
+            # without them is drift this script refuses to paper over with a
+            # hardcoded commit (which is how it came to name a repo that was no
+            # longer what shipped).
+            if not args.hatari_commit:
+                fail("the bundled Hatari is the fork (HRDB banner present) but no "
+                     "--hatari-commit was given, so the source offer cannot name it")
+            repo = args.hatari_repo or "https://github.com/idontwantyourspamthanks/hatari-pist"
+            components.append(("Hatari (hatari-pist fork: upstream 2.6.1 + HRDB listener "
+                               "+ media channel)", "GPL v2 as conveyed (upstream v2 or later)",
                                ["GPL-2.0.txt"],
-                               "source: https://github.com/tattlemuss/hatari — pinned "
-                               "commit 21aa4cb76783eb1b141b917fa1976c9c01331d66"))
+                               f"source: {repo} — pinned commit {args.hatari_commit}"))
         else:
             components.append(("Hatari 2.6.1", "GPL v2 as conveyed (upstream v2 or later)",
                                ["GPL-2.0.txt"],

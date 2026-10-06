@@ -94,6 +94,8 @@ int runDiagnose()
         out << "  version: " << emulatorVersion << "\n";
     if (emulator.found())
         out << "  transport: " << (caps.hasHrdb ? "hrdb" : "native") << "\n";
+    if (emulator.found())
+        out << "  media: " << (caps.hasPistMedia ? "yes" : "no") << "\n";
 
     // ROMs and where they were looked for, since "no ROM" is the most common
     // first-run problem and the search spans several directories.

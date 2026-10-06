@@ -74,6 +74,12 @@ outputs:
     # One of the two install steps always runs and the other always skips, so
     # exactly one of these expressions is non-empty.
     value: ${{ steps.install.outputs.path }}${{ steps.install-win.outputs.path }}
+  pist-commit:
+    description: The hatari-pist commit built; empty for the upstream variant.
+    value: ${{ steps.pin.outputs.pist-commit }}
+  pist-url:
+    description: The repository the fork pin was fetched from.
+    value: ${{ steps.pin.outputs.pist-url }}
 
 runs:
   using: composite
@@ -318,3 +324,15 @@ runs:
           || { echo "::error::$BIN lacks the --pist-media channel (protocol v2 marker not found)"; exit 1; }
         grep -aq "Remote Debug Listening on port" "$BIN" \
           || { echo "::error::$BIN lacks the HRDB listener (banner not found)"; exit 1; }
+
+    - name: Report the fork pin
+      id: pin
+      shell: bash
+      run: |
+        # A GPL source offer must name exactly what was built, and the pin lives
+        # here (defaults included), so it is reported from here rather than
+        # re-typed — and drifted — in every caller.
+        if [ "${{ inputs.variant }}" = "pist" ]; then
+          echo "pist-commit=${{ inputs.pist-commit }}" >> "$GITHUB_OUTPUT"
+          echo "pist-url=${{ inputs.pist-url }}" >> "$GITHUB_OUTPUT"
+        fi

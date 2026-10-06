@@ -223,11 +223,12 @@ jobs:
           # host, and sidesteps the archive-area policy problem of shipping a
           # non-free assembler (an AppImage is not a distro package, so the DFSG
           # does not apply — only vasm's own redistribution terms do).
-          # emulator: Linux and Windows bundle the hrdb-main fork of Hatari —
-          # on Windows it is what gives the archive pause and live breakpoints,
-          # since the stock Windows build has no control channel. macOS does
-          # not bundle: the fork links Homebrew SDL2, and rewiring those dylibs
-          # into the .app is unbuilt work (brew install hatari covers it).
+          # emulator: all three legs bundle the hatari-pist fork. On Windows it
+          # is what gives the archive pause, live breakpoints and the media
+          # channel, since the stock Windows build has no control channel; on
+          # macOS the fork links Homebrew's SDL2 and libpng, and the bundling
+          # step below copies that closure into the app and rewires it to
+          # @rpath — the work that used to be why macOS shipped without one.
           - name: linux-x86_64
             os: ubuntu-22.04
             vasm_artifact: vasm-linux
@@ -237,7 +238,7 @@ jobs:
             os: macos-15
             vasm_artifact: vasm-macos
             deployed: true
-            emulator: false
+            emulator: true
           - name: windows-x86_64
             os: windows-latest
             vasm_artifact: vasm-windows
@@ -285,6 +286,7 @@ jobs:
       # the action stages its runtime DLLs beside the exe; on Linux the
       # AppImage deploy step bundles its libraries.
       - name: 'Build Hatari (the bundled emulator: hatari-pist fork)'
+        id: build-fork
         if: matrix.emulator
         uses: ./.github/actions/build-hatari
         with:
@@ -299,7 +301,10 @@ jobs:
           # action's install step asserts the built binary carries both
           # channels by content before it is bundled.
           variant: pist
-          destination: ${{ github.workspace }}/bundle/bin
+          # macOS keeps the binary out of bundle/bin: the Qt deploy step deletes
+          # that directory once vasm and vlink are inside the app, and the
+          # emulator must survive to the bundling step.
+          destination: ${{ runner.os == 'macOS' && format('{0}/emulator', github.workspace) || format('{0}/bundle/bin', github.workspace) }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -401,6 +406,63 @@ jobs:
             | grep -qx PiST \
             || { echo "ERROR: the bundle's CFBundleName is not PiST:"; \
                  /usr/libexec/PlistBuddy -c Print bundle/pist.app/Contents/Info.plist | head -20; exit 1; }
+
+      # The fork links Homebrew's SDL2 and libpng from /opt/homebrew, a prefix
+      # the user's machine need not have — a binary that loads dylibs from the
+      # build host is a binary that does not run. Copy the closure into the
+      # bundle and rewrite every load path to @rpath, the same trick macdeployqt
+      # just played for Qt, then prove it loads by running it.
+      - name: Bundle the emulator into the app (macOS)
+        if: matrix.emulator && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=bundle/pist.app
+          FW="$APP/Contents/Frameworks"
+          SRC=emulator/hatari
+          [ -x "$SRC" ] || { echo "ERROR: no fork binary at $SRC"; exit 1; }
+          mkdir -p "$FW"
+          cp "$SRC" "$APP/Contents/MacOS/hatari"
+
+          # Transitive closure of non-system dylibs, copied once each. Breadth
+          # first over a worklist: a copied library's own brew dependencies are
+          # queued when it is copied, so SDL2's neighbours come along too.
+          queue=("$APP/Contents/MacOS/hatari")
+          copied=""
+          while [ "${#queue[@]}" -gt 0 ]; do
+            next=("${queue[@]}"); queue=()
+            for bin in "${next[@]}"; do
+              while read -r dep; do
+                case "$dep" in
+                  /opt/homebrew/*|/usr/local/*) ;;
+                  *) continue ;;
+                esac
+                base=$(basename "$dep")
+                if [ ! -f "$FW/$base" ]; then
+                  cp "$dep" "$FW/$base"
+                  install_name_tool -id "@rpath/$base" "$FW/$base"
+                  # siblings resolve from the directory they were copied into
+                  install_name_tool -add_rpath "@loader_path/." "$FW/$base"
+                  copied="$copied $base"
+                  queue+=("$FW/$base")
+                fi
+                install_name_tool -change "$dep" "@rpath/$base" "$bin"
+              done < <(otool -L "$bin" | tail -n +2 | awk '{print $1}')
+            done
+          done
+          install_name_tool -add_rpath "@executable_path/../Frameworks" \
+            "$APP/Contents/MacOS/hatari"
+          echo "bundled dylibs:${copied:- none}"
+
+          # Nothing may still point at the build host's prefix, and the binary
+          # must actually load: dyld failures surface here, not on a user's
+          # machine. --version is the one Hatari invocation that is safe headless.
+          if otool -L "$APP/Contents/MacOS/hatari" "$FW"/*.dylib \
+             | grep -E '/opt/homebrew|/usr/local'; then
+            echo "ERROR: the bundled emulator still loads from the build host"
+            exit 1
+          fi
+          "$APP/Contents/MacOS/hatari" --version | head -1
 
       - name: Deploy Qt runtime (Windows)
         if: matrix.deployed && runner.os == 'Windows'
@@ -888,7 +950,9 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] && PLATFORM=windows
           python3 packaging/collect-notices.py --root bundle --platform "$PLATFORM" \
             --qt-version "$QT_VERSION" --vasm-tarball vasm.tar.gz \
-            --vlink-tarball vlink.tar.gz
+            --vlink-tarball vlink.tar.gz \
+            --hatari-repo "${{ steps.build-fork.outputs.pist-url }}" \
+            --hatari-commit "${{ steps.build-fork.outputs.pist-commit }}"
 
       # The point of the exercise: prove the packaged archive resolves the
       # assembler *it* carries, rather than one on the machine building it.
@@ -1094,6 +1158,18 @@ jobs:
                  cat diagnose-sealed.txt; exit 1; }
           grep -q 'PiST.app/Contents/MacOS/vasmm68k_mot' diagnose-sealed.txt \
             || { echo "ERROR: the sealed app does not find its own assembler"; \
+                 cat diagnose-sealed.txt; exit 1; }
+          # The emulator travels inside the app now, so the sealed bundle must
+          # resolve it there — and it must be the fork, or the panel and the
+          # HRDB transport this release promises are not in the artifact.
+          grep -q 'PiST.app/Contents/MacOS/hatari' diagnose-sealed.txt \
+            || { echo "ERROR: the sealed app does not find its own emulator"; \
+                 cat diagnose-sealed.txt; exit 1; }
+          grep -q 'transport: hrdb' diagnose-sealed.txt \
+            || { echo "ERROR: the bundled emulator does not speak HRDB"; \
+                 cat diagnose-sealed.txt; exit 1; }
+          grep -q 'media: yes' diagnose-sealed.txt \
+            || { echo "ERROR: the bundled emulator has no media channel"; \
                  cat diagnose-sealed.txt; exit 1; }
 
       - name: Package archive

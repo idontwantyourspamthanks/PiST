@@ -63,11 +63,11 @@ inputs:
       variant; the fetch fails loudly on an empty pin rather than silently
       building something else.
     required: false
-    default: 'd7e3363f3dc400292f15e90b07107ad0b7c1acfb'
+    default: '1c583f18cf28bbea0dffe95fd171be267e26b05d'
   pist-sha256:
     description: 'SHA-256 of the pinned hatari-pist tarball at pist-commit.'
     required: false
-    default: '3a8aa1cbf796ae2e5ded19875d380ce2910d1094b41658696910152b0bc73581'
+    default: 'd7207d13fb6fce021595e97ec5a101a8cbe7e47258f6a97466842897ec35941e'
 outputs:
   path:
     description: Absolute path to the built `hatari` binary.

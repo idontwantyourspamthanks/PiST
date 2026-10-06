@@ -903,8 +903,16 @@ void MainWindow::refreshToolchain()
     // override pointing elsewhere, the discovered binary's capabilities are
     // the wrong answer for the status bar.
     m_caps = probeHatari(toolchain::findEmulator(m_settings.hatariPath).path);
-    m_statusToolchain->setText(
-        QStringLiteral("vasm: %1").arg(QFileInfo(m_build->assemblerPath()).fileName()));
+    // A configured path that resolves to the wrong tool is reported as not
+    // found (toolchain::locate), which would otherwise leave the chip naming a
+    // bare fallback while the reason — the only sentence that says what is
+    // actually misconfigured — went unread. Put it where the eye already is.
+    if (!assembler.reason.isEmpty())
+        qWarning("toolchain: %s", qPrintable(assembler.reason));
+    m_statusToolchain->setText(assembler.reason.isEmpty()
+                                   ? QStringLiteral("vasm: %1").arg(
+                                         QFileInfo(m_build->assemblerPath()).fileName())
+                                   : assembler.reason);
     updateSessionChip();
 }
 

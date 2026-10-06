@@ -256,7 +256,11 @@ jobs:
           # verify the build by content probe instead (HatariProbe scans the
           # binary on Windows precisely because of this).
           if [ "${{ runner.os }}" != "Windows" ]; then
-            hatari --version 2>&1 | sed -n '1p' || true
+            # SDL_Init(SDL_INIT_VIDEO) runs before option parsing, so on a
+            # headless runner --version dies before answering: this check has
+            # printed a blank line and verified nothing. The dummy driver is
+            # what makes it a check.
+            SDL_VIDEODRIVER=dummy hatari --version 2>&1 | sed -n '1p' || true
           fi
 
       - name: Fetch a ROM

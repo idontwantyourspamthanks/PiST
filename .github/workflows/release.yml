@@ -470,16 +470,20 @@ jobs:
           echo "--- Contents/Frameworks ---"
           ls -l "$FW"
           rc=0
-          ver="$("$APP/Contents/MacOS/hatari" --version 2>&1)" || rc=$?
+          # SDL_Init(SDL_INIT_VIDEO) runs before option parsing, so without a
+          # video driver a headless runner dies before --version is answered —
+          # the same trap CI's verify step fell into.
+          ver="$(SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+            "$APP/Contents/MacOS/hatari" --version 2>&1)" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "ERROR: the bundled emulator exited $rc on --version"
             echo "$ver"
             exit 1
           fi
           printf '%s\n' "$ver" | head -1
-          # Nothing may still point at the build host's prefix, and the binary
-          # must actually load: dyld failures surface here, not on a user's
-          # machine. --version is the one Hatari invocation that is safe headless.
+          # Nothing may still point at the build host's prefix: a load path into
+          # /opt/homebrew is a binary that will not run on a machine without
+          # Homebrew, which is most of them.
           if otool -L "$APP/Contents/MacOS/hatari" "$FW"/*.dylib \
              | grep -E '/opt/homebrew|/usr/local'; then
             echo "ERROR: the bundled emulator still loads from the build host"

@@ -8,10 +8,12 @@
 
 #include <QCursor>
 #include <QEnterEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPainter>
+#include <QScreen>
 
 namespace pist {
 
@@ -256,16 +258,32 @@ void EmulatorDisplayWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    const QPoint hostDelta = event->pos() - m_lastMousePos;
+    const QPoint here = event->pos();
+    const QPoint hostDelta = here - m_lastMousePos;
+    m_lastMousePos = here;
     if (hostDelta.isNull())
         return;
 
-    // Re-centre so the physical cursor can't pin at a screen edge; harmless
-    // where the platform can't warp (offscreen, Wayland) since deltas are
-    // relative anyway.
-    const QPoint centre = rect().center();
-    QCursor::setPos(mapToGlobal(centre));
-    m_lastMousePos = centre;
+    // Deltas are event-to-event: correct for a relative mouse and for a guest
+    // driver that integrates the host pointer absolutely (VirtualBox mouse
+    // integration), where re-centring on every move is overwritten by the next
+    // injected event and turns each delta into the full offset from centre —
+    // one axis amplified, the other pinned. The host cursor is blank while
+    // captured, so letting it roam costs nothing; the one thing it must not do
+    // is pin at a screen edge and stop delivering motion, so warp, and re-base,
+    // only when it gets close to one.
+    const QPoint globalHere = mapToGlobal(here);
+    if (QScreen *screen = QGuiApplication::screenAt(globalHere)) {
+        const QRect geom = screen->geometry();
+        const int margin = 32;
+        if (globalHere.x() < geom.x() + margin || globalHere.y() < geom.y() + margin
+            || globalHere.x() > geom.right() - margin
+            || globalHere.y() > geom.bottom() - margin) {
+            const QPoint centre = rect().center();
+            QCursor::setPos(mapToGlobal(centre));
+            m_lastMousePos = centre;
+        }
+    }
 
     // Host pixels are not guest pixels: the frame is aspect-fit, so the
     // fitted rect's scale converts, and the accumulator keeps the fraction

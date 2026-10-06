@@ -1540,8 +1540,11 @@ hidden host-side. Consequences:
 
 - **Ungrabbed display:** the host cursor is hidden whenever it is over the panel while a session
   runs, so only the guest cursor is ever visible (host-side compositing is infeasible for software
-  cursors; auto-grab-on-hover is surprising). The fork exports the guest pointer position from the
-  IKBD/6301 emulation state (it tracks absolute position internally) for the click affordance.
+  cursors; auto-grab-on-hover is surprising). Nothing exports the guest pointer position: the
+  channel's outbound traffic is FRAME and AUDIO only, so the host never learns where the guest
+  cursor is and composites nothing — the arrow the user aims with is the guest's own, baked into
+  the frame. (An earlier draft of this bullet claimed an IKBD position export "for the click
+  affordance"; like the resync below it was plan text, corrected 2026-10-06.)
 - **Scaling:** the panel paints aspect-fit, so host pixels ≠ guest pixels. Deltas are divided by the
   effective `fittedRect` scale with a sub-pixel accumulator, or a small/HiDPI panel makes the guest
   cursor outrun the hand continuously.

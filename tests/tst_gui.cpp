@@ -4271,48 +4271,50 @@ void TstGui::mediaDisplayFeedsThePanel()
     // subset of the source pixels than a stride-2 walk of it does, so both
     // sides have to be reduced the same way before their cells mean the same
     // thing.
-    MediaFrame pending;
-    QString note = QStringLiteral("the channel delivered no structured frame");
+    MediaFrame newest; // the last frame the channel delivered, whatever it shows
+    int newestSpread = 0;
+    QString note = QStringLiteral("the channel delivered no frame");
     const QMetaObject::Connection probe =
         connect(host, &IDebugBackend::mediaFrameReceived, display, [&](const MediaFrame &frame) {
             if (!frame.w || !frame.h)
                 return;
-            // A flat frame — the black of a screen clear, or one caught
-            // mid-change — would pass or fail vacuously, so it is not a
-            // candidate; the last structured one is what gets compared.
-            const int spread = gridSpread(frameCellMeans(frame));
-            if (spread < 32) {
-                note = QStringLiteral("frame %1x%2 seq %3 is flat (spread %4)")
-                           .arg(frame.w)
-                           .arg(frame.h)
-                           .arg(frame.seq)
-                           .arg(spread);
-                return;
-            }
-            pending = frame; // the payload is the copy the transport handed over
-            note = QStringLiteral("frame %1x%2 seq %3 never matched the panel")
-                       .arg(frame.w)
-                       .arg(frame.h)
-                       .arg(frame.seq);
+            // The panel shows the newest frame and nothing else, so that is the
+            // only candidate — an older structured one is not a fallback, it is
+            // a frame the panel has already painted over.
+            newest = frame; // the payload is the copy the transport handed over
+            newestSpread = gridSpread(frameCellMeans(newest));
+            note = newestSpread < 32
+                       ? QStringLiteral("frame %1x%2 seq %3 is flat (spread %4)")
+                             .arg(frame.w)
+                             .arg(frame.h)
+                             .arg(frame.seq)
+                             .arg(newestSpread)
+                       : QStringLiteral("frame %1x%2 seq %3 never matched the panel")
+                             .arg(frame.w)
+                             .arg(frame.h)
+                             .arg(frame.seq);
         });
     // The entry stop's frame can genuinely be black (the desktop switch clears
     // the screen first), so a match there proves nothing; resume past it.
     host->resume();
     // The guest may never redraw after this — a program that loops forever
     // leaves the screen as the boot left it, and the stream is change-gated —
-    // so the frame to compare is the one already delivered, and what the wait
-    // is really for is the badge to go away.
+    // so what the wait is really for is the badge to go away, not another frame.
     const bool painted = QTest::qWaitFor(
         [&] {
-            if (!pending.w)
+            if (!newest.w)
                 return false;
             if (host->isStopped()) {
                 note = QStringLiteral("the session never resumed, so the Paused badge still "
                                        "covers the panel");
                 return false;
             }
+            // A flat frame — the black of a screen clear, or one caught
+            // mid-change — would pass or fail vacuously, so it proves nothing.
+            if (newestSpread < 32)
+                return false;
             QString reason;
-            if (panelPaintsFrame(display, pending, &reason))
+            if (panelPaintsFrame(display, newest, &reason))
                 return true;
             note = reason;
             return false;

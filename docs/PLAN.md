@@ -1628,6 +1628,11 @@ produced exact count agreement.)
 - **One push per VBL:** `sent + dropped ≈ VBLs` in every run, so frameskipping never engaged here —
   but fast-forward can raise it (`Main_WaitOnVbl`), so media mode must force `--frameskips 0` or
   surface a "video skipped" state, or the panel silently starves.
+  A dropped *changed* frame is re-sent once the in-flight frame drains (fork 1c583f1): the pending
+  tail is the remainder of an already-sent frame, so it must finish first — the resend fires on the
+  next clear VBL rather than discarding mid-frame. Without it a screen that goes quiet after a
+  burst (the desktop's final menu-bar and pointer draws) leaves the panel a frame behind forever,
+  which reads as a missing cursor.
 - **Reconnect storm:** a self-exited receiver left the fork calling `connect()` every frame (32689
   failures in 68 s). Reconnect backoff (~1 Hz) is a phase-1 requirement.
 - **Loopback self-connect (the session's deep finding):** measured in a run with clean process

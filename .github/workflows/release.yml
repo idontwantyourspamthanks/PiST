@@ -462,7 +462,21 @@ jobs:
             codesign --force --sign - "$lib"
           done
           echo "bundled dylibs:${copied:- none}"
-
+          # Forensics first: a silent non-zero exit here cost a cycle to guess
+          # at, and the two things that matter are what the binary actually
+          # links and what is sitting in Frameworks.
+          echo "--- otool -L (bundled hatari) ---"
+          otool -L "$APP/Contents/MacOS/hatari"
+          echo "--- Contents/Frameworks ---"
+          ls -l "$FW"
+          rc=0
+          ver="$("$APP/Contents/MacOS/hatari" --version 2>&1)" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "ERROR: the bundled emulator exited $rc on --version"
+            echo "$ver"
+            exit 1
+          fi
+          printf '%s\n' "$ver" | head -1
           # Nothing may still point at the build host's prefix, and the binary
           # must actually load: dyld failures surface here, not on a user's
           # machine. --version is the one Hatari invocation that is safe headless.

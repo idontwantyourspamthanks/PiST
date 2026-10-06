@@ -5,6 +5,7 @@
 #include "ui/Appearance.h"
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCursor>
 #include <QFont>
 #include <QPalette>
@@ -18,7 +19,6 @@
 
 #include <cctype>
 #include <cmath>
-#include <cstdlib>
 
 namespace pist {
 namespace appearance {
@@ -1216,12 +1216,31 @@ QPainterPath svgPath(const char *d)
         return *s == '+' || *s == '-' || *s == '.'
             || (*s >= '0' && *s <= '9');
     };
+    // Not strtod: it follows LC_NUMERIC, which QCoreApplication sets from the
+    // environment, so under a comma-decimal locale (is_IS, de_DE) ".001"
+    // consumed nothing and the implicit-repeat loop never advanced. Scan the
+    // SVG number token here and convert it with the C-locale QByteArray parser.
     auto number = [&] {
         skip();
-        char *end = nullptr;
-        const qreal v = std::strtod(s, &end);
-        s = end;
-        return v;
+        const char *start = s;
+        auto digits = [&] {
+            while (*s >= '0' && *s <= '9')
+                ++s;
+        };
+        if (*s == '+' || *s == '-')
+            ++s;
+        digits();
+        if (*s == '.') {
+            ++s;
+            digits();
+        }
+        if ((*s == 'e' || *s == 'E')
+            && ((s[1] >= '0' && s[1] <= '9')
+                || ((s[1] == '+' || s[1] == '-') && s[2] >= '0' && s[2] <= '9'))) {
+            s += 2;
+            digits();
+        }
+        return QByteArray(start, int(s - start)).toDouble();
     };
 
     skip();

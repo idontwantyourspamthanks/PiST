@@ -36,6 +36,7 @@ private slots:
     void checksumMismatchRefusesInstall();
     void installToolBinaryIsFoundByDiscovery();
     void installToolBinaryFailsWithoutRemovingExisting();
+    void assemblerOverrideMustIdentifyItself();
     void vasmTarballBuildsAndInstalls();
 
     void zipMemberExtractsFromNestedDirectory();
@@ -239,6 +240,48 @@ void TstToolFetch::installToolBinaryFailsWithoutRemovingExisting()
     QCOMPARE(survivor.readAll(), content);
     QVERIFY(QFileInfo(installed).isExecutable());
     QVERIFY(!QFileInfo::exists(installed + QStringLiteral(".part")));
+}
+
+void TstToolFetch::assemblerOverrideMustIdentifyItself()
+{
+    // An override is a path the user typed or browsed to and nothing else
+    // checks it: the Browse filter is "All files", so a mis-click can file the
+    // emulator as the assembler, and a build then invokes the emulator with
+    // vasm's argument shape — no object file, no error naming the cause, and a
+    // stale program autostarted into a baffling session. The override must
+    // carry its tool's identity, the way hatari's is probed.
+    const auto writeExe = [this](const QString &path, const QByteArray &content) {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(content);
+        f.close();
+        QFile::setPermissions(path, QFile::permissions(path) | QFileDevice::ExeOwner
+                                          | QFileDevice::ExeGroup | QFileDevice::ExeUser);
+    };
+#ifdef Q_OS_WIN
+    const QString suffix = QStringLiteral(".exe");
+#else
+    const QString suffix;
+#endif
+    const QString real = m_work.path() + QStringLiteral("/real-vasm") + suffix;
+    writeExe(real, "vasm 1.92 fixture, carries the banner");
+    const QString impostor = m_work.path() + QStringLiteral("/impostor") + suffix;
+    writeExe(impostor, "hatari 2.6.1 fixture, no assembler banner");
+
+    const ToolInfo good = toolchain::findAssembler(real);
+    QVERIFY2(good.found(), qPrintable(good.reason));
+    QCOMPARE(QDir::cleanPath(good.path), QDir::cleanPath(real));
+    QVERIFY(good.reason.isEmpty());
+
+    const ToolInfo bad = toolchain::findAssembler(impostor);
+    QVERIFY(!bad.found());
+    QVERIFY(bad.path.isEmpty());
+    QVERIFY(!bad.reason.isEmpty());
+
+    // The linker is checked the same way: a vasm filed as vlink must not link.
+    const ToolInfo badLinker = toolchain::findLinker(real);
+    QVERIFY(!badLinker.found());
+    QVERIFY(!badLinker.reason.isEmpty());
 }
 
 void TstToolFetch::vasmTarballBuildsAndInstalls()

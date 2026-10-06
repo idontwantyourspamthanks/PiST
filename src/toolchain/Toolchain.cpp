@@ -101,6 +101,30 @@ QString resolveOverridePath(const QString &overridePath)
     return {};
 }
 
+/// The string a tool's own binary carries: vasm embeds its "vasm" banner and
+/// vlink embeds "vlink". Empty for tools whose identity is checked elsewhere
+/// (hatari has emu/HatariProbe, which also reads its capabilities).
+QString identityMarker(const QString &program)
+{
+    if (program == QLatin1String("vasmm68k_mot"))
+        return QStringLiteral("vasm");
+    if (program == QLatin1String("vlink"))
+        return QStringLiteral("vlink");
+    return {};
+}
+
+/// Whether `path` carries `marker` in its first bytes. Bounded rather than
+/// whole-file: both binaries are well under this and the banner sits in their
+/// read-only data near the start.
+bool carriesMarker(const QString &path, const QString &marker)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    return file.read(4 * 1024 * 1024).contains(marker.toLatin1());
+}
+
+
 ToolInfo locate(const QString &program, const QString &overridePath)
 {
     ToolInfo info;
@@ -110,10 +134,24 @@ ToolInfo locate(const QString &program, const QString &overridePath)
     //    resolve: pointing PiST at a binary that has moved is a mistake worth
     //    reporting rather than silently substituting a different one. `reason`
     //    is what lets the caller report that instead of showing the bare name.
+    //    An override that resolves but does not carry its tool's identity is
+    //    reported the same way: the Browse filter is "All files", so a mis-click
+    //    can file the emulator as the assembler, and building then invokes the
+    //    emulator with vasm's argument shape — no object file, no error naming
+    //    the cause, and a stale program autostarted into a baffling session.
+    //    A name is not evidence; hatari gets the same treatment from HatariProbe.
     if (!overridePath.isEmpty()) {
         info.path = resolveOverridePath(overridePath);
         if (info.path.isEmpty()) {
             info.reason = QObject::tr("'%1' is not an executable file").arg(overridePath);
+        } else {
+            const QString marker = identityMarker(program);
+            if (!marker.isEmpty() && !carriesMarker(info.path, marker)) {
+                info.reason = QObject::tr("'%1' is executable but carries no %2 identity "
+                                          "marker; it is not the tool it is filed under")
+                                  .arg(overridePath, program);
+                info.path.clear();
+            }
         }
         return info;
     }

@@ -803,7 +803,9 @@ void TstSettings::explicitPathWinsOverDiscovery()
 
     QFile f(fake);
     QVERIFY(f.open(QIODevice::WriteOnly));
-    f.write("#!/bin/sh\nexit 0\n");
+    // The override must also identify itself as the tool it is filed under, so
+    // the fixture carries vasm's banner the way a real binary does.
+    f.write("#!/bin/sh\necho 'vasm 9.9z fixture'\n");
     f.close();
     QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
                              | QFileDevice::ExeOwner));

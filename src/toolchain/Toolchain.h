@@ -20,11 +20,11 @@ struct ToolInfo
     QString version;  ///< first version-looking token from `--version`, if cheap
     QString name;     ///< human-facing name, e.g. "vasmm68k_mot"
 
-    /// Why an explicit path from settings did not resolve. Empty in every other
+    /// Why an explicit path from settings is not usable. Empty in every other
     /// case: "nothing was found" needs no explanation, but a path the user typed
-    /// that does not run is their mistake to correct, and the callers that show
-    /// it must be able to tell the two apart instead of printing the bare
-    /// program name as if discovery had found it.
+    /// that does not run — or that runs and turns out not to be the tool it is
+    /// filed under — is their mistake to correct, and the callers that show it
+    /// must be able to tell those apart from discovery simply finding nothing.
     QString reason;
 
     bool found() const { return !path.isEmpty(); }

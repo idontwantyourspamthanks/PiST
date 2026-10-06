@@ -64,16 +64,22 @@ int runDiagnose()
         << (assembler.found() ? assembler.path : QStringLiteral("NOT FOUND")) << "\n";
     if (assembler.found() && !assembler.version.isEmpty())
         out << "  version: " << assembler.version << "\n";
+    if (!assembler.found() && !assembler.reason.isEmpty())
+        out << "  reason: " << assembler.reason << "\n";
 
     const pist::ToolInfo linker = pist::toolchain::findLinker();
     out << "Linker (vlink): "
         << (linker.found() ? linker.path : QStringLiteral("NOT FOUND")) << "\n";
     if (linker.found() && !linker.version.isEmpty())
         out << "  version: " << linker.version << "\n";
+    if (!linker.found() && !linker.reason.isEmpty())
+        out << "  reason: " << linker.reason << "\n";
 
     const pist::ToolInfo emulator = pist::toolchain::findEmulator();
     out << "Emulator (hatari): "
         << (emulator.found() ? emulator.path : QStringLiteral("NOT FOUND")) << "\n";
+    if (!emulator.found() && !emulator.reason.isEmpty())
+        out << "  reason: " << emulator.reason << "\n";
     // Probe the emulator's capabilities, so a release archive can prove
     // what its bundled emulator speaks (native prompt framing vs HRDB).
     pist::HatariCapabilities caps;

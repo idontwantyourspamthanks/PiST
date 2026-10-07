@@ -500,10 +500,16 @@ jobs:
           # binary runs to files under a watchdog, and a hang is reported
           # with a backtrace and a dyld trace rather than silence.
           SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+            DYLD_PRINT_LIBRARIES=1 \
             "$APP/Contents/MacOS/hatari" --version \
             > "$FW/../banner-out.txt" 2> "$FW/../banner-err.txt" &
           BPID=$!
-          ( sleep 60; kill -9 "$BPID" 2>/dev/null ) &
+          # The watchdog samples the process BEFORE killing it — a backtrace
+          # of a dead process is nothing — and the dyld trace in banner-err
+          # names the library being mapped when it stopped moving.
+          ( sleep 45
+            sample "$APP/Contents/MacOS/hatari" 5 -file "$FW/../sample.txt" 2>/dev/null || true
+            kill -9 "$BPID" 2>/dev/null ) &
           WATCHDOG=$!
           rc=0
           wait "$BPID" || rc=$?   # --version exits 1 by design; capture, don't die
@@ -516,14 +522,15 @@ jobs:
           if ! printf '%s\n' "$ver" | grep -q "the Atari ST, STE, TT and Falcon emulator"; then
             echo "ERROR: the bundled emulator did not run (exit $rc):"
             echo "$ver"
-            # A process the watchdog had to kill is a hang, not a fast exit:
-            # say so, and capture what it was doing when it stopped moving.
-            if [ "$rc" -ge 128 ]; then
+            # The watchdog's sample() and the DYLD_PRINT trace are printed
+            # whenever they exist: a fast failure produces no sample (none
+            # was taken), a hang produces both, and the trace names the
+            # library whose mapping never finished.
+            echo "--- dyld trace tail ---"
+            tail -40 "$FW/../banner-err.txt" 2>/dev/null || true
+            if [ -f "$FW/../sample.txt" ]; then
               echo "--- backtrace of the hung process ---"
-              sample "$APP/Contents/MacOS/hatari" 5 -file "$FW/../sample.txt" 2>/dev/null \
-                || sample "$BPID" 5 -file "$FW/../sample.txt" 2>/dev/null \
-                || true
-              sed -n '1,80p' "$FW/../sample.txt" 2>/dev/null || true
+              sed -n '1,80p' "$FW/../sample.txt"
             fi
             exit 1
           fi

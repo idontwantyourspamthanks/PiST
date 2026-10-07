@@ -448,14 +448,31 @@ jobs:
                 if [ ! -f "$FW/$base" ]; then
                   cp "$dep" "$FW/$base"
                   install_name_tool -id "@rpath/$base" "$FW/$base"
-                  # siblings resolve from the directory they were copied into
-                  install_name_tool -add_rpath "@loader_path/." "$FW/$base"
+                  # rpaths are purged and re-added in one place below
                   copied="$copied $base"
                   queue+=("$FW/$base")
                 fi
                 install_name_tool -change "$dep" "@rpath/$base" "$bin"
               done < <(otool -L "$bin" | tail -n +2 | awk '{print $1}')
             done
+          done
+          # The fork and every copied dylib arrive with the build host's
+          # rpaths (build-tree directories, /opt/homebrew/lib) ahead of the
+          # ones we add, so dyld resolves @rpath/... from the BUILD HOST
+          # first: on any Mac with Homebrew the bundled SDL2/libpng were
+          # never the ones loaded — a mismatch channel the banner check
+          # cannot see, since the runner has Homebrew too. Delete every
+          # inherited rpath and add exactly the ones this layout needs.
+          purge_rpaths() {
+            while read -r rp; do
+              install_name_tool -delete_rpath "$rp" "$1"
+            done < <(otool -l "$1" | awk '/LC_RPATH/{f=1} f&&/path /{sub(/^ +path /,""); print; f=0}')
+          }
+          purge_rpaths "$APP/Contents/MacOS/hatari"
+          for lib in "$FW"/*.dylib; do
+            [ -e "$lib" ] || continue
+            purge_rpaths "$lib"
+            install_name_tool -add_rpath "@loader_path/." "$lib"
           done
           install_name_tool -add_rpath "@executable_path/../Frameworks" \
             "$APP/Contents/MacOS/hatari"
@@ -494,6 +511,16 @@ jobs:
           # condition so a match is reported, not merely fatal.
           hosts="$(otool -L "$APP/Contents/MacOS/hatari" "$FW"/*.dylib 2>&1 \
                    | grep -E '/opt/homebrew|/usr/local' || true)"
+          # The same hole exists in rpaths: an inherited /opt/homebrew/lib
+          # rpath makes dyld prefer the build host's libraries over the
+          # bundled ones on any Mac that has Homebrew. otool -l lists them.
+          for bin in "$APP/Contents/MacOS/hatari" "$FW"/*.dylib; do
+            [ -e "$bin" ] || continue
+            bad_rp="$(otool -l "$bin" \
+                      | awk '/LC_RPATH/{f=1} f&&/path /{sub(/^ +path /,""); print; f=0}' \
+                      | grep -E '/opt/homebrew|/usr/local|/Users/' || true)"
+            [ -z "$bad_rp" ] || hosts="$hosts $bad_rp"
+          done
           if [ -n "$hosts" ]; then
             echo "ERROR: the bundled emulator still loads from the build host:"
             echo "$hosts"

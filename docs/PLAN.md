@@ -1308,6 +1308,15 @@ project; everything before it was either Linux-only or read from source.
    that lost it is fixed) or was SIGKILLed (invalid signature on arm64 is the classic cause).
    The seal step's new boot smoke, plus a re-cut dmg with the rpath purge, is the next evidence.
 
+11. ~~The fork's root `readme.txt` is a verbatim upstream blob~~ — **changed 2026-10-07,
+   documentation only**: hatari-pist's `readme.txt` now opens with a section 0 stating the fork's
+   purpose (the `--pist-media` channel, the HRDB listener, and the `hatari` binary-name /
+   no-Readline constraints), with sections 1–7 kept verbatim (title and contents list adjusted) —
+   so §2.4's citation of the linking clause and §7's quoted licence wording still quote text
+   present in the tree. Provenance blob comparisons like §7's "identical `readme.txt` blob to
+   upstream" must run against the pristine pinned tarball (sha256 in
+   `../hatari-pist/HATARI-PIST.md`), not against the fork tree.
+
 
 ---
 

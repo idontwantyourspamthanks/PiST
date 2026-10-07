@@ -505,7 +505,14 @@ jobs:
           # emulated process left as an orphan named in cleanup), so the
           # binary runs to files under a watchdog, and a hang is reported
           # with a backtrace and a dyld trace rather than silence.
-          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+          # SDL_ASSERT=abort turns any SDL assertion into an immediate
+          # abort with the message on stderr: the default handler shows a
+          # modal NSAlert, which is a hang on a headless runner and a
+          # forever-dialog in a background process on a user machine.
+          # The last run hung exactly there (NSAlert runModal inside a
+          # dyld initializer, in the backtrace); aborting names the
+          # assertion instead.
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SDL_ASSERT=abort \
             "$APP/Contents/MacOS/hatari" --version \
             > "$FW/../banner-out.txt" 2> "$FW/../banner-err.txt" &
           BPID=$!

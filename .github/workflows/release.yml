@@ -1222,18 +1222,20 @@ jobs:
           ASMDIR=$(mktemp -d)
           "$APP/Contents/MacOS/vasmm68k_mot" -quiet -Ftos \
             -o "$ASMDIR/hello.prg" demo/hello.s
+          # The entry breakpoint the IDE's bootstrap script arms: without it
+          # there is no stop to wait for, and the smoke proves nothing.
+          printf 'b pc = TEXT && pc < $e00000 :once\n' > "$ASMDIR/boot.ini"
           SMOKEDIR=$(mktemp -d)
           HOME="$SMOKEDIR" XDG_CONFIG_HOME="$SMOKEDIR" \
             SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
             "$APP/Contents/MacOS/hatari" \
             --tos "$APP/Contents/share/emutos/etos1024k.img" \
-            --machine st --memsize 1 --monitor rgb \
+            --machine st --memsize 1 --monitor vga \
             --alert-level fatal --confirm-quit off --sound off \
             -d "$ASMDIR" \
-            --debug-except autostart,illegal,address,zerodiv \
-            --control-socket "$SMOKEDIR/ctl.sock" \
+            --parse "$ASMDIR/boot.ini" \
             "$ASMDIR/hello.prg" \
-            < /dev/null > "$SMOKEDIR/out.txt" 2> "$SMOKEDIR/err.txt" &
+            > "$SMOKEDIR/out.txt" 2> "$SMOKEDIR/err.txt" &
           SMOKE_PID=$!
           for i in $(seq 1 60); do
             if grep -q 'entering debug mode\|You have entered debug mode' \

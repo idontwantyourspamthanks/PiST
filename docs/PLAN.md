@@ -1285,6 +1285,26 @@ project; everything before it was either Linux-only or read from source.
    remains open against the *input* direction, not this gap — keys reach the guest audibly while
    the pointer is absent, which no platform-neutral path explains yet.
 
+10. **The 0.9.0-alpha macOS dmg's bundled fork dies at session start.** Reported from a real
+   machine (2026-10-07): the app resolves its own emulator, EmuTOS and vasm; the session spawns
+   the bundled `hatari` with the full argv; then "The remote-debug connection dropped" and
+   nothing else — no `Hatari, compiled on` on stderr (which is unbuffered, so it was never
+   written, meaning the child died before `Main_Init`/`Log_Init` or was killed by a signal),
+   no media connect (the channel only speaks after the first rendered frame), and *no exit
+   line* — the last one being a PiST defect, since `HrdbBackend::stop()` disconnected
+   `QProcess::finished` before the child's death notification could fire (fixed: the disconnect
+   handler now waits for the notification, and both backends report the signal for a crash
+   exit). The artifact itself has been dissected statically: the dylib closure is complete and
+   `@rpath`-rewired (SDL2, libpng, the X11 chain), the ad-hoc signature's hashes verify, and
+   the LC_RPATH list carries build-tree paths plus `/opt/homebrew/lib` before
+   `@executable_path/../Frameworks` — so on any Mac *with* Homebrew the bundled fork loads
+   Homebrew's SDL2/libpng rather than the bundled ones, a latent mismatch channel the banner
+   check cannot see (the runner has Homebrew too). The release workflow now boots the sealed
+   emulator to the entry stop (release.yml "Seal the macOS app"), which reproduces the session
+   shape on the artifact; a re-cut with it is the next evidence. The user-side crash report
+   (`~/Library/Logs/DiagnosticReports/hatari-*.ips`) would settle the root cause directly and
+   is still outstanding.
+
 
 ---
 

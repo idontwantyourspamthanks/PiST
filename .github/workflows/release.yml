@@ -491,6 +491,12 @@ jobs:
           # links and what is sitting in Frameworks.
           echo "--- otool -L (bundled hatari) ---"
           otool -L "$APP/Contents/MacOS/hatari"
+          echo "--- otool -L (every bundled dylib) ---"
+          for lib in "$FW"/*.dylib; do
+            [ -e "$lib" ] || continue
+            echo "== $(basename "$lib") =="
+            otool -L "$lib"
+          done
           echo "--- Contents/Frameworks ---"
           ls -l "$FW"
           # Load proof for the bundled closure. A `$( )` substitution swallows
@@ -500,15 +506,17 @@ jobs:
           # binary runs to files under a watchdog, and a hang is reported
           # with a backtrace and a dyld trace rather than silence.
           SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-            DYLD_PRINT_LIBRARIES=1 \
             "$APP/Contents/MacOS/hatari" --version \
             > "$FW/../banner-out.txt" 2> "$FW/../banner-err.txt" &
           BPID=$!
           # The watchdog samples the process BEFORE killing it — a backtrace
-          # of a dead process is nothing — and the dyld trace in banner-err
-          # names the library being mapped when it stopped moving.
-          ( sleep 45
-            sample "$APP/Contents/MacOS/hatari" 5 -file "$FW/../sample.txt" 2>/dev/null || true
+          # of a dead process is nothing — with sample(1)'s errors kept
+          # visible, because a failed sampler looks exactly like a missing
+          # backtrace otherwise.
+          ( sleep 40
+            sample "$APP/Contents/MacOS/hatari" 10 -file "$FW/../sample.txt" \
+              2> "$FW/../sample-err.txt" || true
+            sleep 5
             kill -9 "$BPID" 2>/dev/null ) &
           WATCHDOG=$!
           rc=0
@@ -526,8 +534,10 @@ jobs:
             # whenever they exist: a fast failure produces no sample (none
             # was taken), a hang produces both, and the trace names the
             # library whose mapping never finished.
-            echo "--- dyld trace tail ---"
+            echo "--- stderr tail ---"
             tail -40 "$FW/../banner-err.txt" 2>/dev/null || true
+            echo "--- sample(1) errors ---"
+            cat "$FW/../sample-err.txt" 2>/dev/null || true
             if [ -f "$FW/../sample.txt" ]; then
               echo "--- backtrace of the hung process ---"
               sed -n '1,80p' "$FW/../sample.txt"

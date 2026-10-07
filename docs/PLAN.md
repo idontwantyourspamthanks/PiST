@@ -1285,28 +1285,41 @@ project; everything before it was either Linux-only or read from source.
    remains open against the *input* direction, not this gap — keys reach the guest audibly while
    the pointer is absent, which no platform-neutral path explains yet.
 
-10. **The 0.9.0-alpha macOS dmg's bundled fork dies at session start.** Reported from a real
-   machine (2026-10-07): the app resolves its own emulator, EmuTOS and vasm; the session spawns
-   the bundled `hatari` with the full argv; then "The remote-debug connection dropped" and
-   nothing else — no `Hatari, compiled on` on stderr (which is unbuffered, so it was never
-   written, meaning the child died before `Main_Init`/`Log_Init` or was killed by a signal),
-   no media connect (the channel only speaks after the first rendered frame), and *no exit
-   line* — the last one being a PiST defect, since `HrdbBackend::stop()` disconnected
-   `QProcess::finished` before the child's death notification could fire (fixed: the disconnect
-   handler now waits for the notification, and both backends report the signal for a crash
-   exit). The artifact itself has been dissected statically: the dylib closure is complete and
-   `@rpath`-rewired (SDL2, libpng, the X11 chain), the ad-hoc signature's hashes verify, and
-   the LC_RPATH list carried build-tree paths plus `/opt/homebrew/lib` before
-   `@executable_path/../Frameworks` — so on any Mac *with* Homebrew the bundled fork loaded
-   Homebrew's SDL2/libpng rather than the bundled ones, a mismatch channel the banner check
-   could not see (the runner has Homebrew too). **The build host's rpaths are now purged**
-   (release.yml: every inherited LC_RPATH is deleted; the dylibs get `@loader_path/.` and the
-   executable `@executable_path/../Frameworks`, and the host-prefix assertion now scans
-   `otool -l` too, so an inherited rpath fails the release). No `hatari-*.ips` exists on the
-   reporting machine, which rules out the crashing signals macOS writes reports for: the child
-   either exited by its own choice (its stderr would then name the reason — and the transport
-   that lost it is fixed) or was SIGKILLed (invalid signature on arm64 is the classic cause).
-   The seal step's new boot smoke, plus a re-cut dmg with the rpath purge, is the next evidence.
+10. ~~The 0.9.0-alpha macOS dmg's bundled fork dies at session start~~ — **root-caused
+   2026-10-07, fixed by bundling SDL3**. Reported from a real machine: the app resolves its
+   own tools, the session spawns the bundled `hatari`, then "The remote-debug connection
+   dropped" and nothing else — no stderr, no media connect, no exit line. Three defects
+   overlapped, and each had to be fixed to see the next:
+
+   1. **The transport lost the death cause** (PiST bug, fixed first): the HRDB disconnect
+      handler ran before QProcess delivered the child's exit notification and `stop()`
+      disconnected `finished`, so a dying emulator ended the session with one line and no
+      cause. Both backends now print how the process ended (signal or exit code), and the
+      stderr tail survives.
+   2. **The bundle was never actually executed before shipping** (workflow bug): hatari's
+      inherited rpaths put `/opt/homebrew/lib` *ahead* of `@executable_path/../Frameworks`,
+      so every "passing" banner check on the runner loaded Homebrew's libraries and the
+      bundled closure was cargo. Purging the inherited rpaths made the runner load the
+      real bundle — and it hung identically to the field report, reproducing the user's bug
+      on demand. The hang was bounded (60 s watchdog with a live `sample(1)` backtrace
+      instead of a `$( )` substitution that swallows both output and hangs).
+   3. **The root cause — Homebrew's `sdl2` formula is sdl2-compat.** `libSDL2-2.0.0.dylib`
+      is a shim whose `dllinit` constructor `dlopen()`s `libSDL3.dylib` *by soname*
+      (sdl2-compat `sdl2_compat.c`: `@loader_path/`, `../Frameworks/SDL3.framework`, home,
+      `/Library/Frameworks`, then the bare name). The bundling walk follows `otool -L`,
+      which cannot see a dlopen, so the bundle shipped the shim without SDL3. The shim's
+      failure path is `error_dialog()` — a modal `NSAlert runModal` (`sdl2_compat_objc.m`)
+      no background process can dismiss, followed by an `abort()` that never executes.
+      The backtrace pinned it: `dyld4::runAllInitializersForMain → dllinit (libSDL2) →
+      error_dialog → -[NSAlert runModal] → _BlockUntilNextEvent…`. On the runner this
+      surfaced as an infinite hang only after the rpath purge (brew's SDL3 was being found
+      through the inherited rpath); on the user's Mac it surfaced immediately — a modal
+      dialog in a background process, no stderr, no exit, no `.ips` (a blocked process is
+      not a crash). **Fix:** `libSDL3.0.dylib` is copied beside the shim in
+      `Contents/Frameworks/` (where `@loader_path` finds it), walked by the same closure
+      for its own dependencies, and the step fails loudly if brew stops providing it.
+      The banner check runs with `SDL_ASSERT=abort`, and the seal step boots the sealed
+      emulator to the entry stop before the dmg is cut.
 
 11. ~~The fork's root `readme.txt` is a verbatim upstream blob~~ — **changed 2026-10-07,
    documentation only**: hatari-pist's `readme.txt` now opens with a section 0 stating the fork's

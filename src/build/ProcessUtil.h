@@ -47,6 +47,20 @@ inline void killAndRelease(QProcess *process, QObject *owner)
     }
 }
 
+/// Describe how `process` ended, for a log line the user can act on.
+///
+/// A `finished` handler that only prints the exit code hides the one fact
+/// that matters when a session dies on its own: `code` is a signal number
+/// (negated) when `status` is CrashExit, and "Hatari exited (code -11)" says
+/// nothing. Both debug backends print this, so the wording lives here and
+/// cannot drift between the transports.
+inline QString processExitText(int code, QProcess::ExitStatus status)
+{
+    if (status == QProcess::CrashExit)
+        return QObject::tr("Hatari was killed by signal %1.").arg(-code);
+    return QObject::tr("Hatari exited (code %1).").arg(code);
+}
+
 /// Call `handler` when `process` could not be launched at all.
 ///
 /// Qt emits `finished` only when a child dies, so a program that never started

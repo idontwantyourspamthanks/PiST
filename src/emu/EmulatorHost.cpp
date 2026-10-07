@@ -315,14 +315,14 @@ bool EmulatorHost::start(const SessionConfig &config, QString *error)
     });
 
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this](int code, QProcess::ExitStatus) {
+            [this](int code, QProcess::ExitStatus status) {
                 m_stopped = false;
                 m_haveCurrent = false;
                 m_commandTimeout->stop();
                 m_queue.clear();
                 emit stoppedChanged(false);
                 emit runningChanged(false);
-                emit logLine(tr("Hatari exited (code %1).").arg(code));
+                emit logLine(processExitText(code, status));
                 m_embedSocket.close();
             });
 

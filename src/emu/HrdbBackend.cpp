@@ -222,7 +222,7 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
             emit errorOccurred(tr("Failed to start Hatari. Check the executable path."));
     });
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this](int code, QProcess::ExitStatus) {
+            [this](int code, QProcess::ExitStatus status) {
                 m_stopped = false;
                 m_ready = false;
                 m_haveCurrent = false;
@@ -231,7 +231,7 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
                 m_handshakeWatchdog->stop();
                 emit stoppedChanged(false);
                 emit runningChanged(false);
-                emit logLine(tr("Hatari exited (code %1).").arg(code));
+                emit logLine(processExitText(code, status));
             });
 
     const QStringList argv = config.toArgv();
@@ -262,6 +262,15 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
             m_current = Pending();
             emit commandFinished(command, QString());
         }
+        // A dying child closes its sockets before QProcess delivers its exit
+        // notification, so this handler runs first and stop() below would
+        // disconnect QProcess::finished before the notification can fire — a
+        // crashed fork ended the session as "connection dropped" with no cause
+        // at all. Hand the notification its chance: a child that is still
+        // alive fails this wait at once (stop() kills it below, as before),
+        // while a dead one is reaped here, and its finished handler — already
+        // connected above — logs the cause, not this lambda.
+        m_process->waitForFinished(300);
         stop();
     });
     m_socket->connectToHost(QStringLiteral("127.0.0.1"), kHrdbPort);

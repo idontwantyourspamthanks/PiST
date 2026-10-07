@@ -466,7 +466,7 @@ jobs:
           purge_rpaths() {
             while read -r rp; do
               install_name_tool -delete_rpath "$rp" "$1"
-            done < <(otool -l "$1" | awk '/LC_RPATH/{f=1} f&&/path /{sub(/^ +path /,""); print; f=0}')
+            done < <(otool -l "$1" | awk '/LC_RPATH/{f=1} f&&/path /{sub(/^ +path /,""); sub(/ \(offset [0-9]+\)$/,""); print; f=0}')
           }
           purge_rpaths "$APP/Contents/MacOS/hatari"
           for lib in "$FW"/*.dylib; do
@@ -517,7 +517,7 @@ jobs:
           for bin in "$APP/Contents/MacOS/hatari" "$FW"/*.dylib; do
             [ -e "$bin" ] || continue
             bad_rp="$(otool -l "$bin" \
-                      | awk '/LC_RPATH/{f=1} f&&/path /{sub(/^ +path /,""); print; f=0}' \
+                      | awk '/LC_RPATH/{f=1} f&&/path /{sub(/^ +path /,""); sub(/ \(offset [0-9]+\)$/,""); print; f=0}' \
                       | grep -E '/opt/homebrew|/usr/local|/Users/' || true)"
             [ -z "$bad_rp" ] || hosts="$hosts $bad_rp"
           done

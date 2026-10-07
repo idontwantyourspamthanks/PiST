@@ -514,7 +514,7 @@ jobs:
           # visible, because a failed sampler looks exactly like a missing
           # backtrace otherwise.
           ( sleep 40
-            sample "$APP/Contents/MacOS/hatari" 10 -file "$FW/../sample.txt" \
+            sample "$BPID" 10 -file "$FW/../sample.txt" \
               2> "$FW/../sample-err.txt" || true
             sleep 5
             kill -9 "$BPID" 2>/dev/null ) &

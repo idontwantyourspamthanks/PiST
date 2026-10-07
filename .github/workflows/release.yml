@@ -493,18 +493,42 @@ jobs:
           otool -L "$APP/Contents/MacOS/hatari"
           echo "--- Contents/Frameworks ---"
           ls -l "$FW"
+          # Load proof for the bundled closure. A `$( )` substitution swallows
+          # both the output and a HANG (the first rpath-purged run sat here
+          # for six hours until the job's own timeout cancelled it, with the
+          # emulated process left as an orphan named in cleanup), so the
+          # binary runs to files under a watchdog, and a hang is reported
+          # with a backtrace and a dyld trace rather than silence.
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+            "$APP/Contents/MacOS/hatari" --version \
+            > "$FW/../banner-out.txt" 2> "$FW/../banner-err.txt" &
+          BPID=$!
+          ( sleep 60; kill -9 "$BPID" 2>/dev/null ) &
+          WATCHDOG=$!
           rc=0
-          ver="$(SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-            "$APP/Contents/MacOS/hatari" --version 2>&1)" || rc=$?
+          wait "$BPID" || rc=$?   # --version exits 1 by design; capture, don't die
+          kill "$WATCHDOG" 2>/dev/null || true
+          wait "$WATCHDOG" 2>/dev/null || true
           # --version prints the banner and then reports the option parse as
           # failed, so exit 1 is the success path here; the banner is the load
           # proof, and a dyld failure would produce none at all.
+          ver="$(cat "$FW/../banner-out.txt" "$FW/../banner-err.txt" 2>/dev/null)"
           if ! printf '%s\n' "$ver" | grep -q "the Atari ST, STE, TT and Falcon emulator"; then
             echo "ERROR: the bundled emulator did not run (exit $rc):"
             echo "$ver"
+            # A process the watchdog had to kill is a hang, not a fast exit:
+            # say so, and capture what it was doing when it stopped moving.
+            if [ "$rc" -ge 128 ]; then
+              echo "--- backtrace of the hung process ---"
+              sample "$APP/Contents/MacOS/hatari" 5 -file "$FW/../sample.txt" 2>/dev/null \
+                || sample "$BPID" 5 -file "$FW/../sample.txt" 2>/dev/null \
+                || true
+              sed -n '1,80p' "$FW/../sample.txt" 2>/dev/null || true
+            fi
             exit 1
           fi
           printf '%s\n' "$ver" | grep -m1 "Hatari v"
+          rm -f "$FW/../banner-out.txt" "$FW/../banner-err.txt"
           # Nothing may still point at the build host's prefix: a load path into
           # /opt/homebrew is a binary that will not run on a machine without
           # Homebrew, which is most of them. Captured rather than left in a

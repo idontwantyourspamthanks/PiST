@@ -169,6 +169,12 @@ runs:
           # configure step disables its detection on every platform — so the
           # Homebrew keg-only prefix that used to be named explicitly for it is
           # gone as well.
+          # Note: brew's sdl2 formula installs the sdl2-compat shim
+          # (libSDL2-2.0.0.dylib dlopen()s libSDL3 at load). That is fine
+          # for this build — and the release bundling step copies
+          # libSDL3.0.dylib beside the shim for exactly that reason:
+          # without SDL3 in the bundle the shim's constructor shows a
+          # modal NSAlert that no background process can dismiss.
           brew install sdl2 libpng pkg-config
         fi
 

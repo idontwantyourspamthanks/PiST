@@ -431,11 +431,33 @@ jobs:
           mkdir -p "$FW"
           cp "$SRC" "$APP/Contents/MacOS/hatari"
 
+          # Homebrew's sdl2 formula is sdl2-compat: libSDL2-2.0.0.dylib is a
+          # shim whose constructor dlopen()s libSDL3.dylib — a soname, not a
+          # load command, so the closure walk below never sees it. Without
+          # SDL3 in the bundle the shim's constructor shows a modal error
+          # dialog (sdl2_compat_objc.m: error_dialog -> NSAlert runModal)
+          # that no background process can dismiss: an infinite hang that
+          # masqueraded as a dead session on user machines (the field report)
+          # and as a six-hour CI hang once the build-host rpaths were purged.
+          # The shim searches @loader_path/libSDL3.dylib, so SDL3 rides
+          # beside it in Frameworks and is walked like any other dylib.
+          if [ -f /opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib ]; then
+            cp /opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib "$FW/libSDL3.dylib"
+          elif [ -f /opt/homebrew/lib/libSDL3.0.dylib ]; then
+            cp /opt/homebrew/lib/libSDL3.0.dylib "$FW/libSDL3.dylib"
+          else
+            echo "ERROR: brew provides no libSDL3.0.dylib; the sdl2-compat shim would hang"
+            echo "brew sdl2 formula contents:"
+            ls -l /opt/homebrew/opt/sdl2/lib/ 2>/dev/null || true
+            exit 1
+          fi
+          install_name_tool -id "@rpath/libSDL3.dylib" "$FW/libSDL3.dylib"
+          queue_init=("$APP/Contents/MacOS/hatari" "$FW/libSDL3.dylib")
+          copied=" libSDL3.dylib"
           # Transitive closure of non-system dylibs, copied once each. Breadth
           # first over a worklist: a copied library's own brew dependencies are
           # queued when it is copied, so SDL2's neighbours come along too.
-          queue=("$APP/Contents/MacOS/hatari")
-          copied=""
+          queue=("${queue_init[@]}")
           while [ "${#queue[@]}" -gt 0 ]; do
             next=("${queue[@]}"); queue=()
             for bin in "${next[@]}"; do

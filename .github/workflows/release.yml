@@ -1211,6 +1211,57 @@ jobs:
             || { echo "ERROR: the bundled emulator has no media channel"; \
                  cat diagnose-sealed.txt; exit 1; }
 
+          # Boot the sealed emulator the way a session does, not just the
+          # --version path: the banner check earlier proves dyld can load it,
+          # but a field report showed the bundled fork dying at launch with
+          # no stderr and only "connection dropped" — a load-time failure the
+          # banner path never reaches. A GEMDOS autostart of the assembled
+          # demo program must reach its entry stop, which is the earliest
+          # state an IDE session depends on. The session's TOS is the ROM we
+          # bundle; the program is assembled by the bundled vasm.
+          ASMDIR=$(mktemp -d)
+          "$APP/Contents/MacOS/vasmm68k_mot" -quiet -Ftos \
+            -o "$ASMDIR/hello.prg" demo/hello.s
+          SMOKEDIR=$(mktemp -d)
+          HOME="$SMOKEDIR" XDG_CONFIG_HOME="$SMOKEDIR" \
+            SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+            "$APP/Contents/MacOS/hatari" \
+            --tos "$APP/Contents/share/emutos/etos1024k.img" \
+            --machine st --memsize 1 --monitor rgb \
+            --alert-level fatal --confirm-quit off --sound off \
+            -d "$ASMDIR" \
+            --debug-except autostart,illegal,address,zerodiv \
+            --control-socket "$SMOKEDIR/ctl.sock" \
+            "$ASMDIR/hello.prg" \
+            < /dev/null > "$SMOKEDIR/out.txt" 2> "$SMOKEDIR/err.txt" &
+          SMOKE_PID=$!
+          for i in $(seq 1 60); do
+            if grep -q 'entering debug mode\|You have entered debug mode' \
+              "$SMOKEDIR/err.txt" 2>/dev/null; then
+              break
+            fi
+            # The stopped IDE-side session would send "quit" here; for the
+            # smoke run, a death before the stop is the failure to name.
+            if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+              echo "ERROR: the sealed emulator died before the entry stop"
+              wait "$SMOKE_PID" || true
+              echo "--- stderr ---"; cat "$SMOKEDIR/err.txt"
+              echo "--- stdout ---"; cat "$SMOKEDIR/out.txt"
+              exit 1
+            fi
+            sleep 1
+          done
+          kill "$SMOKE_PID" 2>/dev/null || true
+          wait "$SMOKE_PID" 2>/dev/null || true
+          if ! grep -q 'entering debug mode\|You have entered debug mode' \
+            "$SMOKEDIR/err.txt" 2>/dev/null; then
+            echo "ERROR: the sealed emulator never reached its entry stop"
+            echo "--- stderr ---"; cat "$SMOKEDIR/err.txt"
+            echo "--- stdout ---"; cat "$SMOKEDIR/out.txt"
+            exit 1
+          fi
+          echo "OK: the sealed emulator boots the demo program to its entry stop"
+
       - name: Package archive
         shell: bash
         run: |
@@ -1218,6 +1269,7 @@ jobs:
 
           # Linux already produced its asset (the AppImage) above; the others get
           # an archive.
+
           if [ -n "${APPIMAGE:-}" ]; then
             ls -l "$ASSET"
             exit 0

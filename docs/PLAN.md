@@ -1296,14 +1296,17 @@ project; everything before it was either Linux-only or read from source.
    handler now waits for the notification, and both backends report the signal for a crash
    exit). The artifact itself has been dissected statically: the dylib closure is complete and
    `@rpath`-rewired (SDL2, libpng, the X11 chain), the ad-hoc signature's hashes verify, and
-   the LC_RPATH list carries build-tree paths plus `/opt/homebrew/lib` before
-   `@executable_path/../Frameworks` — so on any Mac *with* Homebrew the bundled fork loads
-   Homebrew's SDL2/libpng rather than the bundled ones, a latent mismatch channel the banner
-   check cannot see (the runner has Homebrew too). The release workflow now boots the sealed
-   emulator to the entry stop (release.yml "Seal the macOS app"), which reproduces the session
-   shape on the artifact; a re-cut with it is the next evidence. The user-side crash report
-   (`~/Library/Logs/DiagnosticReports/hatari-*.ips`) would settle the root cause directly and
-   is still outstanding.
+   the LC_RPATH list carried build-tree paths plus `/opt/homebrew/lib` before
+   `@executable_path/../Frameworks` — so on any Mac *with* Homebrew the bundled fork loaded
+   Homebrew's SDL2/libpng rather than the bundled ones, a mismatch channel the banner check
+   could not see (the runner has Homebrew too). **The build host's rpaths are now purged**
+   (release.yml: every inherited LC_RPATH is deleted; the dylibs get `@loader_path/.` and the
+   executable `@executable_path/../Frameworks`, and the host-prefix assertion now scans
+   `otool -l` too, so an inherited rpath fails the release). No `hatari-*.ips` exists on the
+   reporting machine, which rules out the crashing signals macOS writes reports for: the child
+   either exited by its own choice (its stderr would then name the reason — and the transport
+   that lost it is fixed) or was SIGKILLed (invalid signature on arm64 is the classic cause).
+   The seal step's new boot smoke, plus a re-cut dmg with the rpath purge, is the next evidence.
 
 
 ---

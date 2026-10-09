@@ -225,7 +225,18 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
             [this](int code, QProcess::ExitStatus status) {
                 m_stopped = false;
                 m_ready = false;
-                m_haveCurrent = false;
+                // If the exit notification is delivered before the socket's
+                // disconnected (both are queued by the same event loop, and
+                // which wins the race is not guaranteed), the disconnect
+                // handler's in-flight failure below will not fire: this
+                // handler has already cleared the slot. Fail it here as
+                // well, so the caller's commandFinished fires on either
+                // ordering rather than waiting out its own timeout.
+                if (m_haveCurrent) {
+                    const QString command = m_current.text;
+                    m_haveCurrent = false;
+                    emit commandFinished(command, QString());
+                }
                 m_queue.clear();
                 m_connectRetry->stop();
                 m_handshakeWatchdog->stop();
@@ -255,12 +266,25 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
         // into the dead socket forever, and the UI shows a live session with a
         // dead debug channel (finding 11).
         // A dying child closes its sockets before QProcess delivers its exit
-        // notification, so this handler runs first. Give the notification its
-        // chance before saying anything about the cause: a child that died
-        // pre-handshake looks exactly like a cut connection (!m_ready, no
-        // handshake), and only the exit line names that — the disconnect
-        // must not contradict it. A child that is still alive fails this
-        // wait at once; stop() below kills it, as before.
+        // notification, so this handler runs first. Fail the in-flight
+        // command *before* reaping: the finished handler clears
+        // m_haveCurrent without emitting commandFinished, so letting it run
+        // first would swallow the caller's answer and stall their queue
+        // (finding 11) — that emit is what this block is for, so it stays
+        // ahead of the wait below.
+        if (m_haveCurrent) {
+            const QString command = m_current.text;
+            m_haveCurrent = false;
+            m_current = Pending();
+            emit commandFinished(command, QString());
+        }
+
+        // Give the exit notification its chance before saying anything about
+        // the cause: a child that died pre-handshake looks exactly like a cut
+        // connection (!m_ready, no handshake), and only the exit line names
+        // that — the disconnect must not contradict it. A child that is
+        // still alive fails this wait at once; stop() below kills it, as
+        // before.
         m_process->waitForFinished(300);
         const bool childAlive = m_process->state() != QProcess::NotRunning;
 
@@ -286,17 +310,16 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
         } else if (!m_ready) {
             // The child died before the handshake: its finished handler,
             // already connected above, has now run during the wait and
-            // logged how it ended. Nothing more to say here.
+            // logged how it ended. Still surface the failure as an error —
+            // the UI's banner and status bar key on errorOccurred, and a
+            // log-only line would fail silently.
+            emit errorOccurred(tr(
+                "The emulator died before the debug connection was "
+                "established (see the log for how it ended)."));
             emit logLine(tr("Remote-debug socket closed."));
         } else {
             emit errorOccurred(tr("The remote-debug connection dropped."));
             emit logLine(tr("Remote-debug socket closed."));
-        }
-        if (m_haveCurrent) {
-            const QString command = m_current.text;
-            m_haveCurrent = false;
-            m_current = Pending();
-            emit commandFinished(command, QString());
         }
         stop();
     });

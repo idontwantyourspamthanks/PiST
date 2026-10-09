@@ -254,8 +254,30 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
         // session — otherwise m_ready/m_haveCurrent stay set, dispatchNext writes
         // into the dead socket forever, and the UI shows a live session with a
         // dead debug channel (finding 11).
-        emit errorOccurred(tr("The remote-debug connection dropped."));
-        emit logLine(tr("Remote-debug socket closed."));
+        const bool beforeHandshake = !m_ready;
+        if (beforeHandshake) {
+            // The TCP connect succeeded (the kernel completes it against a
+            // listening socket before the fork ever accept()s) but no
+            // handshake ever arrived while the emulator kept booting. With
+            // the process alive that is not a transport fault: the accepted
+            // connection was closed by something *between* the two
+            // processes — on macOS, the application firewall and endpoint
+            // agents do exactly this to unlisted, ad-hoc-signed binaries,
+            // and the bundled emulator is ad-hoc signed. Name it, because
+            // "connection dropped" sent a field report down a day-long
+            // wrong path.
+            emit errorOccurred(tr(
+                "The debug connection was cut before the handshake: the "
+                "emulator connected, then something closed it. On a managed "
+                "Mac, the application firewall (or endpoint software) does "
+                "this to unlisted, unsigned binaries — allow "
+                "'PiST.app/Contents/MacOS/hatari' in the firewall, or run "
+                "from a machine where inbound loopback is not filtered."));
+            emit logLine(tr("Remote-debug socket closed before the handshake."));
+        } else {
+            emit errorOccurred(tr("The remote-debug connection dropped."));
+            emit logLine(tr("Remote-debug socket closed."));
+        }
         if (m_haveCurrent) {
             const QString command = m_current.text;
             m_haveCurrent = false;

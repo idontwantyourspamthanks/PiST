@@ -254,26 +254,40 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
         // session — otherwise m_ready/m_haveCurrent stay set, dispatchNext writes
         // into the dead socket forever, and the UI shows a live session with a
         // dead debug channel (finding 11).
-        const bool beforeHandshake = !m_ready;
+        // A dying child closes its sockets before QProcess delivers its exit
+        // notification, so this handler runs first. Give the notification its
+        // chance before saying anything about the cause: a child that died
+        // pre-handshake looks exactly like a cut connection (!m_ready, no
+        // handshake), and only the exit line names that — the disconnect
+        // must not contradict it. A child that is still alive fails this
+        // wait at once; stop() below kills it, as before.
+        m_process->waitForFinished(300);
+        const bool childAlive = m_process->state() != QProcess::NotRunning;
+
+        const bool beforeHandshake = !m_ready && childAlive;
         if (beforeHandshake) {
             // The TCP connect succeeded (the kernel completes it against a
             // listening socket before the fork ever accept()s) but no
             // handshake ever arrived while the emulator kept booting. With
-            // the process alive that is not a transport fault: the accepted
-            // connection was closed by something *between* the two
-            // processes — on macOS, the application firewall and endpoint
-            // agents do exactly this to unlisted, ad-hoc-signed binaries,
-            // and the bundled emulator is ad-hoc signed. Name it, because
-            // "connection dropped" sent a field report down a day-long
-            // wrong path.
+            // the process alive that is not a transport fault and not the
+            // fork's either: something between the two processes closed the
+            // accepted connection — endpoint/filtering software that hooks
+            // the network stack, including loopback, is the known shape of
+            // this on managed machines. Name what was observed, not a
+            // prescription: the fix depends on which software it is.
             emit errorOccurred(tr(
                 "The debug connection was cut before the handshake: the "
-                "emulator connected, then something closed it. On a managed "
-                "Mac, the application firewall (or endpoint software) does "
-                "this to unlisted, unsigned binaries — allow "
-                "'PiST.app/Contents/MacOS/hatari' in the firewall, or run "
-                "from a machine where inbound loopback is not filtered."));
+                "emulator connected, then something closed it while the "
+                "emulator kept running. This is not the emulator dying or "
+                "a PiST fault — a firewall or endpoint agent filtering "
+                "loopback connections is the usual cause on managed "
+                "machines."));
             emit logLine(tr("Remote-debug socket closed before the handshake."));
+        } else if (!m_ready) {
+            // The child died before the handshake: its finished handler,
+            // already connected above, has now run during the wait and
+            // logged how it ended. Nothing more to say here.
+            emit logLine(tr("Remote-debug socket closed."));
         } else {
             emit errorOccurred(tr("The remote-debug connection dropped."));
             emit logLine(tr("Remote-debug socket closed."));
@@ -284,15 +298,6 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
             m_current = Pending();
             emit commandFinished(command, QString());
         }
-        // A dying child closes its sockets before QProcess delivers its exit
-        // notification, so this handler runs first and stop() below would
-        // disconnect QProcess::finished before the notification can fire — a
-        // crashed fork ended the session as "connection dropped" with no cause
-        // at all. Hand the notification its chance: a child that is still
-        // alive fails this wait at once (stop() kills it below, as before),
-        // while a dead one is reaped here, and its finished handler — already
-        // connected above — logs the cause, not this lambda.
-        m_process->waitForFinished(300);
         stop();
     });
     m_socket->connectToHost(QStringLiteral("127.0.0.1"), kHrdbPort);

@@ -156,7 +156,8 @@ Everything else in this document is a consequence of that rule. The debug transp
   gutter heat and the remote `profile results` verb — the attribution used to live inside the view,
   so the other two readers had to scrape a dock. `results()` holds the last attributed profile.
 - **`control/ControlHost.{h,cpp}` / `control/RemoteControl.{h,cpp}`** — `ControlHost` is the
-  protocol's view of the IDE: one virtual per verb (`openPathQuiet`, `build`, `run`, `stopSession`,
+  protocol's view of the IDE: one virtual per verb (`openPathQuiet`, `build`/`buildRelease`,
+  `run`, `stopSession`,
   `step`/`stepOver`/`resume`, `profileStart`/`profileStop`, `toggleBreakpointAtLine`,
   `debugCommand`, the typed reads, the JSON state reads and `saveScreenshot`) plus six event
   subscriptions (`onBuildCompleted`, `onDebugCommandFinished`, …) which are the `QObject::connect`
@@ -409,12 +410,12 @@ with any line beginning `.` dot-stuffed (one extra leading `.`, stripped by the 
 closing lone `.`. The explicit status line is what keeps a body that merely *starts* with "error"
 (a compiler's `error 2 in line`, a debugger transcript) from reading as a failed reply, and the
 stuffing is what keeps a body line that is only `.` from ending the block early (MIN-9). Blocking
-commands (`build`, `run`, `profile stop`, and the debugger round-trips behind
+commands (`build`, `buildrelease`, `run`, `profile stop`, and the debugger round-trips behind
 `cmd`/`readmem`/`disasm`) spin a nested event loop waiting on
 `MainWindow` signals so a script never polls. Everything runs on the UI thread: the connection
 handler marshals each line with a queued `QMetaObject::invokeMethod`, and `execute()` then calls
 `MainWindow` — the asynchronous verbs through `invokeMethod` on the named slots (`openPathQuiet`,
-`build`, `run`, `stopSession`, `step`, `stepOver`, `resume`, `toggleBreakpointAtLine`,
+`build`, `buildRelease`, `run`, `stopSession`, `step`, `stepOver`, `resume`, `toggleBreakpointAtLine`,
 `profileStart`, `profileStop`), and the rest (`setRegister`, `setMemoryByte`,
 `toggleBreakpointAtLabel`, `addWatchpointAddress`, `debugReadMemory`, `debugReadDisassembly`,
 `debugCommand`, `saveCurrentDocument`, `raise`, `activateWindow`) as ordinary calls, alongside the

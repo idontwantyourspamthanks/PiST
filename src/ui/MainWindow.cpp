@@ -3614,6 +3614,11 @@ void MainWindow::build()
     buildImpl(/*quiet=*/true, /*release=*/false);
 }
 
+void MainWindow::buildRelease()
+{
+    buildImpl(/*quiet=*/true, /*release=*/true);
+}
+
 void MainWindow::buildInteractive()
 {
     buildImpl(/*quiet=*/false, /*release=*/false);

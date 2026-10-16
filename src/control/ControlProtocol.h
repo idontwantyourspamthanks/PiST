@@ -50,6 +50,8 @@ inline constexpr Verb kVerbs[] = {
     {"open", "open <path>      open a source file", false},
     {"read", "read             the current document as JSON {path, text}", true},
     {"build", "build            assemble, answering when the build finishes", false},
+    {"buildrelease", "buildrelease     assemble with the release arguments, answering when "
+                     "the build finishes", false},
     {"run", "run              build and start the emulator, answering when running", false},
     {"stop", "stop             stop the emulator session", false},
     {"cmd", "cmd <command>    run a debugger command, replying with its output", true},

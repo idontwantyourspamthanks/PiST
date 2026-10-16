@@ -489,6 +489,8 @@ terminator always unblocks:
 open <path>        open a source file
 read               the current document as a JSON object {path, text} (block reply)
 build              assemble; the reply arrives when the build finishes
+buildrelease       assemble with the project's Release arguments (no debug symbols);
+                   the reply arrives when the build finishes
 run                build and start the emulator; the reply arrives when it is running
 stop               stop the emulator session
 step / stepover / continue
@@ -515,7 +517,7 @@ help               list the commands
 quit               close the IDE
 ```
 
-`build` and `run` answer only once the work is actually done, so a script does
+`build`, `buildrelease` and `run` answer only once the work is actually done, so a script does
 not have to poll: `run` returning `ok` means the emulator session is up.
 
 ### Events: not having to poll for a stop
@@ -558,7 +560,7 @@ or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it, and the session
 token from `--token` or `PIST_CONTROL_TOKEN` — and with none of those, both
 come from the discovery file a `pist --control-port` session publishes, so a
 locally started IDE needs no configuration at all. The tools are
-`pist_run`, `pist_build`, `pist_stop`, `pist_step`, `pist_stepover`,
+`pist_run`, `pist_build`, `pist_build_release`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
 `pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,

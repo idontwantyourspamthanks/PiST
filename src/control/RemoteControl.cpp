@@ -427,12 +427,13 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         reply(guarded, opened ? QStringLiteral("ok")
                               : QStringLiteral("error could not open %1").arg(arg));
 
-    } else if (cmd == QLatin1String("build") || cmd == QLatin1String("run")) {
-        // These are asynchronous: build compiles, run builds and then starts the
-        // emulator. Answer only once the operation has genuinely finished, which
-        // is what an agent actually needs — "started" is no use for sequencing a
-        // screenshot. A nested event loop gives synchronous semantics without
-        // freezing the UI or the other connections.
+    } else if (cmd == QLatin1String("build") || cmd == QLatin1String("buildrelease")
+               || cmd == QLatin1String("run")) {
+        // These are asynchronous: build and buildrelease compile, run builds and
+        // then starts the emulator. Answer only once the operation has genuinely
+        // finished, which is what an agent actually needs — "started" is no use
+        // for sequencing a screenshot. A nested event loop gives synchronous
+        // semantics without freezing the UI or the other connections.
         if (m_busy) {
             reply(guarded, QStringLiteral("error busy: another command is still running"));
             return;
@@ -443,9 +444,12 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         QTimer timeout;
         timeout.setSingleShot(true);
 
+        const bool isRun = cmd == QLatin1String("run");
         QMetaObject::Connection done;
         QMetaObject::Connection failed;
-        if (cmd == QLatin1String("build")) {
+        if (!isRun) {
+            // `build` and `buildrelease` differ only in the arguments they
+            // assemble with; both answer on the build finishing.
             done = m_host->onBuildCompleted(&loop,
                                             [&](bool ok) { finished = true; success = ok; loop.quit(); });
         } else {
@@ -469,6 +473,8 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         QTimer::singleShot(0, this, [this, cmd] {
             if (cmd == QLatin1String("build"))
                 m_host->build();
+            else if (cmd == QLatin1String("buildrelease"))
+                m_host->buildRelease();
             else
                 m_host->run();
         });

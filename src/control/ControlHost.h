@@ -59,6 +59,11 @@ public:
 
     /// Build now; the answer is the buildCompleted event.
     virtual void build() = 0;
+    /// Build with the project's *release* assembler arguments rather than the
+    /// debug ones — the same build `Build Release` runs, and the only way a
+    /// remote caller can produce a shipping `.PRG`. The answer is the
+    /// buildCompleted event, exactly as for build().
+    virtual void buildRelease() = 0;
     /// Build and, when it succeeds, start the emulator session; the answer is
     /// either sessionRunningChanged(true) or buildCompleted(false).
     virtual void run() = 0;

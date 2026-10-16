@@ -39,6 +39,7 @@ private slots:
     void screenshotWithoutDisplayFailsGracefully();
     void watchpointCommandValidatesAddress();
     void buildRespondsWhenFinished();
+    void buildReleaseUsesTheReleaseArguments();
     void cmdDisconnectDuringWaitSurvives();
     void runWithoutSourceFailsFast();
     void secondBlockingCommandIsRefusedWhileOneWaits();
@@ -164,6 +165,24 @@ QString exchange(QTcpSocket &client, const QByteArray &command, bool block, int 
 QString roundTrip(QTcpSocket &client, const QByteArray &command)
 {
     return exchange(client, command, false).trimmed();
+}
+
+/// The TOS PRG header's symbol-table size: a big-endian `long` at offset 0x0E,
+/// zero exactly when the build stripped the table. Reading it is how the test
+/// tells a debug build (table kept, so the debugger can name addresses) from a
+/// release one (table stripped) without another tool.
+quint32 prgSymbolTableSize(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return 0;
+    const QByteArray head = file.read(18);
+    if (head.size() < 18)
+        return 0;
+    return (quint32(static_cast<quint8>(head.at(14))) << 24)
+         | (quint32(static_cast<quint8>(head.at(15))) << 16)
+         | (quint32(static_cast<quint8>(head.at(16))) << 8)
+         | quint32(static_cast<quint8>(head.at(17)));
 }
 
 QString roundTripBlock(QTcpSocket &client, const QByteArray &command)
@@ -311,6 +330,38 @@ void TstRemoteControl::buildRespondsWhenFinished()
     const QString reply = roundTrip(s.client, "build");
     QVERIFY2(reply == QStringLiteral("ok"),
              qPrintable(QStringLiteral("build replied: %1").arg(reply)));
+}
+
+void TstRemoteControl::buildReleaseUsesTheReleaseArguments()
+{
+    // The remote build used to be debug-only, so an agent could not produce the
+    // shipping PRG at all. Drive the release verb and prove it assembled with the
+    // *release* arguments by reading the result: the debug build keeps the
+    // DRI/GST symbol table the debugger reads, the release build strips it.
+    if (QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot")).isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.path() + QStringLiteral("/prog.s");
+    {
+        QFile f(source);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("_start:\n\trts\n");
+    }
+    const QString program = dir.path() + QStringLiteral("/prog.prg");
+
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QCOMPARE(roundTrip(s.client, "open " + source.toUtf8()), QStringLiteral("ok"));
+
+    QCOMPARE(roundTrip(s.client, "build"), QStringLiteral("ok"));
+    QVERIFY2(prgSymbolTableSize(program) != 0,
+             "the debug build must keep the symbol table the debugger reads");
+
+    QCOMPARE(roundTrip(s.client, "buildrelease"), QStringLiteral("ok"));
+    QCOMPARE(prgSymbolTableSize(program), 0u);
 }
 
 void TstRemoteControl::cmdDisconnectDuringWaitSurvives()

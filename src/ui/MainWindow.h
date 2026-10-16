@@ -243,6 +243,11 @@ private slots:
     /// operation timeout: the failure openPathQuiet exists to avoid. The
     /// menu/toolbar/shortcut entry is buildInteractive().
     void build() override;
+    /// Build with the release assembler arguments, quietly. The remote-control
+    /// `buildrelease` verb invokes this slot by name, so a refusal is reported on
+    /// the console and status bar rather than in a modal nobody can dismiss; the
+    /// menu/toolbar entry is buildReleaseInteractive().
+    void buildRelease() override;
     /// Run: build now, launch when it finishes. RemoteControl's `run` verb
     /// invokes this slot by name, so its refusals are quiet for the same
     /// reason as build()'s. The menu/toolbar/shortcut entry is

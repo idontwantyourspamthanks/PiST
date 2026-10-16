@@ -546,6 +546,8 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         command = QStringLiteral("run");
     } else if (name == QLatin1String("pist_build")) {
         command = QStringLiteral("build");
+    } else if (name == QLatin1String("pist_build_release")) {
+        command = QStringLiteral("buildrelease");
     } else if (name == QLatin1String("pist_continue")) {
         command = QStringLiteral("continue");
     } else if (name == QLatin1String("pist_open")) {
@@ -650,7 +652,8 @@ void McpServer::deliverReply(quint64 token, const QString &text)
 
     // A failed build owes the agent its diagnostics: chain the problems query
     // and answer when it lands, with the original error kept as the text.
-    if (isError && outstanding.tool == QLatin1String("pist_build")) {
+    if (isError && (outstanding.tool == QLatin1String("pist_build")
+                    || outstanding.tool == QLatin1String("pist_build_release"))) {
         m_outstanding.insert(token, Outstanding{outstanding.id,
                                                 QStringLiteral("pist_build_diagnostics"), text,
                                                 true});
@@ -766,6 +769,15 @@ QJsonArray McpServer::tools()
     list.append(toolObject(
         QStringLiteral("pist_build"), QStringLiteral("Build"),
         QStringLiteral("Assemble and link the current source. Answers only when the "
+                       "build has finished. Call pist_problems for the diagnostics "
+                       "when it fails."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_build_release"), QStringLiteral("Build (release)"),
+        QStringLiteral("Assemble and link the current source with the project's "
+                       "Release assembler arguments — a shipping PRG, with no debug "
+                       "symbols — instead of the Debug ones. Answers only when the "
                        "build has finished. Call pist_problems for the diagnostics "
                        "when it fails."),
         empty, {}));
@@ -981,7 +993,8 @@ QJsonArray McpServer::tools()
         QStringLiteral("pist_problems"), QStringLiteral("Build problems"),
         QStringLiteral("The Problems pane — file, line and message for every "
                        "diagnostic from the last build, as a JSON array (also in "
-                       "structuredContent). Call this after pist_build instead of "
+                       "structuredContent). Call this after pist_build or "
+                       "pist_build_release instead of "
                        "parsing pist_console output."),
         empty, {}));
 

@@ -280,7 +280,8 @@ private slots:
         // Pin the whole set: a renamed or dropped tool is how an agent's
         // workflow breaks without anything here noticing.
         QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
-                                     "pist_cmd", "pist_console", "pist_continue",
+                                     "pist_build_release", "pist_cmd", "pist_console",
+                                     "pist_continue",
                                      "pist_disasm", "pist_open", "pist_problems",
                                      "pist_profile_results", "pist_profile_start",
                                      "pist_profile_stop", "pist_read", "pist_readmem",
@@ -289,6 +290,23 @@ private slots:
                                      "pist_step", "pist_stepover", "pist_stop",
                                      "pist_symbols", "pist_tabs", "pist_watch",
                                      "pist_watchpoint"}));
+    }
+
+    void buildReleaseMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        // The release tool must drive the release verb, not the debug one — the
+        // whole point is producing the shipping PRG.
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_build_release")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("buildrelease"));
+        ide.send("ok\n");
+        const QJsonObject reply = waitReply(1);
+        QCOMPARE(resultText(reply), QStringLiteral("ok"));
+        QVERIFY(!resultIsError(reply));
     }
 
     void lineAndBlockRepliesAreFramedCorrectly()

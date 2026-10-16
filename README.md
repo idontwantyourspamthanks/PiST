@@ -690,4 +690,7 @@ Stated plainly, because an early release should not imply more than it does:
   rationale, the launcher rules, roadmap, risk register and licensing analysis
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and the starting point for
   each item (notably: a portable emulator control channel, which is what Windows is missing)
+- **[docs/glm-features.md](docs/glm-features.md)** — the agreed next feature sheet: six features in
+  development scope (scripted stop hooks, L4 reference authoring, find in files, editor completion,
+  watchpoint symbols, the floppy-pane menu residue) and one binned idea with its reasoning
 - **[NOTICE](NOTICE)** — third-party components and the licence obligations that follow from them

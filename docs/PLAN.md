@@ -1008,6 +1008,33 @@ The implementation found three of the spec's premises wrong and measured the
 
 ---
 
+### Next feature sheet (agreed 2026-10-16)
+
+Six features were agreed for development and one roadmap item binned; the sheet
+of record, with the verified current state of each, is
+[docs/glm-features.md](glm-features.md):
+
+- scripted stop hooks (absorbing FUTURE §10), L4 reference authoring (the
+  remainder of FUTURE §14), find in files, editor completion / symbol palette /
+  hover card, watchpoint symbols, and the floppy-image pane residue (Delete /
+  Rename / New Folder inside a disk — the add/edit/remove core was verified as
+  already delivered during the sheet's writing);
+- **FUTURE §9 (an in-IDE assistant sidebar) is binned**, not deferred: the MCP
+  route (`pist-mcp`) is the agent surface this project keeps growing, and an
+  embedded chat would duplicate it at the IDE's expense. The reasoning is
+  recorded in glm-features §0 so the decision survives the conversation.
+
+A scope note for this branch, so the sheet's references resolve: the **teaching
+layer** (`docs/tutorial-plan.md`, `lessons/*/lesson.pil`, `src/lessons/`, the
+`Lesson` dock) is **not here yet** — it is `docs/tutorial-plan` (PR #14), held
+back deliberately for a later review pass, which is also why `docs/FUTURE.md`
+has no §14 on this branch and why sheet §2's pointer to it is forward-looking.
+Sheet §2's L4 authoring *depends* on it (`Used in:` names lessons, and the
+examples are assembled against `lessons/`), so L4 starts after that PR lands
+here. The other five features do not touch it and start immediately.
+
+---
+
 ## 7. Legal constraints
 
 | Component | License | Can we ship it? | Boundary |

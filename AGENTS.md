@@ -104,6 +104,8 @@ code. Use this table for a quick lookup:
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the codebase guide (read this to change code).
 - **[docs/PLAN.md](docs/PLAN.md)** — the design document: verified findings, architecture rationale,
   the hard-won launcher rules, the verified-vs-unverified ledger, and licensing analysis.
+- **[docs/glm-features.md](docs/glm-features.md)** — the agreed next feature sheet (what to build
+  next, with each feature's verified current state) and one binned idea with its reasoning.
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and a starting point for
   each item. Check here before starting something ambitious; it may already be analysed.
 - **[README.md](README.md)** — user-facing features, install, platform support, remote control.

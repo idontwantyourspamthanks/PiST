@@ -742,9 +742,8 @@ probe. A forced mismatch (native on the fork, HRDB on stock) is refused at launc
 reason named — the fork's stdin debugger is dead once its listener binds, and stock Hatari has
 no listener (§9).
 
-**Boundary, updated:** the fork is the **bundled** emulator in the Linux AppImage and the Windows
-archive, installed as `hatari` — one emulator per install; the probe selects HRDB for it
-automatically. The licence
+**Boundary, updated:** the fork is the **bundled** emulator in every archive, installed as `hatari`
+— one emulator per install; the probe selects HRDB for it automatically. The licence
 analysis is unchanged (GPL-2.0-or-later, built unmodified from a checksum-pinned source — the
 pinned fork commit, which the NOTICE source offer names). The one structural constraint: port
 56001 is fixed, so one HRDB session at a time per machine — the connect watchdog names it if
@@ -1035,11 +1034,11 @@ terms of every component permit bundling:
   constraint is that the bundled binary must be byte-for-byte upstream's, so **the IDE must never
   patch vasm**; behaviours we need are obtained by command-line flags only.
 - **Hatari** — GPL-2.0-or-later upstream; the binary PiST conveys is GPLv2-capped, because three of
-  the files it compiles in grant version 2 alone (§10). Bundled in the Linux AppImage and the Windows
-  archive as a separate executable (mere aggregation): built unmodified from the checksum-pinned fork
-  commit (upstream 2.6.1 plus the remote-debug listener), never patched, and built **without** GNU
-  Readline — a GPLv3 library cannot join a v2-capped work, and the `fgets` fallback that replaces it
-  costs the transport nothing (§2.4).
+  the files it compiles in grant version 2 alone (§10). Bundled in every archive
+  as a separate executable (mere aggregation): built unmodified from the checksum-pinned fork
+  commit (upstream 2.6.1 plus the remote-debug listener and the media channel), never patched,
+  and built **without** GNU Readline — a GPLv3 library cannot join a v2-capped work, and the `fgets`
+  fallback that replaces it costs the transport nothing (§2.4).
 
 Two distribution rules follow from this:
 
@@ -1049,9 +1048,8 @@ Two distribution rules follow from this:
    user-configured path → bundled. This keeps the IDE usable with a different `vasmm68k_mot`, with
    a newer/patched Hatari, or for commercial use where bundling would not be permitted.
 
-Bundling a Hatari binary does not change the boundary: the copies in the Linux AppImage and the
-Windows archive are still launched as separate processes, with command-line arguments only, never
-patched and never linked in.
+Bundling a Hatari binary does not change the boundary: the bundled copies are still launched as
+separate processes, with command-line arguments only, never patched and never linked in.
 
 ### Toolchain acquisition
 
@@ -1519,21 +1517,23 @@ understood precisely rather than assumed.
 Hatari still runs as a subprocess. That is now driven by *platform capability and maintenance cost*
 rather than licence necessity, and it keeps the integration surface small and auditable:
 
-- macOS cannot reparent a foreign process window, so a subprocess gives a detached-window experience
-  there and real embedding on Linux/Windows.
+- A subprocess cannot be reparented on macOS, which is why the display travels the fork's media
+  channel — screen, sound and input over a local socket — rather than window adoption; embedding
+  therefore works on every platform with the bundled fork, and a stock Hatari without the channel
+  keeps its own window.
 - The debugger transport (§3.3) is text-based and version-gated, which is easier to maintain against
   an upstream we do not control than a compiled-in dependency.
 
-Bundling Hatari in the Linux AppImage and the Windows archive does not change this: the bundled
+Bundling Hatari in every archive does not change this: the bundled
 copy is still launched as a separate process, with command-line arguments only, and is never
 patched or linked in (§7).
 
 ### Not bundled
 
-Original Atari TOS ROMs remain user-supplied (proprietary). Hatari is bundled in the Linux AppImage
-and the Windows archive, but not in the macOS archive, nor in a source build; where it is absent, PiST reports it
-and points at where to get it. Everything else needed to build and run assembly out of the box is
-bundleable — see §7.
+Original Atari TOS ROMs remain user-supplied (proprietary). Hatari is bundled in all three archives
+(the AppImage and the deb/RPM, the Windows zip/MSI, and the macOS dmg/tar.gz), but not in a source
+build; where it is absent, PiST reports it and points at where to get it. Everything else needed to
+build and run assembly out of the box is bundleable — see §7.
 
 ---
 

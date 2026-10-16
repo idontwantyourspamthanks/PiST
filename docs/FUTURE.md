@@ -78,8 +78,9 @@ Two things it must get right:
 ### Why it isn't done now
 
 - It requires carrying a **Hatari fork**, with rebase duty against every upstream release. That
-  duty is now carried deliberately: the bundled emulator IS the hrdb-main fork (pause and live
-  breakpoints everywhere, typed framing), with the native backend as the stock-Hatari fallback.
+  duty is now carried deliberately: the bundled emulator IS the hatari-pist fork (the HRDB typed
+  framing plus the media channel; pause and live
+  breakpoints everywhere), with the native backend as the stock-Hatari fallback.
 - It only pays off when someone actually needs Pause or runtime disk swap *on Windows*. The two
   break-ins that matter most for assembly work — program entry, and a program that faulted — are
   already available everywhere via `--parse` and `--debug-except`.
@@ -162,12 +163,14 @@ Do it for macOS polish, not as an architectural simplification.
 
 **Status:** mostly delivered. Release artefacts carry the assembler, the linker (vlink, same
 licence shape as vasm) and EmuTOS on every platform; per-platform installers exist (AppImage, deb
-and rpm on Linux; dmg on macOS; MSI on Windows); and the Linux AppImage and the Windows archive
-both bundle the hrdb-main fork of Hatari (2.6.1-based) — the Windows one built with MSYS2 ucrt64,
-with its runtime DLLs beside the exe. The first-run setup flow is delivered (`ui/SetupDialog`:
-checksum-pinned vasm source build and EmuTOS download, shown when the assembler or ROM is
-missing). What remains open here is Hatari-on-macOS bundling: the fork links Homebrew SDL2, and
-rewiring those dylibs into the .app is unbuilt work — `brew install hatari` (2.6.1) covers it.
+and rpm on Linux; dmg on macOS; MSI on Windows); and every archive bundles the hatari-pist
+fork of Hatari (2.6.1-based) — the Windows one built with MSYS2 ucrt64, with its runtime DLLs
+beside the exe, the macOS one carrying the fork's Homebrew dylib closure inside the app. The
+first-run setup flow is delivered (`ui/SetupDialog`:
+checksum-pinned vasm source build and an EmuTOS download, shown when the assembler or ROM is
+missing). Hatari-on-macOS bundling, once the open item here, has since landed: the release
+workflow copies the fork's Homebrew dylib closure (SDL2, libpng, SDL3) into the .app and rewires
+every load path to `@rpath`.
 
 Because `PiST` is free software, vasm's redistribution terms permit bundling it **unmodified** for
 non-commercial use, and EmuTOS can ship as the default ROM — so a one-click install is legally

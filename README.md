@@ -209,8 +209,9 @@ test caught it. `docs/PLAN.md` §3.3 and §5 record them in full, along with the
 **An alternative transport exists.** `IDebugBackend` abstracts the debug channel, with two
 implementations: the native one above, and `HrdbBackend`, which speaks the typed TCP protocol of
 the [hrdb-main fork of Hatari](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus a
-remote-debug listener). The bundled emulator **is** that fork — the Linux AppImage and the Windows
-archive ship it as `hatari`, and PiST detects it by binary content and selects HRDB automatically.
+remote-debug listener). The bundled emulator is that fork extended with the media channel (the
+[hatari-pist fork](https://github.com/idontwantyourspamthanks/hatari-pist)) — every archive ships
+it as `hatari`, and PiST detects it by binary content and selects HRDB automatically.
 A stock Hatari you install yourself lands on the native transport; Project Settings → Debug
 transport can force either. HRDB works on Windows, carries live section bases in its register reply,
 and can pause a *running* program — the things the native transport cannot do where Hatari's
@@ -265,10 +266,10 @@ are available — and `tst_hrdb` unless `$PIST_HRDB_HATARI` names the hrdb-main 
 
 Download an archive or installer from [Releases](../../releases) — a Linux AppImage plus
 deb and RPM packages, a macOS dmg and tarball, and a Windows MSI and zip, every asset
-named `PiST-<version>-<platform>`. All of them carry PiST, the `vasmm68k_mot` assembler
-and an EmuTOS ROM; the Linux AppImage and the Windows archive also carry **Hatari (the
-hrdb-main fork, 2.6.1-based)** — the Windows one built with MSYS2 ucrt64 — so on those
-platforms a fresh download runs and debugs with nothing else installed:
+named `PiST-<version>-<platform>`. All of them carry PiST, the `vasmm68k_mot` assembler,
+an EmuTOS ROM and **Hatari (the hatari-pist fork, 2.6.1-based)** — the Windows one built
+with MSYS2 ucrt64, the macOS one carrying the fork's Homebrew dylib closure inside the
+app — so a fresh download runs and debugs with nothing else installed:
 
 ```sh
 chmod +x PiST-*-x86_64.AppImage
@@ -303,7 +304,7 @@ To develop the IDE you will also want, at runtime:
 - **`vasmm68k_mot`** — put it on `PATH` or set an explicit path in Project Settings; the release
   archives bundle it, and a source build needs your own (see [NOTICE](NOTICE) for its licence
   terms)
-- **Hatari** — 2.6.1 is what the IDE is verified against; the Linux and Windows archives bundle a
+- **Hatari** — 2.6.1 is what the IDE is verified against; every archive bundles a
   compatible fork, and a source build needs it on `PATH` or set in Project Settings (see
   [Platform support](#platform-support))
 - **A TOS ROM, version 1.04 or later** — see [TOS ROMs](#tos-roms)
@@ -346,9 +347,11 @@ of an upstream Hatari limitation rather than anything in `PiST`:
 | Swap disk images while the program is running | ✓ | ✗\* | ✓ |
 
 \* Pause on Windows, and live breakpoint / running-disk changes there, work when the debug
-transport is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (Project Settings → Debug
+transport is HRDB (the [hrdb-main fork](https://github.com/tattlemuss/hatari)'s typed TCP
+listener; Project Settings → Debug
 transport), which speaks typed TCP instead of the POSIX-only control socket. The Windows release
-archive bundles exactly that fork, so a fresh download is unaffected; a user-installed *stock*
+archive bundles exactly that transport's fork — the hatari-pist fork — so a fresh download is
+unaffected; a user-installed *stock*
 Hatari on Windows still lacks those *while the program is running*, and a stopped session can
 still insert or eject a floppy via the debugger (`setopt`).
 
@@ -639,10 +642,11 @@ what is actually on screen.
 
 Bundled or invoked third-party components keep their own licences. In particular `vasm` is *not*
 free software (it permits unmodified, non-commercial redistribution, which is why the IDE never
-patches it), and Qt is used under the LGPL. The Hatari bundled in the Linux AppImage and the
-Windows archive is the [hrdb-main fork](https://github.com/tattlemuss/hatari) (upstream 2.6.1 plus
-the remote-debug listener PiST's HRDB transport uses), redistributed unmodified from a
-checksum-pinned commit tarball and conveyed under **GPL version 2**: three of the files Hatari
+patches it), and Qt is used under the LGPL. The Hatari bundled in every archive is the
+[hatari-pist fork](https://github.com/idontwantyourspamthanks/hatari-pist) (upstream 2.6.1 plus
+the remote-debug listener PiST's HRDB transport uses and the media channel), redistributed
+unmodified from a checksum-pinned commit tarball and conveyed under **GPL version 2**: three of
+the files Hatari
 compiles in grant version 2 alone, so the build pins `-DCMAKE_DISABLE_FIND_PACKAGE_Readline=ON`
 and the GPLv3 GNU Readline neither joins it nor travels in any archive. See [NOTICE](NOTICE) and
 [docs/PLAN.md](docs/PLAN.md) §7 and §10 for the full breakdown and the obligations that follow.
@@ -660,18 +664,18 @@ Stated plainly, because an early release should not imply more than it does:
 - **On stock Hatari, pause, changing breakpoints while running, and swapping disks at runtime
   do not work on Windows.** Hatari compiles its control channel only on POSIX systems, and
   the official Windows build is a GUI-subsystem binary whose debugger does not answer over
-  pipes at all (see the bullet above). The bundled emulator is the hrdb-main fork — marked
+  pipes at all (see the bullet above). The bundled emulator is the hatari-pist fork — marked
   experimental on Windows until reports from real machines come in. See
   [docs/FUTURE.md](docs/FUTURE.md) for the upstream fix that would cover stock Hatari.
 - **Installers and plain archives** — Linux gets an AppImage plus deb and RPM packages,
   macOS a dmg and a tarball, Windows an MSI and a zip.
-- **Hatari is bundled in the Linux AppImage and the Windows archive.** Both copies are the
-  hrdb-main fork (upstream 2.6.1 plus the remote-debug listener), redistributed unmodified
-  from a checksum-pinned commit tarball — the Windows one built with MSYS2 ucrt64 with its
+- **Hatari is bundled in every archive.** Each copy is the hatari-pist fork (upstream 2.6.1
+  plus the remote-debug listener and the media channel), redistributed unmodified from a
+  checksum-pinned commit tarball — the Windows one built with MSYS2 ucrt64 with its
   runtime DLLs beside the exe, and **experimental** there until real-machine reports confirm
-  it — so they debug with nothing else installed, over HRDB. The
-  macOS archive does not include it (`brew install hatari` is 2.6.1), and neither does a
-  source build. Avoid distribution packages on Linux: Ubuntu 22.04 ships 2.3.1 and 24.04
+  it, the macOS one carrying its Homebrew dylib closure inside the app — so they run and
+  debug with nothing else installed; a source build supplies its own emulator. Avoid
+  distribution packages on Linux: Ubuntu 22.04 ships 2.3.1 and 24.04
   ships 2.4.1, whose truncated debugger responses break source-line debugging, while the
   IDE is developed and verified against 2.6.1.
 - Multi-file projects are supported through the linker (add sources in Project

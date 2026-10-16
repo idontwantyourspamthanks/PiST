@@ -268,6 +268,11 @@ private slots:
     void stepOut();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
+    /// Run ▸ Follow execution: hand the caret to the program counter — it goes
+    /// to the PC's line now, and every later stop brings it along until a caret
+    /// move of the user's own takes it back. The session chip's click and the
+    /// gutter's PC wedge do exactly this too (docs/cursor-plan.md §3.3).
+    void followExecution();
     /// Profiling is armed/collected while stopped: Hatari starts collection on
     /// continue and zeroes it if any breakpoint is armed mid-run, so both
     /// actions refuse a running machine.
@@ -558,6 +563,23 @@ private:
     void onStateUpdated(const pist::MachineState &state);
     void locationFromPc(quint32 pc);
 
+    /// Hand the caret to the program counter, returning false when there is
+    /// nothing to hand it to (no session, or a machine that is running rather
+    /// than stopped). The one implementation behind all three engage
+    /// affordances (cursor-plan §3.3).
+    bool engagePcFollow();
+
+    /// The one place m_pcFollow changes, so the menu item that shows the
+    /// ownership cannot disagree with it.
+    void setPcFollow(bool following);
+
+    /// Show the PC at `line` in `target`, and in no other editor: a marker left
+    /// behind on a file the machine has walked out of reads as "the program is
+    /// here" when the user switches back to it. `target` may be null (the PC's
+    /// file is not open) — then no editor holds a marker at all and the session
+    /// chip carries the location (cursor-plan §4.3).
+    void setExecutionMarker(CodeEditor *target, int line);
+
     /// Rebuild the program's source mapping from the listings this build
     /// produced, and load the linker's placement map when there was a link.
     void rebuildProgramMap();
@@ -749,6 +771,23 @@ private:
     QString m_stoppedFile;
     int m_stoppedLine = 0;
 
+    /// Whether the caret's position is owned by the program counter: the user
+    /// handed it over (Follow execution, the session chip, or the gutter's PC
+    /// wedge), and every stop moves it until they take it back with a caret
+    /// move of their own. Session-scoped — clearSessionViews resets it.
+    bool m_pcFollow = false;
+    /// Whether the PC has been *placed* in this session yet. The first stop is
+    /// a placement — marker and chips only, the caret untouched — and every
+    /// stop after it a movement. That asymmetry is what keeps the entry stop
+    /// from yanking the caret while stepping still follows once the user asks
+    /// it to (cursor-plan §3.2).
+    bool m_pcPlaced = false;
+    /// Set while the follow path moves the caret itself: the
+    /// cursorPositionChanged that move produces must not be read as the user
+    /// claiming the caret back, which would end following at the first step
+    /// (cursor-plan §4.2).
+    bool m_pcFollowInProgress = false;
+
     /// Source mapping for the whole program. Replaces a single LineMap because a
     /// linked program has one listing per module, each needing its own base.
     ProgramLineMap m_programMap;
@@ -806,6 +845,10 @@ private:
     QAction *m_actStepOver = nullptr;
     QAction *m_actStepOut = nullptr;
     QAction *m_actRunToCursor = nullptr;
+    /// Run ▸ Follow execution. Checkable, and the state it shows *is*
+    /// m_pcFollow: the menu is where the caret's ownership is visible and can be
+    /// flipped in one gesture (cursor-plan §3.3, §6.4).
+    QAction *m_actFollow = nullptr;
     QAction *m_actResume = nullptr;
     QAction *m_actClearBreakpoints = nullptr;
     QAction *m_actToggleBreakpoint = nullptr;

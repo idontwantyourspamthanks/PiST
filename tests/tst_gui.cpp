@@ -3,12 +3,12 @@
 // PiST - an IDE for Atari ST assembly development
 //
 // End-to-end test of the debug loop through MainWindow: build, launch, attach,
-// resolve a source-line breakpoint, hit it, and confirm the editor follows the
-// program counter.
+// resolve a source-line breakpoint, hit it, and confirm the editor marks the
+// program counter's source line.
 //
-// This covers the layer that no other suite touches. The README claims the
-// editor follows the PC and that breakpoints work, so those claims are asserted
-// here rather than assumed.
+// This covers the layer that no other suite touches. The README claims that a
+// stop is marked in the editor and that breakpoints work, so those claims are
+// asserted here rather than assumed.
 
 #include "editor/CodeEditor.h"
 #include "editor/AsmHighlighter.h"
@@ -264,6 +264,27 @@ bool declaresPositivePixels(const QString &rule, const QString &property)
     return match.hasMatch() && match.captured(1).toInt() > 0;
 }
 
+/// A small program at the top of the file, filler below it — the shape of the
+/// file in the report that started this ("when I press the play button, the
+/// editor moves the cursor to the beginning of my .s file").
+///
+/// Every test around the caret and the program counter needs an editor whose
+/// view can be scrolled away from the program and whose caret has somewhere
+/// else to be, so they share this one: the entry stop is line 2, the loop
+/// breakpoint line 3, and the file is 60 lines long so parking the caret at the
+/// end really scrolls the view.
+QByteArray spinningProgramWithFiller()
+{
+    QByteArray text(QByteArrayLiteral("\ttext\n"                    // 1
+                                      "start:\tmoveq\t#0,d0\n"      // 2  entry stop
+                                      "loop:\taddq.w\t#1,d0\n"      // 3  breakpoint
+                                      "\tbra.s\tloop\n"));          // 4
+    for (int i = 0; i < 55; ++i)
+        text += QByteArrayLiteral("\tnop\n");                        // 5..59
+    text += QByteArrayLiteral("\tend\n");                            // 60
+    return text;
+}
+
 /// Ends whatever emulator session a test leaves running, on every path out of
 /// the test function. A failed QCOMPARE returns immediately, skipping the
 /// test's own host->stop(), and a window destroyed with a live session tears its
@@ -342,9 +363,39 @@ private slots:
     /// so itself. The two boundary cases ride in the same slot: a matching
     /// auto-selected ROM and an explicitly configured ROM must stay quiet.
     void autoSelectedRomForAnotherMachineWarnsAboutTheOverride();
-    void breakpointSetBeforeRunFiresAndEditorFollows();
+    void breakpointSetBeforeRunFiresAndTheStopIsMarked();
     void breakpointAddedWhileRunningFiresThisSession();
     void stepOutAndRunToCursorReachTheirTargets();
+    /// Pressing Run used to move the caret to the program's first line: the
+    /// entry stop was treated like every other stop and the editor followed the
+    /// PC with gotoLine() — caret, scroll and focus. The first stop of a
+    /// session is a placement now (docs/cursor-plan.md §1, §3.2).
+    void firstStopPlacesTheMarkerAndLeavesTheCaret();
+    /// A stop the user never handed the caret to — a breakpoint the machine
+    /// reaches on its own — moves the marker and nothing else (cursor-plan §3.2).
+    void aStopTheUserDidNotClaimLeavesTheCaret();
+    /// Run ▸ Follow execution, the session chip and the gutter's PC wedge all
+    /// hand the caret to the program counter, and all go to it (cursor-plan
+    /// §3.3, §8.5).
+    void everyEngageAffordanceGoesToTheProgramCounter();
+    /// With the caret handed over, each stop brings it along — without taking
+    /// the keyboard, because a stop is a background event (cursor-plan §4.1,
+    /// §8.6).
+    void followingStopsMoveTheCaretWithoutTakingFocus();
+    /// Moving the caret oneself ends the claim, and the next stop leaves it
+    /// where the user put it (cursor-plan §3.3, §8.4).
+    void movingTheCaretReleasesItFromTheProgramCounter();
+    /// Following across files: released, a PC in an unopened include opens and
+    /// raises nothing; engaged, it opens it, raises it, and the caret comes
+    /// along (cursor-plan §4.2, §4.3, §8.4).
+    void followingAcrossFilesRaisesTheTabOnlyWhileClaimed();
+    /// A PC that maps to no source line (library code) clears the marker and
+    /// leaves the caret where it was (cursor-plan §3.4, §8.7).
+    void anUnmappedProgramCounterClearsTheMarkerAndNothingElse();
+    /// The gutter's reserved marker column and the click test that finds it must
+    /// agree — including with the blame lane on, where a lane-relative x and an
+    /// absolute one are different numbers (cursor-plan §5).
+    void executionWedgePaintsItsOwnGutterColumn();
     void openRecentMenuListsAndOpensFiles();
     void ctrlClickOpensIncludesAndJumpsToLabels();
     void debugConsoleRecallsHistoryWithArrowKeys();
@@ -2400,11 +2451,11 @@ void TstGui::stackViewDoubleClickFollowsAddress()
 }
 
 // The core debug-loop regression: a breakpoint set before Run must fire, and the
-// editor must follow the program counter to it. This is the one test that would
-// have caught the bug where the arming chain and the live-base wiring were both
-// missing — every component passed its own test while the loop as a whole did
+// stop must be marked on its source line in the editor. This is the one test that
+// would have caught the bug where the arming chain and the live-base wiring were
+// both missing — every component passed its own test while the loop as a whole did
 // nothing (docs/code-review-glm-001.md P1).
-void TstGui::breakpointSetBeforeRunFiresAndEditorFollows()
+void TstGui::breakpointSetBeforeRunFiresAndTheStopIsMarked()
 {
     REQUIRE_EMULATOR_OR_SKIP();
 
@@ -2676,6 +2727,547 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
     QVERIFY(host);
     host->stop();
 }
+
+// The gutter reserves a column right of the line numbers for the program
+// counter's ▶, and that column is also what a click on the marker line engages
+// following with (isPcWedgeClick). The two must agree — including with the blame
+// lane on, the one configuration where a lane-relative x and an absolute one are
+// different numbers — and the wedge must stay out of the blame lane, which is
+// the collision docs/cursor-plan.md §5 calls out. Rendered, not driven: the
+// markers are put on directly, so this runs without an emulator.
+void TstGui::executionWedgePaintsItsOwnGutterColumn()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QString text;
+    for (int i = 0; i < 12; ++i)
+        text += QStringLiteral("\tnop\n");
+    editor->setPlainText(text);
+
+    // The lane is the point: with it off, a lane-relative wedge and an absolute
+    // click test coincide and any mistake hides.
+    editor->setBlameShown(true);
+    editor->setBlame({});
+    editor->setCurrentExecutionLine(4);
+    auto *gutter = editor->findChild<QWidget *>(QStringLiteral("lineNumberArea"));
+    QVERIFY(gutter);
+
+    const int row =
+        editor->cursorRect(QTextCursor(editor->document()->findBlockByNumber(3))).center().y();
+    QVERIFY2(row > 0 && row < gutter->height(), "the marker's row has to be on screen");
+
+    // Where the markable column starts, asked of the editor rather than
+    // recomputed here — the render below is checked against this very answer.
+    int wedgeX = -1;
+    for (int x = 0; x < gutter->width() && wedgeX < 0; ++x) {
+        if (editor->isPcWedgeClick(QPointF(x, row), 4))
+            wedgeX = x;
+    }
+    QVERIFY2(wedgeX >= 0, "the marker's row must have a click target at all");
+
+    const QImage marked = gutter->grab().toImage();
+    editor->clearCurrentExecutionLine();
+    const QImage unmarked = gutter->grab().toImage();
+
+    // The wedge is inked inside the column its own click test claims.
+    bool painted = false;
+    for (int x = wedgeX; x < marked.width() && !painted; ++x)
+        painted = marked.pixel(x, row) != unmarked.pixel(x, row);
+    QVERIFY2(painted, "the wedge must be painted inside the column a click on it tests for");
+
+    // And the marker paints nothing into the blame lane beside it.
+    const int lane = editor->blameLaneWidth();
+    QVERIFY(lane > 0);
+    for (int x = 0; x < lane; ++x) {
+        QVERIFY2(marked.pixel(x, row) == unmarked.pixel(x, row),
+                 qPrintable(QStringLiteral("the marker painted into the blame lane at x=%1")
+                                .arg(x)));
+    }
+}
+
+// The first stop of a session is a *placement*: the marker and the chips say
+// where the machine is, and the caret, the viewport and the keyboard are left
+// exactly where the user left them. Pressing play used to move the caret to the
+// program's first line, which sits near the top of the file — the report this
+// feature exists to answer (docs/cursor-plan.md §1).
+void TstGui::firstStopPlacesTheMarkerAndLeavesTheCaret()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/place.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write(spinningProgramWithFiller());
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    // The caret at the far end of the file, and the keyboard somewhere else
+    // entirely: both are what the entry stop used to take.
+    const auto parkCaretAtEnd = [&] {
+        // The last line with text on it: the document's closing block is the
+        // empty one after the trailing newline.
+        editor->setTextCursor(QTextCursor(
+            editor->document()->findBlockByNumber(editor->document()->blockCount() - 2)));
+    };
+    parkCaretAtEnd();
+    const int parkedLine = editor->textCursor().blockNumber() + 1;
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    input->setFocus();
+    const QWidget *focusBefore = window.focusWidget();
+    QVERIFY2(focusBefore != static_cast<QWidget *>(editor),
+             "the test has to start with the keyboard outside the editor");
+    const int scrollBefore = editor->verticalScrollBar()->value();
+    QVERIFY2(scrollBefore > 0,
+             "parking the caret at the end must have scrolled the view, or the "
+             "assertion below says nothing about scrolling");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    QCOMPARE(editor->textCursor().blockNumber() + 1, parkedLine);   // the caret stayed
+    QCOMPARE(editor->verticalScrollBar()->value(), scrollBefore);  // the view stayed
+    QCOMPARE(window.focusWidget(), focusBefore);                   // the keyboard stayed
+}
+
+// A stop the user never handed the caret to — here a breakpoint the machine
+// reaches on its own — moves the marker and nothing else. The caret parked
+// after the placement stays parked (cursor-plan §3.2).
+void TstGui::aStopTheUserDidNotClaimLeavesTheCaret()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/claim.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write(spinningProgramWithFiller());
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    // Armed before Run, exactly as a gutter click arms it.
+    QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
+                                      Q_ARG(int, 3)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // Past the placement: park the caret at the end of the file and leave the
+    // breakpoint to fire by itself.
+    editor->setTextCursor(QTextCursor(
+        editor->document()->findBlockByNumber(editor->document()->blockCount() - 2)));
+    const int parkedLine = editor->textCursor().blockNumber() + 1;
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, parkedLine);
+}
+
+// The three engage affordances are one behaviour: the caret goes to the program
+// counter now, and every later stop brings it along (cursor-plan §3.3).
+void TstGui::everyEngageAffordanceGoesToTheProgramCounter()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/engage.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write(spinningProgramWithFiller());
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    auto *follow = window.findChild<QAction *>(QStringLiteral("followExecutionAction"));
+    auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
+    auto *gutter = window.findChild<QWidget *>(QStringLiteral("lineNumberArea"));
+    QVERIFY2(follow && session && gutter, "each engage affordance must exist to be tested");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    const auto parkCaretAtEnd = [&] {
+        // The last line with text on it (the closing block is the empty one
+        // after the trailing newline).
+        editor->setTextCursor(QTextCursor(
+            editor->document()->findBlockByNumber(editor->document()->blockCount() - 2)));
+    };
+    parkCaretAtEnd();
+
+    // Run ▸ Follow execution.
+    follow->trigger();
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 2);
+    QVERIFY(follow->isChecked());
+
+    // Giving the caret back to itself first, so the click under test is the one
+    // that engages: parking is a caret move, and that releases by definition.
+    parkCaretAtEnd();
+    QVERIFY(!follow->isChecked());
+
+    // The session chip.
+    QTest::mouseClick(session, Qt::LeftButton);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 2);
+    QVERIFY(follow->isChecked());
+
+    parkCaretAtEnd();
+    const int parkedLine = editor->textCursor().blockNumber() + 1;
+    QVERIFY(!follow->isChecked());
+
+    // The gutter's PC wedge, on the row of the line the machine is stopped at.
+    // The view is scrolled to the end of the file by the parking above, so bring
+    // the marker's row back on screen first — a scroll, not a caret move.
+    editor->verticalScrollBar()->setValue(0);
+    const int markerRow =
+        editor->cursorRect(QTextCursor(editor->document()->findBlockByNumber(1))).center().y();
+    // Where the wedge is, asked of the editor rather than guessed: which side of
+    // the numbers it sits on is a rendering decision that cursor-plan §5 leaves
+    // open, and a test that hard-coded the x would pin it.
+    int wedgeX = -1;
+    for (int x = 0; x < gutter->width() && wedgeX < 0; ++x) {
+        if (editor->isPcWedgeClick(QPointF(x, markerRow), 2))
+            wedgeX = x;
+    }
+    QVERIFY2(wedgeX >= 0, "the marker's row must have a click target at all");
+
+    // Only the left button engages: a middle click is not a breakpoint toggle
+    // either, so it must do nothing at all.
+    QTest::mouseClick(gutter, Qt::MiddleButton, {}, QPoint(wedgeX, markerRow));
+    QCOMPARE(editor->textCursor().blockNumber() + 1, parkedLine);
+    QVERIFY(!follow->isChecked());
+
+    QTest::mouseClick(gutter, Qt::LeftButton, {}, QPoint(wedgeX, markerRow));
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 2);
+    QVERIFY(follow->isChecked());
+    // And it is not a breakpoint toggle: the wedge column is the marker's, not
+    // the gutter's.
+    QVERIFY(editor->breakpointLines().isEmpty());
+
+    // The menu is where the claim is handed back as well: un-ticking it releases
+    // the caret, so the next stop leaves it where it is.
+    follow->trigger();
+    QVERIFY(!follow->isChecked());
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 2);
+}
+
+// With the caret in the program counter's hands, every stop brings it along —
+// and a stop never takes the keyboard, because it arrives while the user is
+// typing (cursor-plan §4.1).
+void TstGui::followingStopsMoveTheCaretWithoutTakingFocus()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/focus.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write(spinningProgramWithFiller());
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "followExecution", Qt::DirectConnection));
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 2);  // engaging goes to the PC
+
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    input->setFocus();
+    const QWidget *focusBefore = window.focusWidget();
+    QVERIFY2(focusBefore != static_cast<QWidget *>(editor),
+             "the test has to start with the keyboard outside the editor");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 3);  // the caret came along
+    QCOMPARE(window.focusWidget(), focusBefore);          // without taking the keyboard
+}
+
+// Moving the caret oneself ends the claim, and the next stop leaves it where the
+// user put it (cursor-plan §3.3).
+void TstGui::movingTheCaretReleasesItFromTheProgramCounter()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/release.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write(spinningProgramWithFiller());
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    auto *follow = window.findChild<QAction *>(QStringLiteral("followExecutionAction"));
+    QVERIFY(follow);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+    QVERIFY(QMetaObject::invokeMethod(&window, "followExecution", Qt::DirectConnection));
+    QVERIFY(follow->isChecked());
+
+    // The user moves the caret themselves: two real key presses, not a signal
+    // emitted by hand.
+    editor->setFocus();
+    QTest::keyClick(editor, Qt::Key_Down);
+    QTest::keyClick(editor, Qt::Key_Down);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 4);
+    QVERIFY2(!follow->isChecked(), "the user's own caret move must end the claim");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 4);  // the marker moved, the caret did not
+}
+
+// Following across files. Released, a PC that walks into a file nobody has open
+// opens nothing and raises nothing — the session chip carries the location.
+// Engaged, the same stop opens that file, raises its tab and takes the caret
+// with it, and that move must not read as the user claiming the caret back
+// (cursor-plan §4.2, §4.3).
+void TstGui::followingAcrossFilesRaisesTheTabOnlyWhileClaimed()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString dir = m_work->path() + QStringLiteral("/roam");
+    QVERIFY(QDir().mkpath(dir));
+    const QString included = dir + QStringLiteral("/inc.s");
+    const QString main = dir + QStringLiteral("/roam.s");
+    {
+        QFile file(included);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("\ttext\n"                     // 1
+                   "helper:\tmoveq\t#3,d0\n"      // 2  the call lands here
+                   "\trts\n");                    // 3
+    }
+    {
+        QFile file(main);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        // The include spells its file's full path on purpose. vasm records an
+        // included file in the listing exactly as the directive writes it, and
+        // the IDE opens the PC's file by that recorded path: a bare "inc.s"
+        // would be recorded bare and resolve only against whatever directory
+        // the IDE happens to run in.
+        file.write(QStringLiteral("\ttext\n"                          // 1
+                                  "start:\tmoveq\t#1,d0\n"            // 2  entry stop
+                                  "\tbsr\thelper\n"                   // 3  the call across the file
+                                  "spin:\tbra.s\tspin\n"              // 4
+                                  "\tinclude\t\"%1\"\n"               // 5
+                                  "\tend\n")                          // 6
+                       .arg(included)
+                       .toUtf8());
+    }
+
+    ProjectSettings settings;
+    settings.sourceFile = main;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(main), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(main);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *editor = window.findChild<CodeEditor *>();
+    auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
+    auto *follow = window.findChild<QAction *>(QStringLiteral("followExecutionAction"));
+    QVERIFY(tabs && editor && session && follow);
+    QCOMPARE(tabs->count(), 1);  // inc.s is not open
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // Park the caret away from the program, then step out of `start` and through
+    // the call: the PC ends up in a file nobody has opened.
+    editor->setTextCursor(QTextCursor(
+        editor->document()->findBlockByNumber(editor->document()->blockCount() - 2)));
+    const int parkedLine = editor->textCursor().blockNumber() + 1;
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 3, 30000);
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(session->text().contains(QStringLiteral("inc.s:2")), 30000);
+
+    // Released: the stop opened nothing and raised nothing.
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(qobject_cast<CodeEditor *>(tabs->currentWidget()), editor);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, parkedLine);
+
+    // Engaged: the same stop, now the caret's business. The raise the engage
+    // performs is the caret's; the keyboard is not. Focus parked outside the tab
+    // widget — here the console — must survive the tab raise unchanged
+    // (cursor-plan §4.1).
+    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
+    QVERIFY(input);
+    input->setFocus();
+    const QWidget *focusBefore = window.focusWidget();
+    QVERIFY2(focusBefore != static_cast<QWidget *>(editor),
+             "the test has to start with the keyboard outside the editor");
+    QVERIFY(QMetaObject::invokeMethod(&window, "followExecution", Qt::DirectConnection));
+    CodeEditor *includedEditor = nullptr;
+    for (CodeEditor *candidate : window.findChildren<CodeEditor *>()) {
+        if (QFileInfo(candidate->filePath()).fileName() == QStringLiteral("inc.s"))
+            includedEditor = candidate;
+    }
+    QVERIFY2(includedEditor, "engaging must open the file the PC is in");
+    QCOMPARE(qobject_cast<CodeEditor *>(tabs->currentWidget()), includedEditor);
+    QCOMPARE(includedEditor->textCursor().blockNumber() + 1, 2);
+    QVERIFY2(follow->isChecked(),
+             "the caret move the engage made must not read as the user claiming it back");
+    QCOMPARE(window.focusWidget(), focusBefore);  // and the keyboard stayed put
+
+    // And the next stop, in the file that is now current, brings the caret along.
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(includedEditor->currentExecutionLine(), 3, 30000);
+    QCOMPARE(includedEditor->textCursor().blockNumber() + 1, 3);
+
+    // Ending the session leaves no marker in any open editor — both are open
+    // now, and a marker left on either would claim a line the machine has left.
+    IDebugBackend *host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+    host->stop();
+    QTRY_COMPARE_WITH_TIMEOUT(session->text(), QStringLiteral("Not running"), 10000);
+    for (CodeEditor *open : window.findChildren<CodeEditor *>())
+        QCOMPARE(open->currentExecutionLine(), 0);
+}
+
+// A PC that maps to no source line — library code, or the ROM — clears the
+// marker and leaves the caret, the viewport and the tabs alone (cursor-plan
+// §3.4).
+void TstGui::anUnmappedProgramCounterClearsTheMarkerAndNothingElse()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/unmapped.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write(spinningProgramWithFiller());
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.show();
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    auto *session = window.findChild<QLabel *>(QStringLiteral("statusSession"));
+    QVERIFY(session);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 2, 30000);
+
+    // Park the caret on the last line, then open a second file: the marker is
+    // now on a tab that is no longer the current one, which is the case a
+    // "clear the current editor" would leave behind.
+    editor->setTextCursor(QTextCursor(
+        editor->document()->findBlockByNumber(editor->document()->blockCount() - 2)));
+    const int parkedLine = editor->textCursor().blockNumber() + 1;
+    const QString other = m_work->path() + QStringLiteral("/unmapped-other.s");
+    {
+        QFile file(other);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write(spinningProgramWithFiller());
+    }
+    window.openPath(other);
+    QVERIFY2(window.findChildren<CodeEditor *>().size() >= 2,
+             "the second editor is what makes the marker check below say something");
+
+    // Put the PC in the TOS ROM and step there: no listing covers that address,
+    // which is the unmapped path this cares about.
+    QVERIFY(window.setRegister(QStringLiteral("pc"), 0xe10000u));
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->currentExecutionLine(), 0, 30000);
+    // The chip says only that the machine is stopped — no file, no line.
+    QTRY_COMPARE_WITH_TIMEOUT(session->text(), QStringLiteral("Stopped"), 10000);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, parkedLine);
+    // And no open editor holds a marker for a line the machine has left.
+    for (CodeEditor *open : window.findChildren<CodeEditor *>())
+        QCOMPARE(open->currentExecutionLine(), 0);
+}
+
 // F4/Shift+F4 tour the Problems pane without the mouse: each step selects the
 // next diagnostic carrying a source line (wrapping, skipping build-level
 // messages) and the editor follows, exactly like double-clicking the item. The

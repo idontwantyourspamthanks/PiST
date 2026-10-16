@@ -20,7 +20,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 
 > **Status: early, and usable.** The full loop works — write, assemble, run under Hatari, and
 > debug with breakpoints, stepping, registers, memory, disassembly, watchpoints, a stack
-> view and hardware registers, with the editor following the program counter. Projects have persistent settings (include paths, defines, machine, ROM,
+> view and hardware registers, with the execution point marked in the editor and your caret
+> left where you put it. Projects have persistent settings (include paths, defines, machine, ROM,
 > RAM, disk images). Linux, macOS and Windows all build and pass their tests in CI.
 >
 > What is missing is breadth rather than core function: every archive bundles the emulator, and
@@ -84,8 +85,13 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   lists every label and equate with its address once the program is running
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
 - **Debug** with breakpoints, single-step, step-over, **step out** and **run to cursor**
-  (Ctrl+F10), registers, memory and labelled disassembly — and the editor following the
-  program counter as you step
+  (Ctrl+F10), registers, memory and labelled disassembly. A stop marks its source line in the
+  editor (a ▶ in the gutter, plus the highlighted line and the status bar) and leaves your
+  caret, your scroll position and your keyboard exactly where they were — the emulator never
+  interrupts your editing
+  - **Follow execution** hands the caret to the program counter instead: it goes to the line
+    the machine is on, and every stop brings it along until you move the caret yourself.
+    Run ▸ Follow Execution, or click the session chip in the status bar, or the ▶ in the gutter
   - **edit registers and memory** while stopped — poke a value and keep debugging
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are

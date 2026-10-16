@@ -366,6 +366,12 @@ MainWindow::MainWindow(QWidget *parent)
     const auto clearSessionViews = [this] {
         m_stoppedFile.clear();
         m_stoppedLine = 0;
+        // A session ends with the caret wherever the user left it, and with no
+        // claim on it: the next session's first stop is a placement again, not
+        // a movement (cursor-plan §3.1).
+        setPcFollow(false);
+        m_pcPlaced = false;
+        m_pcFollowInProgress = false;
         m_bases = LineMap::SectionBases();
         m_lastState = MachineState();
         m_pendingDebugCommand.clear();
@@ -675,11 +681,25 @@ void MainWindow::wireEditor(CodeEditor *editor)
             editBreakpointCondition(line);
     });
 
+    // The gutter's PC wedge — the marker's own click target. A click there is
+    // the user handing the caret to the program counter, so it engages instead
+    // of toggling a breakpoint (cursor-plan §3.3, §5).
+    connect(editor, &CodeEditor::executionMarkerClicked, this,
+            [this] { followExecution(); });
+
     // The instruction reference follows the cursor, but only when its dock is
     // on show — otherwise an idle panel would churn on every keystroke. OS
     // calls win over the word: cursor on a `trap #1` line (or a push feeding
     // one) shows the call being made, not the TRAP or MOVE instruction.
     connect(editor, &CodeEditor::cursorPositionChanged, this, [this, editor] {
+        // A caret move that is not the follow path's own is the user taking the
+        // caret back: typing, a click, an arrow key, the Go-to bar, a jump to a
+        // diagnostic. The claim ends there and the caret is theirs again
+        // (cursor-plan §3.3). The guard is what keeps the PC's own move — which
+        // arrives through this same signal — from ending following at every
+        // step.
+        if (m_pcFollow && !m_pcFollowInProgress)
+            setPcFollow(false);
         if (editor == m_editor)
             updateCaretChip();
         if (editor == m_editor)
@@ -1116,6 +1136,28 @@ void MainWindow::createActions()
     m_actRunToCursor->setEnabled(false);
     connect(m_actRunToCursor, &QAction::triggered, this, &MainWindow::runToCursor);
 
+    // Checkable, because the caret's ownership is a state the user has to be
+    // able to see — the tick *is* m_pcFollow. Engaging goes to the PC now and
+    // brings the caret along on every later stop; unticking is a release, the
+    // same one an editing keystroke performs (cursor-plan §3.3).
+    m_actFollow = new QAction(tr("Follow &Execution"), this);
+    m_actFollow->setObjectName(QStringLiteral("followExecutionAction"));
+    m_actFollow->setCheckable(true);
+    m_actFollow->setEnabled(false);
+    m_actFollow->setToolTip(tr("Move the caret with the program counter while the machine "
+                              "runs and stops. Move the caret yourself and it is yours "
+                              "again"));
+    connect(m_actFollow, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            followExecution();
+        // The un-tick *is* a release, the same one an editing keystroke performs;
+        // and an engage that found nothing to follow to (no stopped session) has
+        // to undo its own tick. Either way the menu ends up showing where the
+        // caret actually is rather than where the click hoped it would be.
+        if (!on || !m_pcFollow)
+            setPcFollow(false);
+    });
+
     m_actToggleBreakpoint = new QAction(tr("Toggle &Breakpoint"), this);
     m_actToggleBreakpoint->setObjectName(QStringLiteral("toggleBreakpointAction"));
     m_actToggleBreakpoint->setShortcut(QKeySequence(Qt::Key_F8));
@@ -1193,6 +1235,7 @@ void MainWindow::wireBackend()
             if (m_actStepOver) m_actStepOver->setEnabled(false);
             if (m_actStepOut) m_actStepOut->setEnabled(false);
             if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
+            if (m_actFollow) m_actFollow->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
             m_log->appendPlainText(tr("[session] emulator is no longer running"));
         }
@@ -1324,6 +1367,7 @@ void MainWindow::wireBackend()
         m_actStepOver->setEnabled(stopped);
         m_actStepOut->setEnabled(stopped);
         m_actRunToCursor->setEnabled(stopped);
+        m_actFollow->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
         updateRunContinueShortcut();
         updateSessionChip();
@@ -1473,6 +1517,9 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStepOver);
     runMenu->addAction(m_actStepOut);
     runMenu->addAction(m_actRunToCursor);
+    // Next to Run to Cursor: both are about where the caret is relative to the
+    // executing program, one of them for a single stop and one for the session.
+    runMenu->addAction(m_actFollow);
     runMenu->addAction(m_actProfileStart);
     runMenu->addAction(m_actProfileStop);
     runMenu->addAction(m_actProfileToCursor);
@@ -1609,6 +1656,19 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         return QMainWindow::eventFilter(watched, event);
 
     auto *me = static_cast<QMouseEvent *>(event);
+
+    // The session chip's click: it is a QLabel, so the gesture that hands the
+    // caret to the program counter arrives as a filtered event rather than as a
+    // signal (cursor-plan §3.3). Qt hands the release to the widget the press
+    // started on even when the pointer has left it, which is why the position
+    // is checked: a press on the chip that is dragged away and released
+    // elsewhere must not engage.
+    if (watched == m_statusSession && type == QEvent::MouseButtonRelease
+        && me->button() == Qt::LeftButton
+        && m_statusSession->rect().contains(me->position().toPoint())) {
+        followExecution();
+        return true;
+    }
 
     if (type == QEvent::MouseButtonRelease)
         return QMainWindow::eventFilter(watched, event);
@@ -2504,6 +2564,11 @@ void MainWindow::createStatusBar()
     // is the rightmost. The session is the one a glance should land on.
     m_statusSession = new QLabel(tr("Not running"), this);
     m_statusSession->setObjectName(QStringLiteral("statusSession"));
+    // One of the three engage affordances (cursor-plan §3.3). A QLabel has no
+    // clicked signal, so the click is handled in eventFilter; the hand cursor
+    // and the hint updateSessionChip appends to the tooltip are what make it
+    // discoverable.
+    m_statusSession->setCursor(Qt::PointingHandCursor);
     m_statusBuild = new QLabel(this);
     m_statusBuild->setObjectName(QStringLiteral("statusBuild"));
     m_statusToolchain = new QLabel(this);
@@ -2532,6 +2597,11 @@ void MainWindow::updateSessionChip()
         m_statusSession->setText(tr("Running"));
         return;
     }
+    // Stopped is the only state in which the chip's click does anything — it
+    // hands the caret to the program counter (cursor-plan §3.3) — so the hint
+    // lives here, and a chip that would refuse the click does not advertise it.
+    m_statusSession->setToolTip(m_caps.summary() + QStringLiteral("\n\n")
+                                + tr("Click to follow the program counter with the caret"));
     if (m_stoppedLine > 0 && !m_stoppedFile.isEmpty())
         m_statusSession->setText(tr("Stopped — %1:%2").arg(m_stoppedFile).arg(m_stoppedLine));
     else
@@ -3960,6 +4030,11 @@ void MainWindow::runToCursor()
 {
     if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty())
         return;
+    // "Run to my line" is a caret gesture like any other: it reads honestly as
+    // "run until *my* line" only while the caret is the user's, so following
+    // ends with it rather than dragging the caret off the line being run to
+    // (cursor-plan §4.4).
+    setPcFollow(false);
     const int line = m_editor->textCursor().blockNumber() + 1;
     quint32 address = 0;
     if (!m_programMap.codeAddressFor(m_editor->filePath(), line, &address)) {
@@ -4385,8 +4460,9 @@ void MainWindow::onStateUpdated(const MachineState &state)
         m_bases.bss = state.bssBase;
 
         // Hand the live bases to the program map. Without this, lineFor and
-        // addressFor return false forever: no breakpoint ever resolves, and the
-        // editor never follows the program counter (docs/code-review-glm-001.md
+        // addressFor return false forever: no breakpoint ever resolves, and no
+        // stop ever finds a source line to place the execution marker on — the
+        // chips read "Stopped" and nothing more (docs/code-review-glm-001.md
         // P1 root cause B).
         m_programMap.setLiveBases(m_bases);
 
@@ -4506,20 +4582,15 @@ QMetaObject::Connection MainWindow::onDebugReadMemoryFinished(
 
 void MainWindow::locationFromPc(quint32 pc)
 {
-    if (!m_bases.isValid() || m_programMap.isEmpty()) {
-        if (m_editor)
-            m_editor->clearCurrentExecutionLine();
-        m_stoppedFile.clear();
-        m_stoppedLine = 0;
-        updateSessionChip();
-        updateCaretChip();
-        return;
-    }
-
     LineMap::Address address;
-    if (!m_programMap.lineFor(pc, &address)) {
-        if (m_editor)
-            m_editor->clearCurrentExecutionLine();
+    const bool mapped = m_bases.isValid() && !m_programMap.isEmpty()
+                        && m_programMap.lineFor(pc, &address);
+    if (!mapped) {
+        // Unmapped: library or ROM code, or a PC of 0 before the bases are
+        // live. The marker goes (it is nothing but a lie now), and the caret,
+        // the scroll, the focus and the tab layout — the user's, all of them —
+        // stay exactly where they were (cursor-plan §3.4).
+        setExecutionMarker(nullptr, 0);
         m_stoppedFile.clear();
         m_stoppedLine = 0;
         updateSessionChip();
@@ -4527,31 +4598,116 @@ void MainWindow::locationFromPc(quint32 pc)
         return;
     }
 
-    // The editor follows the program counter into whatever file it lands in:
-    // raise the tab showing it, opening one when it is not already open. The
-    // comparison must be path-tolerant: the listing records whatever path was
-    // passed to vasm (usually absolute), while the editor knows the file it
-    // was opened with (usually just a name).
+    // The PC's file among the open editors. The comparison must be
+    // path-tolerant: the listing records whatever path was passed to vasm
+    // (usually absolute), while the editor knows the file it was opened with
+    // (usually just a name).
     CodeEditor *target = nullptr;
     for (CodeEditor *editor : openEditors())
         if (LineMap::sameSource(address.file, editor->filePath())) {
             target = editor;
             break;
         }
-    if (!target && QFileInfo::exists(address.file))
-        target = addEditorTab(address.file);
 
     m_stoppedFile = QFileInfo(address.file).fileName();
     m_stoppedLine = address.line;
     updateSessionChip();
 
-    if (!target)
+    if (!m_pcPlaced) {
+        // The session's first stop is a *placement*. It arrives at the
+        // program's own first line moments after the user pressed Run, which is
+        // exactly where a caret-following editor used to drag them (the
+        // reported injury, cursor-plan §1). The marker and the chips say where
+        // the machine is; nothing else moves, and no file is opened for it.
+        m_pcPlaced = true;
+        setExecutionMarker(target, address.line);
+        updateCaretChip();
         return;
+    }
 
-    m_tabs->setCurrentWidget(target);
-    target->setCurrentExecutionLine(address.line);
-    target->gotoLine(address.line);
+    if (!m_pcFollow) {
+        // The caret is the user's. The marker follows the PC; the caret, the
+        // scroll, the focus and the tab layout do not, and a file the PC has
+        // walked into is not opened on its behalf (cursor-plan §3.2, §4.3).
+        setExecutionMarker(target, address.line);
+        updateCaretChip();
+        return;
+    }
+
+    // Following: this movement is the PC's, and the caret comes along.
+    // Everything below — opening and raising the tab, and the caret move itself
+    // — happens under the guard, so the cursorPositionChanged those produce is
+    // not mistaken for the user claiming the caret back (cursor-plan §4.2).
+    // Saved and restored rather than just cleared: opening a tab can run a
+    // nested event loop (a warning modal for a file that will not load), and a
+    // state update delivered in there re-enters this function — the guard the
+    // outer call set has to survive that.
+    const bool wasFollowingInProgress = m_pcFollowInProgress;
+    m_pcFollowInProgress = true;
+
+    // Opening the PC's file is part of following: the caret has to have
+    // somewhere to land. It is the one thing the released path above must not
+    // do, and the guard's opening paragraph covers it too — a tab created here
+    // lands its own cursor in the document.
+    if (!target && QFileInfo::exists(address.file))
+        target = addEditorTab(address.file);
+
+    if (target) {
+        m_tabs->setCurrentWidget(target);
+        setExecutionMarker(target, address.line);
+        target->followExecutionLine(address.line);
+    } else {
+        setExecutionMarker(nullptr, 0);
+    }
+
+    m_pcFollowInProgress = wasFollowingInProgress;
     updateCaretChip();
+}
+
+bool MainWindow::engagePcFollow()
+{
+    if (!m_host || !m_host->isRunning() || !m_host->isStopped())
+        return false;
+
+    // The stop this engagement applies to is a movement of the PC's, not the
+    // untouched placement of a fresh session: the user is asking for the caret
+    // to come along from here on, whether or not a placement has happened yet
+    // (it has not when the first stop's PC did not map).
+    m_pcPlaced = true;
+    setPcFollow(true);
+    return true;
+}
+
+void MainWindow::setPcFollow(bool following)
+{
+    m_pcFollow = following;
+    if (!m_actFollow)
+        return;
+    // Reported, not clicked: letting this through would re-enter the toggled
+    // handler that calls the very function this is inside.
+    const QSignalBlocker blocker(m_actFollow);
+    m_actFollow->setChecked(following);
+}
+
+void MainWindow::setExecutionMarker(CodeEditor *target, int line)
+{
+    for (CodeEditor *editor : openEditors())
+        if (editor != target)
+            editor->clearCurrentExecutionLine();
+    if (target)
+        target->setCurrentExecutionLine(line);
+}
+
+void MainWindow::followExecution()
+{
+    if (!engagePcFollow())
+        return;
+    // Go to where the machine is now: every engage affordance is something the
+    // user clicked *in order to* get to the PC, so engaging is also the jump.
+    // An unmapped PC — library code, or a session whose first stop has not
+    // arrived — has nowhere to go, and locationFromPc says so; following is
+    // armed all the same, and the caret moves at the next mapped stop.
+    locationFromPc(m_lastState.pc);
 }
 
 } // namespace pist

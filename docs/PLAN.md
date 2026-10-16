@@ -1033,6 +1033,15 @@ Sheet §2's L4 authoring *depends* on it (`Used in:` names lessons, and the
 examples are assembled against `lessons/`), so L4 starts after that PR lands
 here. The other five features do not touch it and start immediately.
 
+**Scripted stop hooks** (sheet §1) got its own plan of record on this branch,
+[docs/stop-hooks-plan.md](stop-hooks-plan.md): the trigger is the published stop
+rather than the raw `stoppedChanged(true)` event, the runner executes from a
+queued invocation so its read-back nested loop is not inside the transport's
+single-entry drain, scripted writes must complete before a script's `continue()`
+(because `resume()` prunes everything without `keepOnResume`), and the engine is
+still a measured choice — that plan's L0 produces the numbers, which land in §9
+below.
+
 ---
 
 ## 7. Legal constraints

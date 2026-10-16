@@ -105,6 +105,17 @@ API in the README; ship one integration test that stops at a line and asserts a
 scripted write landed (`tst_emulatorhost` is the pattern for a real-session
 test, not a mock).
 
+**The plan of record is [docs/stop-hooks-plan.md](stop-hooks-plan.md)**, and it
+refines two points above. The hook fires on the *published* stop — after the
+register batch, not on the raw `stoppedChanged(true)` event, where the state is
+still a batch stale and the entry stop may still be printing its dump. And the
+engine is a measured choice in the plan's L0: Lua stays on record (audience,
+in-thread interruption), with `QJSEngine` as the default candidate because the
+packaging evidence is exactly the "packaging fights back" case this entry named
+as the fallback trigger — the tree has no vendoring mechanism at all, and the
+shipped licence set is derived from the linked artifact, which a statically
+linked Lua is invisible to.
+
 ---
 
 ## 2. L4 reference authoring

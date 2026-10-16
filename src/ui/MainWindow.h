@@ -661,8 +661,8 @@ private:
     void addDockToViewMenu(QDockWidget *dock);
 
     /// Point the Git panel at the project directory, and show or hide the
-    /// blame lane on every open editor. Blame stays off for an untitled
-    /// buffer, an image tab, and a file that is not inside the repository.
+    /// blame lane on every open editor. Blame stays off for a document with no
+    /// path, an image tab, and a file that is not inside the repository.
     void syncGitDirectory();
     void applyGitBlame();
     void refreshBlame();

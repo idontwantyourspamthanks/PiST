@@ -96,6 +96,28 @@ QPushButton *addPathRow(QFormLayout *form, QWidget *tab, const QString &label, Q
     return browse;
 }
 
+/// One "arguments field + Reset to defaults" row of `form`: the field takes the
+/// width, a Reset button sits at its top right and restores @p defaults, one
+/// argument per line. The two assembler-argument rows differ only in their
+/// defaults.
+void addArgsRow(QFormLayout *form, QWidget *tab, const QString &label, QPlainTextEdit *field,
+                const QStringList &defaults)
+{
+    field->setPlaceholderText(SettingsDialog::tr("One argument per line"));
+    field->setMaximumHeight(70);
+    auto *row = new QWidget(tab);
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->addWidget(field, 1);
+    auto *reset = new QPushButton(SettingsDialog::tr("Reset"), row);
+    reset->setToolTip(SettingsDialog::tr("Restore these to PiST's default arguments"));
+    rowLayout->addWidget(reset, 0, Qt::AlignTop);
+    QObject::connect(reset, &QPushButton::clicked, field, [field, defaults] {
+        field->setPlainText(defaults.join(QLatin1Char('\n')));
+    });
+    form->addRow(label, row);
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
@@ -218,10 +240,31 @@ void SettingsDialog::buildUi()
     defLayout->addLayout(defButtons);
     buildLayout->addRow(tr("Defines:"), defBox);
 
-    m_extraBuildArgs = new QPlainTextEdit(buildTab);
-    m_extraBuildArgs->setPlaceholderText(tr("One argument per line"));
-    m_extraBuildArgs->setMaximumHeight(70);
-    buildLayout->addRow(tr("Extra assembler args:"), m_extraBuildArgs);
+    // Assembler arguments, one list per build mode, each editable with its own
+    // reset. PiST adds the flags that describe *this* build — the output format,
+    // the include paths and defines, the listing, -o and the source file —
+    // after these. Both defaults use -devpac; the two lists exist because
+    // -devpac drops the symbol table the debugger reads, so the debug list adds
+    // -opt-x+ to put it back.
+    m_debugBuildArgs = new QPlainTextEdit(buildTab);
+    addArgsRow(buildLayout, buildTab, tr("Debug assembler args:"), m_debugBuildArgs,
+               defaultDebugAssemblerArgs());
+
+    m_releaseBuildArgs = new QPlainTextEdit(buildTab);
+    addArgsRow(buildLayout, buildTab, tr("Release assembler args:"), m_releaseBuildArgs,
+               defaultReleaseAssemblerArgs());
+
+    auto *argsNote = new QLabel(
+        tr("PiST adds the output format (-Ftos, or -Fvobj per module for a linked "
+           "build), the include paths, defines, listing, -o and the source file "
+           "after these. Both defaults use -devpac (Devpac compatibility, "
+           "optimisations off) so one source assembles the same either way; the "
+           "debug list adds -opt-x+ to keep the symbol table the debugger reads, "
+           "and the release list strips it (-nosym) for a clean PRG."),
+        buildTab);
+    argsNote->setWordWrap(true);
+    argsNote->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    buildLayout->addRow(QString(), argsNote);
 
     tabs->addTab(scrollableTab(buildTab), tr("Build"));
 
@@ -444,7 +487,8 @@ void SettingsDialog::loadValues(const ProjectSettings &settings)
     for (const QString &define : settings.defines)
         m_defines->addItem(define);
 
-    m_extraBuildArgs->setPlainText(settings.extraBuildArgs.join(QLatin1Char('\n')));
+    m_debugBuildArgs->setPlainText(settings.debugAssemblerArgs.join(QLatin1Char('\n')));
+    m_releaseBuildArgs->setPlainText(settings.releaseAssemblerArgs.join(QLatin1Char('\n')));
 
     const int machineIndex = m_machine->findData(static_cast<int>(settings.machine));
     if (machineIndex >= 0)
@@ -669,7 +713,8 @@ ProjectSettings SettingsDialog::settings() const
     for (int i = 0; i < m_defines->count(); ++i)
         s.defines.append(m_defines->item(i)->text());
 
-    s.extraBuildArgs = linesToArgs(m_extraBuildArgs->toPlainText());
+    s.debugAssemblerArgs = linesToArgs(m_debugBuildArgs->toPlainText());
+    s.releaseAssemblerArgs = linesToArgs(m_releaseBuildArgs->toPlainText());
 
     s.machine = static_cast<Machine>(m_machine->currentData().toInt());
     s.tosPath = m_rom->currentData().toString();

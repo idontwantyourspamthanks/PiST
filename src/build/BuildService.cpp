@@ -110,6 +110,26 @@ bool parseVasmDiagnostic(const QString &line, Diagnostic *diagnostic)
     return true;
 }
 
+QStringList vasmAssemblerArguments(const QStringList &projectArgs, const QString &format,
+                                   const QString &cpu, const QStringList &includePaths,
+                                   const QStringList &defines, const QString &listingFile,
+                                   const QString &outputFile, const QString &sourceFile)
+{
+    QStringList args = projectArgs;
+    args << format;
+    if (!cpu.isEmpty())
+        args << (QStringLiteral("-m") + cpu);
+    for (const QString &inc : includePaths)
+        args << (QStringLiteral("-I") + inc);
+    for (const QString &def : defines)
+        args << (QStringLiteral("-D") + def);
+    if (!listingFile.isEmpty())
+        args << QStringLiteral("-L") << listingFile;
+    args << QStringLiteral("-o") << outputFile;
+    args << sourceFile;
+    return args;
+}
+
 BuildService::BuildService(QObject *parent)
     : QObject(parent)
 {
@@ -202,18 +222,9 @@ bool BuildService::planSteps(QString *error)
 
         Step step;
         step.program = m_assemblerPath;
-        step.arguments << QStringLiteral("-quiet") << QStringLiteral("-Ftos");
-        if (!m_cpu.isEmpty())
-            step.arguments << (QStringLiteral("-m") + m_cpu);
-        for (const QString &inc : m_includePaths)
-            step.arguments << (QStringLiteral("-I") + inc);
-        for (const QString &def : m_defines)
-            step.arguments << (QStringLiteral("-D") + def);
-        if (!m_listingFile.isEmpty())
-            step.arguments << QStringLiteral("-L") << m_listingFile;
-        step.arguments << QStringLiteral("-o") << m_outputFile;
-        step.arguments << m_extraArgs;
-        step.arguments << m_sourceFile;
+        step.arguments = vasmAssemblerArguments(m_assemblerArgs, QStringLiteral("-Ftos"), m_cpu,
+                                                m_includePaths, m_defines, m_listingFile,
+                                                m_outputFile, m_sourceFile);
         m_steps.append(step);
         return true;
     }
@@ -271,17 +282,9 @@ bool BuildService::planSteps(QString *error)
 
         Step step;
         step.program = m_assemblerPath;
-        step.arguments << QStringLiteral("-quiet") << QStringLiteral("-Fvobj");
-        if (!m_cpu.isEmpty())
-            step.arguments << (QStringLiteral("-m") + m_cpu);
-        for (const QString &inc : m_includePaths)
-            step.arguments << (QStringLiteral("-I") + inc);
-        for (const QString &def : m_defines)
-            step.arguments << (QStringLiteral("-D") + def);
-        step.arguments << QStringLiteral("-L") << listing;
-        step.arguments << QStringLiteral("-o") << object;
-        step.arguments << m_extraArgs;
-        step.arguments << source;
+        step.arguments = vasmAssemblerArguments(m_assemblerArgs, QStringLiteral("-Fvobj"), m_cpu,
+                                                m_includePaths, m_defines, listing, object,
+                                                source);
         m_steps.append(step);
     }
 

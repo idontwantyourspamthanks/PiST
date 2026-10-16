@@ -98,6 +98,7 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtEndian>
@@ -1063,6 +1064,12 @@ void MainWindow::createActions()
     m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
     connect(m_actBuild, &QAction::triggered, this, &MainWindow::buildInteractive);
 
+    m_actBuildRelease = new QAction(tr("Build &Release"), this);
+    m_actBuildRelease->setToolTip(
+        tr("Build with the release assembler arguments (no debug symbols)"));
+    connect(m_actBuildRelease, &QAction::triggered, this,
+            &MainWindow::buildReleaseInteractive);
+
     m_actRun = new QAction(tr("&Run"), this);
     m_actRun->setObjectName(QStringLiteral("runAction"));
     m_actRun->setShortcut(QKeySequence(Qt::Key_F5));
@@ -1449,6 +1456,7 @@ void MainWindow::createMenus()
     auto *buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->setObjectName(QStringLiteral("buildMenu"));
     buildMenu->addAction(m_actBuild);
+    buildMenu->addAction(m_actBuildRelease);
     buildMenu->addSeparator();
     buildMenu->addAction(m_actNextDiagnostic);
     buildMenu->addAction(m_actPrevDiagnostic);
@@ -2314,6 +2322,16 @@ void MainWindow::createToolBar()
     bar->addAction(m_actSettings);
     bar->addSeparator();
     bar->addAction(m_actBuild);
+    // The Build button is a split button: clicking it builds with the debug
+    // arguments (F7), and its arrow offers the Release build too — one icon, no
+    // second near-identical one to tell apart.
+    if (auto *buildButton = qobject_cast<QToolButton *>(bar->widgetForAction(m_actBuild))) {
+        auto *buildChoices = new QMenu(buildButton);
+        buildChoices->addAction(m_actBuild);
+        buildChoices->addAction(m_actBuildRelease);
+        buildButton->setMenu(buildChoices);
+        buildButton->setPopupMode(QToolButton::MenuButtonPopup);
+    }
     bar->addAction(m_actRun);
     bar->addAction(m_actStop);
     bar->addAction(m_actPause);
@@ -3593,15 +3611,20 @@ void MainWindow::exportBitplaneData()
 
 void MainWindow::build()
 {
-    buildImpl(/*quiet=*/true);
+    buildImpl(/*quiet=*/true, /*release=*/false);
 }
 
 void MainWindow::buildInteractive()
 {
-    buildImpl(/*quiet=*/false);
+    buildImpl(/*quiet=*/false, /*release=*/false);
 }
 
-void MainWindow::buildImpl(bool quiet)
+void MainWindow::buildReleaseInteractive()
+{
+    buildImpl(/*quiet=*/false, /*release=*/true);
+}
+
+void MainWindow::buildImpl(bool quiet, bool release)
 {
     // A remote-initiated build has nobody to dismiss a modal, and the dialog's
     // own event loop would hold its reply until the operation timeout, so its
@@ -3634,7 +3657,7 @@ void MainWindow::buildImpl(bool quiet)
 
     m_problems->clear();
     m_problemEntries.clear();
-    m_log->appendPlainText(tr("--- build ---"));
+    m_log->appendPlainText(release ? tr("--- build (release) ---") : tr("--- build ---"));
 
     const QFileInfo info(source);
     const settings::OutputPaths paths = settings::outputPathsFor(info.absoluteFilePath());
@@ -3668,10 +3691,11 @@ void MainWindow::buildImpl(bool quiet)
     m_build->setIncludePaths(m_settings.includePaths);
     m_build->setDefines(m_settings.defines);
     m_build->setCpu(m_settings.cpu);
-    m_build->setExtraArgs(m_settings.extraBuildArgs);
+    m_build->setAssemblerArgs(release ? m_settings.releaseAssemblerArgs
+                                      : m_settings.debugAssemblerArgs);
 
     if (m_statusBuild)
-        m_statusBuild->setText(tr("Building…"));
+        m_statusBuild->setText(release ? tr("Building (release)…") : tr("Building…"));
     m_build->build();
 }
 
@@ -3848,7 +3872,9 @@ void MainWindow::runImpl(bool quiet)
     // refused run would leave the session's launch intent armed for the next
     // build).
     m_session->setLaunchAfterBuild(true);
-    buildImpl(quiet);
+    // Run is a debug session, so it always builds with the debug arguments —
+    // a release build would leave the debugger with no symbol table.
+    buildImpl(quiet, /*release=*/false);
 }
 
 void MainWindow::stopSession()

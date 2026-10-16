@@ -12,6 +12,32 @@
 
 namespace pist {
 
+/// Default assembler arguments for a **debug** build: `-quiet -devpac -opt-x+`.
+///
+/// `-devpac` selects Devpac compatibility, which also disables vasm's
+/// optimisations, so the code the debugger steps through matches the source. It
+/// drops the DRI/GST symbol table as well, which would leave Hatari's
+/// `symbols prg` with nothing to load — so the debug list adds `-opt-x+`,
+/// Devpac's extended-symbols option, which puts the table back with full-length
+/// names (`-opt-d+` restores it too but truncates names to eight characters).
+/// Both flags verified on vasm 2.0f, and Hatari's `symbols prg` loads the
+/// `-opt-x+` table.
+QStringList defaultDebugAssemblerArgs();
+
+/// Default assembler arguments for a **release** build: `-quiet -devpac -nosym`.
+///
+/// The same Devpac compatibility and disabled optimisations as the debug list,
+/// with the symbol table stripped. `-devpac` already sets vasm's `no_symbols`, so
+/// `-nosym` is strictly redundant — it is kept because it says what the mode is
+/// *for*, and keeps the strip true if the `-devpac` is ever removed. Using
+/// `-devpac` in both lists is the point: one source must assemble to the same
+/// code in either mode; only the symbol table differs.
+///
+/// Neither list is a guarantee: a source's own `opt x+` re-enables the table even
+/// here (it is applied during assembly, after the command line). See
+/// docs/PLAN.md §4.1.
+QStringList defaultReleaseAssemblerArgs();
+
 /// Settings for one project: what to build, how, and how to run it.
 ///
 /// Kept as a plain value type so it can be persisted, copied and compared
@@ -40,8 +66,18 @@ struct ProjectSettings
     /// Target CPU as vasm's `-m` suffix, e.g. "68000". Empty leaves vasm's default.
     QString cpu = QStringLiteral("68000");
 
-    /// Extra arguments appended verbatim, for anything not yet modelled.
-    QStringList extraBuildArgs;
+    /// Assembler arguments for a debug build, in order.
+    ///
+    /// These are the flags PiST passes ahead of the arguments it manages itself
+    /// — the output format (`-Ftos`, or `-Fvobj` per module in a linked build),
+    /// `-o`, `-L`, `-I`, `-D` and the source file. They are editable because the
+    /// issue behind this setting is precisely "I want to control vasm's command
+    /// line"; the defaults are `defaultDebugAssemblerArgs()`.
+    QStringList debugAssemblerArgs = defaultDebugAssemblerArgs();
+
+    /// Assembler arguments for a release build, in order. Same contract as
+    /// `debugAssemblerArgs`; defaults to `defaultReleaseAssemblerArgs()`.
+    QStringList releaseAssemblerArgs = defaultReleaseAssemblerArgs();
 
     /// Explicit tool paths from project or user settings. Empty means
     /// "discover it", which searches beside the app, the per-user tools

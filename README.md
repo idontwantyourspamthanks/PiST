@@ -71,11 +71,17 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Project files** — the left pane groups the host project (the GEMDOS hard drive) with Disk A
   and Disk B. Change or eject a floppy there (the same paths as in project settings); export
   selected hard-drive files to a new `.st` or `.msa` image
-- **Project settings** — include paths, defines, target CPU, and the emulator's machine, ROM,
-  monitor, RAM, hard disk and floppy images, saved beside the source in a small JSON file
+- **Project settings** — include paths, defines, target CPU, the assembler's own command-line
+  arguments per build mode (**Debug** and **Release**, each editable one-argument-per-line with a
+  **Reset** to defaults), and the emulator's machine, ROM, monitor, RAM, hard disk and floppy
+  images, saved beside the source in a small JSON file
 - **Build** through `vasmm68k_mot`, with its diagnostics shown against the exact source line
-  and toured from the keyboard (**F4** / Shift+F4); multi-file projects link with vlink, and a
-  **symbols dock** lists every label and equate with its address once the program is running
+  and toured from the keyboard (**F4** / Shift+F4); the toolbar's Build button is a split button
+  — click builds **Debug**, its arrow offers **Build Release** — and multi-file projects link
+  with vlink. Both modes assemble in **Devpac compatibility mode** (`-devpac`), which is also what
+  turns vasm's optimiser off; the Debug list adds `-opt-x+` to keep the symbol table the debugger
+  reads, and the Release list strips it (`-nosym`) for a clean shipping `.PRG` — a **symbols dock**
+  lists every label and equate with its address once the program is running
 - **Run** in [Hatari](https://www.hatari-emu.org/), launched with the project's settings
 - **Debug** with breakpoints, single-step, step-over, **step out** and **run to cursor**
   (Ctrl+F10), registers, memory and labelled disassembly — and the editor following the

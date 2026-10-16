@@ -29,6 +29,19 @@ bool parseLinkerDiagnostic(const QString &line, Diagnostic *diagnostic);
 /// than a copy that can drift from it.
 bool parseVasmDiagnostic(const QString &line, Diagnostic *diagnostic);
 
+/// The arguments for one vasm invocation: the project's own flags (a build
+/// mode's list) first, then the arguments PiST manages — the output format, the
+/// CPU, include paths, defines, the listing, the output file and the source.
+///
+/// The order is an invariant, not a detail: vasm takes the *last* `-F`, so the
+/// managed format has to follow the project's list, or a stray `-F` in that list
+/// could change the output module the launch depends on. Built here rather than
+/// inline so the order can be pinned by a test (tst_parsers).
+QStringList vasmAssemblerArguments(const QStringList &projectArgs, const QString &format,
+                                   const QString &cpu, const QStringList &includePaths,
+                                   const QStringList &defines, const QString &listingFile,
+                                   const QString &outputFile, const QString &sourceFile);
+
 /// Drives `vasmm68k_mot` as a subprocess and turns its stderr into diagnostics.
 ///
 /// The assembler is never modified or linked against: everything is expressed
@@ -87,7 +100,11 @@ public:
     /// Target CPU, e.g. "68000". Empty leaves vasm's default.
     void setCpu(const QString &cpu) { m_cpu = cpu; }
 
-    void setExtraArgs(const QStringList &args) { m_extraArgs = args; }
+    /// The assembler's own arguments (the project's debug or release list),
+    /// passed ahead of the arguments PiST manages — see the setters below and
+    /// `ProjectSettings::debugAssemblerArgs`.
+    void setAssemblerArgs(const QStringList &args) { m_assemblerArgs = args; }
+    QStringList assemblerArgs() const { return m_assemblerArgs; }
 
     bool isRunning() const;
 
@@ -137,7 +154,7 @@ private:
     QStringList m_includePaths;
     QStringList m_defines;
     QString m_cpu;
-    QStringList m_extraArgs;
+    QStringList m_assemblerArgs;
 
     QProcess *m_process = nullptr;
     QList<Diagnostic> m_diagnostics;

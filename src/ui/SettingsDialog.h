@@ -84,7 +84,8 @@ private:
     QListWidget *m_sources = nullptr;
     QListWidget *m_includePaths = nullptr;
     QListWidget *m_defines = nullptr;
-    QPlainTextEdit *m_extraBuildArgs = nullptr;
+    QPlainTextEdit *m_debugBuildArgs = nullptr;
+    QPlainTextEdit *m_releaseBuildArgs = nullptr;
     QPlainTextEdit *m_extraEmuArgs = nullptr;
 
     ProjectSettings m_settings;

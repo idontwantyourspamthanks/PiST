@@ -2765,9 +2765,15 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
 // markers are put on directly, so this runs without an emulator.
 void TstGui::executionWedgePaintsItsOwnGutterColumn()
 {
+    // A document to paint the gutter of: the window has no editor until a file
+    // is opened, because every tab is a file (docs/untitled-plan.md §2).
+    const QString path = m_work->path() + QStringLiteral("/wedge.s");
+    QVERIFY(writeFile(path, QByteArrayLiteral("\tnop\n")));
+
     MainWindow window;
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
+    window.openPath(path);
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);
     QString text;
@@ -2858,12 +2864,20 @@ void TstGui::firstStopPlacesTheMarkerAndLeavesTheCaret()
     };
     parkCaretAtEnd();
     const int parkedLine = editor->textCursor().blockNumber() + 1;
-    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
-    QVERIFY(input);
-    input->setFocus();
+    // The keyboard outside the editor, established rather than assumed. The
+    // console input would be the natural target, but with no session it is
+    // disabled — and a disabled widget cannot take focus at all, which is why the
+    // emulator-gated tests that use it there get away with it and this one did
+    // not. The document's tab bar is visible, enabled and not the editor.
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    tabs->setFocus();
     const QWidget *focusBefore = window.focusWidget();
     QVERIFY2(focusBefore != static_cast<QWidget *>(editor),
-             "the test has to start with the keyboard outside the editor");
+             qPrintable(QStringLiteral("the test has to start with the keyboard outside the editor "
+                                       "(focus is on %1)")
+                            .arg(focusBefore ? QString::fromLatin1(focusBefore->metaObject()->className())
+                                             : QStringLiteral("<nothing>"))));
     const int scrollBefore = editor->verticalScrollBar()->value();
     QVERIFY2(scrollBefore > 0,
              "parking the caret at the end must have scrolled the view, or the "

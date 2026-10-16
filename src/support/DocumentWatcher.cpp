@@ -38,15 +38,21 @@ DocumentWatcher::DocumentWatcher(QObject *parent)
             // Still there: a replace — our own save's staged rename, or another
             // writer's. Qt may have dropped the watch with the inode it pointed
             // at, so put it back and stay quiet: nothing happened that a document
-            // has to be told about.
+            // has to be told about. A file that came back is live again, so a
+            // later deletion is news.
+            m_reportedGone.remove(path);
             if (!m_watcher->files().contains(path))
                 m_watcher->addPath(path);
             return;
         }
-        // Gone. Qt has already dropped its own watch; report it, and let the
-        // owner decide whether the path is watched again (a recreated file
-        // after a save does, a closed document does not).
+        // Gone. Qt has already dropped its own watch; report it once — Windows
+        // raises the same deletion twice — and let the owner decide whether the
+        // path is watched again (a recreated file after a save does, a closed
+        // document does not).
         m_watcher->removePath(path);
+        if (m_reportedGone.contains(path))
+            return;
+        m_reportedGone.insert(path);
         emit deleted(path);
     });
 }
@@ -57,6 +63,7 @@ void DocumentWatcher::addPath(const QString &path)
         return;
     const QString absolute = normalised(path);
     m_watched.insert(absolute);
+    m_reportedGone.remove(absolute);
     if (!m_watcher->files().contains(absolute))
         m_watcher->addPath(absolute);
 }
@@ -67,6 +74,7 @@ void DocumentWatcher::forget(const QString &path)
         return;
     const QString absolute = normalised(path);
     m_watched.remove(absolute);
+    m_reportedGone.remove(absolute);
     m_watcher->removePath(absolute);
 }
 
@@ -79,6 +87,7 @@ void DocumentWatcher::rearm(const QString &path)
     // because a watch that survived the rename still points at the old inode and
     // addPath() alone would leave it exactly as it is.
     m_watched.insert(absolute);
+    m_reportedGone.remove(absolute);
     m_watcher->removePath(absolute);
     m_watcher->addPath(absolute);
 }
@@ -102,6 +111,9 @@ void DocumentWatcher::setPaths(const QStringList &paths)
         if (!watched.contains(path))
             m_watcher->addPath(path);
     }
+    // A path the owner has dropped is not reported on again, whether or not it
+    // was already reported gone.
+    m_reportedGone.intersect(wanted);
 }
 
 QStringList DocumentWatcher::paths() const

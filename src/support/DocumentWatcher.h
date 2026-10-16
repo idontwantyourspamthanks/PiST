@@ -77,6 +77,10 @@ private:
     /// is exactly how "the tab was closed" or "the sidebar deleted it" stays
     /// quiet — so the report is only passed on for a path still in this set.
     QSet<QString> m_watched;
+    /// Paths already reported gone, so a platform that raises one deletion twice
+    /// is still heard once (Windows does). Cleared when the owner says the path
+    /// is live again — `addPath()`, `rearm()` — or when the file reappears.
+    QSet<QString> m_reportedGone;
 };
 
 } // namespace pist

@@ -903,7 +903,7 @@ void MainWindow::onTabCloseRequested(int index)
     closeTab(index);
 }
 
-bool MainWindow::closeTab(int index)
+bool MainWindow::closeTab(int index, bool promptToSave)
 {
     QWidget *widget = m_tabs->widget(index);
     if (!widget)
@@ -912,11 +912,11 @@ bool MainWindow::closeTab(int index)
     QString closedPath;
     if (auto *editor = qobject_cast<CodeEditor *>(widget)) {
         closedPath = editor->filePath();
-        if (!maybeSaveEditor(editor))
+        if (promptToSave && !maybeSaveEditor(editor))
             return false;
     } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
         closedPath = image->filePath();
-        if (!maybeSaveImage(image))
+        if (promptToSave && !maybeSaveImage(image))
             return false;
     }
 
@@ -1107,13 +1107,6 @@ void MainWindow::documentVanished(const QString &path, bool deliberate)
     if (m_watcher)
         m_watcher->forget(path);
 
-    // PiST's own scratch is not the user's file. A document opened out of a
-    // floppy image lives in the session directory, which is swept when the
-    // session ends; that sweep must not read as "your file was deleted" and
-    // start a rescue conversation about a copy PiST made itself.
-    if (path.startsWith(paths::sessionBaseDir() + QLatin1Char('/')))
-        return;
-
     QList<QWidget *> documents;
     for (CodeEditor *editor : openEditors()) {
         if (QFileInfo(editor->filePath()) == QFileInfo(path))
@@ -1168,7 +1161,10 @@ void MainWindow::rescueDeletedDocument(QWidget *document, const QString &path)
     box.exec();
 
     if (box.clickedButton() == close) {
-        closeTab(m_tabs->indexOf(document));
+        // The prompt above is the question and Close tab is the answer: closing
+        // through the unsaved-changes offer would ask again, and its "Save"
+        // would recreate the file the user just deleted.
+        closeTab(m_tabs->indexOf(document), /*promptToSave=*/false);
         return;
     }
     if (box.clickedButton() != copy)
@@ -2848,6 +2844,8 @@ void MainWindow::applyAppearance()
         m_symbolsView->applyAppearance();
     if (m_profiler)
         m_profiler->applyAppearance();
+    if (m_welcome)
+        m_welcome->applyAppearance();
 }
 
 void MainWindow::applyAudioOutputDevice()

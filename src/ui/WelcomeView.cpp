@@ -49,9 +49,9 @@ WelcomeView::WelcomeView(QWidget *parent)
     title->setFont(titleFont);
     column->addWidget(title);
 
-    auto *subtitle = new QLabel(tr("Atari ST 68000 assembly — edit, build, run, debug"), this);
-    subtitle->setObjectName(QStringLiteral("welcomeSubtitle"));
-    column->addWidget(subtitle);
+    m_subtitle = new QLabel(tr("Atari ST 68000 assembly — edit, build, run, debug"), this);
+    m_subtitle->setObjectName(QStringLiteral("welcomeSubtitle"));
+    column->addWidget(m_subtitle);
     column->addSpacing(6);
 
     m_doorTitle = new QLabel(this);
@@ -103,10 +103,7 @@ WelcomeView::WelcomeView(QWidget *parent)
     m_stats->setWordWrap(true);
     column->addWidget(m_stats);
 
-    const appearance::Colors colors = appearance::colors();
-    useInk(subtitle, colors.muted);
-    useInk(m_doorTitle, colors.muted);
-    useInk(m_stats, colors.muted);
+    applyAppearance();
 
     rebuildDoorways();
 }
@@ -132,8 +129,9 @@ void WelcomeView::setDemoProjects(const QList<Entry> &demos)
 
 void WelcomeView::setReadiness(bool missing, const QStringList &lines)
 {
+    m_readinessMissing = missing;
     m_readiness->setText(lines.join(QLatin1Char('\n')));
-    useInk(m_readiness, missing ? appearance::colors().warning : appearance::colors().muted);
+    applyAppearance();
 }
 
 void WelcomeView::setStats(const Stats &stats)
@@ -156,7 +154,20 @@ void WelcomeView::setStats(const Stats &stats)
         lines << summary;
     }
     m_stats->setText(lines.join(QLatin1Char('\n')));
-    useInk(m_stats, appearance::colors().muted);
+    applyAppearance();
+}
+
+void WelcomeView::applyAppearance()
+{
+    // The one place the fixed labels take their inks: the constructor, the
+    // setters that fill them, and MainWindow::applyAppearance() all come here,
+    // so a theme change with the welcome view on show cannot leave the old
+    // theme's greys behind.
+    const appearance::Colors colors = appearance::colors();
+    useInk(m_subtitle, colors.muted);
+    useInk(m_doorTitle, colors.muted);
+    useInk(m_readiness, m_readinessMissing ? colors.warning : colors.muted);
+    useInk(m_stats, colors.muted);
 }
 
 QList<WelcomeView::Entry> WelcomeView::demoProjects()

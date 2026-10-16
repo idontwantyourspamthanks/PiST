@@ -546,9 +546,12 @@ private:
     /// that exist here, toolchain readiness, and the usage shelf.
     void refreshWelcome();
 
-    /// Close the tab at `index`, asking to save first. False when the user
-    /// cancelled, so Close All stops where the user stopped.
-    bool closeTab(int index);
+    /// Close the tab at `index`, asking to save a modified document first.
+    /// False when the user cancelled, so Close All stops where the user
+    /// stopped. `promptToSave` false closes without that offer, for a caller
+    /// that has already put the question and been answered — the delete
+    /// rescue's "Close tab", whose own prompt says the changes go with it.
+    bool closeTab(int index, bool promptToSave = true);
 
     /// The directory a new source file starts in: the project's when the
     /// sidebar has one, else the chain suggestedImageDirectory() follows.

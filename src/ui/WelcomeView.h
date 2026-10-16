@@ -73,6 +73,11 @@ public:
 
     void setStats(const Stats &stats);
 
+    /// Re-apply the theme's inks to the fixed labels. MainWindow's
+    /// applyAppearance() calls this with every other panel, so switching theme
+    /// with the welcome view on show does not leave the old theme's greys.
+    void applyAppearance();
+
     /// The demo projects shipped beside this PiST, or an empty list when it is
     /// not running from a source tree.
     ///
@@ -94,9 +99,13 @@ signals:
 private:
     void rebuildDoorways();
 
+    QLabel *m_subtitle = nullptr;
     QLabel *m_doorTitle = nullptr;
     QLabel *m_readiness = nullptr;
     QLabel *m_stats = nullptr;
+    /// Whether the readiness lines name a missing piece, so applyAppearance()
+    /// can ink them the way setReadiness() did.
+    bool m_readinessMissing = false;
     QWidget *m_rowsHost = nullptr;
     QVBoxLayout *m_rows = nullptr;
     QList<Entry> m_recents;

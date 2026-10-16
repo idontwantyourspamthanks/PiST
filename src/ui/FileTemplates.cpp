@@ -18,9 +18,9 @@ const char *const kGemdosHello = R"ASM(* hello.s — a PiST source, from the New
 * F7 assembles it, F5 builds and runs it in the emulator: TOS boots, this
 * prints a line and waits for a key so you can read it.
 *
-* Breakpoints are file:line — click the gutter, or press F8 on a line — so
-* the interesting first move is a breakpoint on the `move.w` below `message`
-* and F5: the machine stops there with the registers live.
+* Breakpoints are file:line — click the gutter, or press F8 on a line. The
+* interesting first move is one on the `move.w	#7,-(a7)` line: F5 stops there
+* with the message already printed and the registers live.
 
 _start:
 	move.l	#message,-(a7)		; GEMDOS Cconws: print a string
@@ -195,8 +195,9 @@ saved_ssp:
 ; the blob.
 bitplanes:
 	incbin	"sprites.dat"
-palette		equ	bitplanes+$0000		; the ST palette the export wrote: 32 words
-sprite_block	equ	bitplanes+$0040		; one masked sprite: mask + four planes per group
+palette		equ	bitplanes+$0000		; the ST palette the export wrote: 16 words (32 bytes)
+sprite_block	equ	bitplanes+$0020		; one masked sprite: mask + four planes per group, and the
+						; block the map puts first when only the palette precedes it
 )ASM";
 
 } // namespace

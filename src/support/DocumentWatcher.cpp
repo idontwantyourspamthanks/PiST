@@ -108,11 +108,16 @@ void DocumentWatcher::setPaths(const QStringList &paths)
     }
     const QStringList watched = m_watcher->files();
     for (const QString &path : wanted) {
-        if (!watched.contains(path))
+        if (!watched.contains(path)) {
             m_watcher->addPath(path);
+            // Watching it again, so a deletion from here on is news however it
+            // ended up unwatched: a file reported gone and later recreated (by
+            // the user's save, or outside) must not have its next deletion
+            // swallowed by the report that came before it.
+            m_reportedGone.remove(path);
+        }
     }
-    // A path the owner has dropped is not reported on again, whether or not it
-    // was already reported gone.
+    // A path the owner has dropped is not reported on again either.
     m_reportedGone.intersect(wanted);
 }
 

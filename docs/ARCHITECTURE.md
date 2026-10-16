@@ -284,8 +284,7 @@ and ROM readiness, the usage shelf) — the welcome view carries no per-document
 **External change.** `DocumentWatcher` watches every open document's path. A *deletion*
 (`documentVanished()`) closes an unmodified tab when the sidebar's own delete was the gesture (that
 gesture already asked), and otherwise opens `rescueDeletedDocument()` — Close tab / Save a copy… /
-Cancel. Deletions under `paths::sessionBaseDir()` are ignored, because those are PiST's own scratch
-copies of an extracted floppy document, not the user's file. A *rename* fans out through
+Cancel. A *rename* fans out through
 `followRenamedFile()`: the open editors and images rebind, the breakpoint store migrates its
 base-name keys (`BreakpointWatchpointModel::followRenamedFile`), a sibling `.pistproject` moves with
 the file it is named after, `settings::renameSource()` follows it through the last source and the

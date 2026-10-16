@@ -41,9 +41,10 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/model/` | `Machine` — the machine vocabulary shared by `emu/` and `project/`: the `Machine` enum, its display/CLI name mapping and TOS-acceptance. ROM discovery stays in `emu/`; this leaf exists so `project/` no longer includes `emu/` (MIN-56). |
 | `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). `DocumentWatcher` sits beside it: the paths of the open documents, watched for the one event that matters — the backing file going away — and re-armed after PiST's own staged write. |
 | `src/control/` | `ControlHost` (`ControlHost.h`, the interface the IDE implements for the protocol: the verbs it serves and the events its verbs wait on) and `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent, with `watch`/`unwatch` event subscriptions — plus `mcp/`, the `pist-mcp` stdio MCP shim that bridges MCP clients to it. Nothing here includes or names a `src/ui/` type: the control layer depends on `ControlHost`, and `MainWindow` is one of its implementers (MIN-86). |
+| `src/lessons/` | The teaching layer (`docs/tutorial-plan.md`): `Lesson` — the `.pil` format, its parser, the `.pil` discovery and the checkpoint evaluator against a `Snapshot` — and `LessonRunner` — the `ControlHost` driver that performs a step's actions and then checks its `expect` lines. QtCore-only and IDE-type-free on purpose: the Lesson dock, the headless `tst_lessons` and a future external caller all run the same runner through the same seam `RemoteControl` uses. The dock itself is `ui/LessonView`. |
 | `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings), and the user's `QSettings` facts beside it: the last source and the recents list, with `settings::renameSource()` following a rename through both, the lifetime counters (`sessionCount()` / `buildCount()` / `runCount()` / `openedFileCount()` / `firstLaunchDate()`), and the last-session summary flushed once at teardown (`lastSession()`). |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → `$PIST_HATARI` (emulator only; names a hatari-pist build tree, PLAN.md §12) → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
-| `tests/` | Parser and image unit tests (always run) — including `tst_watcher`, the document watcher pinned headless against real temp files — and the offscreen GUI/emulator integration tests (gated on tools being present). |
+| `tests/` | Parser and image unit tests (always run) — including `tst_watcher`, the document watcher pinned headless against real temp files, and `tst_lessons`, which parses every shipped lesson, evaluates checkpoints against constructed snapshots and runs two lessons against a real session — and the offscreen GUI/emulator integration tests (gated on tools being present). |
 | `demo/` | `hello.s` — a tiny program opened by `run.sh` (and by `run.sh` only; the first run itself is the setup dialog), plus `hello.pistproject`, `demo.pim` — a sample sprite set (two phases, v2 format) — and `spritedemo/` — a complete image-include project (`sprites.s`, `sprites.pistproject`, the exported `sprites.dat` and its build output), which shows the `.dat` hand-off from the sprite editor to an `incbin` listing; it is tracked with this change, having been described here while it lived only in the working tree. |
 
 ### Per-file detail
@@ -468,6 +469,44 @@ too. The widget translates (`keyIntent`/`mouseIntent`), `MainWindow` routes to
 `IDebugBackend::mediaKey`/`mediaMouse`, and the default flipped at phase 2: media is the default
 when the capability pair holds — `--pist-media` and the "protocol v2: input" marker in its help
 text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fork.
+
+### Lessons (the teaching layer)
+
+`lessons/<id>/lesson.pil` is the whole format (`src/lessons/Lesson.cpp`): front matter
+(title, level, `needs`, what it teaches, and where its program comes from), then steps of
+`teach` / `do` / `see` / `expect` / `nominal`. A step's `do` verbs are the remote-control
+verbs, and `LessonRunner` performs them through `control::ControlHost` — the same interface
+`RemoteControl` drives — so the dock, `tst_lessons` and any external caller share one
+implementation. After the actions, the runner evaluates the step's `expect` lines against a
+`Snapshot` (registers, problems, memory the step read, and the PC's source line) and reports
+a verdict. A failed checkpoint is advice in the panel and a failure in `tst_lessons`: that
+asymmetry is what keeps a lesson from teaching something untrue in silence.
+
+Two rules in the runner are non-obvious and were both learned from a real session:
+
+- **"The state changed" is not a stop.** `stateJson()`'s `running` is the emulator process
+  and `stopped` is the debugger's stop flag; they move independently, and the object is
+  already different the moment the machine resumes. After `step`/`stepover`/`continue` the
+  runner waits for a *stopped* machine holding a register batch whose **PC differs** from
+  before the command — otherwise the checkpoints read the previous stop's registers.
+- **A checkpoint that needs a stop needs a register batch too.** A session that has only
+  just come up reports `stopped` before any batch exists, so the gate for evaluating a
+  `stopped`/register/memory/`at` checkpoint is `stopped && a batch with a PC`; after `run`
+  that is the entry stop, however long TOS takes to boot.
+
+A lesson's `breakpoint` step *sets* a breakpoint and its `clearbreakpoint` step removes one
+(`ControlHost::setBreakpointAtLine(line, on)`), because a re-run must not clear what the step
+just added, and because a lesson that moves its breakpoint on — a loop's `dbf` line, then
+the line the loop exits to — has to be able to take the first away: continuing from a
+breakpoint the loop revisits would stop on the same line for ever. The `breakpoint` **verb**
+keeps its toggle semantics, and `setbreakpoint`/`clearbreakpoint` are the verb forms of the
+two the lesson uses.
+
+A lesson is assembled out of the tree: `LessonRunner::start()` creates a template's starter
+file in the user's data directory (`PIST_LESSON_DIR` overrides it, which is what the test
+does) and **copies** a lesson-owned or demo source there before opening it, because the
+build writes a `.prg` and a listing beside whatever it assembles. Assembling in place would
+write into the source tree and fail outright on a read-only installed bundle.
 
 ### Panels, docks and the event filter
 

@@ -1,0 +1,31 @@
+title:   Before the first program
+level:   first steps
+learn:   what has to be installed, where it comes from, and why PiST changes none of it
+source:  template "GEMDOS hello" as hello.s
+needs:   assembler
+
+step  The three pieces
+  teach  PiST is the editor, the debugger and the glue; it is not the assembler
+         and not the emulator. Three things have to be on the machine: vasmm68k_mot
+         assembles your source, Hatari runs the resulting ST program, and an EmuTOS
+         image gives Hatari a TOS to boot. Two of them are not free software in the
+         usual sense — vasm permits redistribution unmodified and for non-commercial
+         use — which is why PiST drives them as separate programs through their own
+         command lines and never patches or relinks them.
+  nominal nothing in the machine changes here; this step is orientation
+
+step  Putting them in place
+  teach  View ▸ Tool setup shows what is found and offers to fetch what is not: the
+         assembler as the author's source tarball, built here, and EmuTOS as a
+         download. The URL and its checksum are shown before anything is fetched, so
+         you are never asked to trust a silent download. The welcome view says the
+         same thing in one line when something is missing.
+  nominal the dialog reports readiness; there is no machine state to check yet
+
+step  Prove the assembler works
+  teach  This step builds the file the lesson created for you — the same GEMDOS
+         hello program, assembled from disk with nothing else in the way. If the
+         Problems pane stays empty, the toolchain is real and working, which is a
+         better answer than a green tick in a settings dialog.
+  do     build
+  expect problems == none

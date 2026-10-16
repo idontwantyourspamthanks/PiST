@@ -21,12 +21,16 @@
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
 #include "ui/InstructionRefView.h"
+#include "ui/LessonView.h"
 #include "build/FloppyImage.h"
 #include "editor/IncludeNav.h"
+#include "editor/DiagnosticRef.h"
 #include "editor/InstrRef.h"
 #include "editor/OsCallBinding.h"
 #include "editor/OsCallRef.h"
 #include "editor/OsCallScan.h"
+#include "lessons/Lesson.h"
+#include "lessons/LessonRunner.h"
 #include "ui/ConsoleInput.h"
 #include "ui/SymbolsView.h"
 #include "control/RemoteControl.h"
@@ -49,10 +53,12 @@
 #include <QAudioDevice>
 #include <QMediaDevices>
 #include "ui/FileBrowser.h"
+#include "ui/FileTemplates.h"
 #include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
 #include "ui/NewFileDialog.h"
+#include "ui/NewFileSpec.h"
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
@@ -561,11 +567,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The welcome view's doors.
     connect(m_welcome, &WelcomeView::openRequested, this,
-            [this](const QString &path) { openPath(path); });
+            [this](const QString &path) { openPathOrProject(path); });
     connect(m_welcome, &WelcomeView::browseRequested, this, &MainWindow::openFile);
     connect(m_welcome, &WelcomeView::newFileRequested, this, &MainWindow::newFile);
     connect(m_welcome, &WelcomeView::newImageRequested, this, &MainWindow::newImage);
     connect(m_welcome, &WelcomeView::setupRequested, this, &MainWindow::showToolSetup);
+    connect(m_welcome, &WelcomeView::learnRequested, this, &MainWindow::showLessons);
 
     // Every open document's file is watched, so a deletion or a rename outside
     // the IDE is noticed rather than discovered on the next save
@@ -2220,7 +2227,7 @@ void MainWindow::buildPanels()
     // can drag panels into it and out of it like any other, and the Move-to
     // menu works on their tabs.
     m_problems = new QTreeWidget(this);
-    m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message")});
+    m_problems->setHeaderLabels({tr("File"), tr("Line"), tr("Message"), tr("What this means")});
     m_problems->header()->setStretchLastSection(true);
 
     m_log = new QPlainTextEdit(this);
@@ -2263,6 +2270,52 @@ void MainWindow::buildPanels()
         makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), consoleWidget);
     addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
     tabifyDockWidget(m_problemsDock, consoleDock);
+
+    // The teaching layer's dock: the lesson runs beside the editor and the
+    // debug panes, which is why it is a dock and not a mode of the welcome view
+    // (docs/tutorial-plan.md §5 decision 4). It joins the console's tab group so
+    // a first run does not have to find it.
+    m_lessonRunner = new lessons::LessonRunner(this, this);
+    m_lessonRunner->setKeyResolver([this](const QString &action) {
+        return shortcutKeyFor(action);
+    });
+    m_lessons = new LessonView(m_lessonRunner, this);
+    m_lessons->setObjectName(QStringLiteral("lessonView"));
+    connect(m_lessons, &LessonView::whyRequested, this, [this]() {
+        // "Why?" raises the reference on the step's own subject when it names
+        // one, so the panel answers the question the step is about.
+        const lessons::Step *step = m_lessonRunner->currentStep();
+        QString topic;
+        if (step) {
+            for (const lessons::Action &action : step->actions) {
+                if (action.verb == QLatin1String("explain") && !action.args.isEmpty()) {
+                    topic = action.args.first();
+                    break;
+                }
+            }
+        }
+        raiseReference(topic);
+    });
+    m_lessonDock = makeDock(tr("Lesson"), QStringLiteral("lessonDock"), m_lessons);
+    addDockWidget(Qt::BottomDockWidgetArea, m_lessonDock);
+    tabifyDockWidget(m_problemsDock, m_lessonDock);
+    // Hidden until asked for, like the other on-demand docks: the factory
+    // Editing layout keeps the bottom strip small (tst_gui pins that the
+    // Problems/console group stays under a third of the window, and a lesson
+    // panel's step list and prose are taller than either). The welcome view's
+    // "Learn 68000 assembly" doorway and View ▸ Layout ▸ Learn both show and
+    // raise it, so nothing has to find it by hand.
+    m_lessonDock->hide();
+    {
+        QStringList warnings;
+        const QVector<lessons::Lesson> loaded =
+            lessons::loadLessons(lessons::lessonRoots(QString()), &warnings);
+        m_lessons->setLessons(loaded);
+        for (const QString &warning : warnings)
+            m_log->appendPlainText(tr("[lesson] %1").arg(warning));
+        if (m_welcome)
+            m_welcome->setLearnAvailable(!loaded.isEmpty());
+    }
 
     // The first memory pane (tag 0) tabs onto this group; more can be added
     // from its "+" button.
@@ -2440,6 +2493,7 @@ void MainWindow::buildViewMenu()
             {"Editing", QT_TR_NOOP("Editing")},
             {"Debugging", QT_TR_NOOP("Debugging")},
             {"Sprite", QT_TR_NOOP("Sprite")},
+            {"Learn", QT_TR_NOOP("Learn")},
         };
         for (const auto &preset : presets) {
             auto *action = layoutMenu->addAction(tr(preset.title));
@@ -2609,7 +2663,11 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     const bool editing = preset == QLatin1String("Editing");
     const bool debugging = preset == QLatin1String("Debugging");
     const bool sprite = preset == QLatin1String("Sprite");
-    if (!editing && !debugging && !sprite)
+    // Learn is the arrangement the shipped lessons assume: the editor, the
+    // Lesson dock, and the two panels a lesson points at (docs/tutorial-plan.md
+    // §5 decision 5).
+    const bool learn = preset == QLatin1String("Learn");
+    if (!editing && !debugging && !sprite && !learn)
         return;
 
     QSettings().setValue(layoutPreviousKey(), saveState());
@@ -2650,9 +2708,21 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     for (QDockWidget *dock : findChildren<QDockWidget *>()) {
         if (!isDebugDockName(dock->objectName()))
             continue;
-        dock->setVisible(debugging);
-        if (debugging && console)
+        // A lesson says "watch D0" and "the reference explains this", so Learn
+        // brings up exactly those two.
+        const bool lessonPanel = dock->objectName() == QLatin1String("registersDock")
+                                 || dock->objectName() == QLatin1String("instructionRefDock");
+        const bool wanted = debugging || (learn && lessonPanel);
+        dock->setVisible(wanted);
+        if (wanted && console)
             tabifyDockWidget(console, dock);
+    }
+    if (QDockWidget *lessons = dockNamed(QStringLiteral("lessonDock"))) {
+        lessons->setVisible(learn);
+        if (learn) {
+            lessons->show();
+            lessons->raise();
+        }
     }
     // Debugging is the preset that wants the picture: the display dock joins
     // the right area and shows — a media session paints it, and before one it
@@ -3417,7 +3487,33 @@ void MainWindow::openProject()
             .arg(QLatin1String(settings::kProjectSuffix)));
     if (path.isEmpty())
         return;
+    openProjectPath(path);
+}
 
+void MainWindow::openPathOrProject(const QString &path)
+{
+    // A .pistproject is named after the source it belongs to, so its source is
+    // derived rather than looked up — exactly what openProjectPath() does with
+    // the same suffix. The welcome view's demo rows hand us the project file,
+    // and opening that JSON in a text editor is not what the row labelled
+    // "Start with a demo project" says it does (docs/tutorial-plan.md §1.2).
+    if (!path.endsWith(QLatin1String(settings::kProjectSuffix), Qt::CaseInsensitive)) {
+        openPath(path);
+        return;
+    }
+    const QString implied = path.left(path.size() - QLatin1String(settings::kProjectSuffix).size())
+                            + QStringLiteral(".s");
+    if (QFileInfo::exists(implied)) {
+        // Opening the source loads the project beside it, which is the whole
+        // gesture the row offered.
+        openPath(implied);
+        return;
+    }
+    openProjectPath(path);
+}
+
+void MainWindow::openProjectPath(const QString &path)
+{
     ProjectSettings loaded;
     QString error;
     if (!settings::load(&loaded, path, &error)) {
@@ -4140,6 +4236,11 @@ QTreeWidgetItem *MainWindow::addProblemRow(const RemoteStateAdapter::ProblemRow 
     item->setText(0, entry.file.isEmpty() ? tr("(build)") : entry.file);
     item->setText(1, entry.line > 0 ? QString::number(entry.line) : QString());
     item->setText(2, entry.message);
+    // The explanation is advisory and may be absent: a message the table does
+    // not know shows an empty cell rather than a guess (docs/tutorial-plan.md
+    // §11).
+    if (const DiagnosticInfo *info = diagnosticRef(entry.message))
+        item->setText(3, info->meaning);
     markProblemSeverity(item, entry.error);
     return item;
 }
@@ -4860,6 +4961,195 @@ bool MainWindow::saveScreenshot(const QString &path)
     QGuiApplication::processEvents();
     const QImage image = screen()->grabWindow(winId()).toImage();
     return !image.isNull() && image.save(path);
+}
+
+// --- the teaching layer (control/ControlHost.h; docs/tutorial-plan.md §7.1) --
+
+bool MainWindow::navigateToLine(const QString &path, int line)
+{
+    if (line <= 0)
+        return false;
+    CodeEditor *editor = path.isEmpty() ? m_editor : editorForPath(path);
+    if (!editor && !path.isEmpty()) {
+        if (!openPathQuiet(path))
+            return false;
+        editor = editorForPath(path);
+    }
+    if (!editor)
+        return false;
+    // followExecutionLine moves the caret and shows the line *without* taking
+    // the keyboard — the same reason locationFromPc uses it (cursor-plan §3.4).
+    // A lesson points at a line; it does not steal the caret the user is
+    // typing at.
+    editor->followExecutionLine(line);
+    return true;
+}
+
+bool MainWindow::createFileFromTemplate(const QString &templateLabel, const QString &path,
+                                        QString *error)
+{
+    // A lesson writes the visible label ("GEMDOS hello") because a lesson is
+    // read by people; the remote verb and the MCP tool pass a short id
+    // ("gemdos") because a command line is read by machines. Both name the same
+    // four templates (FileTemplates.h).
+    static const QHash<QString, SourceTemplate> ids = {
+        { QStringLiteral("blank"), SourceTemplate::Blank },
+        { QStringLiteral("gemdos"), SourceTemplate::GemdosHello },
+        { QStringLiteral("keyboard"), SourceTemplate::KeyboardInput },
+        { QStringLiteral("image"), SourceTemplate::ImageInclude },
+    };
+
+    SourceTemplate kind = SourceTemplate::Blank;
+    bool known = false;
+    if (ids.contains(templateLabel.toLower())) {
+        kind = ids.value(templateLabel.toLower());
+        known = true;
+    } else {
+        for (SourceTemplate candidate : allSourceTemplates()) {
+            if (pist::templateLabel(candidate) == templateLabel) {
+                kind = candidate;
+                known = true;
+                break;
+            }
+        }
+    }
+    if (!known) {
+        if (error)
+            *error = tr("there is no template called \"%1\"").arg(templateLabel);
+        return false;
+    }
+    // The same transaction the New File dialog runs, so a lesson's starter file
+    // is a real file made the supported way (docs/untitled-plan.md §4).
+    const QFileInfo info(path);
+    NewFileSpec spec(info.absolutePath(), info.fileName(), kind);
+    return spec.create(error);
+}
+
+bool MainWindow::raiseReference(const QString &topic)
+{
+    if (m_instrRef && !topic.isEmpty()) {
+        if (const InstructionInfo *instruction = instructionRef(topic)) {
+            m_instrRef->showInstruction(instruction->mnemonic);
+            raiseInstructionRef();
+            return true;
+        }
+        // By name rather than (trap, opcode): a lesson says `explain Cconws`,
+        // not which trap it is.
+        for (const OsCallInfo &call : osCallTable()) {
+            if (call.name.compare(topic, Qt::CaseInsensitive) == 0) {
+                m_instrRef->showOsCall(call.trap, call.opcode);
+                raiseInstructionRef();
+                return true;
+            }
+        }
+    }
+    raiseInstructionRef();
+    return m_instrRef != nullptr;
+}
+
+bool MainWindow::setBreakpointAtLine(int line, bool on)
+{
+    if (!m_editor || line <= 0)
+        return false;
+    const QString base = QFileInfo(m_editor->filePath()).fileName();
+    bool present = false;
+    for (const Breakpoint &existing : m_bpModel->breakpoints()) {
+        if (existing.line == line && existing.file == base) {
+            present = true;
+            break;
+        }
+    }
+    if (present == on)
+        return true;  // already what was asked for
+    if (on)
+        return toggleBreakpointAtLine(line);
+    removeBreakpoint(base, line);
+    return true;
+}
+
+bool MainWindow::setBreakpointAtLabel(const QString &name, bool on, QString *detail)
+{
+    // toggleAtLabel resolves the label to its first code line and toggles
+    // there. Its reply ("ok <file>:<line>") is the one place that knows where
+    // the label resolved to, so the toggle just performed is corrected when it
+    // is not the one the caller asked for — a lesson sets rather than toggles,
+    // and clears rather than guessing.
+    if (!m_bpModel->toggleAtLabel(name, detail))
+        return false;
+    static const QRegularExpression okRe(QStringLiteral("^ok (.+):(\\d+)"));
+    const QRegularExpressionMatch match = okRe.match(detail ? *detail : QString());
+    if (!match.hasMatch())
+        return true;
+    const QString file = match.captured(1);
+    const int line = match.captured(2).toInt();
+    bool present = false;
+    for (const Breakpoint &existing : m_bpModel->breakpoints()) {
+        if (existing.line == line && existing.file == file) {
+            present = true;
+            break;
+        }
+    }
+    if (present != on)
+        m_bpModel->toggle(file, line);
+    return true;
+}
+
+bool MainWindow::pcSourcePosition(QString *file, int *line) const
+{
+    if (!m_bases.isValid() || m_programMap.isEmpty())
+        return false;
+    LineMap::Address address;
+    if (!m_programMap.lineFor(m_lastState.pc, &address))
+        return false;
+    if (file)
+        *file = address.file;
+    if (line)
+        *line = address.line;
+    return true;
+}
+
+QString MainWindow::shortcutKeyFor(const QString &action) const
+{
+    // The lesson text names the action; the key comes from the action itself, so
+    // the same lesson is right under either shortcut scheme. Under the Common
+    // scheme Run and Continue share F5 and only the applicable one holds it
+    // (updateRunContinueShortcut), which is exactly why an empty answer falls
+    // back to the action's name rather than printing a key that is not bound.
+    const QAction *target = nullptr;
+    if (action == QLatin1String("build"))
+        target = m_actBuild;
+    else if (action == QLatin1String("run"))
+        target = m_actRun;
+    else if (action == QLatin1String("step"))
+        target = m_actStep;
+    else if (action == QLatin1String("step-over"))
+        target = m_actStepOver;
+    else if (action == QLatin1String("step-out"))
+        target = m_actStepOut;
+    else if (action == QLatin1String("run-to-cursor"))
+        target = m_actRunToCursor;
+    else if (action == QLatin1String("continue"))
+        target = m_actResume;
+    else if (action == QLatin1String("toggle-breakpoint"))
+        target = m_actToggleBreakpoint;
+    else if (action == QLatin1String("clear-breakpoints"))
+        target = m_actClearBreakpoints;
+    if (!target)
+        return {};
+    return target->shortcut().toString(QKeySequence::NativeText);
+}
+
+void MainWindow::showLessons()
+{
+    if (!m_lessonDock || !m_lessons)
+        return;
+    // Starting the lesson is part of the gesture: the doorway says "Learn
+    // 68000 assembly", not "look at a panel".
+    if (m_lessons->currentLessonId().isEmpty())
+        m_lessons->selectLesson(lessons::defaultLessonId());
+    m_lessonDock->show();
+    m_lessonDock->raise();
+    statusBar()->showMessage(tr("Lesson: %1").arg(m_lessonRunner->lesson().title), 5000);
 }
 
 QMetaObject::Connection MainWindow::onBuildCompleted(QObject *context,

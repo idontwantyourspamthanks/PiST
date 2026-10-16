@@ -177,6 +177,8 @@ pist_module(pist_editor
     src/editor/AsmHighlighter.h
     src/editor/CodeEditor.cpp
     src/editor/CodeEditor.h
+    src/editor/DiagnosticRef.cpp
+    src/editor/DiagnosticRef.h
     src/editor/EditorTheme.h
     src/editor/InstrRef.cpp
     src/editor/InstrRef.h
@@ -195,6 +197,18 @@ pist_module(pist_editor
 pist_module(pist_control
     src/control/RemoteControl.cpp
     src/control/RemoteControl.h
+)
+
+# lessons/ — the teaching layer: the lesson format and its parser, the
+# checkpoints a step is checked by, and the runner that drives the IDE through
+# control::ControlHost (docs/tutorial-plan.md). QtCore-only on purpose: the
+# runner is the same code the panel, the headless test and a future external
+# caller use, so it must not know what a widget is.
+pist_module(pist_lessons
+    src/lessons/Lesson.cpp
+    src/lessons/Lesson.h
+    src/lessons/LessonRunner.cpp
+    src/lessons/LessonRunner.h
 )
 
 # control/mcp — the pist-mcp stdio shim. Its own library: the shim talks MCP on
@@ -252,6 +266,8 @@ pist_module(pist_ui
     src/ui/PcHistoryView.h
     src/ui/InstructionRefView.cpp
     src/ui/InstructionRefView.h
+    src/ui/LessonView.cpp
+    src/ui/LessonView.h
     src/ui/SymbolsView.cpp
     src/ui/SymbolsView.h
     src/ui/ProfilerView.cpp
@@ -327,9 +343,13 @@ target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network Qt6::Multimedia
     pist_git
     pist_editor
     pist_control
+    pist_lessons
     pist_support
 )
 target_link_libraries(pist_control PUBLIC Qt6::Network pist_emu)   # its verbs reuse emu/'s typed reads (MemoryDump, MachineState)
+# The teaching layer drives the IDE through the control seam and nothing else:
+# one edge, in the same direction as control/'s.
+target_link_libraries(pist_lessons PUBLIC Qt6::Core pist_control)
 target_link_libraries(pist_mcp PUBLIC Qt6::Core Qt6::Network)      # MCP stdio <-> remote-control socket, no Widgets
 
 
@@ -589,6 +609,17 @@ qt_add_executable(tst_oscall
 )
 target_link_libraries(tst_oscall PRIVATE pist_editor Qt6::Test)
 pist_add_test(oscall)
+
+# The teaching layer: the lesson format's parser and the checkpoint evaluator
+# against constructed snapshots, then every shipped lesson parsed and its
+# checkpoints run headlessly, with the IDE needed only by the steps that drive
+# a session.
+qt_add_executable(tst_lessons
+    tests/tst_lessons.cpp
+)
+target_link_libraries(tst_lessons PRIVATE pist_lessons pist_ui Qt6::Test)
+target_compile_definitions(tst_lessons PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
+pist_add_test(lessons)
 
 # TOS ROM identification: version must come from the image header, so the
 # autostart guard cannot be skipped by an unusual filename.

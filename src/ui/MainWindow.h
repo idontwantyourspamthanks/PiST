@@ -39,6 +39,10 @@ class QTreeWidgetItem;
 
 namespace pist {
 
+namespace lessons {
+class LessonRunner;
+}
+
 class BuildService;
 class BreakpointWatchpointModel;
 class CodeEditor;
@@ -48,6 +52,7 @@ class DocumentWatcher;
 class ProfilerController;
 class SessionLauncher;
 class InstructionRefView;
+class LessonView;
 class SymbolsView;
 class RemoteControl;
 class DisassemblyView;
@@ -160,6 +165,15 @@ public:
     /// failed.
     bool saveScreenshot(const QString &path) override;
 
+    // The teaching layer (control/ControlHost.h; docs/tutorial-plan.md §7.1).
+    bool navigateToLine(const QString &path, int line) override;
+    bool createFileFromTemplate(const QString &templateLabel, const QString &path,
+                                QString *error) override;
+    bool raiseReference(const QString &topic) override;
+    bool setBreakpointAtLine(int line, bool on) override;
+    bool setBreakpointAtLabel(const QString &name, bool on, QString *detail) override;
+    bool pcSourcePosition(QString *file, int *line) const override;
+
     // The control layer's event subscriptions (control/ControlHost.h): each is
     // the QObject::connect MainWindow's own signal would take, with `context`
     // as the connection's owner, returned so the waiter can disconnect. The
@@ -249,6 +263,22 @@ private slots:
     void onTabChanged(int index);
     void onTabCloseRequested(int index);
     void openProject();
+    /// The body of openProject() without the dialog: load the settings, then
+    /// the source the project file implies. Shared with the welcome view's
+    /// demo rows, which hand over a `.pistproject` (docs/tutorial-plan.md §1.2).
+    void openProjectPath(const QString &path);
+    /// Open `path` as a document, or — when it is a `.pistproject` — open the
+    /// source that project is named after. The welcome view's rows hand over
+    /// whatever they point at, and a demo row points at the project file.
+    void openPathOrProject(const QString &path);
+    /// The key the active shortcut scheme has bound to `action`
+    /// ("step", "toggle-breakpoint", …), or empty when nothing is bound. A
+    /// lesson's prose carries `{key:step}` for this reason: the same lesson text
+    /// is right under either scheme (docs/tutorial-plan.md §5 decision 9).
+    QString shortcutKeyFor(const QString &action) const;
+    /// Raise the Lesson dock, choose the lesson the IDE opens with, and start
+    /// it. The welcome view's "Learn 68000 assembly" doorway.
+    void showLessons();
     void saveProject();
     void editSettings();
     /// Build the source. The remote-control `build` verb invokes this slot by
@@ -815,6 +845,12 @@ private:
     class SymbolsView *m_symbolsView = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
     class InstructionRefView *m_instrRef = nullptr;
+
+    // The teaching layer (docs/tutorial-plan.md): the dock, and the runner that
+    // drives the IDE through this class's own ControlHost implementation.
+    LessonView *m_lessons = nullptr;
+    class lessons::LessonRunner *m_lessonRunner = nullptr;
+    QDockWidget *m_lessonDock = nullptr;
     /// One line under the source editor: mnemonic and summary, or an OS call
     /// with its stack. Hidden on an image tab. Clicking it raises Instructions.
     QPushButton *m_instrStrip = nullptr;

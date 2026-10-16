@@ -1,0 +1,43 @@
+title:   Finding a bug the assembler cannot see
+level:   after the first program
+needs:   assembler, emulator, rom
+learn:   reading a loop's real behaviour out of the registers instead of the comments
+source:  file fault.s
+
+step  Assemble the suspect
+  teach  fault.s is a small program with a comment that lies. It says it adds 10
+         to D1. The assembler has no complaint, because nothing here is illegal —
+         which is the kind of bug you cannot find by reading.
+  do     build
+  expect problems == none
+
+step  Run it
+  teach  {key:run} stops at the entry point before anything has run, so the
+         registers still hold whatever TOS left there.
+  do     run
+  expect stopped
+
+step  Catch the loop
+  teach  Put a breakpoint on the `dbf` line — line 21 — and Continue. It fires
+         before the instruction runs, so you are looking at the loop's first pass:
+         D0 still holds the count, exactly as the `moveq` set it.
+  do     breakpoint 21
+  do     continue
+  expect stopped
+  expect at fault.s:21
+  expect reg.d0 == 10
+
+step  Count the passes
+  teach  `dbf` decrements first and loops while the counter is not -1, so counting
+         10 down to -1 runs the body eleven times. Clear the breakpoint on the loop
+         line first — continuing from a breakpoint the loop revisits would stop on
+         the same line again — then break on the `clr.w` at line 23 and Continue:
+         the loop finishes and stops there, with the total the comment promised to
+         make 10 sitting in D1 as 11. That is the bug, and you found it by watching
+         the machine rather than trusting the source.
+  do     clearbreakpoint 21
+  do     breakpoint 23
+  do     continue
+  expect stopped
+  expect at fault.s:23
+  expect reg.d1 == 11

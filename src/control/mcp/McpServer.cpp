@@ -604,6 +604,34 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         const QString path = args.value(QStringLiteral("path")).toString();
         command = path.isEmpty() ? QStringLiteral("screenshot")
                                  : QStringLiteral("screenshot %1").arg(path);
+    } else if (name == QLatin1String("pist_set_breakpoint")) {
+        const QString label = args.value(QStringLiteral("label")).toString();
+        command = label.isEmpty()
+                      ? QStringLiteral("setbreakpoint %1")
+                            .arg(args.value(QStringLiteral("line")).toInt())
+                      : QStringLiteral("setbreakpoint ") + label;
+    } else if (name == QLatin1String("pist_clear_breakpoint")) {
+        const QString label = args.value(QStringLiteral("label")).toString();
+        command = label.isEmpty()
+                      ? QStringLiteral("clearbreakpoint %1")
+                            .arg(args.value(QStringLiteral("line")).toInt())
+                      : QStringLiteral("clearbreakpoint ") + label;
+    } else if (name == QLatin1String("pist_goto")) {
+        // The schema says string (so file:line works), but an agent that sends a
+        // JSON number must not get an empty verb argument.
+        const QJsonValue line = args.value(QStringLiteral("line"));
+        command = QStringLiteral("goto %1").arg(line.isString() ? line.toString()
+                                                               : QString::number(line.toInt()));
+    } else if (name == QLatin1String("pist_new_file")) {
+        command = QStringLiteral("newfile %1 %2")
+                      .arg(args.value(QStringLiteral("kind")).toString(),
+                           args.value(QStringLiteral("path")).toString());
+    } else if (name == QLatin1String("pist_reference")) {
+        const QString topic = args.value(QStringLiteral("topic")).toString();
+        command = topic.isEmpty() ? QStringLiteral("reference")
+                                  : QStringLiteral("reference ") + topic;
+    } else if (name == QLatin1String("pist_where")) {
+        command = QStringLiteral("where");
     } else {
         sendError(id, kInvalidParams, QStringLiteral("Unknown tool: ") + name);
         return;
@@ -688,7 +716,8 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_tabs")
                      || outstanding.tool == QLatin1String("pist_read")
                      || outstanding.tool == QLatin1String("pist_readmem")
-                     || outstanding.tool == QLatin1String("pist_disasm"))) {
+                     || outstanding.tool == QLatin1String("pist_disasm")
+                     || outstanding.tool == QLatin1String("pist_where"))) {
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &parseError);
         if (parseError.error == QJsonParseError::NoError) {
@@ -841,6 +870,100 @@ QJsonArray McpServer::tools()
                            "instruction can fire; the reply says when a line has none."),
             props, {}));
     }
+
+    {
+        QJsonObject props;
+        QJsonObject line;
+        line.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        line.insert(QStringLiteral("description"),
+                    QStringLiteral("Source line number to set a breakpoint on"));
+        QJsonObject label;
+        label.insert(QStringLiteral("type"), QStringLiteral("string"));
+        label.insert(QStringLiteral("description"),
+                     QStringLiteral("Symbol to break at instead of a line number"));
+        props.insert(QStringLiteral("line"), line);
+        props.insert(QStringLiteral("label"), label);
+        list.append(toolObject(
+            QStringLiteral("pist_set_breakpoint"), QStringLiteral("Set breakpoint"),
+            QStringLiteral("Set a breakpoint at a source line or at a symbol's definition "
+                           "(pass label). Unlike pist_breakpoint this never removes one, so "
+                           "re-running a script is idempotent."),
+            props, {}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject line;
+        line.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        line.insert(QStringLiteral("description"),
+                    QStringLiteral("Source line number to clear a breakpoint from"));
+        QJsonObject label;
+        label.insert(QStringLiteral("type"), QStringLiteral("string"));
+        label.insert(QStringLiteral("description"),
+                     QStringLiteral("Symbol whose breakpoint to clear instead of a line number"));
+        props.insert(QStringLiteral("line"), line);
+        props.insert(QStringLiteral("label"), label);
+        list.append(toolObject(
+            QStringLiteral("pist_clear_breakpoint"), QStringLiteral("Clear breakpoint"),
+            QStringLiteral("Take a breakpoint away at a source line, or at a symbol's definition "
+                           "(pass label). Use this rather than pist_breakpoint when a script "
+                           "moves its breakpoint on and must not toggle one back on."),
+            props, {}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject line;
+        line.insert(QStringLiteral("type"), QStringLiteral("string"));
+        line.insert(QStringLiteral("description"),
+                    QStringLiteral("Line to show: a number, or file:line to name the file"));
+        props.insert(QStringLiteral("line"), line);
+        list.append(toolObject(
+            QStringLiteral("pist_goto"), QStringLiteral("Go to a line"),
+            QStringLiteral("Put the editor on a line and scroll it into view without moving "
+                           "the keyboard focus, so a caller can show a user the line it is "
+                           "about to break on."),
+            props, QJsonArray{QStringLiteral("line")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject kind;
+        kind.insert(QStringLiteral("type"), QStringLiteral("string"));
+        kind.insert(QStringLiteral("description"),
+                    QStringLiteral("Which New File template: blank, gemdos, keyboard or image"));
+        QJsonObject path;
+        path.insert(QStringLiteral("type"), QStringLiteral("string"));
+        path.insert(QStringLiteral("description"), QStringLiteral("Where to create the file"));
+        props.insert(QStringLiteral("kind"), kind);
+        props.insert(QStringLiteral("path"), path);
+        list.append(toolObject(
+            QStringLiteral("pist_new_file"), QStringLiteral("Create a file from a template"),
+            QStringLiteral("Create a source file from one of the New File templates, through "
+                           "the same transaction the New File dialog uses, and open it."),
+            props, QJsonArray{QStringLiteral("kind"), QStringLiteral("path")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject topic;
+        topic.insert(QStringLiteral("type"), QStringLiteral("string"));
+        topic.insert(QStringLiteral("description"),
+                     QStringLiteral("An instruction mnemonic or an OS call name; empty for "
+                                    "the dock itself"));
+        props.insert(QStringLiteral("topic"), topic);
+        list.append(toolObject(
+            QStringLiteral("pist_reference"), QStringLiteral("Show the reference"),
+            QStringLiteral("Raise the instruction and OS-call reference, on a mnemonic or a "
+                           "TOS call when one is named."),
+            props, {}));
+    }
+
+    list.append(toolObject(
+        QStringLiteral("pist_where"), QStringLiteral("Where the program is"),
+        QStringLiteral("The source line the program counter maps to, as {file, line} (also "
+                       "in structuredContent); empty when the PC is not mapped to a line."),
+        empty, {}));
 
     {
         QJsonObject props;

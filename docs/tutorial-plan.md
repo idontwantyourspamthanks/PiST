@@ -182,6 +182,23 @@ inventing.
    nothing is copied out of `demo/` and an installed app has everything it needs.
 8. **Distances are checked, not measured**: no time estimates, no "should take 10 minutes";
    lesson length is a step count.
+9. **Teaching text names actions, never keys.** The shipped teaching text hard-codes one
+   scheme today and is wrong under the other: `demo/hello.s:6-11` and the GEMDOS hello
+   template (`src/ui/FileTemplates.cpp:16-23`) say "F8 toggle breakpoint … F10 step, F11
+   step over", which is the `pist` scheme; under `common` (`appearance::shortcutScheme()`,
+   default `pist`, `src/ui/Appearance.cpp:345`) step is F11, step over is F10 and toggle
+   breakpoint is F9 (`applyShortcutScheme`, `src/ui/MainWindow.cpp:2739-2761`). So:
+   - generated text (lesson prose, New File templates) carries tokens —
+     `{key:step}`, `{key:toggle-breakpoint}` — resolved from the live actions when the text
+     is rendered or the file created, so it always names the key that is actually bound;
+   - committed sources (`demo/hello.s`) cannot be resolved at runtime, so they name the
+     actions and point at Settings ▸ Appearance for the key, keeping only the bindings that
+     are scheme-independent (F7 build, F5 run, Shift+F9 clear).
+10. **The fix ships with a test that clicks a demo row.** §1.2's defect survived because
+   `welcomeViewDoorwaysFollowTheState` (`tests/tst_gui.cpp:6972`) asserts only that each
+   row's tooltip names an existing file and then clicks a *recent source* row, never a demo
+   row — so nothing exercised the path a newcomer takes first. `welcomeDemoRowOpensTheSource`
+   is that pin: it clicks a demo row and requires the source to open.
 
 ## 6. The lesson model
 
@@ -246,33 +263,58 @@ Directives:
 | Directive | Meaning |
 |---|---|
 | `teach` | prose shown for this step; the only required directive |
-| `do` | an action the runner performs (`open`, `goto`, `breakpoint`, `build`, `run`, `stop`, `step`, `stepover`, `continue`, `readmem`, `disasm`, `explain`) |
+| `do` | an action the runner performs (`open`, `goto`, `breakpoint`, `clearbreakpoint`, `build`, `buildrelease`, `run`, `stop`, `step`, `stepover`, `continue`, `readmem`, `disasm`, `explain`) |
 | `see` | where in the UI the result appears; a hint, not an action |
 | `expect` | a checkpoint the runner evaluates (§7.2) |
 | `nominal` | explicitly "no machine check here", with the reason |
 
-`do` verbs are the **existing** control verbs wherever one exists, and three new ones
-(§7.1). This is deliberate: a lesson step should be a thing the IDE can already be told to
-do, and adding a verb for the lesson is a signal that the verb was worth having anyway.
+`do` verbs are the **existing** control verbs wherever one exists, plus the few that
+pointing and checking need (§7.1). This is deliberate: a lesson step should be a thing the
+IDE can already be told to do, and adding a verb for the lesson is a signal that the verb
+was worth having anyway.
 
 ## 7. The runner and the control surface
 
 ### 7.1 What is missing
 
-Everything a lesson needs to *talk* to the machine exists. Three things it needs in order
-to *point* — and one it needs in order to *assert* — do not:
+Everything a lesson needs to *talk* to the machine exists. What it needs in order to
+*point*, to *set* a breakpoint repeatably, and to *assert* does not:
 
-| Need | Today | Where it should live |
+| Need | Today | Where it lives now |
 |---|---|---|
-| Move the editor to a line or label and mark it | `CodeEditor::gotoLine` exists and is used by the caret-follow path (`CodeEditor.cpp:630-638`); no control op reaches it | a `ControlHost` op; the lesson runner calls it |
-| Create a file from a template | `NewFileSpec`/`FileTemplates` do this for the New File dialog; no control op | reuse the transaction in-process |
-| Raise the reference dock on a topic | `raiseInstructionRef()` (`MainWindow.cpp:3051`) and `showOsCall`/`showInstruction` exist; no control op | a `ControlHost` op taking a topic |
+| Move the editor to a line and show it | `CodeEditor::followExecutionLine` exists (the caret-follow path, `CodeEditor.cpp:687`) | `ControlHost::navigateToLine` — the caret moves, the keyboard does not |
+| Create a file from a template | `NewFileSpec`/`FileTemplates` do this for the New File dialog; no control op | `ControlHost::createFileFromTemplate`, the same transaction the dialog runs; accepts a template's label ("GEMDOS hello") or a short id ("gemdos") |
+| Raise the reference dock on a topic | `raiseInstructionRef()` (`MainWindow.cpp:3051`) and `showOsCall`/`showInstruction` exist; no control op | `ControlHost::raiseReference`, by mnemonic or OS-call name |
+| Set or clear a breakpoint without toggling | `toggleBreakpointAtLine`/`AtLabel` **toggle**; a lesson that re-runs a step would *remove* the breakpoint it just added, and one that moves its breakpoint on (a loop's `dbf` line, then the line the loop exits to) could never clear the first | `ControlHost::setBreakpointAtLine`/`setBreakpointAtLabel` — they take `on`, check the model first, and correct a toggle that did the opposite |
 | Evaluate a checkpoint | `statejson` (registers, PC) and `readmem` (bytes) return blocks; nothing compares them | the runner, against the block replies |
+| Know where the program is | the PC→line map the caret path already uses (`m_programMap`), unreachable from outside | `ControlHost::pcSourcePosition`, which is what an `at file:line` checkpoint is evaluated against — and the missing half of "set a breakpoint at `file:line`" for an agent |
 
-Phase L1 needs the three ops as `ControlHost` methods only, so panel and tests share one
-path. Phase L3 exposes them as remote verbs and MCP tools — and this is worth doing on its
-own merit: an external agent today can set a breakpoint on `file:line` but cannot *show* a
-user that line, which is a gap in the agent story too.
+Phase L1 needed the six as `ControlHost` methods only, so panel and tests share one path.
+Phase L3 exposes them as remote verbs and MCP tools.
+
+### 7.1.1 Waiting for the machine (added after the first implementation)
+
+Three facts about the control surface shape the runner's polling, and each was measured
+rather than assumed:
+
+- **`stateJson()` changes the instant the machine resumes.** `running` is the emulator
+  process and `stopped` is the debugger's stop flag; they move independently, and the
+  object is already different before the machine has stopped anywhere new. So "the object
+  changed" is not a stop signal.
+- **A step from a stopped machine emits no running/stopped transition at all**, so there is
+  no event to wait for (§15's open question 6, answered: polling).
+- **The runner therefore waits for a stopped machine holding a register batch whose PC is
+  not the one it was on.** That is the only condition that means "the machine has stopped
+  *somewhere else*", and it is also what makes `expect stopped` mean something after `run`:
+  a session that has only just come up reports `stopped` before any register batch exists,
+  so the gate is `stopped && a batch with a PC`, and the boot to the entry stop passes it
+  when it actually arrives.
+
+The first implementation polled for "the JSON changed", which returns immediately on
+resume: the expects then read the *previous* stop's PC and a lesson reported
+`expected at hello.s:16, found hello.s:11` — the entry, not the breakpoint. The lesson was
+right in both directions; the runner was wrong. `tst_lessons` caught it, which is the
+design working: the checkpoints are not decoration.
 
 ### 7.2 Checkpoints
 
@@ -285,7 +327,7 @@ user that line, which is a gap in the agent story too.
 | `expect pc == message+0` | the PC resolves to a symbol plus offset | `symbols` + `statejson` |
 | `expect mem 0x1000 4 == de ad be ef` | memory contents | `readmem` |
 | `expect problems == none` | last build produced no diagnostics | `problems` |
-| `expect at hello.s:24` | the editor is on a line, and the PC maps to it | the editor, plus the PC→line map the caret path already uses |
+| `expect at hello.s:24` | the machine is stopped on that source line | `pcSourcePosition` (§7.1) |
 
 A failed checkpoint is **advisory in the panel** (a lesson must never trap the user mid-step)
 and **fatal in `tst_lessons`** (§13, L1): the lesson's own test run treats every `expect` as
@@ -301,7 +343,9 @@ on the command's return.
 
 ## 8. The Lesson panel and the `Learn` layout
 
-A dock, `lessonDock`, beside the console:
+A dock, `lessonDock`, tabbed with the console and **hidden until asked for** — the factory
+Editing layout keeps the bottom strip small, and the welcome doorway and the `Learn` preset
+are what bring it up:
 
 ```
 ┌─ Lesson ───────────────────────────────────────────────────────┐
@@ -333,9 +377,11 @@ says so there instead ("nothing to check here — watch the screen").
   ("nothing to check here — watch the screen").
 - The whole panel is driven by the runner, not by a second code path: pressing **Show me**
   and running the headless test call the same function.
-- `WelcomeView` gains one row above the demos: **"Learn 68000 assembly"**, which opens the
-  Lesson dock on lesson 1. This is the only welcome-view change; the doorway defect (§1.2)
-  is fixed in the same phase.
+- `WelcomeView` gains a **"Learn 68000 assembly"** doorway in its actions row, which opens
+  the Lesson dock on the lesson the IDE opens with and starts it. It is hidden when no
+  lessons are found — an installed build that ships none — so it never offers a dead end.
+  This is the only welcome-view change; the doorway defect (§1.2) is fixed in the same
+  phase.
 
 ## 9. The first five lessons
 
@@ -365,6 +411,13 @@ something the user can *see*.
 Each lesson names its `needs` in front matter and is skipped (not failed) when they are
 absent.
 
+A lesson's program is assembled **outside the tree**. A template lesson's starter file is
+created in the user's own data directory, and a lesson that ships a source — or reuses a
+demo — runs a *copy* of it there, because the build writes a `.prg` and a listing beside
+whatever it assembles: assembling in place would write into the source tree, and an
+installed bundle's lessons directory may not be writable at all. `at file.s:16` still names
+the same file, because the copy keeps the name.
+
 ## 10. Turning the reference dock into a teaching surface
 
 The reference tables are the largest teaching asset in the tree and are currently a lookup:
@@ -392,12 +445,23 @@ five lessons touch, and the rest is deliberately deferred (§13, L2/L4).
 The problems pane already carries `File`/`Line`/`Message`
 (`src/ui/MainWindow.cpp:2223`) filled from vasm/vlink diagnostics (`docs/PLAN.md` §4.1).
 Add a **"What this means"** column fed by a small, hand-written table from diagnostic
-pattern → plain-language explanation + the reference entry or doc section that covers it:
-"`operand size mismatch` — this instruction's operands disagree on size; see `move.w`",
-"`undefined symbol` — the label is not in this file and not `incbin`'d", "a GEMDOS file
-name cannot contain `*?:\"<>|`". The table lives beside the reference tables, in the same
-style (`src/editor/DiagnosticRef.{h,cpp}`), and a diagnostic with no entry shows nothing
-rather than a guess.
+pattern → plain-language explanation + the reference entry or doc section that covers it.
+Keyed on the wording the parsers already pin in `tests/tst_parsers.cpp:91-155`, so every
+entry is anchored to a real string rather than an invented one:
+
+| Diagnostic (as the tool prints it) | What it means |
+|---|---|
+| `error 10 in line 2 of "bad.s": number or identifier expected` | vasm could not read an operand: a stray quote, a missing `#`, or a label that is not defined |
+| `error 3004: section attributes <r> not supported` | the section flags are not ones the Atari/`tos` output module accepts |
+| `fatal error 3008: output module doesn't allow multiple sections of the same type ()` | two sections of the same kind; the fix is a single `section` or a different one (`docs/PLAN.md` §4.3) |
+| `Error 36: main.o (CODE+0x4): Reference to undefined symbol helper.` | a symbol is used but defined nowhere: check the spelling, an `incbin`'d file, or the sources listed in Project Settings |
+| `error 1 in line 1 of "bad.s": unknown mnemonic <kMax>` | what the assembler read in the instruction field is not an instruction — in Motorola syntax a label must start at column 0, so an indented label or equate is read as a mnemonic |
+
+The table lives beside the reference tables, in the same style
+(`src/editor/DiagnosticRef.{h,cpp}`), and a diagnostic with no entry shows nothing rather
+than a guess. Because a vasm message embeds a file name and line, the match is on the
+message *pattern* (the leading code, or the stable wording after it), not on whole-string
+equality.
 
 Two constraints: the explanation must not offer to *fix* anything by writing to a
 third-party tool's files (`AGENTS.md` rule 1), and it must not repeat the raw message —
@@ -424,31 +488,41 @@ the discoverability gap this plan exists to close.
 
 ## 13. Phasing
 
-**L0 — the front door (no new features).** Fix §1.2: a demo row opens the project it names.
-The recent-files rows are already correct (they pass a source path); it is only the
-`.pistproject` case that needs to route through the existing implied-source derivation
-(`MainWindow.cpp:3418-3432`), so the row opens `hello.s` with the
-project's settings loaded. Test: clicking a demo row lands on a `CodeEditor` whose
-`filePath()` is the `.s`, with the project's settings loaded — extending
-`welcomeViewDoorwaysFollowTheState` (`tests/tst_gui.cpp:6972`), which today never clicks a
-row. Ships independently; it is a bug fix, and it is the single largest teaching win per
-line changed.
+**L0 — the front door (no new features).** *Landed.* Fix §1.2: a demo row opens the project
+it names. The recent-files rows were already correct (they pass a source path); only the
+`.pistproject` case needed the implied-source derivation `openProject()` already uses, so
+a row opens `hello.s` and the project's settings load with it. `openProject()` is split
+into the dialog and `openProjectPath()`, and the welcome view's `openRequested` now goes
+through `openPathOrProject()`.
 
-**L1 — the model, the runner, the panel.** The `.pil` parser and its unit test; the runner
-over `ControlHost` with the three new ops (§7.1); the checkpoint evaluator (§7.2); the
-Lesson dock, the `Learn` layout preset and the welcome row; lesson 2 end to end; and
-`tst_lessons`, which runs every lesson headlessly (skipping emulator-dependent ones as the
-other integration suites do — `AGENTS.md` rule 7) and fails on any unmet `expect`.
+**L1 — the model, the runner, the panel.** *Landed.* `src/lessons/` (the `.pil` parser, the
+checkpoint evaluator, the runner over `ControlHost`); the six new `ControlHost` ops (§7.1),
+two of which only *set* a breakpoint; the `Lesson` dock and the `Learn` layout preset; the
+welcome doorway; the first lesson end to end against a real ST/TOS session; and
+`tst_lessons`, which parses every shipped lesson, evaluates checkpoints against constructed
+snapshots, and runs two lessons headless against a real session — the emulator-dependent
+ones skipping exactly as the other integration suites do (`AGENTS.md` rule 7) and failing
+under `PIST_REQUIRE_EMULATOR`.
 
-**L2 — the content.** Lessons 1, 3, 4 and 5; the "What this means" table (§11); `Used in:`
-and `Example:` for the entries the lessons touch (§10).
+The polling mechanism (§7.1.1) was found by that test rather than designed in advance, and
+it is the one part of the runner that is not obvious: "the state changed" is not a stop.
 
-**L3 — external parity.** The three ops gain remote-control verbs and MCP tools, so an agent
-can run a lesson and can show a user a line; `nominal` steps are upgraded to checkpoints
-where a check has since become possible.
+**L2 — the content.** *Landed, except §10's breadth.* All five lessons (§9) ship, with
+`fault.s` for the debugging one; the "What this means" table (§11) is in the problems pane.
+§10's `Used in:`/`Example:` per reference entry is deferred to L4 in its own right: it is
+233 entries of authoring, not a wiring job, and the lessons do not depend on it.
 
-**L4 — breadth.** `Typical use`/`Common mistake` across the instruction table; further
-lessons (interrupts, VBL, blitter, GEMDOS file I/O, a Mega STE/Falcon variant).
+**L3 — external parity.** *Landed.* Six verbs — `goto`, `newfile`, `setbreakpoint`,
+`clearbreakpoint`, `reference`, `where` — and six MCP tools (`pist_goto`,
+`pist_new_file`, `pist_set_breakpoint`, `pist_clear_breakpoint`, `pist_reference`,
+`pist_where`), so an agent can point at a line, make a starter file, ask where the program
+is, and set or clear (not toggle) a breakpoint. The
+agent gap this closes was real: it could set a breakpoint at `file:line` but could not show
+a user that line, or tell where the PC was.
+
+**L4 — breadth.** `Typical use`/`Common mistake` and `Used in:`/`Example:` across the
+reference tables; further lessons (interrupts, VBL, blitter, GEMDOS file I/O, a Mega
+STE/Falcon variant).
 
 ## 14. Risks
 
@@ -460,6 +534,7 @@ lessons (interrupts, VBL, blitter, GEMDOS file I/O, a Mega STE/Falcon variant).
 | Lesson steps fight the launcher rules | Breakpoints armed too early silently do nothing (`AGENTS.md` rule 4) | §7.2's ordering constraint: breakpoint before run; never during the boot window |
 | A lesson cannot run without tools, so CI skips the interesting ones | Rot goes unnoticed | Split lessons by `needs:`; the emulator-free lessons must still pass everywhere, and the emulator ones run on the Linux/macOS CI legs that build the fork |
 | Scope: 233 reference entries is a second content project | The teaching layer never finishes | Explicitly phased (§13 L2/L4); v1 covers lessons-touched entries only |
+| Teaching text hard-codes one scheme and lies under the other | A tutorial that tells a user to press F10 for step is wrong on the Common scheme | Decision 9: generated text carries `{key:…}` tokens resolved from the live actions; committed sources name actions and keep only scheme-independent keys |
 
 ## 15. Open questions
 
@@ -497,6 +572,15 @@ lessons (interrupts, VBL, blitter, GEMDOS file I/O, a Mega STE/Falcon variant).
 
 ## 17. Status
 
-Design decided 2026-10-16; nothing implemented. §1.2's defect was verified by execution
-that day (the control-socket probe quoted above) — the fix is Phase L0 and does not depend
-on any decision the rest of this document makes.
+**L0–L3 landed** (2026-10-16): the front-door fix, the lesson format and its parser, the
+runner with the six new control ops, the Lesson dock and the `Learn` preset, the welcome
+doorway, five lessons, the diagnostic-explanation column, and the remote verbs and MCP
+tools. L4 — the reference tables' `Example:`/`Used in:`/`Typical use` across all 233
+entries, and further lessons — is deliberately unstarted.
+
+§1.2's defect was verified by execution before the fix (the control-socket probe quoted
+there) and the fix is pinned by `welcomeDemoRowOpensTheSource` (`tests/tst_gui.cpp`), which
+clicks a demo row and requires the source to open — the row used to open the project file
+instead, and no test had ever clicked one. §7.1.1's polling rules were
+verified against a real session: the first implementation of the runner failed its own
+lesson with `expected at hello.s:16, found hello.s:11`, and `tst_lessons` is what said so.

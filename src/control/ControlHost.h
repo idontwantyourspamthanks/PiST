@@ -140,6 +140,41 @@ public:
     /// embedder already owns.
     virtual bool saveScreenshot(const QString &path) = 0;
 
+    // --- the teaching layer (docs/tutorial-plan.md §7.1) -------------------
+    //
+    // A lesson has to *point* at things, not only drive them: a step that says
+    // "look at line 16" cannot if nothing can put the editor there. These are
+    // the operations the lesson runner needs, defined once here so the panel,
+    // the headless test and — later — an external agent share them.
+
+    /// Put the caret on `line` of `path` and show it, without taking the
+    /// keyboard: a lesson points at a line, it does not steal focus from the
+    /// user reading it.
+    virtual bool navigateToLine(const QString &path, int line) = 0;
+    /// Create a file from a New File template, through the same transaction the
+    /// New File dialog uses. False, with `error` set, on an unknown template or
+    /// a failed write.
+    virtual bool createFileFromTemplate(const QString &templateLabel, const QString &path,
+                                        QString *error) = 0;
+    /// Raise the instruction/OS-call reference dock on `topic` — an instruction
+    /// mnemonic or an OS-call name; empty raises the dock itself.
+    virtual bool raiseReference(const QString &topic) = 0;
+    /// Put a breakpoint at `line` of the current document (`on`), or take one
+    /// away (`!on`).
+    ///
+    /// A lesson *sets* rather than toggles: re-running a step must not remove
+    /// the breakpoint it just added. Clearing is separate for the same reason —
+    /// a lesson that moves its breakpoint on (a loop's `dbf` line, then the line
+    /// the loop exits to) has to be able to take the first one away, and a
+    /// continue that re-triggers it would never reach the second.
+    virtual bool setBreakpointAtLine(int line, bool on) = 0;
+    /// The same, at a symbol's definition. `detail` carries the reply either
+    /// way, exactly as toggleBreakpointAtLabel documents it.
+    virtual bool setBreakpointAtLabel(const QString &name, bool on, QString *detail) = 0;
+    /// The source line the program counter maps to, for an `at file:line`
+    /// checkpoint. False when the PC cannot be mapped to a line.
+    virtual bool pcSourcePosition(QString *file, int *line) const = 0;
+
     // --- events ------------------------------------------------------------
     //
     // Each hook is a QObject::connect with `context` as the connection's

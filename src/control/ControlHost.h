@@ -98,8 +98,8 @@ public:
     /// Add an address watchpoint from its text form ("$12345", "$12345.l").
     /// False, with `error` set, on a bad address.
     virtual bool addWatchpointAddress(const QString &text, QString *error) = 0;
-    /// Save the current document without a dialog. False when it has no path
-    /// yet (a name cannot be chosen remotely) or the write failed.
+    /// Save the current document without a dialog. False when no document is
+    /// open, or when the write failed.
     virtual bool saveCurrentDocument() = 0;
 
     // --- typed debugger access --------------------------------------------

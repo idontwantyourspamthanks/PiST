@@ -27,6 +27,9 @@
 #include "control/RemoteControl.h"
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
+#include "ui/FileTemplates.h"
+#include "ui/NewFileSpec.h"
+#include "ui/WelcomeView.h"
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
 #include "ui/MainWindow.h"
@@ -77,10 +80,12 @@
 #include <QTreeWidget>
 #include <QTimer>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QToolButton>
 #include <QProcess>
+#include <QScreen>
 #include <QRegularExpression>
 #include <QTreeView>
 #include <QAbstractItemModel>
@@ -619,12 +624,31 @@ private slots:
     void editorGotoIndentAndShortcutScheme();
     void quietColoursClearTheirBackground();
     void instructionStripFollowsTheCaret();
-    /// Documents open in tabs: pristine-tab reuse, raise-not-duplicate, the
-    /// modified marker on the label, and the never-empty invariant.
+    /// Documents open in tabs: a fresh window shows the welcome view, opening
+    /// gives one tab each, raise-not-duplicate, the modified marker on the
+    /// label, and the zero-document state after the last Close.
     void documentTabsManageOpenFiles();
     /// Opening a `.pim` creates an ImageEditor tab that coexists with `.s`
     /// tabs; Build still finds the assembly source when the image is focused.
     void imageTabsOpenBesideAssembly();
+    /// File ▸ New File is a create-file transaction: a file on disk with the
+    /// template's bytes, opened, remembered and revealed in the sidebar.
+    void newFileCreatesOpensAndRevealsTheFile();
+    /// Every shipped template is a real starting point, not a stub: the
+    /// picker's bytes are what the file gets and the assembler accepts them.
+    void shippedTemplatesAssemble();
+    /// The welcome view's doors follow the session: demo rows on a first run,
+    /// the user's own recents once there are any, and a row opens its file.
+    void welcomeViewDoorwaysFollowTheState();
+    /// Losing an open document's file on disk is a question the user answers,
+    /// not a silent ghost tab.
+    void deletingAnOpenFileOnDiskAsksForRescue();
+    /// Renaming through the sidebar moves everything keyed to the document:
+    /// its path, its label, its .pistproject, the reopen pointer, breakpoints.
+    void renameFollowsTheOpenDocument();
+    /// The previous session's summary is written once, at teardown, so the
+    /// welcome view can say where the last one left off.
+    void lastSessionSummaryIsFlushedAtTeardown();
     /// Placement fields belong to spritesheet mode; onion sits with the frame
     /// buttons; play sits above the preview; icon rows pack instead of stretching.
     void spriteEditorChromeSitsWhereItIsUsed();
@@ -899,9 +923,14 @@ void TstGui::assemblesAndMapsLines()
 // the line map being correct.
 void TstGui::editorShowsExecutionLineAndBreakpoints()
 {
+    const QString path = m_work->path() + QStringLiteral("/exec.s");
+    QVERIFY(writeFile(path, QByteArrayLiteral("\ttext\nstart:\tnop\n\tend\n")));
+
     MainWindow window;
-    auto *editor = window.findChild<CodeEditor *>();
-    QVERIFY2(editor, "MainWindow must own a CodeEditor");
+    window.openPath(path);
+    auto *editor = qobject_cast<CodeEditor *>(window.findChild<QTabWidget *>(
+        QStringLiteral("documentTabs"))->currentWidget());
+    QVERIFY2(editor, "opening a source must show a CodeEditor");
 
     editor->setPlainText(QStringLiteral("\ttext\nstart:\tnop\n\tbra.s\tstart\n\tend\n"));
 
@@ -2483,12 +2512,11 @@ void TstGui::breakpointSetBeforeRunFiresAndTheStopIsMarked()
 
     MainWindow window;
     EmulatorStopper stopper(window);
+    window.openPath(source);
     auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY2(editor, "MainWindow must own a CodeEditor");
-
-    window.openPath(source);
 
     // Set the breakpoint BEFORE Run, exactly as a gutter click does.
     QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine",
@@ -2555,11 +2583,11 @@ void TstGui::breakpointAddedWhileRunningFiresThisSession()
 
     MainWindow window;
     EmulatorStopper stopper(window);
+    window.openPath(source);
     auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY2(editor, "MainWindow must own a CodeEditor");
-    window.openPath(source);
 
     QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
                                       Q_ARG(int, 6)));
@@ -2626,12 +2654,12 @@ void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
 
     MainWindow window;
     EmulatorStopper stopper(window);
+    window.openPath(source);
     auto *host = window.findChild<IDebugBackend *>();
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY2(host, "MainWindow must own an EmulatorHost");
     QVERIFY2(editor, "MainWindow must own a CodeEditor");
 
-    window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
                                       Q_ARG(int, 3)));
 
@@ -2698,11 +2726,11 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
     MainWindow window;
     EmulatorStopper stopper(window);
     auto *host = window.findChild<IDebugBackend *>();
+    window.openPath(source);
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(host);
     QVERIFY(editor);
 
-    window.openPath(source);
     QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
     if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
         qDebug().noquote() << window.debugConsoleText();
@@ -2737,9 +2765,15 @@ void TstGui::stepOutAndRunToCursorReachTheirTargets()
 // markers are put on directly, so this runs without an emulator.
 void TstGui::executionWedgePaintsItsOwnGutterColumn()
 {
+    // A document to paint the gutter of: the window has no editor until a file
+    // is opened, because every tab is a file (docs/untitled-plan.md §2).
+    const QString path = m_work->path() + QStringLiteral("/wedge.s");
+    QVERIFY(writeFile(path, QByteArrayLiteral("\tnop\n")));
+
     MainWindow window;
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
+    window.openPath(path);
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);
     QString text;
@@ -2830,12 +2864,20 @@ void TstGui::firstStopPlacesTheMarkerAndLeavesTheCaret()
     };
     parkCaretAtEnd();
     const int parkedLine = editor->textCursor().blockNumber() + 1;
-    auto *input = window.findChild<QLineEdit *>(QStringLiteral("consoleInput"));
-    QVERIFY(input);
-    input->setFocus();
+    // The keyboard outside the editor, established rather than assumed. The
+    // console input would be the natural target, but with no session it is
+    // disabled — and a disabled widget cannot take focus at all, which is why the
+    // emulator-gated tests that use it there get away with it and this one did
+    // not. The document's tab bar is visible, enabled and not the editor.
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    tabs->setFocus();
     const QWidget *focusBefore = window.focusWidget();
     QVERIFY2(focusBefore != static_cast<QWidget *>(editor),
-             "the test has to start with the keyboard outside the editor");
+             qPrintable(QStringLiteral("the test has to start with the keyboard outside the editor "
+                                       "(focus is on %1)")
+                            .arg(focusBefore ? QString::fromLatin1(focusBefore->metaObject()->className())
+                                             : QStringLiteral("<nothing>"))));
     const int scrollBefore = editor->verticalScrollBar()->value();
     QVERIFY2(scrollBefore > 0,
              "parking the caret at the end must have scrolled the view, or the "
@@ -3293,9 +3335,9 @@ void TstGui::diagnosticKeyboardFlowToursProblems()
     QVERIFY(dock);
     auto *problems = dock->findChild<QTreeWidget *>();
     QVERIFY(problems);
+    window.openPath(source);
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);
-    window.openPath(source);
 
     // Two assembly errors, so the tour has two rows with a source line to land
     // on. A quiet build: the assembler's failure is reported in the pane.
@@ -3400,12 +3442,35 @@ void TstGui::fileMenuAndToolbarMatchTheJobs()
 
     auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
     QVERIFY(tabs);
-    const int before = tabs->count();
+    QCOMPARE(tabs->count(), 0);
+
+    // New File opens the create-file dialog rather than adding an empty tab:
+    // drive it to a cancel, then pin that no tab appeared and nothing modal is
+    // left behind.
+    bool sawDialog = false;
+    QTimer::singleShot(0, &window, [&sawDialog] {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog)
+            return;
+        sawDialog = true;
+        // The dialog names the create-file fields; a bare dialog is not it.
+        if (!dialog->findChild<QLineEdit *>(QStringLiteral("newFileName")))
+            qWarning("New File opened a dialog without the name field");
+        dialog->reject();
+    });
     file->actions().first()->trigger();
-    QCOMPARE(tabs->count(), before + 1);
-    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
-    QVERIFY(editor);
-    QVERIFY(editor->filePath().isEmpty());
+    QVERIFY2(sawDialog, "New File must open its dialog, not add a tab");
+    QCOMPARE(tabs->count(), 0);
+    QCOMPARE(QApplication::activeModalWidget(), nullptr);
+
+    // Close File / Close All join the File menu: the deliberate route to the
+    // zero-document state the tab's × used to be the only way to reach.
+    auto *closeFile = window.findChild<QAction *>(QStringLiteral("closeFileAction"));
+    auto *closeAll = window.findChild<QAction *>(QStringLiteral("closeAllAction"));
+    QVERIFY2(closeFile, "File ▸ Close File must exist");
+    QVERIFY2(closeAll, "File ▸ Close All must exist");
+    QVERIFY(file->actions().contains(closeFile));
+    QVERIFY(file->actions().contains(closeAll));
 
     auto *exportMenu = window.findChild<QMenu *>(QStringLiteral("exportMenu"));
     QVERIFY2(exportMenu, "File must gather the image exports under Export");
@@ -4156,26 +4221,80 @@ void TstGui::windowGeometryPersistsAcrossRestart()
     int width = 0;
     int height = 0;
     {
-        // Inside the offscreen screen (800×800). The plugin nudges a
-        // requested size, so the contract is the size the window actually
-        // took, and that it stayed near the request.
+        // The offscreen plugin nudges a requested size, and on a virtual screen
+        // smaller than the request it clamps to that screen — the platform's
+        // business, and not the same on every leg of CI. So the contract is the
+        // size the window actually took: at least its own minimum, no larger
+        // than the screen, and smaller than the factory 1280×860 the window
+        // would otherwise keep — which is what shows the resize was applied at
+        // all, rather than the persistence check below pinning the default.
         MainWindow window;
-        window.resize(760, 520);
+        const QSize wanted(760, 700);
+        window.resize(wanted);
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
-        window.resize(760, 520);
+        // Again once it is up: a resize while hidden is the one a plugin may
+        // have nudged.
+        window.resize(wanted);
         width = window.width();
         height = window.height();
+
+        const QSize minimum = window.minimumSizeHint();
+        QVERIFY2(width >= minimum.width() && height >= minimum.height(),
+                 qPrintable(QStringLiteral("the window took %1×%2, below its own minimum %3×%4")
+                                .arg(width)
+                                .arg(height)
+                                .arg(minimum.width())
+                                .arg(minimum.height())));
+        // Where the screen and the window's own minimum both allow the size that
+        // was asked for, it must be honoured: this is the half that catches a
+        // resize dropped on the floor rather than merely nudged. What the window
+        // takes *within* those bounds is the plugin's business — Windows'
+        // offscreen plugin takes the dock layout's preferred size (962×700
+        // measured) rather than the request, where Linux' takes the request and
+        // clamps it to the screen.
+        const QSize screen = window.screen() ? window.screen()->size() : wanted;
+        if (screen.width() >= wanted.width() && minimum.width() <= wanted.width())
+            QVERIFY2(width >= wanted.width(),
+                     qPrintable(QStringLiteral("asked for %1px of width on a %2px screen, took %3px")
+                                    .arg(wanted.width())
+                                    .arg(screen.width())
+                                    .arg(width)));
+        if (screen.height() >= wanted.height() && minimum.height() <= wanted.height())
+            QVERIFY2(height >= wanted.height(),
+                     qPrintable(QStringLiteral("asked for %1px of height on a %2px screen, took %3px")
+                                    .arg(wanted.height())
+                                    .arg(screen.height())
+                                    .arg(height)));
+        QVERIFY2(width < 1280 && height < 860,
+                 qPrintable(QStringLiteral("the resize was ignored: the window kept the factory "
+                                           "%1×%2")
+                                .arg(width)
+                                .arg(height)));
         QVERIFY(window.close());
     }
-    QVERIFY(qAbs(width - 760) < 80);
-    QVERIFY(qAbs(height - 520) < 80);
     {
         MainWindow window;
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
-        QCOMPARE(window.width(), width);
-        QCOMPARE(window.height(), height);
+        // The size the session ended at comes back, within a margin the offscreen
+        // plugin's frame handling can explain: Windows restores the saved geometry
+        // with a frame the first window never had (measured: 1016 restored from
+        // 962), where Linux restores it exactly. What this half pins is that the
+        // saved size is restored at all, rather than the factory 1280×860.
+        QVERIFY2(qAbs(window.width() - width) < 80,
+                 qPrintable(QStringLiteral("restored %1×%2; the session ended at %3×%4")
+                                .arg(window.width())
+                                .arg(window.height())
+                                .arg(width)
+                                .arg(height)));
+        QVERIFY2(qAbs(window.height() - height) < 80,
+                 qPrintable(QStringLiteral("restored %1×%2; the session ended at %3×%4")
+                                .arg(window.width())
+                                .arg(window.height())
+                                .arg(width)
+                                .arg(height)));
+        QVERIFY(window.width() < 1280 && window.height() < 860);
     }
 }
 
@@ -4218,16 +4337,29 @@ void TstGui::statusBarShowsCaretAndBuild()
     QVERIFY2(session->toolTip().contains(QLatin1String("Hatari")),
              qPrintable(session->toolTip()));
 
-    QCOMPARE(caret->text(), QStringLiteral("untitled:1:1"));
+    // Nothing is open, so there is no caret to name: m_editor is null and the
+    // chip is empty rather than naming a buffer that no longer exists.
+    QVERIFY2(caret->text().isEmpty(), qPrintable(caret->text()));
+
+    // The suite's scratch source, written here rather than assumed: the chip
+    // names the file the caret is in, and a test that opened whatever another
+    // test happened to leave behind would hang the moment it ran alone —
+    // openPath's "could not open" is a modal, and nobody is there to dismiss it
+    // (the CI workflow re-runs a failing suite's functions one at a time).
+    QVERIFY(writeFile(m_source, QByteArrayLiteral("\ttext\nstart:\tnop\n\teven\n\tend\n")));
+
+    window.openPath(m_source);
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);
+    QCOMPARE(editor->filePath(), m_source);
+    QCOMPARE(caret->text(), QStringLiteral("prog.s:1:1"));
     editor->setPlainText(QStringLiteral("\ttext\nstart:\tnop\n"));
     QTextCursor cursor = editor->textCursor();
     cursor.movePosition(QTextCursor::Start);
     cursor.movePosition(QTextCursor::Down);
     cursor.movePosition(QTextCursor::Right);
     editor->setTextCursor(cursor);
-    QCOMPARE(caret->text(), QStringLiteral("untitled:2:2"));
+    QCOMPARE(caret->text(), QStringLiteral("prog.s:2:2"));
 
     const QString source = m_work->path() + QStringLiteral("/status.s");
     {
@@ -4243,8 +4375,8 @@ void TstGui::statusBarShowsCaretAndBuild()
     QCOMPARE(build->text(), QStringLiteral("Build ok"));
 
     // Already-open files are not reloaded, so the failure has to be the
-    // buffer the build will save. The pristine tab is still around, and
-    // findChild would hand that one back.
+    // buffer the build will save. The status.s editor is the current one, but
+    // findChild would be order-dependent with two documents open.
     CodeEditor *sourceEditor = nullptr;
     for (CodeEditor *candidate : window.findChildren<CodeEditor *>()) {
         if (candidate->filePath() == source)
@@ -5313,16 +5445,30 @@ void TstGui::fileBrowserFileOperations()
 
     MainWindow window;
     auto *browser = window.findChild<FileBrowser *>();
-    auto *editor = window.findChild<CodeEditor *>();
-    QVERIFY(browser && editor);
+    QVERIFY(browser);
     window.openPath(src);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
 
-    // Create: lands on disk, refuses duplicates and names with separators.
-    const QString created = browser->createFile(dir, QStringLiteral("new.s"));
-    QCOMPARE(created, dir + QStringLiteral("/new.s"));
+    // Create: the New File transaction (NewFileSpec) derives the path, refuses
+    // a target that already exists and names that are paths, and writes the
+    // template's bytes — Blank's are none, so that file is empty.
+    NewFileSpec blank(dir, QStringLiteral("new"), SourceTemplate::Blank);
+    QCOMPARE(blank.fileName(), QStringLiteral("new.s"));
+    QCOMPARE(blank.targetPath(), dir + QStringLiteral("/new.s"));
+    QVERIFY(blank.verify().ok);
+    QString createError;
+    QVERIFY2(blank.create(&createError), qPrintable(createError));
+    const QString created = blank.targetPath();
     QVERIFY(QFileInfo::exists(created));
-    QVERIFY(browser->createFile(dir, QStringLiteral("new.s")).isEmpty());
-    QVERIFY(browser->createFile(dir, QStringLiteral("a/b.s")).isEmpty());
+    QVERIFY(fileBytes(created).isEmpty());
+    QVERIFY2(!blank.verify().ok, "an existing target must be refused");
+    QVERIFY(!blank.create(&createError));
+    QVERIFY(!NewFileSpec(dir, QStringLiteral("a/b.s"), SourceTemplate::Blank).verify().ok);
+    NewFileSpec hello(dir, QStringLiteral("hello"), SourceTemplate::GemdosHello);
+    QVERIFY(hello.create(&createError));
+    QVERIFY(!fileBytes(hello.targetPath()).isEmpty());
+
     const QString folder = browser->createFolder(dir, QStringLiteral("sub"));
     QVERIFY(QFileInfo(folder).isDir());
 
@@ -5969,8 +6115,13 @@ void TstGui::floppyTextOpensAndSavesBack()
 // until now isModifiedSinceLoad() was never called from anywhere.
 void TstGui::editorTracksUnsavedChanges()
 {
+    const QString path = m_work->path() + QStringLiteral("/tracked.s");
+    QVERIFY(writeFile(path, QByteArrayLiteral("\tnop\n")));
+
     MainWindow window;
-    auto *editor = window.findChild<CodeEditor *>();
+    window.openPath(path);
+    auto *editor = qobject_cast<CodeEditor *>(window.findChild<QTabWidget *>(
+        QStringLiteral("documentTabs"))->currentWidget());
     QVERIFY(editor);
 
     editor->setPlainText(QStringLiteral("\tnop\n"));
@@ -6257,8 +6408,12 @@ void TstGui::setupInstallTakesEffectWithoutRestart()
 void TstGui::appearancePreferencesApply()
 {
     QSettings settings;
+    const QString path = m_work->path() + QStringLiteral("/appearance.s");
+    QVERIFY(writeFile(path, QByteArrayLiteral("\tnop\n")));
     MainWindow window;
-    auto *editor = window.findChild<CodeEditor *>();
+    window.openPath(path);
+    auto *editor = qobject_cast<CodeEditor *>(window.findChild<QTabWidget *>(
+        QStringLiteral("documentTabs"))->currentWidget());
     QVERIFY(editor);
 
     // Font size: an explicit value wins over the platform default.
@@ -6479,7 +6634,12 @@ void TstGui::instructionStripFollowsTheCaret()
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
-    auto *editor = window.findChild<CodeEditor *>();
+    const QString path = m_work->path() + QStringLiteral("/strip.s");
+    QVERIFY(writeFile(path, QByteArrayLiteral("\tnop\n")));
+    window.openPath(path);
+
+    auto *editor = qobject_cast<CodeEditor *>(window.findChild<QTabWidget *>(
+        QStringLiteral("documentTabs"))->currentWidget());
     auto *ref = window.findChild<InstructionRefView *>();
     auto *strip = window.findChild<QPushButton *>(QStringLiteral("instructionStrip"));
     QVERIFY(editor && ref && strip);
@@ -6543,14 +6703,24 @@ void TstGui::documentTabsManageOpenFiles()
     }
 
     MainWindow window;
-    auto *tabs = window.findChild<QTabWidget *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
     QVERIFY2(tabs, "documents must live in a tab widget");
+    auto *center = window.findChild<QStackedWidget *>(QStringLiteral("centralPages"));
+    QVERIFY2(center, "the central area must be the pages stack");
+    auto *welcome = window.findChild<WelcomeView *>(QStringLiteral("welcomeView"));
+    QVERIFY(welcome);
+    auto welcomeShown = [&] { return center->currentWidget() == welcome; };
 
-    // The pristine start tab is reused by the first open rather than stranded.
-    QCOMPARE(tabs->count(), 1);
+    // A fresh window has no documents: the welcome view is what it shows.
+    QCOMPARE(tabs->count(), 0);
+    QVERIFY2(welcomeShown(), "zero documents must show the welcome view");
+
+    // Each open is exactly one tab; the first open is not folded into a
+    // pristine buffer, because there is no such buffer any more.
     window.openPath(a);
     QCOMPARE(tabs->count(), 1);
-    auto *editorA = window.findChild<CodeEditor *>();
+    QVERIFY(!welcomeShown());
+    auto *editorA = qobject_cast<CodeEditor *>(tabs->currentWidget());
     QVERIFY(editorA);
     QCOMPARE(editorA->filePath(), a);
 
@@ -6572,22 +6742,17 @@ void TstGui::documentTabsManageOpenFiles()
     editorA->document()->setModified(false);
     QVERIFY(!tabs->tabText(tabs->indexOf(editorA)).endsWith(QLatin1String(" *")));
 
-    // Closing tabs must never empty the central widget: the last close leaves
-    // a pristine editor behind.
-    bool ok = false;
-    int index = tabs->indexOf(editorA);
-    ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, index));
-    QVERIFY(ok);
+    // File ▸ Close File closes the current document and leaves the other.
+    QVERIFY(QMetaObject::invokeMethod(&window, "closeCurrentFile", Qt::DirectConnection));
     QCOMPARE(tabs->count(), 1);
     QCOMPARE(tabs->currentWidget(), static_cast<QWidget *>(editorB));
+    QVERIFY(!welcomeShown());
 
-    index = tabs->indexOf(editorB);
-    ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, index));
-    QVERIFY(ok);
-    QCOMPARE(tabs->count(), 1);
-    auto *pristine = qobject_cast<CodeEditor *>(tabs->widget(0));
-    QVERIFY(pristine);
-    QVERIFY(pristine->filePath().isEmpty());
+    // File ▸ Close All reaches zero tabs, and zero tabs is the welcome view —
+    // not a stranded empty editor.
+    QVERIFY(QMetaObject::invokeMethod(&window, "closeAllFiles", Qt::DirectConnection));
+    QCOMPARE(tabs->count(), 0);
+    QVERIFY2(welcomeShown(), "closing the last document must show the welcome view");
 }
 
 void TstGui::imageTabsOpenBesideAssembly()
@@ -6606,7 +6771,7 @@ void TstGui::imageTabsOpenBesideAssembly()
     QVERIFY2(doc.save(pim, &error), qPrintable(error));
 
     MainWindow window;
-    auto *tabs = window.findChild<QTabWidget *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
     QVERIFY(tabs);
 
     window.openPath(source);
@@ -6697,20 +6862,296 @@ void TstGui::imageTabsOpenBesideAssembly()
 
     ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, 0));
     QVERIFY(ok);
-    QCOMPARE(tabs->count(), 1);
-    auto *pristine = qobject_cast<CodeEditor *>(tabs->widget(0));
-    QVERIFY(pristine);
-    QVERIFY(pristine->filePath().isEmpty());
+    QCOMPARE(tabs->count(), 0);
 
-    // Opening a .pim as the only document still leaves a pristine assembly
-    // editor when that last tab is closed.
+    auto *center = window.findChild<QStackedWidget *>(QStringLiteral("centralPages"));
+    auto *welcome = window.findChild<WelcomeView *>(QStringLiteral("welcomeView"));
+    QVERIFY(center && welcome);
+    QCOMPARE(center->currentWidget(), static_cast<QWidget *>(welcome));
+
+    // Opening a .pim as the only document is one image tab; closing it reaches
+    // the zero-document state — the welcome view, not a stranded editor.
     window.openPath(pim);
     QCOMPARE(tabs->count(), 1);
     QVERIFY(qobject_cast<ImageEditor *>(tabs->currentWidget()));
     ok = QMetaObject::invokeMethod(&window, "onTabCloseRequested", Q_ARG(int, 0));
     QVERIFY(ok);
+    QCOMPARE(tabs->count(), 0);
+    QCOMPARE(center->currentWidget(), static_cast<QWidget *>(welcome));
+}
+
+// File ▸ New File is a create-file transaction (docs/untitled-plan.md §4): a
+// name, a directory and a template, then a file on disk before anything opens.
+// A whole transaction that only produced a tab would pass every wiring test
+// while writing nothing.
+void TstGui::newFileCreatesOpensAndRevealsTheFile()
+{
+    const QString dir = m_work->path() + QStringLiteral("/newfile");
+    QVERIFY(QDir().mkpath(dir));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+
+    QTimer::singleShot(0, &window, [] {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("newFileName"));
+        QVERIFY(name);
+        name->setText(QStringLiteral("hello"));
+        auto *tmpl = dialog->findChild<QComboBox *>(QStringLiteral("newFileTemplate"));
+        QVERIFY(tmpl);
+        const int index = tmpl->findData(int(SourceTemplate::GemdosHello));
+        QVERIFY(index >= 0);
+        tmpl->setCurrentIndex(index);
+        dialog->accept();
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "newFileIn", Qt::DirectConnection,
+                                      Q_ARG(QString, dir)));
+
+    const QString created = dir + QStringLiteral("/hello.s");
+    QVERIFY2(QFileInfo::exists(created), "New File must create the file on disk");
+    QCOMPARE(fileBytes(created), templateBytes(SourceTemplate::GemdosHello));
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
     QCOMPARE(tabs->count(), 1);
-    QVERIFY(qobject_cast<CodeEditor *>(tabs->widget(0)));
+    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    QCOMPARE(editor->filePath(), created);
+
+    // A new document is a document like any other: the next launch reopens it.
+    QCOMPARE(settings::lastSourcePath(), created);
+
+    // And the sidebar reveals it, so the user sees where it landed.
+    QTRY_VERIFY_WITH_TIMEOUT(browser->selectedHardDrivePaths().contains(created), 5000);
+}
+
+// The picker's entries are the shipped starting points, and a shipped starting
+// point that does not assemble is worse than none (docs/untitled-plan.md §9).
+// Create each through NewFileSpec and hand the non-empty ones to vasm.
+void TstGui::shippedTemplatesAssemble()
+{
+    const QString dir = m_work->path() + QStringLiteral("/templates");
+    QVERIFY(QDir().mkpath(dir));
+    // The image-include listing `incbin`s this beside itself.
+    QVERIFY(writeFile(dir + QStringLiteral("/sprites.dat"), QByteArray(64, '\0')));
+
+    int index = 0;
+    for (SourceTemplate kind : allSourceTemplates()) {
+        const QString name = QStringLiteral("tmpl%1").arg(index++);
+        NewFileSpec spec(dir, name, kind);
+        QString error;
+        QVERIFY2(spec.create(&error), qPrintable(error));
+
+        const QByteArray bytes = fileBytes(spec.targetPath());
+        if (kind == SourceTemplate::Blank) {
+            QVERIFY2(bytes.isEmpty(), "Blank is the empty file, by design");
+            continue;
+        }
+        QVERIFY2(!bytes.isEmpty(), qPrintable(templateLabel(kind)));
+
+        const QString prg = dir + QLatin1Char('/') + name + QStringLiteral(".prg");
+        QStringList args = defaultDebugAssemblerArgs();
+        args << QStringLiteral("-Ftos") << QStringLiteral("-o") << prg << spec.targetPath();
+        QProcess vasm;
+        vasm.setWorkingDirectory(dir);
+        vasm.start(m_vasm, args);
+        QVERIFY(vasm.waitForFinished(20000));
+        if (vasm.exitCode() != 0)
+            qDebug().noquote() << templateLabel(kind) << vasm.readAllStandardError();
+        QCOMPARE(vasm.exitCode(), 0);
+        QVERIFY2(QFileInfo::exists(prg),
+                 qPrintable(QStringLiteral("no output for %1").arg(templateLabel(kind))));
+    }
+}
+
+// The welcome view's doors are the session's state made visible: the demos on
+// a first run, the user's own recents once there are any, and a row that opens
+// the file it names.
+void TstGui::welcomeViewDoorwaysFollowTheState()
+{
+    MainWindow window;
+    auto *welcome = window.findChild<WelcomeView *>(QStringLiteral("welcomeView"));
+    QVERIFY(welcome);
+
+    // The actions row is always there, whatever the rest of the state is.
+    QVERIFY(welcome->findChild<QPushButton *>(QStringLiteral("welcomeOpen")));
+    QVERIFY(welcome->findChild<QPushButton *>(QStringLiteral("welcomeNewFile")));
+    QVERIFY(welcome->findChild<QPushButton *>(QStringLiteral("welcomeNewImage")));
+
+    if (WelcomeView::demoProjects().isEmpty())
+        QSKIP("this build is not running from a source tree with demo/");
+
+    // A first run has no recents, so the demo projects are the doorway — and
+    // every row points at a project that exists here.
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !welcome->findChildren<QToolButton *>(QStringLiteral("welcomeRow")).isEmpty(), 5000);
+    for (QToolButton *row : welcome->findChildren<QToolButton *>(QStringLiteral("welcomeRow")))
+        QVERIFY2(QFileInfo::exists(row->toolTip()), qPrintable(row->toolTip()));
+
+    // Opening a document (with a project beside it, so the session remembers
+    // it) and closing it hands the doorway over to the recents.
+    const QString source = m_work->path() + QStringLiteral("/welcome.s");
+    QVERIFY(writeFile(source, QByteArrayLiteral("\tnop\n")));
+    QString error;
+    QVERIFY2(settings::save(ProjectSettings(), settings::projectFileFor(source), &error),
+             qPrintable(error));
+    window.openPath(source);
+    QCOMPARE(settings::lastSourcePath(), source);
+    QVERIFY(QMetaObject::invokeMethod(&window, "closeCurrentFile", Qt::DirectConnection));
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !welcome->findChildren<QToolButton *>(QStringLiteral("welcomeRow")).isEmpty(), 5000);
+    QToolButton *recent = nullptr;
+    for (QToolButton *row : welcome->findChildren<QToolButton *>(QStringLiteral("welcomeRow")))
+        if (row->text().contains(QStringLiteral("welcome.s")))
+            recent = row;
+    QVERIFY2(recent, "the closed file must appear as a recent row");
+
+    // And clicking it opens the file.
+    recent->click();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    QTRY_COMPARE_WITH_TIMEOUT(tabs->count(), 1, 5000);
+    QCOMPARE(qobject_cast<CodeEditor *>(tabs->currentWidget())->filePath(), source);
+}
+
+// Deleting an open document's file from disk is a question. The watcher reports
+// it, and the two answers with an obvious meaning — Cancel, Close tab — must do
+// what they say rather than leaving a tab pointing at a ghost.
+void TstGui::deletingAnOpenFileOnDiskAsksForRescue()
+{
+    const QString dir = m_work->path() + QStringLiteral("/rescue");
+    QVERIFY(QDir().mkpath(dir));
+    const QString source = dir + QStringLiteral("/gone.s");
+    QVERIFY(writeFile(source, QByteArrayLiteral("\tnop\n")));
+
+    MainWindow window;
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *center = window.findChild<QStackedWidget *>(QStringLiteral("centralPages"));
+    auto *welcome = window.findChild<WelcomeView *>(QStringLiteral("welcomeView"));
+    QVERIFY(tabs && center && welcome);
+
+    auto armButton = [&](const QString &text, bool *flag, QTimer *timer) {
+        timer->setInterval(0);
+        QObject::connect(timer, &QTimer::timeout, &window, [text, flag, timer] {
+            auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!box)
+                return;
+            for (QPushButton *button : box->findChildren<QPushButton *>())
+                if (button->text() == text)
+                    button->click();
+            *flag = true;
+            timer->stop();
+        });
+        timer->start();
+    };
+
+    window.openPath(source);
+    QCOMPARE(tabs->count(), 1);
+
+    // Cancel keeps the tab on the name it had — a later save recreates it.
+    bool cancelled = false;
+    QTimer cancelTimer;
+    armButton(QStringLiteral("Cancel"), &cancelled, &cancelTimer);
+    QVERIFY(QFile::remove(source));
+    QTRY_VERIFY_WITH_TIMEOUT(cancelled, 5000);
+    cancelTimer.stop();
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(qobject_cast<CodeEditor *>(tabs->currentWidget())->filePath(), source);
+
+    // Close tab, the other answer: the tab goes and the welcome view returns.
+    QVERIFY(QMetaObject::invokeMethod(&window, "closeCurrentFile", Qt::DirectConnection));
+    QCOMPARE(tabs->count(), 0);
+    QCOMPARE(center->currentWidget(), static_cast<QWidget *>(welcome));
+
+    QVERIFY(writeFile(source, QByteArrayLiteral("\tnop\n")));
+    window.openPath(source);
+    QCOMPARE(tabs->count(), 1);
+    bool closed = false;
+    QTimer closeTimer;
+    armButton(QStringLiteral("Close tab"), &closed, &closeTimer);
+    QVERIFY(QFile::remove(source));
+    QTRY_VERIFY_WITH_TIMEOUT(closed, 5000);
+    closeTimer.stop();
+    QTRY_COMPARE_WITH_TIMEOUT(tabs->count(), 0, 5000);
+    QCOMPARE(center->currentWidget(), static_cast<QWidget *>(welcome));
+}
+
+// Everything keyed to a document's path follows a rename through the sidebar:
+// the editor's path and label, its .pistproject beside it, the reopen pointer,
+// and the breakpoints keyed by base name (docs/untitled-plan.md §7.2).
+void TstGui::renameFollowsTheOpenDocument()
+{
+    const QString dir = m_work->path() + QStringLiteral("/rename");
+    QVERIFY(QDir().mkpath(dir));
+    const QString source = dir + QStringLiteral("/before.s");
+    QVERIFY(writeFile(source, QByteArrayLiteral("\ttext\nstart:\tnop\n\trts\n\tend\n")));
+    QString error;
+    QVERIFY2(settings::save(ProjectSettings(), settings::projectFileFor(source), &error),
+             qPrintable(error));
+    const QString oldProject = settings::projectFileFor(source);
+    const QString newProject = settings::projectFileFor(dir + QStringLiteral("/renamed.s"));
+
+    MainWindow window;
+    window.openPath(source);
+    QCOMPARE(settings::lastSourcePath(), source);
+
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 1);
+
+    // A breakpoint on the file, before the rename.
+    QVERIFY(QMetaObject::invokeMethod(&window, "toggleBreakpointAtLine", Qt::DirectConnection,
+                                      Q_ARG(int, 3)));
+    auto *panel = window.findChild<QDockWidget *>(QStringLiteral("breakpointsDock"));
+    QVERIFY(panel);
+    auto *table = panel->findChild<QTableWidget *>();
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), 1);
+    QCOMPARE(table->item(0, 0)->text(), QStringLiteral("before.s:3"));
+
+    // The sidebar only renames a path it has indexed, so wait for the reveal.
+    QTRY_VERIFY_WITH_TIMEOUT(browser->selectedHardDrivePaths().contains(source), 5000);
+    QVERIFY(browser->renamePath(source, QStringLiteral("renamed.s")));
+
+    const QString renamed = dir + QStringLiteral("/renamed.s");
+    QVERIFY(QFileInfo::exists(renamed));
+    QVERIFY(!QFileInfo::exists(source));
+    QCOMPARE(editor->filePath(), renamed);
+    QCOMPARE(tabs->tabText(tabs->indexOf(editor)), QStringLiteral("renamed.s"));
+    QVERIFY2(QFileInfo::exists(newProject), "the .pistproject must follow its source");
+    QVERIFY(!QFileInfo::exists(oldProject));
+    QCOMPARE(settings::lastSourcePath(), renamed);
+    // The breakpoint store is keyed by base name, so the panel must show the
+    // new one rather than a file that no longer exists.
+    QCOMPARE(table->item(0, 0)->text(), QStringLiteral("renamed.s:3"));
+}
+
+// The previous session's summary is flushed once, at teardown
+// (docs/untitled-plan.md §6). A window destroyed without it loses the only
+// place "where you were" is written; nothing else in the suite would notice.
+void TstGui::lastSessionSummaryIsFlushedAtTeardown()
+{
+    const QString source = m_work->path() + QStringLiteral("/lastsession.s");
+    QVERIFY(writeFile(source, QByteArrayLiteral("\tnop\n")));
+    QString error;
+    QVERIFY2(settings::save(ProjectSettings(), settings::projectFileFor(source), &error),
+             qPrintable(error));
+
+    {
+        MainWindow window;
+        window.openPath(source);
+        QCOMPARE(settings::lastSourcePath(), source);
+    }
+
+    const settings::LastSession last = settings::lastSession();
+    QVERIFY2(last.known, "destroying the window must flush the session summary");
+    QCOMPARE(last.lastFile, source);
 }
 
 void TstGui::spriteEditorChromeSitsWhereItIsUsed()
@@ -8001,11 +8442,8 @@ void TstGui::searchMenuFollowsTheEditor()
     QCOMPARE(replaceAction->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_H));
     QCOMPARE(nextAction->shortcut(), QKeySequence(Qt::Key_F3));
 
-    // A session starts on a text tab, so they are live from the first frame.
-    // Open a real file rather than relying on the pristine tab: an untouched
-    // tab is REPLACED when the image opens below (addImageTab), and whether the
-    // tab is pristine otherwise depends on QSettings left by whichever test ran
-    // before — which is how this test flaked.
+    // A document is a file now, so Find and Replace only become live once one
+    // is open: the window starts on the welcome view with no tabs at all.
     const QString source = m_work->path() + QStringLiteral("/search.s");
     QFile src(source);
     QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));

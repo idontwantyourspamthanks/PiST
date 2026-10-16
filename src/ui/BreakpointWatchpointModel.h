@@ -108,6 +108,13 @@ public:
     /// list, so the panel shows where each one actually landed.
     QList<Breakpoint> mergeResolved(const ArmPlan &plan) const;
 
+    /// Move the breakpoints keyed to a renamed file over to its new base name
+    /// (docs/untitled-plan.md §7.2). The key is the base name the whole IDE
+    /// uses, so a move that keeps the name needs nothing and a rename that
+    /// changes it would otherwise strand the file's breakpoints — and its gutter
+    /// markers — under a name that no longer exists.
+    void followRenamedFile(const QString &oldFile, const QString &newFile);
+
     /// Push the models to every open editor's gutter and to the breakpoint
     /// panel.
     void refreshMarkers();

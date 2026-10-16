@@ -4,6 +4,7 @@
 
 #include "ui/MainWindow.h"
 #include "emu/HexFormat.h"
+#include "support/DocumentWatcher.h"
 #include "support/FileWrite.h"
 
 #include "ui/BreakpointWatchpointModel.h"
@@ -51,6 +52,8 @@
 #include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
+#include "ui/NewFileDialog.h"
+#include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
@@ -92,6 +95,7 @@
 #include <QSet>
 #include <QSize>
 #include <QStandardPaths>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
@@ -158,12 +162,6 @@ QImage mediaFrameImage(const MediaFrame &frame)
         }
     }
     return image;
-}
-
-bool isPristineEditor(CodeEditor *editor)
-{
-    return editor && editor->filePath().isEmpty() && !editor->isModifiedSinceLoad()
-        && editor->document()->isEmpty();
 }
 
 // Suffixes that name text worth opening straight off a floppy disk. Assembly
@@ -526,12 +524,12 @@ MainWindow::MainWindow(QWidget *parent)
     // The instruction strip sits under the tabs, not in the dock: the dock is
     // one tab among the debug group, and a mnemonic the user is reading should
     // not depend on that tab being selected.
-    auto *center = new QWidget(this);
-    auto *column = new QVBoxLayout(center);
+    auto *documents = new QWidget(this);
+    auto *column = new QVBoxLayout(documents);
     column->setContentsMargins(0, 0, 0, 0);
     column->setSpacing(0);
     column->addWidget(m_tabs, 1);
-    m_instrStrip = new QPushButton(center);
+    m_instrStrip = new QPushButton(documents);
     m_instrStrip->setObjectName(QStringLiteral("instructionStrip"));
     m_instrStrip->setFlat(true);
     m_instrStrip->setFocusPolicy(Qt::NoFocus);
@@ -540,18 +538,46 @@ MainWindow::MainWindow(QWidget *parent)
     appearance::markMono(m_instrStrip);
     connect(m_instrStrip, &QPushButton::clicked, this, &MainWindow::raiseInstructionRef);
     column->addWidget(m_instrStrip);
-    m_registerStrip = new QLabel(center);
+    m_registerStrip = new QLabel(documents);
     m_registerStrip->setObjectName(QStringLiteral("registerStrip"));
     m_registerStrip->setVisible(false);
     appearance::markMono(m_registerStrip);
     column->addWidget(m_registerStrip);
-    setCentralWidget(center);
+
+    // The central area is two pages: the documents, and the welcome view that
+    // stands in for them when there are none. Zero documents is a real state
+    // now — a document is a file on disk, and an empty "untitled" buffer was
+    // only ever a document in appearance (docs/untitled-plan.md §5).
+    m_center = new QStackedWidget(this);
+    m_center->setObjectName(QStringLiteral("centralPages"));
+    m_center->addWidget(documents);
+    m_welcome = new WelcomeView(m_center);
+    m_welcome->setObjectName(QStringLiteral("welcomeView"));
+    m_center->addWidget(m_welcome);
+    setCentralWidget(m_center);
+
     connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
 
-    // Every session starts with one pristine editor tab; opening a file reuses
-    // it while it is still untouched.
-    addEditorTab(QString());
+    // The welcome view's doors.
+    connect(m_welcome, &WelcomeView::openRequested, this,
+            [this](const QString &path) { openPath(path); });
+    connect(m_welcome, &WelcomeView::browseRequested, this, &MainWindow::openFile);
+    connect(m_welcome, &WelcomeView::newFileRequested, this, &MainWindow::newFile);
+    connect(m_welcome, &WelcomeView::newImageRequested, this, &MainWindow::newImage);
+    connect(m_welcome, &WelcomeView::setupRequested, this, &MainWindow::showToolSetup);
+
+    // Every open document's file is watched, so a deletion or a rename outside
+    // the IDE is noticed rather than discovered on the next save
+    // (docs/untitled-plan.md §7.1). The sidebar's own rename and delete gestures
+    // come through their own signals; this covers everything else.
+    m_watcher = new DocumentWatcher(this);
+    connect(m_watcher, &DocumentWatcher::deleted, this,
+            [this](const QString &path) { documentVanished(path, /*deliberate=*/false); });
+
+    // No pristine tab is created here: a document is a file on disk, so the
+    // window opens on the welcome view and something real replaces it (the
+    // command line's file, or the reopen below).
 
     m_build = new BuildService(this);
     connect(m_build, &BuildService::finished, this, &MainWindow::onBuildFinished);
@@ -580,43 +606,39 @@ MainWindow::MainWindow(QWidget *parent)
     // instance could still own them.
     paths::pruneStaleSessions();
 
-    // Reopen where the user left off when nothing was passed on the command line.
+    // The lifetime counters (docs/untitled-plan.md §6): this is a session, and
+    // the first one also records the date the installation started counting.
+    settings::noteSessionStarted();
+
+    // Reopen where the user left off when nothing was passed on the command
+    // line. A last source that no longer exists opens nothing, and the welcome
+    // view is what remains — which is the honest answer to "where was I?".
     QTimer::singleShot(0, this, [this] {
-        if (m_editor && m_editor->filePath().isEmpty() && !m_image)
+        if (m_tabs->count() == 0)
             openRecentSource();
+        updateCentralPage();
     });
 
     refreshToolchain();
 
     updateModifiedState();
-    // The actions exist only now, and the pristine tab was added before them —
-    // so run the per-tab pass once, or Find would stay greyed out until the
-    // first tab switch.
+    // The actions exist only now, so run the per-tab pass once, or Find would
+    // stay greyed out until the first tab switch.
     onTabChanged(m_tabs->currentIndex());
     finalizeLayout();
 }
 
 CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
 {
-    // A pristine tab (no path, no content, unmodified) is reused rather than
-    // left behind as an empty first tab, matching how editors treat an
-    // untouched "untitled" buffer.
-    if (!path.isEmpty() && m_tabs->count() == 1) {
-        auto *only = qobject_cast<CodeEditor *>(m_tabs->widget(0));
-        if (isPristineEditor(only)) {
-            if (!only->loadFile(path)) {
-                if (!quiet)
-                    QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
-                return nullptr;
-            }
-            updateTabTitle(only);
-            return only;
-        }
-    }
+    // A document is a file on disk, so there is no path-less form of this to
+    // create: the assertion documents the invariant the removal of the untitled
+    // buffer rests on (docs/untitled-plan.md §8). A caller with no path has
+    // nothing to show the user.
+    Q_ASSERT(!path.isEmpty());
 
     auto *editor = new CodeEditor(appearance::editorTheme(), this);
     wireEditor(editor);
-    if (!path.isEmpty() && !editor->loadFile(path)) {
+    if (!editor->loadFile(path)) {
         if (!quiet)
             QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
         editor->deleteLater();
@@ -625,37 +647,32 @@ CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
     const int index = m_tabs->addTab(editor, editor->displayName());
     m_tabs->setCurrentIndex(index);
     updateTabTitle(editor);
+    syncWatchedDocuments();
     return editor;
 }
 
 ImageEditor *MainWindow::addImageTab(const QString &path, bool quiet)
 {
-    // Opening an image into a single untouched assembly tab replaces it so the
-    // session does not keep a stranded untitled .s.
-    if (m_tabs->count() == 1) {
-        auto *only = qobject_cast<CodeEditor *>(m_tabs->widget(0));
-        if (isPristineEditor(only)) {
-            m_tabs->removeTab(0);
-            only->deleteLater();
-        }
-    }
+    // As with a text editor, creation always has a file. (The image editor may
+    // become path-less *later* — an imported sheet has no file of its own yet —
+    // which is its own deliberate workflow, not a creation path.)
+    Q_ASSERT(!path.isEmpty());
 
     auto *editor = new ImageEditor(this);
     wireImage(editor);
     wireImageReExport(editor);
-    if (!path.isEmpty()) {
-        const bool ok = isPimPath(path) ? editor->loadFile(path) : editor->importFile(path, false);
-        if (!ok) {
-            if (!quiet)
-                QMessageBox::warning(this, tr("Open"),
-                                     tr("Could not open %1: %2").arg(path, editor->lastError()));
-            editor->deleteLater();
-            return nullptr;
-        }
+    const bool ok = isPimPath(path) ? editor->loadFile(path) : editor->importFile(path, false);
+    if (!ok) {
+        if (!quiet)
+            QMessageBox::warning(this, tr("Open"),
+                                 tr("Could not open %1: %2").arg(path, editor->lastError()));
+        editor->deleteLater();
+        return nullptr;
     }
     const int index = m_tabs->addTab(editor, editor->displayName());
     m_tabs->setCurrentIndex(index);
     updateTabTitle(editor);
+    syncWatchedDocuments();
     return editor;
 }
 
@@ -876,25 +893,35 @@ void MainWindow::onTabChanged(int index)
         followCursorReference(m_editor);
     syncGitDirectory();
     applyGitBlame();
+    // Zero tabs is reachable — by the × button, by Close File, by Closing All —
+    // and it means the welcome view, not a stranded empty editor.
+    updateCentralPage();
 }
 
 void MainWindow::onTabCloseRequested(int index)
 {
+    closeTab(index);
+}
+
+bool MainWindow::closeTab(int index, bool promptToSave)
+{
     QWidget *widget = m_tabs->widget(index);
+    if (!widget)
+        return false;
+
     QString closedPath;
     if (auto *editor = qobject_cast<CodeEditor *>(widget)) {
         closedPath = editor->filePath();
-        if (!maybeSaveEditor(editor))
-            return;
+        if (promptToSave && !maybeSaveEditor(editor))
+            return false;
     } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
         closedPath = image->filePath();
-        if (!maybeSaveImage(image))
-            return;
+        if (promptToSave && !maybeSaveImage(image))
+            return false;
     }
 
     m_tabs->removeTab(index);
-    if (widget)
-        widget->deleteLater();
+    widget->deleteLater();
 
     // The extracted-document mapping is a per-tab registry — keyed by the path
     // the closed tab held, which is the path that tab's saves wrote back
@@ -905,10 +932,310 @@ void MainWindow::onTabCloseRequested(int index)
     if (!closedPath.isEmpty())
         m_floppyDocs.remove(QFileInfo(closedPath).absoluteFilePath());
 
-    // There is always at least one tab: closing the last document leaves a
-    // pristine editor rather than an empty central widget.
-    if (m_tabs->count() == 0)
-        addEditorTab(QString());
+    // The document's file stops being watched with the tab: nothing on screen
+    // is bound to it any more (docs/untitled-plan.md §7.1).
+    syncWatchedDocuments();
+    // The last document closing lands on the welcome view
+    // (docs/untitled-plan.md §5); a tab switch normally does this, but removing
+    // the tab that was *not* current does not emit one.
+    updateCentralPage();
+    return true;
+}
+
+void MainWindow::closeCurrentFile()
+{
+    closeTab(m_tabs->currentIndex());
+}
+
+void MainWindow::closeAllFiles()
+{
+    // One at a time, through the same door as the ×: each document gets its
+    // save offer, and a Cancel stops the sweep where the user stopped it.
+    while (m_tabs->count() > 0 && closeTab(m_tabs->currentIndex())) {
+    }
+}
+
+void MainWindow::newFile()
+{
+    newFileIn(suggestedSourceDirectory());
+}
+
+void MainWindow::newFileIn(const QString &directory)
+{
+    NewFileDialog dialog(this, directory);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const NewFileSpec spec = dialog.spec();
+    QString error;
+    if (!spec.create(&error)) {
+        QMessageBox::warning(this, tr("New File"),
+                             tr("Could not create %1: %2").arg(spec.targetPath(), error));
+        return;
+    }
+
+    // The file is on disk before it is on screen, and it is what the next launch
+    // reopens — a new document is a document like any other
+    // (docs/untitled-plan.md §4). openPath() reveals it in the sidebar and
+    // raises it rather than duplicating it if it was somehow already open.
+    settings::rememberLastSource(spec.targetPath());
+    openPath(spec.targetPath());
+}
+
+QString MainWindow::suggestedSourceDirectory() const
+{
+    // The project's own directory heads the chain: a new source is going to be
+    // built beside the ones already there (docs/untitled-plan.md §4). The
+    // sidebar's chosen root is the project — its default before a root is
+    // chosen is the launch directory, which is not one (hasProjectDirectory).
+    if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
+        return m_fileBrowser->directory();
+    return suggestedImageDirectory();
+}
+
+void MainWindow::updateCentralPage()
+{
+    if (!m_center)
+        return;
+    // Zero documents means the welcome view, and it is rebuilt as it is shown:
+    // it is a doorway, so it must not show a recents list or a counter the
+    // session has moved on from.
+    const bool welcome = m_tabs->count() == 0;
+    if (welcome)
+        refreshWelcome();
+    m_center->setCurrentIndex(welcome ? 1 : 0);
+}
+
+void MainWindow::refreshWelcome()
+{
+    if (!m_welcome)
+        return;
+
+    // The demo projects are the first run's doorway; the view holds them back
+    // once the user has recents of their own (docs/untitled-plan.md §3).
+    m_welcome->setDemoProjects(WelcomeView::demoProjects());
+    m_welcome->setRecentSources(settings::recentSources());
+
+    // Readiness, with the project's own tool overrides honoured: the line has to
+    // say what a build here would actually use.
+    const ToolInfo assembler = toolchain::findAssembler(m_settings.assemblerPath);
+    const ToolInfo emulator = toolchain::findEmulator(m_settings.hatariPath);
+    const QList<TosRom> roms = findTosRoms();
+    QStringList readiness;
+    readiness << (assembler.found()
+                      ? tr("Assembler: %1").arg(QFileInfo(assembler.path).fileName())
+                      : tr("Assembler: not found"));
+    readiness << (emulator.found()
+                      ? tr("Emulator: %1").arg(QFileInfo(emulator.path).fileName())
+                      : tr("Emulator: not found"));
+    const bool romNamed = !m_settings.tosPath.isEmpty();
+    if (romNamed)
+        readiness << tr("TOS ROM: %1").arg(QFileInfo(m_settings.tosPath).fileName());
+    else if (roms.isEmpty())
+        readiness << tr("TOS ROM: not found");
+    else
+        readiness << tr("TOS ROM: %1").arg(roms.first().versionText());
+    const bool missing = !assembler.found() || !emulator.found()
+                         || (!romNamed && roms.isEmpty());
+    m_welcome->setReadiness(missing, readiness);
+
+    WelcomeView::Stats stats;
+    stats.sessions = settings::sessionCount();
+    stats.builds = settings::buildCount();
+    stats.runs = settings::runCount();
+    stats.opened = settings::openedFileCount();
+    stats.firstLaunch = settings::firstLaunchDate();
+    const settings::LastSession last = settings::lastSession();
+    stats.lastSessionKnown = last.known;
+    stats.lastSessionBuilds = last.builds;
+    stats.lastBuildOk = last.lastBuildOk;
+    // "The file I was on" is this session's answer while there is one; the
+    // flushed summary is only for an installation that has not opened anything
+    // since it last quit.
+    stats.lastFile = settings::lastSourcePath().isEmpty() ? last.lastFile
+                                                          : settings::lastSourcePath();
+    m_welcome->setStats(stats);
+}
+
+void MainWindow::syncWatchedDocuments()
+{
+    if (!m_watcher)
+        return;
+    QStringList paths;
+    for (CodeEditor *editor : openEditors())
+        paths.append(editor->filePath());
+    for (ImageEditor *image : openImages())
+        paths.append(image->filePath());
+    m_watcher->setPaths(paths);
+}
+
+bool MainWindow::saveEditor(CodeEditor *editor, const QString &path)
+{
+    if (!editor || path.isEmpty())
+        return false;
+    if (!editor->saveFile(path))
+        return false;
+    // Our own write replaced the file by staging and renaming it; put the watch
+    // back rather than trusting that it survived (docs/untitled-plan.md §7.1).
+    if (m_watcher)
+        m_watcher->rearm(path);
+    // A save-as (the delete rescue) moves the document to a new path, so the
+    // watched set is rebuilt rather than patched.
+    syncWatchedDocuments();
+    writeBackFloppyDoc(path);
+    return true;
+}
+
+bool MainWindow::saveImage(ImageEditor *image, const QString &path)
+{
+    if (!image || path.isEmpty())
+        return false;
+    if (!image->saveFile(path))
+        return false;
+    if (m_watcher)
+        m_watcher->rearm(path);
+    syncWatchedDocuments();
+    writeBackFloppyDoc(path);
+    return true;
+}
+
+void MainWindow::documentVanished(const QString &path, bool deliberate)
+{
+    // The file is gone, so it is not watched again whichever way this arrived —
+    // and for the sidebar's own delete the gesture has already said what it
+    // wants (docs/untitled-plan.md §7.3).
+    if (m_watcher)
+        m_watcher->forget(path);
+
+    QList<QWidget *> documents;
+    for (CodeEditor *editor : openEditors()) {
+        if (QFileInfo(editor->filePath()) == QFileInfo(path))
+            documents.append(editor);
+    }
+    for (ImageEditor *image : openImages()) {
+        if (QFileInfo(image->filePath()) == QFileInfo(path))
+            documents.append(image);
+    }
+
+    for (QWidget *document : documents) {
+        bool modified = false;
+        if (auto *editor = qobject_cast<CodeEditor *>(document))
+            modified = editor->isModifiedSinceLoad();
+        else if (auto *image = qobject_cast<ImageEditor *>(document))
+            modified = image->isModifiedSinceLoad();
+
+        // The sidebar's delete is a gesture with a confirmation of its own, so
+        // an unmodified tab goes with the file exactly as it always has. The
+        // watcher's report is a background event, and unsaved work is worth
+        // asking about either way.
+        if (deliberate && !modified) {
+            closeTab(m_tabs->indexOf(document));
+            continue;
+        }
+        rescueDeletedDocument(document, path);
+    }
+}
+
+void MainWindow::rescueDeletedDocument(QWidget *document, const QString &path)
+{
+    auto *editor = qobject_cast<CodeEditor *>(document);
+    auto *image = qobject_cast<ImageEditor *>(document);
+    if (!editor && !image)
+        return;
+
+    const bool modified = editor ? editor->isModifiedSinceLoad() : image->isModifiedSinceLoad();
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Deleted on disk"));
+    box.setText(tr("%1 was deleted from disk.").arg(QFileInfo(path).fileName()));
+    box.setInformativeText(
+        modified
+            ? tr("The tab still holds unsaved changes. Save them to a copy, keep editing "
+                 "and save over the old name later, or close the tab and lose them.")
+            : tr("Close the tab, save a copy somewhere else, or keep editing: a later "
+                 "save writes the file again."));
+    QPushButton *close = box.addButton(tr("Close tab"), QMessageBox::DestructiveRole);
+    QPushButton *copy = box.addButton(tr("Save a copy…"), QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.exec();
+
+    if (box.clickedButton() == close) {
+        // The prompt above is the question and Close tab is the answer: closing
+        // through the unsaved-changes offer would ask again, and its "Save"
+        // would recreate the file the user just deleted.
+        closeTab(m_tabs->indexOf(document), /*promptToSave=*/false);
+        return;
+    }
+    if (box.clickedButton() != copy)
+        return; // Cancel: the editor keeps the name it had, and recreates it on save.
+
+    // Deliberately Save-As shaped, and the only gesture left that is: the buffer
+    // stays bound to a real file, which is what makes it a document.
+    const QString target = QFileDialog::getSaveFileName(
+        this, tr("Save a copy"), path,
+        editor ? tr("Assembly sources (*.s *.S *.asm *.x68)") : tr("PiST images (*.pim)"));
+    if (target.isEmpty())
+        return;
+    const bool written = editor ? saveEditor(editor, target) : saveImage(image, target);
+    if (!written) {
+        QMessageBox::critical(this, tr("Save a copy"), tr("Could not write %1").arg(target));
+        return;
+    }
+    updateTabTitle(document);
+    updateModifiedState();
+}
+
+void MainWindow::followRenamedFile(const QString &oldPath, const QString &newPath)
+{
+    // The document itself: title, save target, the tab's idea of its file.
+    for (CodeEditor *editor : openEditors()) {
+        if (QFileInfo(editor->filePath()) != QFileInfo(oldPath))
+            continue;
+        editor->setFilePath(newPath);
+        updateTabTitle(editor);
+    }
+    for (ImageEditor *image : openImages()) {
+        if (QFileInfo(image->filePath()) != QFileInfo(oldPath))
+            continue;
+        image->setFilePath(newPath);
+        updateTabTitle(image);
+    }
+
+    // The breakpoint store, keyed by base name: renaming a file would otherwise
+    // strand its breakpoints under a name that no longer exists
+    // (docs/untitled-plan.md §7.2).
+    m_bpModel->followRenamedFile(QFileInfo(oldPath).fileName(), QFileInfo(newPath).fileName());
+
+    // The project follows its source. The plan expects a `sourceFile` key in the
+    // .pistproject; there is none — the project file is *named* after the source
+    // (settings::projectFileFor), so the file itself is what has to move, or the
+    // next load finds no project and the settings silently reset. That holds for
+    // any project whose source is renamed, not only the one this window has
+    // loaded, so it does not depend on which document is current.
+    const bool wasProjectSource = QFileInfo(m_settings.sourceFile) == QFileInfo(oldPath);
+    if (wasProjectSource)
+        m_settings.sourceFile = newPath;
+
+    const QString oldProject = settings::projectFileFor(oldPath);
+    const QString newProject = settings::projectFileFor(newPath);
+    if (QFileInfo::exists(oldProject) && QFileInfo(oldProject) != QFileInfo(newProject)
+        && !QFile::rename(oldProject, newProject)) {
+        statusBar()->showMessage(
+            tr("%1 could not be renamed with its source; save the project to place it beside "
+               "the new name.")
+                .arg(QFileInfo(oldProject).fileName()),
+            8000);
+    }
+
+    // The reopen pointer and the recents list both name the file, and both are
+    // read back into this session (the startup reopen, the welcome view).
+    settings::renameSource(oldPath, newPath);
+
+    // Blame is read per path, so the lane has to be asked again.
+    refreshBlame();
+    updateModifiedState();
+    syncWatchedDocuments();
 }
 
 void MainWindow::refreshToolchain()
@@ -951,6 +1278,15 @@ MainWindow::~MainWindow()
     // way the window dies (a test's early return, a delete, a crash path).
     if (m_host->isRunning())
         m_host->stop();
+
+    // The previous-session summary, written once and only here
+    // (docs/untitled-plan.md §6). The counters are already on disk as they
+    // happen, so a crash costs this line and nothing the user did.
+    settings::LastSession summary;
+    summary.builds = m_sessionBuilds;
+    summary.lastBuildOk = m_lastBuildOk;
+    summary.lastFile = settings::lastSourcePath();
+    settings::flushLastSession(summary);
 }
 
 void MainWindow::createActions()
@@ -959,10 +1295,10 @@ void MainWindow::createActions()
     m_actOpen->setShortcut(QKeySequence::Open);
     connect(m_actOpen, &QAction::triggered, this, &MainWindow::openFile);
 
-    m_actNewFile = new QAction(tr("&New File"), this);
+    m_actNewFile = new QAction(tr("&New File…"), this);
     m_actNewFile->setObjectName(QStringLiteral("newFileAction"));
     m_actNewFile->setShortcut(QKeySequence::New);
-    connect(m_actNewFile, &QAction::triggered, this, [this] { addEditorTab(QString()); });
+    connect(m_actNewFile, &QAction::triggered, this, &MainWindow::newFile);
 
     m_actNewImage = new QAction(tr("New &Image…"), this);
     connect(m_actNewImage, &QAction::triggered, this, &MainWindow::newImage);
@@ -1069,6 +1405,18 @@ void MainWindow::createActions()
     m_actSave->setObjectName(QStringLiteral("saveAction"));
     m_actSave->setShortcut(QKeySequence::Save);
     connect(m_actSave, &QAction::triggered, this, &MainWindow::saveFile);
+
+    // The deliberate route to the zero-document state. Until the welcome view
+    // existed there was nothing to close *to*, and the tab's × button was the
+    // only way out of a document at all (docs/untitled-plan.md §5).
+    m_actCloseFile = new QAction(tr("&Close File"), this);
+    m_actCloseFile->setObjectName(QStringLiteral("closeFileAction"));
+    m_actCloseFile->setShortcut(QKeySequence::Close);
+    connect(m_actCloseFile, &QAction::triggered, this, &MainWindow::closeCurrentFile);
+
+    m_actCloseAll = new QAction(tr("Close All"), this);
+    m_actCloseAll->setObjectName(QStringLiteral("closeAllAction"));
+    connect(m_actCloseAll, &QAction::triggered, this, &MainWindow::closeAllFiles);
 
     m_actOpenProject = new QAction(tr("Open &Project…"), this);
     connect(m_actOpenProject, &QAction::triggered, this, &MainWindow::openProject);
@@ -1209,6 +1557,10 @@ void MainWindow::wireBackend()
     connect(m_host, &IDebugBackend::runningChanged, this, [this](bool running) {
         emit sessionRunningChanged(running);
         if (running) {
+            // One launched session (docs/untitled-plan.md §6). The counter sits
+            // on the transport's own "the machine is up" transition, so a launch
+            // that never came up is not counted.
+            settings::noteRun();
             if (m_actPause)
                 m_actPause->setEnabled(!m_host->isStopped());
             if (m_consoleInput)
@@ -1445,6 +1797,8 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
     fileMenu->addAction(m_actSave);
+    fileMenu->addAction(m_actCloseFile);
+    fileMenu->addAction(m_actCloseAll);
     // Rebuilt on every opening: the list is persisted, and entries whose file
     // has gone away are pruned as they are shown.
     auto *recentMenu = new QMenu(tr("Open &Recent"), this);
@@ -1931,53 +2285,10 @@ void MainWindow::wirePanels()
                 if (m_host)
                     m_host->setFloppyImage(drive, path);
             });
-    connect(m_fileBrowser, &FileBrowser::pathRenamed, this,
-            [this](const QString &oldPath, const QString &newPath) {
-                // An open document follows its file; breakpoints are file:line
-                // and the file's *content* is unchanged, so they stay valid.
-                for (CodeEditor *editor : openEditors()) {
-                    if (QFileInfo(editor->filePath()) == QFileInfo(oldPath)) {
-                        editor->setFilePath(newPath);
-                        updateTabTitle(editor);
-                        if (QFileInfo(m_settings.sourceFile) == QFileInfo(oldPath))
-                            m_settings.sourceFile = newPath;
-                    }
-                }
-                for (ImageEditor *image : openImages()) {
-                    if (QFileInfo(image->filePath()) == QFileInfo(oldPath)) {
-                        image->setFilePath(newPath);
-                        updateTabTitle(image);
-                    }
-                }
-                updateModifiedState();
-            });
+    connect(m_fileBrowser, &FileBrowser::newFileRequested, this, &MainWindow::newFileIn);
+    connect(m_fileBrowser, &FileBrowser::pathRenamed, this, &MainWindow::followRenamedFile);
     connect(m_fileBrowser, &FileBrowser::pathDeleted, this,
-            [this](const QString &path) {
-                for (CodeEditor *editor : openEditors()) {
-                    if (QFileInfo(editor->filePath()) != QFileInfo(path))
-                        continue;
-                    if (editor->isModifiedSinceLoad()) {
-                        statusBar()->showMessage(
-                            tr("%1 was deleted on disk; your modified copy is still open.")
-                                .arg(QFileInfo(path).fileName()),
-                            8000);
-                    } else {
-                        onTabCloseRequested(m_tabs->indexOf(editor));
-                    }
-                }
-                for (ImageEditor *image : openImages()) {
-                    if (QFileInfo(image->filePath()) != QFileInfo(path))
-                        continue;
-                    if (image->isModifiedSinceLoad()) {
-                        statusBar()->showMessage(
-                            tr("%1 was deleted on disk; your modified copy is still open.")
-                                .arg(QFileInfo(path).fileName()),
-                            8000);
-                    } else {
-                        onTabCloseRequested(m_tabs->indexOf(image));
-                    }
-                }
-            });
+            [this](const QString &path) { documentVanished(path, /*deliberate=*/true); });
 
     connect(m_gitDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         if (visible && m_gitPanel)
@@ -2533,6 +2844,8 @@ void MainWindow::applyAppearance()
         m_symbolsView->applyAppearance();
     if (m_profiler)
         m_profiler->applyAppearance();
+    if (m_welcome)
+        m_welcome->applyAppearance();
 }
 
 void MainWindow::applyAudioOutputDevice()
@@ -2790,6 +3103,10 @@ void MainWindow::updateModifiedState()
 
     if (m_actSave)
         m_actSave->setEnabled(modified || m_image != nullptr || m_editor != nullptr);
+    if (m_actCloseFile)
+        m_actCloseFile->setEnabled(m_tabs->count() > 0);
+    if (m_actCloseAll)
+        m_actCloseAll->setEnabled(m_tabs->count() > 0);
 }
 
 bool MainWindow::maybeSave()
@@ -2824,23 +3141,16 @@ bool MainWindow::maybeSaveEditor(CodeEditor *editor)
     if (answer == QMessageBox::Discard)
         return true;
 
-    // Save: to the existing path when there is one, otherwise ask for one.
-    if (editor->filePath().isEmpty()) {
-        const QString path = QFileDialog::getSaveFileName(
-            this, tr("Save assembly source"), QString(),
-            tr("Assembly sources (*.s *.S *.asm)"));
-        if (path.isEmpty())
-            return false;
-        if (!editor->saveFile(path)) {
-            QMessageBox::critical(this, tr("Save"), tr("Could not write %1").arg(path));
-            return false;
-        }
-    } else if (!editor->saveFile(editor->filePath())) {
+    // Save means the document's own path: a source document always has one, and
+    // there is no longer any way to be holding a buffer without one
+    // (docs/untitled-plan.md §8).
+    Q_ASSERT(!editor->filePath().isEmpty());
+    if (!saveEditor(editor, editor->filePath())) {
         QMessageBox::critical(this, tr("Save"),
-                              tr("Could not write %1").arg(editor->filePath()));
+                              tr("Could not write %1: %2")
+                                  .arg(editor->filePath(), editor->lastError()));
         return false;
     }
-    writeBackFloppyDoc(editor->filePath());
 
     updateTabTitle(editor);
     updateModifiedState();
@@ -2868,18 +3178,17 @@ bool MainWindow::maybeSaveImage(ImageEditor *editor)
             this, tr("Save image"), QString(), tr("PiST images (*.pim)"));
         if (path.isEmpty())
             return false;
-        if (!editor->saveFile(path)) {
+        if (!saveImage(editor, path)) {
             QMessageBox::critical(this, tr("Save"),
                                   tr("Could not write %1: %2").arg(path, editor->lastError()));
             return false;
         }
-    } else if (!editor->saveFile(editor->filePath())) {
+    } else if (!saveImage(editor, editor->filePath())) {
         QMessageBox::critical(this, tr("Save"),
                               tr("Could not write %1: %2")
                                   .arg(editor->filePath(), editor->lastError()));
         return false;
     }
-    writeBackFloppyDoc(editor->filePath());
 
     updateTabTitle(editor);
     updateModifiedState();
@@ -2926,6 +3235,7 @@ bool MainWindow::openPathImpl(const QString &path, bool quiet)
 
     // Already open documents are raised, not reloaded: the user's undo
     // history and cursor position in the existing tab are kept.
+    bool created = false;
     if (CodeEditor *open = editorForPath(path)) {
         m_tabs->setCurrentWidget(open);
     } else if (ImageEditor *open = imageForPath(path)) {
@@ -2933,22 +3243,29 @@ bool MainWindow::openPathImpl(const QString &path, bool quiet)
     } else if (isPimPath(path) || isImportableImagePath(path)) {
         if (!addImageTab(path, quiet))
             return false;
-    } else if (!addEditorTab(path, quiet)) {
-        return false;
+        created = true;
+    } else {
+        if (!addEditorTab(path, quiet))
+            return false;
+        created = true;
     }
 
     statusBar()->showMessage(tr("Opened %1").arg(path), 4000);
+    // The lifetime counter counts documents the user opened, not the ones an
+    // extraction or a project open created behind the scenes
+    // (docs/untitled-plan.md §6).
+    if (created)
+        settings::noteFileOpened();
     if (!isPimPath(path) && !isImportableImagePath(path))
         loadProjectForSource(path);
     updateModifiedState();
 
     if (m_fileBrowser)
         m_fileBrowser->showFor(path);
-    // The opened file is what decides the project directory, and the per-tab pass
-    // in onTabChanged does not always run here: a pristine first tab takes the
-    // file's contents in place, so the current index never changes and no tab
-    // switch is emitted — git would keep pointing at the previous project (or at
-    // none) while a project is open (MIN-81). Both calls are idempotent.
+    // The opened file is what decides the project directory, and raising the
+    // document that is already current emits no tab change at all, so the
+    // per-tab pass in onTabChanged cannot be relied on here. Both calls are
+    // idempotent (MIN-81).
     syncGitDirectory();
     applyGitBlame();
     return true;
@@ -3211,7 +3528,7 @@ void MainWindow::editSettings()
 
     // Persist immediately when the project is already known, so a settings change
     // is not lost if the session is closed without an explicit save.
-    if (m_editor && !m_editor->filePath().isEmpty()) {
+    if (m_editor) {
         m_settings.sourceFile = m_editor->filePath();
         const QString path = settings::projectFileFor(m_editor->filePath());
         QString error;
@@ -3294,7 +3611,7 @@ void MainWindow::syncGitDirectory()
     QString dir;
     if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
         dir = m_fileBrowser->directory();
-    else if (m_editor && !m_editor->filePath().isEmpty())
+    else if (m_editor)
         dir = QFileInfo(m_editor->filePath()).absolutePath();
     else if (m_image && !m_image->filePath().isEmpty())
         dir = QFileInfo(m_image->filePath()).absolutePath();
@@ -3330,25 +3647,32 @@ void MainWindow::refreshBlame()
 
 void MainWindow::saveFile()
 {
+    // Save is unconditionally "write to the path this document already has"
+    // (docs/untitled-plan.md §8). The branch that used to fall into a Save-As
+    // dialog for a path-less buffer is gone with the buffer — it was also where
+    // a failed write left a document quietly path-less while the user believed
+    // the save had happened.
     if (m_image) {
         if (m_image->filePath().isEmpty()) {
+            // The one document that can still have no path: an image imported
+            // before it had a file of its own. That asymmetry is deliberate
+            // (docs/untitled-plan.md §9).
             const QString path = QFileDialog::getSaveFileName(
                 this, tr("Save image"), QString(), tr("PiST images (*.pim)"));
             if (path.isEmpty())
                 return;
-            if (!m_image->saveFile(path)) {
+            if (!saveImage(m_image, path)) {
                 QMessageBox::critical(this, tr("Save"),
                                       tr("Could not write %1: %2")
                                           .arg(path, m_image->lastError()));
                 return;
             }
             statusBar()->showMessage(tr("Saved %1").arg(path), 4000);
-        } else if (!m_image->saveFile(m_image->filePath())) {
+        } else if (!saveImage(m_image, m_image->filePath())) {
             QMessageBox::critical(this, tr("Save"),
                                   tr("Could not write %1: %2")
                                       .arg(m_image->filePath(), m_image->lastError()));
         } else {
-            writeBackFloppyDoc(m_image->filePath());
             statusBar()->showMessage(tr("Saved %1").arg(m_image->filePath()), 4000);
         }
         updateTabTitle(m_image);
@@ -3358,30 +3682,11 @@ void MainWindow::saveFile()
 
     if (!m_editor)
         return;
-    if (m_editor->filePath().isEmpty()) {
-        const QString path = QFileDialog::getSaveFileName(
-            this, tr("Save assembly source"), QString(),
-            tr("Assembly sources (*.s *.S *.asm)"));
-        if (path.isEmpty())
-            return;
-        // The result was discarded here, so a failed write said nothing at all:
-        // no dialog, no status, and — because saveFile() adopts the path only
-        // on success — a buffer that quietly stayed untitled while the user
-        // believed the save had gone through. Report it as the path-known
-        // branch and maybeSaveEditor do, and stop before the paths below that
-        // describe a document on disk.
-        if (!m_editor->saveFile(path)) {
-            QMessageBox::critical(this, tr("Save"),
-                                  tr("Could not write %1: %2")
-                                      .arg(path, m_editor->lastError()));
-            return;
-        }
-    } else if (!m_editor->saveFile(m_editor->filePath())) {
+    Q_ASSERT(!m_editor->filePath().isEmpty());
+    if (!saveEditor(m_editor, m_editor->filePath())) {
         QMessageBox::critical(this, tr("Save"),
                               tr("Could not write %1: %2")
                                   .arg(m_editor->filePath(), m_editor->lastError()));
-    } else {
-        writeBackFloppyDoc(m_editor->filePath());
     }
     updateTabTitle(m_editor);
     updateModifiedState();
@@ -3394,14 +3699,18 @@ void MainWindow::saveFile()
 
 QString MainWindow::buildSourcePath() const
 {
-    if (m_editor && !m_editor->filePath().isEmpty())
+    // What you see is what you build: the focused editor's file is the source,
+    // full stop. The fallbacks below serve the two states in which there is no
+    // focused *editor* — an image tab is current, or nothing is open — and they
+    // name real files, where the phantom buffer could only be skipped silently
+    // (docs/untitled-plan.md §2).
+    if (m_editor)
         return m_editor->filePath();
     if (!m_settings.sourceFile.isEmpty() && QFileInfo::exists(m_settings.sourceFile))
         return m_settings.sourceFile;
-    for (CodeEditor *editor : openEditors()) {
-        if (!editor->filePath().isEmpty())
-            return editor->filePath();
-    }
+    const QList<CodeEditor *> editors = openEditors();
+    if (!editors.isEmpty())
+        return editors.first()->filePath();
     return {};
 }
 
@@ -3718,16 +4027,15 @@ void MainWindow::buildImpl(bool quiet, bool release)
     // previous on-disk contents and reports a result for code the user is not
     // looking at.
     for (CodeEditor *editor : openEditors()) {
-        if (editor->filePath().isEmpty() || !editor->isModifiedSinceLoad())
+        if (!editor->isModifiedSinceLoad())
             continue;
-        if (!editor->saveFile(editor->filePath())) {
+        if (!saveEditor(editor, editor->filePath())) {
             refuseBuild(tr("Build"),
                         tr("Could not save %1: %2")
                             .arg(editor->filePath(), editor->lastError()),
                         true);
             return;
         }
-        writeBackFloppyDoc(editor->filePath());
     }
 
     m_problems->clear();
@@ -3851,6 +4159,13 @@ const RemoteStateAdapter::ProblemRow *MainWindow::problemEntryFor(const QTreeWid
 
 void MainWindow::onBuildFinished(bool success, const QList<Diagnostic> &diagnostics)
 {
+    // The lifetime counters, and this session's summary for the welcome view
+    // (docs/untitled-plan.md §6). A refused build never reaches here, which is
+    // right: nothing was assembled.
+    settings::noteBuild();
+    ++m_sessionBuilds;
+    m_lastBuildOk = success;
+
     if (m_statusBuild)
         m_statusBuild->setText(success ? tr("Build ok") : tr("Build failed"));
     emit buildCompleted(success);
@@ -4028,7 +4343,7 @@ void MainWindow::stepOut()
 
 void MainWindow::runToCursor()
 {
-    if (!m_host->isStopped() || !m_editor || m_editor->filePath().isEmpty())
+    if (!m_host->isStopped() || !m_editor)
         return;
     // "Run to my line" is a caret gesture like any other: it reads honestly as
     // "run until *my* line" only while the caret is the user's, so following
@@ -4240,7 +4555,7 @@ void MainWindow::removeWatchpoint(int index)
 
 bool MainWindow::toggleBreakpointAtLine(int line)
 {
-    if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
+    if (!m_editor || line <= 0)
         return false;
 
     // Breakpoints are keyed by base name, so two modules linked from different
@@ -4288,11 +4603,14 @@ QJsonArray MainWindow::tabsJson() const
 
 bool MainWindow::saveCurrentDocument()
 {
+    // An image tab may still have no path of its own (an imported sheet); a
+    // source document always does, so the old "no path yet" refusal is gone —
+    // what survives is "nothing is open".
     if (m_image)
-        return !m_image->filePath().isEmpty() && m_image->saveFile(m_image->filePath());
-    if (!m_editor || m_editor->filePath().isEmpty())
+        return !m_image->filePath().isEmpty() && saveImage(m_image, m_image->filePath());
+    if (!m_editor)
         return false;
-    return m_editor->saveFile(m_editor->filePath());
+    return saveEditor(m_editor, m_editor->filePath());
 }
 
 QJsonArray MainWindow::profilerResultsJson() const
@@ -4302,7 +4620,7 @@ QJsonArray MainWindow::profilerResultsJson() const
 
 bool MainWindow::lineHasCode(int line) const
 {
-    if (!m_editor || m_editor->filePath().isEmpty() || line <= 0)
+    if (!m_editor || line <= 0)
         return false;
     if (!m_programMap.isResolved())
         return true; // no build map to judge by; arming will decide

@@ -158,6 +158,12 @@ private slots:
 
     // paths
     void outputPathsDeriveFromSource();
+
+    // --- renaming ---------------------------------------------------------
+
+    /// A file renamed inside the IDE keeps its breakpoints: the store keys them
+    /// by base name, so the entries for the old name have to follow the file.
+    void breakpointsFollowARenamedFile();
 };
 
 void TstDebug::resolvesLineToAddress()
@@ -494,6 +500,86 @@ void TstDebug::outputPathsDeriveFromSource()
     QCOMPARE(QFileInfo(dotted.program).fileName(), QStringLiteral("game.v2.prg"));
 
     QVERIFY(!settings::outputPathsFor(QString()).isValid());
+}
+
+// --- renaming --------------------------------------------------------------
+
+// The in-memory store keys breakpoints by base name (BreakpointWatchpointModel
+// is handed QFileInfo(path).fileName()), so a rename that changes the name
+// would leave the file's breakpoints filed under a name that no longer exists —
+// armed on nothing, or on a different file that later takes the old name. The
+// entries have to follow the file, and every field the user set has to come
+// with them.
+void TstDebug::breakpointsFollowARenamedFile()
+{
+    QList<Breakpoint> stored;
+    stored.append(Breakpoint{QStringLiteral("util.s"), 12, QStringLiteral("d0 = $1234"),
+                             true, 0x12596u, true});
+    stored.append(Breakpoint{QStringLiteral("main.s"), 3, QString(), false, 0u, false});
+    // A name that merely *contains* the old key must not be caught: the match is
+    // the whole key, not a substring of it.
+    stored.append(Breakpoint{QStringLiteral("myutil.s"), 7, QString(), true, 0u, false});
+    stored.append(Breakpoint{QStringLiteral("util.s"), 40, QStringLiteral("d1 < 7"),
+                             false, 0u, false});
+
+    const QList<Breakpoint> moved =
+        renameFile(stored, QStringLiteral("util.s"), QStringLiteral("helpers.s"));
+
+    // Same number of entries: the migration rewrites keys, it does not drop or
+    // duplicate anything.
+    QCOMPARE(moved.size(), stored.size());
+    QCOMPARE(moved.size(), 4);
+
+    // Every entry for the renamed file follows it, with all fields intact. A
+    // field-by-field rebuild that forgot one would fail here.
+    QCOMPARE(moved[0].file, QStringLiteral("helpers.s"));
+    QCOMPARE(moved[0].line, 12);
+    QCOMPARE(moved[0].condition, QStringLiteral("d0 = $1234"));
+    QCOMPARE(moved[0].enabled, true);
+    QCOMPARE(moved[0].address, 0x12596u);
+    QCOMPARE(moved[0].resolved, true);
+
+    QCOMPARE(moved[3].file, QStringLiteral("helpers.s"));
+    QCOMPARE(moved[3].line, 40);
+    QCOMPARE(moved[3].condition, QStringLiteral("d1 < 7"));
+    QCOMPARE(moved[3].enabled, false);
+
+    // The other files are untouched and stay where they were in the order.
+    QCOMPARE(moved[1].file, QStringLiteral("main.s"));
+    QCOMPARE(moved[1].line, 3);
+    QCOMPARE(moved[1].enabled, false);
+    QCOMPARE(moved[2].file, QStringLiteral("myutil.s"));
+    QCOMPARE(moved[2].line, 7);
+
+    // A rename whose old key is in no entry changes nothing, for empty and
+    // non-empty input alike.
+    QVERIFY(renameFile(QList<Breakpoint>(), QStringLiteral("util.s"), QStringLiteral("helpers.s"))
+                .isEmpty());
+    const QList<Breakpoint> untouched =
+        renameFile(stored, QStringLiteral("other.s"), QStringLiteral("helpers.s"));
+    QCOMPARE(untouched.size(), stored.size());
+    for (int i = 0; i < untouched.size(); ++i) {
+        QCOMPARE(untouched[i].file, stored[i].file);
+        QCOMPARE(untouched[i].line, stored[i].line);
+        QCOMPARE(untouched[i].condition, stored[i].condition);
+        QCOMPARE(untouched[i].enabled, stored[i].enabled);
+        QCOMPARE(untouched[i].address, stored[i].address);
+        QCOMPARE(untouched[i].resolved, stored[i].resolved);
+    }
+
+    // Renaming to the name it already has is a no-op — the case a move to
+    // another directory takes, since the key is only the base name.
+    const QList<Breakpoint> same =
+        renameFile(stored, QStringLiteral("util.s"), QStringLiteral("util.s"));
+    QCOMPARE(same.size(), stored.size());
+    for (int i = 0; i < same.size(); ++i) {
+        QCOMPARE(same[i].file, stored[i].file);
+        QCOMPARE(same[i].line, stored[i].line);
+        QCOMPARE(same[i].condition, stored[i].condition);
+        QCOMPARE(same[i].enabled, stored[i].enabled);
+        QCOMPARE(same[i].address, stored[i].address);
+        QCOMPARE(same[i].resolved, stored[i].resolved);
+    }
 }
 
 // --- memory --------------------------------------------------------------

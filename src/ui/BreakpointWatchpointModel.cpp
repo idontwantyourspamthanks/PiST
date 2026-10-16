@@ -298,6 +298,18 @@ QList<Breakpoint> BreakpointWatchpointModel::mergeResolved(const ArmPlan &plan) 
     return merged;
 }
 
+void BreakpointWatchpointModel::followRenamedFile(const QString &oldFile, const QString &newFile)
+{
+    if (oldFile.isEmpty() || newFile.isEmpty() || oldFile == newFile)
+        return;
+    // The transformation itself is the pure, unit-tested one in debug/
+    // (tst_debug); here it is applied where the store lives.
+    m_breakpoints = pist::renameFile(m_breakpoints, oldFile, newFile);
+    // The gutter dots and the panel are keyed by the same base name, so both
+    // have to be told or a marker would point at a file that no longer exists.
+    refreshMarkers();
+}
+
 void BreakpointWatchpointModel::refreshMarkers()
 {
     // Every open editor gets the markers for its own file.

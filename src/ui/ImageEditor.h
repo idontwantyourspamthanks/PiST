@@ -123,7 +123,10 @@ public:
     const ImageDocument &document() const { return m_doc; }
 
     void newDocument(int width, int height, PaletteKind kind);
-    /// Take `doc` as the edited sheet, untitled (used by region extraction).
+    /// Take `doc` as the edited sheet, untitled. The caller is `importFile()`,
+    /// which adopts a still image as a fresh sheet: the editor then holds no
+    /// file until the user saves one. That path-less state is the image
+    /// editor's own workflow, not a source document's (docs/untitled-plan.md §9).
     void replaceDocument(const ImageDocument &doc);
     void undo();
     void redo();

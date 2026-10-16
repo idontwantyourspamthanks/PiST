@@ -682,11 +682,13 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             QJsonDocument(m_host->tabsJson()).toJson(QJsonDocument::Compact)));
 
     } else if (cmd == QLatin1String("save")) {
-        // Quiet save of the current document; an untitled document can't be
-        // named from here, so that is an error, not a dialog.
+        // Quiet save of the current document. Every document has a path of its
+        // own now, so the old "an untitled document can't be named from here"
+        // refusal is gone: what can still fail is the write, or there being
+        // nothing open to write (docs/untitled-plan.md §8).
         reply(guarded, m_host->saveCurrentDocument()
                           ? QStringLiteral("ok")
-                          : QStringLiteral("error nothing to save, or the write failed"));
+                          : QStringLiteral("error no document is open, or the write failed"));
 
 
     } else if (cmd == QLatin1String("screenshot")) {

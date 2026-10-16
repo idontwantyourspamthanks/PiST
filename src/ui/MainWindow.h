@@ -21,6 +21,7 @@
 #include <QMainWindow>
 
 class QTabWidget;
+class QStackedWidget;
 
 #include <QString>
 
@@ -43,6 +44,7 @@ class BreakpointWatchpointModel;
 class CodeEditor;
 class BreakpointPanel;
 class DebugSessionController;
+class DocumentWatcher;
 class ProfilerController;
 class SessionLauncher;
 class InstructionRefView;
@@ -60,6 +62,7 @@ class StackView;
 class HardwareView;
 class EmulatorDisplayWidget;
 class EmuAudio;
+class WelcomeView;
 
 /// The IDE's main window. It is the shell: it owns the docks, the tabs and the
 /// menus, and it is the one place the modules meet.
@@ -229,6 +232,18 @@ private:
 private slots:
     void openFile();
     void saveFile();
+    /// File ▸ New File: name, directory, template, then a real file on disk
+    /// (docs/untitled-plan.md §4). There is no untitled buffer to fall back on,
+    /// so this is the only way a new source starts.
+    void newFile();
+    /// The same transaction rooted at `directory` — what the sidebar's
+    /// context-menu entry asks for, since it knows the directory clicked.
+    void newFileIn(const QString &directory);
+    /// File ▸ Close File / Close All: the deliberate route to the
+    /// zero-document state, which the tab's × button used to be the only way
+    /// to reach.
+    void closeCurrentFile();
+    void closeAllFiles();
 
 private slots:
     void onTabChanged(int index);
@@ -364,9 +379,8 @@ public:
     /// remote `tabs` verb — the agent's map of what the IDE has open.
     QJsonArray tabsJson() const override;
 
-    /// Save the current document without a dialog. False when it has no path
-    /// yet (a name can't be chosen remotely) or the write failed. For the
-    /// remote `save` verb.
+    /// Save the current document without a dialog. False when no document is
+    /// open, or when the write failed. For the remote `save` verb.
     bool saveCurrentDocument() override;
 
     /// Profiler hot lines as JSON objects {line, count}, sorted by descending
@@ -507,18 +521,67 @@ private:
     bool maybeSaveEditor(CodeEditor *editor);
     bool maybeSaveImage(ImageEditor *editor);
 
-    /// Create and wire a text-editor tab, loading `path` into it; empty means a
-    /// pristine tab. Reuses a pristine tab when there is exactly one.
-    /// Returns null when the file could not be loaded.
+    /// Create and wire a text-editor tab, loading `path` into it. The path is
+    /// required: a document is a file on disk (docs/untitled-plan.md §2), so
+    /// there is no empty-path form left to create. Returns null when the file
+    /// could not be loaded.
     CodeEditor *addEditorTab(const QString &path, bool quiet = false);
 
     /// Create and wire an image-editor tab. `path` is a `.pim` or an importable
-    /// ST still-image; empty means a new untitled sprite.
+    /// ST still-image, and is required here too. An *image* may become
+    /// path-less afterwards — an imported sheet has no file yet — which is the
+    /// deliberate asymmetry docs/untitled-plan.md §9 keeps; nothing creates one
+    /// that way.
     ImageEditor *addImageTab(const QString &path, bool quiet = false);
 
     /// Shared body of openPath (interactive) and openPathQuiet (remote): the
     /// quiet form returns false where the interactive one shows a modal.
     bool openPathImpl(const QString &path, bool quiet);
+
+    /// Swap the central area between the documents page and the welcome view,
+    /// refreshing the welcome view when it is the one on show.
+    void updateCentralPage();
+
+    /// Rebuild the welcome view from one place: the recents, the demo projects
+    /// that exist here, toolchain readiness, and the usage shelf.
+    void refreshWelcome();
+
+    /// Close the tab at `index`, asking to save a modified document first.
+    /// False when the user cancelled, so Close All stops where the user
+    /// stopped. `promptToSave` false closes without that offer, for a caller
+    /// that has already put the question and been answered — the delete
+    /// rescue's "Close tab", whose own prompt says the changes go with it.
+    bool closeTab(int index, bool promptToSave = true);
+
+    /// The directory a new source file starts in: the project's when the
+    /// sidebar has one, else the chain suggestedImageDirectory() follows.
+    QString suggestedSourceDirectory() const;
+
+    /// Keep the document watcher on exactly the open documents' paths
+    /// (docs/untitled-plan.md §7.1).
+    void syncWatchedDocuments();
+
+    /// Write `editor`/`image` to `path`, then re-arm the document watcher:
+    /// `files::write()` replaces the file by staging a temporary and renaming it
+    /// over the target, which is what drops a watch on it
+    /// (docs/untitled-plan.md §7.1). Every save goes through these, so none can
+    /// skip the re-arm.
+    bool saveEditor(CodeEditor *editor, const QString &path);
+    bool saveImage(ImageEditor *image, const QString &path);
+
+    /// A document's backing file is gone: a watcher event, or the sidebar's own
+    /// delete. `deliberate` says which — the sidebar gesture has already asked,
+    /// so an unmodified tab closes rather than prompting
+    /// (docs/untitled-plan.md §7.3).
+    void documentVanished(const QString &path, bool deliberate);
+
+    /// The prompt for one still-open document whose file is gone: Close tab,
+    /// Save a copy…, or Cancel (docs/untitled-plan.md §7.3).
+    void rescueDeletedDocument(QWidget *document, const QString &path);
+
+    /// Everything keyed to a path follows the file to its new name
+    /// (docs/untitled-plan.md §7.2).
+    void followRenamedFile(const QString &oldPath, const QString &newPath);
 
     /// Connect one editor's signals. Runs for every editor tab created.
     void wireEditor(CodeEditor *editor);
@@ -601,8 +664,8 @@ private:
     void addDockToViewMenu(QDockWidget *dock);
 
     /// Point the Git panel at the project directory, and show or hide the
-    /// blame lane on every open editor. Blame stays off for an untitled
-    /// buffer, an image tab, and a file that is not inside the repository.
+    /// blame lane on every open editor. Blame stays off for a document with no
+    /// path, an image tab, and a file that is not inside the repository.
     void syncGitDirectory();
     void applyGitBlame();
     void refreshBlame();
@@ -637,6 +700,22 @@ private:
     /// when the current tab is not a text editor; m_image is the current image
     /// editor and is null otherwise.
     QTabWidget *m_tabs = nullptr;
+    /// The central area: page 0 is the documents (the tabs and the two strips
+    /// under them) and page 1 the welcome view. Zero documents is a real state
+    /// now — a document is a file on disk — so the welcome view is a page
+    /// rather than an empty buffer pretending to be one
+    /// (docs/untitled-plan.md §5).
+    QStackedWidget *m_center = nullptr;
+    WelcomeView *m_welcome = nullptr;
+    /// The open documents' backing files (docs/untitled-plan.md §7.1). There is
+    /// always one: a document without a path does not exist any more, and an
+    /// image that has none is not watched.
+    DocumentWatcher *m_watcher = nullptr;
+    /// This session's build count and its last outcome, held here and written to
+    /// the settings once at teardown (docs/untitled-plan.md §6): a crash loses
+    /// the summary, never the work.
+    int m_sessionBuilds = 0;
+    bool m_lastBuildOk = false;
     CodeEditor *m_editor = nullptr;
     ImageEditor *m_image = nullptr;
     BuildService *m_build = nullptr;
@@ -835,6 +914,8 @@ private:
     QAction *m_actSaveProject = nullptr;
     QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;
+    QAction *m_actCloseFile = nullptr;
+    QAction *m_actCloseAll = nullptr;
     QAction *m_actBuild = nullptr;
     QAction *m_actBuildRelease = nullptr;
     QAction *m_actRun = nullptr;

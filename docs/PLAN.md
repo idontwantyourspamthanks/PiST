@@ -969,6 +969,44 @@ directories now part of tool and ROM discovery (§7, "First run" row).
 - vasm **detect-and-use**, bundled only in the release artefacts (see §7)
 - Installers per platform
 
+### Document model: every document is a real file (landed 2026-10-16)
+
+The untitled assembly buffer is gone as a document state: every editor tab is a
+file on disk, `addEditorTab()`/`addImageTab()` and `CodeEditor::displayName()`
+assert a path, and zero documents is a real state. Landed in one change set —
+all three phases of [`docs/untitled-plan.md`](untitled-plan.md) together,
+rather than staged, because removing the buffer requires its replacement (the
+welcome view) in the same stroke. What shipped:
+
+- **New File is a transaction.** File ▸ New File (`newFile()` / `newFileIn()`)
+  runs `NewFileDialog` over the widget-free `NewFileSpec`, which validates the
+  target and creates it through `files::write()`; `settings::rememberLastSource()`
+  records it, and `openPath()` opens it and reveals it in the sidebar. The
+  sidebar's context menu emits `FileBrowser::newFileRequested(directory)`
+  instead of creating the file itself (`FileBrowser::createFile` is gone).
+- **Four templates** (`src/ui/FileTemplates.*`): *Blank* (an empty file, by
+  design), *GEMDOS hello*, *Keyboard/input* and *Image-include* — the last three
+  real listings, seeded from the `demo/` sources.
+- **The welcome view** (`src/ui/WelcomeView.*`) fills the central area whenever
+  zero documents are open: recents (existing files only), the demo projects on a
+  first run, an actions row, toolchain/ROM readiness with Setup…, and the usage
+  shelf. `MainWindow`'s central area is a `QStackedWidget` (`centralPages`) whose
+  page 0 is the document tabs and page 1 the welcome view, swapped by
+  `updateCentralPage()`.
+- **File ▸ Close File / Close All** (`closeTab()`, Ctrl+W) are a deliberate route
+  to zero documents; before this, the tab's × was the only one.
+- **The stats shelf** (`src/project/ProjectSettings.*`): lifetime counters
+  (sessions, builds, runs, files opened, first-launch date) and a last-session
+  summary flushed once at teardown.
+- **Disk changes** (`src/support/DocumentWatcher.*`): every open document's path
+  is watched; a deletion closes an unmodified tab or offers Close tab / Save a
+  copy… / Cancel, and a rename fans out to the editor, the breakpoint store, the
+  sibling `.pistproject`, the recents and blame.
+
+The implementation found three of the spec's premises wrong and measured the
+`QFileSystemWatcher` behaviour its §11 asked for; all four are ledger entries in
+§9 below, not silently absorbed.
+
 ---
 
 ## 7. Legal constraints
@@ -1187,6 +1225,26 @@ load-bearing dependency — which the detection order above already guarantees.
   directory, which a flagless `pist-mcp` reads (verified live: raw connection refused, shim
   authenticates with no flags). `listen(0)` publishes nothing, so tests no longer overwrite a
   real IDE's file. All pinned in `tst_remotecontrol`
+- **`QFileSystemWatcher` survives the staged rename-over on Qt 6.10.2 / Linux 7.0.0 (kernel
+  `7.0.0-38-generic`).** Measured for the document-model watcher (untitled-plan §11): the operation
+  `files::write()` performs — stage a temporary file, rename it over the watched path — does **not**
+  drop the watch and emits no `fileChanged`, while a later deletion of that path is still reported.
+  `DocumentWatcher::rearm()` is therefore defensive, not load-bearing on that pair; it is called
+  after our own writes all the same, because Qt documents neither direction. `tests/tst_watcher.cpp`
+  pins the behaviour the design needs: a deletion after a re-arm is reported.
+- **On Windows, `QFileSystemWatcher` keeps reporting a path that has been removed from its own
+  list while another file in the same directory stays watched.** Measured on the CI runner (Windows
+  MSVC leg, 2026-10-16): deleting a `forget()`-ed path still raised `fileChanged` for it, so a
+  watcher that trusted Qt's list alone would report a path the owner had stopped caring about —
+  exactly the case that has to stay quiet (a closed tab, the sidebar's own delete, which has already
+  asked). `DocumentWatcher` therefore holds the owner's own set and filters reports against it;
+  `tests/tst_watcher.cpp`'s `forgetStopsTheReports` pins the one report out of two deletions.
+- **vasm assembles all three non-blank New File templates with exit 0.**
+  `vasmm68k_mot -quiet -devpac -opt-x+ -Ftos -m68000` — the Debug argument shape — builds the
+  GEMDOS-hello, keyboard/input and image-include templates; the image-include one is assembled
+  against a dummy `sprites.dat`, because it `incbin`s the file the image editor's export writes.
+  This is the CI check untitled-plan §9 asked for; the image-include template legitimately does not
+  build until a `.dat` is exported beside it.
 - **The editor does not follow the program counter at every stop.** The session's first mapped
   stop is a *placement* — marker and chips, with the caret, the scroll position, the focus and
   the tab layout untouched — and only the stops after it move the caret, and only while the user
@@ -1282,6 +1340,28 @@ project; everything before it was either Linux-only or read from source.
   (`cmCPackWIXGenerator::AddComponentsToFeature`, CMake 4.2), and `windeployqt`
   ships no MSVC runtime — both read in CMake's sources after a clean Windows
   install reported *MSVCP140.dll was not found* and an empty Start Menu
+- **The no-untitled document model: three of the spec's premises were wrong.** Confirmed by reading
+  the tree while implementing `docs/untitled-plan.md`; recorded here rather than silently absorbed:
+  1. **The `.pistproject` file has no `sourceFile` key.** `ProjectSettings` carries a `sourceFile`
+     field in memory, but `settings::save()`/`load()` never write or read one — the project file is
+     *named* after the source (`settings::projectFileFor()`), so a rename moves `<base>.pistproject`
+     instead. `MainWindow::followRenamedFile()` does that (and updates the in-memory field); the
+     spec's "`.pistproject` `sourceFile` when it names the renamed file" (untitled-plan §7.2 item 3)
+     describes a key that does not exist.
+  2. **Breakpoints are not persisted.** `BreakpointWatchpointModel` holds the breakpoint list in
+     memory (`src/debug/` has no store), so a rename's migration is in-process, not a rewrite of
+     on-disk state. The unit test pins the pure transformation `pist::renameFile()`
+     (`src/debug/Breakpoint.h`, `tests/tst_debug.cpp`) — the persisted store the spec assumed is the
+     thing that does not exist.
+  3. **The ImageEditor's path-less scratch comes from an import, not a region extraction.**
+     `ImageEditor::importFile()` (through `replaceDocument()`) clears the path when it adopts a still
+     image as a fresh sheet; there is no region-extraction feature, so the spec's non-goal
+     (untitled-plan §2, `src/ui/ImageEditor.h:126`) was written against a workflow that does not
+     exist. The asymmetry — text is always a file, an image may be path-less — is deliberate and is
+     documented on `MainWindow::addImageTab()`.
+- **Only the tab's × reached zero documents before this change** (no Close action existed), which is
+  why File ▸ Close File / Close All were added; and `demo/spritedemo/` was carried in the working
+  tree while `docs/ARCHITECTURE.md` already described it — this change adds it to the repository.
 
 ### Unverified — to resolve during Phase 0/1
 

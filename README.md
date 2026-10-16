@@ -47,6 +47,14 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
   GEMDOS/BIOS/XBIOS call being made and what it is being called with
+- **Documents are files** — every tab is a real file on disk; there is no scratch or untitled
+  buffer. With nothing open the window shows a **welcome view**: your recent files and projects (the
+  bundled demos on a first run), Open/New actions, and whether the assembler and a TOS ROM are
+  ready. **File ▸ New File…** asks for a name, a location and one of four starting templates and
+  creates the file on disk before opening it; **File ▸ Close File** (**Ctrl+W**) and **Close All**
+  close documents deliberately. Renaming a file in the Project files pane follows the open tab, and
+  deleting one on disk while it is open asks what to do — close the tab, save a copy, or keep
+  editing.
 - **Git** — a panel tabbed with Project files lists staged, changed and untracked
   files. Check the ones to commit, write a message, and commit (hooks run). The
   commit takes the **index**: the ticked rows are staged and the index is then

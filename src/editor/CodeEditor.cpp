@@ -1259,7 +1259,11 @@ bool CodeEditor::isModifiedSinceLoad() const
 
 QString CodeEditor::displayName() const
 {
-    return m_filePath.isEmpty() ? tr("untitled") : QFileInfo(m_filePath).fileName();
+    // A document is always a file: there is no path-less editor to name. The tab
+    // (and the status bar's caret chip) therefore always name the file on disk
+    // (docs/untitled-plan.md §8).
+    Q_ASSERT(!m_filePath.isEmpty());
+    return QFileInfo(m_filePath).fileName();
 }
 
 } // namespace pist

@@ -30,8 +30,8 @@ Everything else in this document is a consequence of that rule. The debug transp
 
 | Path | Contents |
 |---|---|
-| `src/main.cpp` | Entry point. Pins `QT_QPA_PLATFORM=xcb` when `DISPLAY` is set (needed for X11 embedding), parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
-| `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor) and `ConsoleInput` (the debug console's history/completion line edit) — the emulator display panel (`EmulatorDisplayWidget`, media frames and the input grab), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`). |
+| `src/main.cpp` | Entry point. Parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
+| `src/ui/` | `MainWindow` (the application shell: document tabs in a `QTabWidget` on the central `QStackedWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor) and `ConsoleInput` (the debug console's history/completion line edit) — the emulator display panel (`EmulatorDisplayWidget`, media frames and the input grab), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`), and the document model around them: `WelcomeView` (the central page shown when zero documents are open — recents, the demo projects on a first run, Open/New actions, toolchain and ROM readiness, and a usage shelf), the New File transaction (`NewFileDialog` — name, directory, template; `NewFileSpec` — the validation and the creation through `files::write()`; `FileTemplates` — `SourceTemplate` and the four shipped starting points). |
 | `src/editor/` | `CodeEditor` (the editor widget: line-number gutter with breakpoint dots and the program counter's marker — the execution-line highlight, the PC bar, and the ▶ whose click engages following (`executionMarkerClicked`), with `followExecutionLine()` as the follow path's caret move — error markers and profiler heat, an optional git blame lane to the left of that gutter, find/replace bar), `AsmHighlighter` (m68k Motorola syntax, painted with the `EditorTheme` it is handed), `EditorTheme` (the monospace font, the effective darkness and exactly the colours the editor and its highlighter read — the value `ui/` builds and hands over, so `editor/` includes nothing from `ui/`), `InstrRef` (the instruction-reference table and lookup behind the dock), `OsCallRef`/`OsCallScan` (the GEMDOS/BIOS/XBIOS table and the trap-sequence scanner behind the same dock), `OsCallBinding` (the canonical insertable call sequence — argument pushes, function number, trap, stack cleanup — and the stack byte count beside it) and `IncludeNav` (include-target/label resolution behind Ctrl+click). |
 | `src/git/` | `GitService` drives `git` as a subprocess (argument lists only: status, blame, commit, pull, push, `switch` / `switch -c`, `diff`, `log`, `show`) and `GitParse` reads porcelain. The panel is `ui/GitPanel`. |
 | `src/image/` | Sprite document and ST graphics: `ImageDocument` (v2 `.pim` JSON: phases own their frames and cell size and carry sprite-sheet placement; `StFormats::composeSheet()`/`sliceSheetCells()` move between placed phases and sheet images), `Palette` (STfm 512 / STe 4096 cubes and colour words — the 4-bit-per-channel machine words, with `rgbFromStfmWord`/`stfmColourWord` for the 3-bit words the file formats actually store), `Tools` (brush/line/rect/fill), `Transform` (flip, rotate, region cut/stamp/move, onion/phase math), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include, plus `spriteSafeDocument()` — the palette shift that keeps colour 0 as background so an export re-imports losslessly — and `bitplaneLayout()`/`exportBitplaneData()` for the sprite editor's `.dat` — the selected blocks of one phase, every frame of it, laid out so a frame and a pre-shift are strides — plus `exportScrollDemo()`, which writes an `incbin`ing scroller that animates and scrolls them). |
@@ -39,17 +39,18 @@ Everything else in this document is a consequence of that rule. The debug transp
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hatari-pist fork over TCP 56001); `EmbedSocket` (the `QLocalServer` on Hatari's `--control-socket` — the `hatari-debug` channel; invariant 14), `MachineState` (the per-stop snapshot the typed reads fill and `stateUpdated` carries), `HatariTextParse` (their shared `d` parser: the `$`-optional address, a byte column that is a run of single-space-separated hex words — so a hex-only mnemonic like `dbf` is never absorbed into it, and a ten-byte instruction's `23+` cut token stays with the bytes — and the instruction text), `SessionConfig` (one session's argv), `HatariProbe` (capability detection; content-scans the binary on Windows, where Hatari's info options print to a fresh console, not the pipe), `ProfileData` (the `profile save` parser behind the Profiler dock), `AttributedProfile` (the attribution of a parsed profile to routines and source lines, with the ROM/TOS row — MAJ-44), `TosRom` (ROM discovery + version), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
 | `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
 | `src/model/` | `Machine` — the machine vocabulary shared by `emu/` and `project/`: the `Machine` enum, its display/CLI name mapping and TOS-acceptance. ROM discovery stays in `emu/`; this leaf exists so `project/` no longer includes `emu/` (MIN-56). |
-| `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). |
+| `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). `DocumentWatcher` sits beside it: the paths of the open documents, watched for the one event that matters — the backing file going away — and re-armed after PiST's own staged write. |
 | `src/control/` | `ControlHost` (`ControlHost.h`, the interface the IDE implements for the protocol: the verbs it serves and the events its verbs wait on) and `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent, with `watch`/`unwatch` event subscriptions — plus `mcp/`, the `pist-mcp` stdio MCP shim that bridges MCP clients to it. Nothing here includes or names a `src/ui/` type: the control layer depends on `ControlHost`, and `MainWindow` is one of its implementers (MIN-86). |
-| `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings). |
+| `src/project/` | `ProjectSettings` — the per-project `.pistproject` JSON file (build + emulator settings), and the user's `QSettings` facts beside it: the last source and the recents list, with `settings::renameSource()` following a rename through both, the lifetime counters (`sessionCount()` / `buildCount()` / `runCount()` / `openedFileCount()` / `firstLaunchDate()`), and the last-session summary flushed once at teardown (`lastSession()`). |
 | `src/toolchain/` | `Toolchain` — discovery of vasm, vlink and Hatari (explicit path → `$PIST_HATARI` (emulator only; names a hatari-pist build tree, PLAN.md §12) → beside the exe → bundled tools dir → `PATH`), plus install hints; `ToolFetch` — the checksum-pinned fetch/build/install the setup dialog drives (`ui/SetupDialog`, shown at startup when the assembler or ROM is missing). |
-| `tests/` | Parser and image unit tests (always run) and the offscreen GUI/emulator integration tests (gated on tools being present). |
-| `demo/` | `hello.s` — a tiny program opened by `run.sh` (and by `run.sh` only; the first run itself is the setup dialog), plus `hello.pistproject`, `demo.pim` — a sample sprite set (two phases, v2 format) — and `spritedemo/`. |
+| `tests/` | Parser and image unit tests (always run) — including `tst_watcher`, the document watcher pinned headless against real temp files — and the offscreen GUI/emulator integration tests (gated on tools being present). |
+| `demo/` | `hello.s` — a tiny program opened by `run.sh` (and by `run.sh` only; the first run itself is the setup dialog), plus `hello.pistproject`, `demo.pim` — a sample sprite set (two phases, v2 format) — and `spritedemo/` — a complete image-include project (`sprites.s`, `sprites.pistproject`, the exported `sprites.dat` and its build output), which shows the `.dat` hand-off from the sprite editor to an `incbin` listing; it is tracked with this change, having been described here while it lived only in the working tree. |
 
 ### Per-file detail
 
 - **`ui/MainWindow.{h,cpp}`** — the central controller and by far the largest file. It owns the
-  document tabs (`CodeEditor` and `ImageEditor`), every dock, the `BuildService`, the debug backend
+  document model — the central `QStackedWidget` (`m_center`, objectName `centralPages`: page 0 the
+  document tabs, page 1 the `WelcomeView`) — every dock, the `BuildService`, the debug backend
   (`m_host`, an `IDebugBackend` — `EmulatorHost` or `HrdbBackend`) and the `ProgramLineMap`; creates
   the actions/menus/toolbar/status bar; persists the layout;
   owns the app-level event filter (dock move menu + drag pass-through); and wires the panels to the
@@ -78,6 +79,21 @@ Everything else in this document is a consequence of that rule. The debug transp
   originate here (they go through the model and the gate);
   the PC→source-line follow itself is still routed here (the stop handler maps the PC through the
   `ProgramLineMap` and calls `setCurrentExecutionLine()` / `gotoLine()` on the target editor).
+  The document model itself is file-only (docs/untitled-plan.md): a document's tab is always a file
+  on disk, there is no path-less buffer, and zero documents is a real state. The central area is the
+  `QStackedWidget` above, swapped by `updateCentralPage()`; `closeTab()` (which replaced the tail of
+  `onTabCloseRequested`) returns false when a save was cancelled, so Close All stops where the user
+  stopped, and File ▸ Close File / Close All are the deliberate route to the empty state the tab's ×
+  used to be the only way to reach. `newFile()` / `newFileIn(directory)` run the New File transaction
+  (`NewFileDialog` → `NewFileSpec::create()` through `files::write()`), record it with
+  `settings::rememberLastSource()` and `openPath()` it, which raises an existing tab instead of
+  duplicating and reveals the file through `FileBrowser::showFor()`. Every open document's path is
+  watched: `syncWatchedDocuments()` hands the current set to a `DocumentWatcher`, `saveEditor()` /
+  `saveImage()` re-arm it after PiST's own staged write, and a disk event fans out through
+  `documentVanished()` → `rescueDeletedDocument()` for a deletion (or the sidebar's own delete, whose
+  gesture already asked) and `followRenamedFile()` for a rename — the editor's path, the breakpoint
+  store's base-name keys, the sibling `.pistproject` (which is named after its source),
+  `settings::renameSource()` and the blame lane.
   `openPath()` dispatches `.pim` / ST still-image files to `addImageTab()`; Build/Run use
   `buildSourcePath()` so an image tab being focused does not strand the assembler.
   `MainWindow` is also the control layer's `control::ControlHost` (`control/ControlHost.h`): the
@@ -95,7 +111,7 @@ Everything else in this document is a consequence of that rule. The debug transp
   a parsed header above the transcript, showing the screen base as eight hex digits, the refresh
   rate and overscan, and nothing the report does not state),
   `PcHistoryView` (`history` output), `BreakpointPanel` (breakpoint + watchpoint table),
-  `FileBrowser` (hard-drive project tree plus Disk A/B floppy listings, with a browser-wide clipboard and drag & drop that copy and move entries within and between the panes — onto a disk this rewrites the image via `floppy::updateImage`; double-clicking a text or still-image entry on a disk extracts it to the session directory — text as an editor tab, a still image as a sprite-sheet document whose phases slice the sheet — and saving that tab writes the recomposed sheet back through `MainWindow::writeBackFloppyDoc`). Each is a thin view;
+  `FileBrowser` (hard-drive project tree plus Disk A/B floppy listings, with a browser-wide clipboard and drag & drop that copy and move entries within and between the panes — onto a disk this rewrites the image via `floppy::updateImage`; double-clicking a text or still-image entry on a disk extracts it to the session directory — text as an editor tab, a still image as a sprite-sheet document whose phases slice the sheet — and saving that tab writes the recomposed sheet back through `MainWindow::writeBackFloppyDoc`; its context-menu New File entry emits `FileBrowser::newFileRequested(directory)` for the window to run the same New File transaction, rather than creating the file itself — the old `FileBrowser::createFile` is gone). Each is a thin view;
   `MainWindow` feeds it parsed state and routes its edit/activation signals to debugger writes.
 - **`editor/CodeEditor.{h,cpp}`** — `QPlainTextEdit` subclass with a `LineNumberArea` gutter.
   Emits `gutterClicked` (breakpoint toggle) and `gutterContextMenuRequested`. View → Git blame
@@ -108,6 +124,8 @@ Everything else in this document is a consequence of that rule. The debug transp
   It is themed, not theme-aware: `CodeEditor(EditorTheme, QWidget*)` takes the font, the darkness and
   the colours it paints with, and `setTheme()` reapplies them when the preferences change — the
   window hands it `appearance::editorTheme()`, so the widget never includes `src/ui/` (MIN-86).
+  Its tab is always bound to a file on disk: `displayName()` asserts a non-empty path, so there is
+  no untitled-buffer state left to name (docs/untitled-plan.md §8).
   **`editor/EditorTheme.{h}`** is that value, and **`editor/AsmHighlighter`** takes it too, via the
   same constructor/`setTheme()` pair, instead of reading the appearance itself.
 - **`image/`** — palette cubes, `.pim` load/save, paint geometry, layers/phases, and ST file codecs. No widgets.
@@ -116,7 +134,7 @@ Everything else in this document is a consequence of that rule. The debug transp
   `bitplaneLayout()` produces and the encoder walks, so the offsets the export dialog prints are the
   offsets the file has. `exportScrollDemo()` turns the same options into a `-Ftos` scroller that
   `incbin`s that `.dat`, animates the frames and moves them across the screen.
-  **`ui/ImageEditor.{h,cpp}`** is the document tab; **`ui/ImageCanvas`** paints the grid with onion-skin, and owns the selection rectangle: the select tool drags a marquee, dragging inside it moves the pixels (live cut+patch preview, committed through `ImageEditor::moveSelection` as one undoable layer edit), and copy/cut/paste/delete/deselect run off an internal palette-index clipboard. **`ui/SheetCanvas`** shows the composed sheet (strips, phase dragging, the staging gutter, raw-sheet slicing), with **`ui/SheetSlicing`** the slice-phase dialog, **`ui/BitplaneExportController`** the per-document recipe a re-export repeats and **`ui/AnimationPreviewWidget`** the frame player.
+  **`ui/ImageEditor.{h,cpp}`** is the document tab (always created with a path — `addImageTab()` asserts one — but it may become path-less *later*, when `importFile()` adopts a still image as a fresh sheet: that untitled scratch is a deliberate image workflow, not a source document, and the asymmetry is documented on `addImageTab()`); **`ui/ImageCanvas`** paints the grid with onion-skin, and owns the selection rectangle: the select tool drags a marquee, dragging inside it moves the pixels (live cut+patch preview, committed through `ImageEditor::moveSelection` as one undoable layer edit), and copy/cut/paste/delete/deselect run off an internal palette-index clipboard. **`ui/SheetCanvas`** shows the composed sheet (strips, phase dragging, the staging gutter, raw-sheet slicing), with **`ui/SheetSlicing`** the slice-phase dialog, **`ui/BitplaneExportController`** the per-document recipe a re-export repeats and **`ui/AnimationPreviewWidget`** the frame player.
 - **`build/FloppyTransfer.{h,cpp}`** — `floppy::Transfer`: the three disk transfers the file browser
   offers (host files onto a disk, entries off a disk, entries between disks) written **once** over a
   source/destination pair instead of three times. It is widget-free: the two questions it cannot
@@ -208,9 +226,11 @@ connects their signals:
 
 ```
 MainWindow
-├── QTabWidget            (document tabs)
-│   ├── CodeEditor        (current assembly tab; m_editor)
-│   └── ImageEditor       (current sprite tab; m_image)
+├── QStackedWidget m_center  (centralPages: the document tabs, or the welcome view)
+│   ├── QTabWidget        (page 0: the document tabs)
+│   │   ├── CodeEditor    (current assembly tab; m_editor)
+│   │   └── ImageEditor   (current sprite tab; m_image)
+│   └── WelcomeView       (page 1: the zero-document state)
 ├── BuildService          (build → diagnostics, listings)
 ├── IDebugBackend m_host  (run/debug → Hatari subprocess; EmulatorHost or HrdbBackend)
 ├── ProgramLineMap        (listings + live bases → PC ↔ line)
@@ -219,6 +239,7 @@ MainWindow
 ├── ProfilerController        m_profiling (profile mode; holds the last AttributedProfile)
 ├── SessionLauncher           m_launcher (run: ROM choice, floppy fallback, SessionConfig → start)
 ├── RemoteStateAdapter        m_remoteState (read-only JSON for the remote verbs)
+├── DocumentWatcher       (the open documents' backing files → close or rescue)
 ├── docks (tabbed panels) ←── fed by the backend's parse results
 └── RemoteControl (optional) ── drives MainWindow through control::ControlHost
 ```
@@ -235,6 +256,40 @@ The build path and the debug path share only the line map and the settings; they
 other's subprocess directly.
 
 ## Core flows
+
+### The document model
+
+A document is a file on disk, and one function each drives the four moments of its life.
+
+**New.** `newFile()` (File ▸ New File, and the welcome view's New File…) derives the directory and
+calls `newFileIn()`: `NewFileDialog` collects a name, a directory and a template, `NewFileSpec`
+validates the target and `NewFileSpec::create()` writes the template's bytes through `files::write()`
+(the staged-write rule). Only then does it open: `settings::rememberLastSource()` records the path for
+the next launch and `openPath()` raises an existing tab instead of duplicating it, with
+`FileBrowser::showFor()` revealing the file in the sidebar.
+
+**Open.** `openPath()` is the one door for an existing file: it loads the editor or dispatches `.pim`
+/ ST still-image files to `addImageTab()`. Every open document's path is watched —
+`syncWatchedDocuments()` rebuilds the watched set from `openEditors()` + `openImages()` whenever the
+tabs change, and `saveEditor()` / `saveImage()` re-arm `DocumentWatcher` after PiST's own staged write
+(the re-arm is defensive; see PLAN §9).
+
+**Close.** Zero documents is a real state, so closing is deliberate. `closeTab()` offers to save a
+modified document and returns false when that offer was cancelled; the tab's × and File ▸ Close File
+both go through it, and Close All sweeps until `closeTab()` refuses — so a Cancel stops it where the
+user stopped. `updateCentralPage()` puts the welcome view on show the moment the count reaches zero,
+rebuilding it as it appears (`refreshWelcome()`: recents, the demo projects on a first run, toolchain
+and ROM readiness, the usage shelf) — the welcome view carries no per-document state.
+
+**External change.** `DocumentWatcher` watches every open document's path. A *deletion*
+(`documentVanished()`) closes an unmodified tab when the sidebar's own delete was the gesture (that
+gesture already asked), and otherwise opens `rescueDeletedDocument()` — Close tab / Save a copy… /
+Cancel. Deletions under `paths::sessionBaseDir()` are ignored, because those are PiST's own scratch
+copies of an extracted floppy document, not the user's file. A *rename* fans out through
+`followRenamedFile()`: the open editors and images rebind, the breakpoint store migrates its
+base-name keys (`BreakpointWatchpointModel::followRenamedFile`), a sibling `.pistproject` moves with
+the file it is named after, `settings::renameSource()` follows it through the last source and the
+recents, and the blame lane refreshes.
 
 ### Build
 
@@ -514,6 +569,15 @@ These exist because a test or a real failure caught them. Do not break them.
     either — on Qt 6.8.1, the Qt every release archive bundles, a flush that fails inside `commit()`
     still renames the truncated temporary file over the destination and returns true.
 
+17. **A document is a file on disk; there is no path-less buffer.** `addEditorTab()` and
+    `addImageTab()` assert a non-empty path and `CodeEditor::displayName()` asserts one too, so a
+    source tab cannot exist without a file behind it (the *image* editor may later drop its path when
+    `importFile()` adopts a still image — its own workflow, not a source document). Everything
+    path-anchored hangs off this: breakpoints are file:line (invariant 5), and the build's output
+    paths, the line map, the git blame lane and the floppy write-back are all resolved against a real
+    path. A path-less tab has no coordinates for any of them, which is why the untitled buffer was
+    removed rather than reworked (docs/untitled-plan.md).
+
 ## Testing
 
 Build, then run the suite:
@@ -527,9 +591,16 @@ ctest --test-dir build --output-on-failure
 There are two kinds of test:
 
 - **Parser/unit tests** (`tst_parsers`, `tst_image`, `tst_tosrom`, `tst_debug`, `tst_link`,
-  `tst_settings`, `tst_toolfetch`, `tst_oscall`, `tst_profile`, `tst_git`, `tst_mcp`) — always
-  run, no emulator and no display needed (`tst_link`'s end-to-end case runs a real vasm + vlink
-  when both are present and skips otherwise; `tst_git` skips its live cases without `git`).
+  `tst_settings`, `tst_toolfetch`, `tst_oscall`, `tst_profile`, `tst_git`, `tst_watcher`,
+  `tst_mcp`) — always run, no emulator and no display needed (`tst_link`'s end-to-end case runs a
+  real vasm + vlink when both are present and skips otherwise; `tst_git` skips its live cases
+  without `git`). `tst_watcher` pins the document watcher's behaviour, headless, against real temp
+  files: a staged temp-file rename over the watched path — exactly what `files::write()` does —
+  leaves the watch alive and reports no change, a later deletion is still reported, and a path the
+  owner has dropped (`forget()`, `setPaths()`) stops being reported at all. That last one is why the
+  class keeps the owner's own set rather than trusting Qt's list: on Windows Qt keeps raising the
+  directory event for a removed path while another file in that directory stays watched. Both are
+  Qt behaviours the design had to measure rather than assume (PLAN §9).
 - **Integration tests** (`tst_gui`, `tst_remotecontrol`, `tst_emulatorhost`, `tst_hrdb`) — run
   offscreen (`QT_QPA_PLATFORM=offscreen`), drive `MainWindow`, and `QSKIP` themselves unless
   Hatari, `vasmm68k_mot` and a TOS ROM are available (set `PIST_TOS_DIR`;

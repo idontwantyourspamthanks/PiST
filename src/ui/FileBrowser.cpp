@@ -574,28 +574,6 @@ QString FileBrowser::contextDirectory() const
     return m_model->rootPath();
 }
 
-QString FileBrowser::createFile(const QString &dir, const QString &name)
-{
-    // A plain name only: anything with separators would escape (or fail
-    // inside) the chosen directory.
-    if (name.isEmpty() || name != QFileInfo(name).fileName())
-        return {};
-    const QString path = QDir(dir).absoluteFilePath(name);
-    if (QFileInfo::exists(path))
-        return {};
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly))
-        return {};
-    file.close();
-
-    const QModelIndex index = m_model->index(path);
-    if (index.isValid()) {
-        m_view->setCurrentIndex(index);
-        m_view->scrollTo(index, QAbstractItemView::PositionAtCenter);
-    }
-    return path;
-}
-
 QString FileBrowser::createFolder(const QString &dir, const QString &name)
 {
     if (name.isEmpty() || name != QFileInfo(name).fileName())
@@ -1106,16 +1084,10 @@ void FileBrowser::onContextMenu(const QPoint &pos)
 
     QAction *chosen = menu.exec(m_view->viewport()->mapToGlobal(pos));
     if (chosen == newFile) {
-        bool ok = false;
-        const QString name = QInputDialog::getText(
-            this, tr("New File"), tr("File name:"), QLineEdit::Normal, QString(), &ok);
-        if (!ok)
-            return;
-        const QString path = createFile(contextDirectory(), name.trimmed());
-        if (path.isEmpty())
-            QMessageBox::warning(this, tr("New File"),
-                                 tr("Could not create the file. The name may be invalid or "
-                                    "already exist."));
+        // The same transaction as File ▸ New File, rooted where the user
+        // right-clicked: the dialog validates the name as it is typed, and the
+        // file it creates is opened and revealed (docs/untitled-plan.md §4).
+        emit newFileRequested(contextDirectory());
     } else if (chosen == newImage) {
         emit newImageRequested(contextDirectory());
     } else if (chosen == newFolder) {

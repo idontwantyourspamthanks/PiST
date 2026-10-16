@@ -65,6 +65,8 @@ endfunction()
 # already had. Qt6::Core, no module edges of its own, so it sits under the graph
 # the way model/ does.
 pist_module(pist_support
+    src/support/DocumentWatcher.cpp
+    src/support/DocumentWatcher.h
     src/support/FileWrite.cpp
     src/support/FileWrite.h
 )
@@ -278,6 +280,14 @@ pist_module(pist_ui
     src/ui/PalettePickerDialog.h
     src/ui/NewImageDialog.cpp
     src/ui/NewImageDialog.h
+    src/ui/NewFileDialog.cpp
+    src/ui/NewFileDialog.h
+    src/ui/NewFileSpec.cpp
+    src/ui/NewFileSpec.h
+    src/ui/FileTemplates.cpp
+    src/ui/FileTemplates.h
+    src/ui/WelcomeView.cpp
+    src/ui/WelcomeView.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
 )
@@ -619,6 +629,17 @@ qt_add_executable(tst_settings
 target_link_libraries(tst_settings PRIVATE pist_project pist_toolchain pist_emu Qt6::Test)
 pist_add_test(settings)
 
+# The document watcher's rules around Qt's own file watcher: a real deletion, a
+# staged write over the watched path (which is what drops a watch), the re-arm
+# after it, and a rename seen from the document's side. Real temporary files; no
+# display and no emulator.
+qt_add_executable(tst_watcher
+    tests/tst_watcher.cpp
+)
+target_link_libraries(tst_watcher PRIVATE pist_support Qt6::Test)
+pist_add_test(watcher)
+set_tests_properties(watcher PROPERTIES TIMEOUT 120)
+
 # First-run fetch/install: checksum verification, archive extraction, and the
 # claim that an installed tool lands where discovery actually looks. Needs no
 # network — fixtures are fabricated locally; the vasm build case skips without
@@ -705,7 +726,7 @@ set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 # every test target - it had drifted once (tst_oscall and tst_profile missing),
 # which on Windows left those two GUI-subsystem with a detached stdout: the
 # test runs, fails, and reports nothing at all (MIN-62).
-foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_link tst_settings tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
+foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_link tst_settings tst_watcher tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

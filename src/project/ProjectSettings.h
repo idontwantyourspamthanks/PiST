@@ -187,6 +187,72 @@ QString lastSourcePath();
 /// Most-recently-opened source files, MRU first, for File ▸ Open Recent.
 QStringList recentSources();
 
+/// Follow a rename of @p oldPath to @p newPath through the last-source pointer
+/// and the recent list (docs/untitled-plan.md §7.2).
+///
+/// Entries naming the old file are rewritten in place, so the list keeps its
+/// order and its length. Both are read back into a session — the startup reopen
+/// and the welcome view — which is why a stale entry is a wrong answer rather
+/// than a cosmetic one.
+void renameSource(const QString &oldPath, const QString &newPath);
+
+/// @name Lifetime usage counters
+///
+/// The welcome view's shelf (docs/untitled-plan.md §6). Local to this user's
+/// QSettings like everything above: nothing leaves the machine, and the numbers
+/// only ever describe this installation.
+///
+/// One typed reader and one `note*` writer per counter, with the key spelled
+/// once inside ProjectSettings.cpp — the MIN-53 rule. Nothing outside needs the
+/// key itself, because nothing outside should be incrementing these.
+///
+/// Counting starts when the counters shipped: an installation's numbers begin
+/// at its first launch on the version that has them (day one counts), and the
+/// stored first-launch date says when that was.
+/// @{
+
+int sessionCount();
+int buildCount();
+int runCount();
+int openedFileCount();
+
+/// The first launch's date, ISO `yyyy-MM-dd`, or empty before the first
+/// `noteSessionStarted()`.
+QString firstLaunchDate();
+
+/// Count one main-window start. Records the first-launch date the first time.
+void noteSessionStarted();
+/// Count one finished build, successful or not.
+void noteBuild();
+/// Count one launched emulator session.
+void noteRun();
+/// Count one document opened by the user.
+void noteFileOpened();
+
+/// The previous session's summary, for the welcome view's orientation line —
+/// facts about where you were, not vanity (docs/untitled-plan.md §6).
+///
+/// Held in memory for the session's duration and written once at teardown, so a
+/// crash loses the summary rather than the work.
+struct LastSession
+{
+    int builds = 0;
+    bool lastBuildOk = false;
+    QString lastFile;
+    /// False until a session has been flushed: an installation that has never
+    /// quit cleanly has no summary to show, which is not the same as one that
+    /// built nothing.
+    bool known = false;
+};
+
+/// Write @p session as "the last session". Called once, at teardown.
+void flushLastSession(const LastSession &session);
+
+/// The summary the previous session left, if it left one (`known`).
+LastSession lastSession();
+
+/// @}
+
 } // namespace settings
 
 } // namespace pist

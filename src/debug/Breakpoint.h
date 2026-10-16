@@ -79,4 +79,18 @@ struct ArmPlan
 ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
                         const ProgramLineMap &lineMap);
 
+/// Move the breakpoints keyed to `oldFile` over to `newFile`, leaving every
+/// other entry untouched and the order unchanged. The store is keyed by base
+/// name (BreakpointWatchpointModel), so a rename that keeps the name (a move
+/// to another directory) needs no migration and a rename that changes it
+/// would otherwise strand the file's breakpoints under a name that no longer
+/// exists (docs/untitled-plan.md §7.2).
+///
+/// Pure function, so the migration rule is testable without the model. The two
+/// names are the keys the store uses — base names such as `util.s`, never full
+/// paths — because that is what the model is handed, and so what a rename must
+/// be able to rewrite.
+QList<Breakpoint> renameFile(const QList<Breakpoint> &breakpoints,
+                             const QString &oldFile, const QString &newFile);
+
 } // namespace pist

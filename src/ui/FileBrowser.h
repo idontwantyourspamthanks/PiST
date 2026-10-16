@@ -96,6 +96,13 @@ signals:
     /// The user asked to create a new `.pim` image in `directory`.
     void newImageRequested(const QString &directory);
 
+    /// The user asked to create a new source file in `directory` — the context
+    /// menu's "New File…". MainWindow answers it with the same dialog File ▸ New
+    /// File uses, so the name is validated before it is accepted and the file is
+    /// opened and revealed rather than created and forgotten
+    /// (docs/untitled-plan.md §4).
+    void newFileRequested(const QString &directory);
+
     /// A file or directory was renamed through the browser (the model also
     /// emits its own fileRenamed; this one covers renames we initiate).
     void pathRenamed(const QString &oldPath, const QString &newPath);
@@ -110,10 +117,6 @@ signals:
     void floppyImageChanged(int drive, const QString &path);
 
 public slots:
-    /// Create an empty file in `dir`. Returns the new path, or empty on
-    /// failure (already exists, or the name is not a plain file name).
-    QString createFile(const QString &dir, const QString &name);
-
     /// Create a folder in `dir`. Returns the new path, or empty on failure.
     QString createFolder(const QString &dir, const QString &name);
 

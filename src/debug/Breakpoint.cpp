@@ -119,4 +119,21 @@ ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
     return plan;
 }
 
+QList<Breakpoint> renameFile(const QList<Breakpoint> &breakpoints,
+                             const QString &oldFile, const QString &newFile)
+{
+    // Rebuild in input order, rewriting only the entries keyed to the old name.
+    // Everything else is copied verbatim, so a field the caller did not touch
+    // cannot be lost by the migration.
+    QList<Breakpoint> migrated;
+    migrated.reserve(breakpoints.size());
+    for (const Breakpoint &bp : breakpoints) {
+        Breakpoint entry = bp;
+        if (entry.file == oldFile)
+            entry.file = newFile;
+        migrated.append(entry);
+    }
+    return migrated;
+}
+
 } // namespace pist

@@ -1,0 +1,32 @@
+{
+    "build": {
+        "additionalSources": [
+        ],
+        "assemblerPath": "",
+        "cpu": "68000",
+        "defines": [
+        ],
+        "extraArgs": [
+        ],
+        "includePaths": [
+        ],
+        "linkerPath": ""
+    },
+    "emulator": {
+        "debugBackend": "auto",
+        "extraArgs": [
+        ],
+        "fastForward": true,
+        "floppyImages": [
+            "",
+            ""
+        ],
+        "hardDiskImage": "",
+        "hatariPath": "",
+        "machine": "st",
+        "memSizeMiB": 1,
+        "monitor": "vga",
+        "tosPath": ""
+    },
+    "version": 1
+}

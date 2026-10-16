@@ -6,6 +6,7 @@
 
 #include "support/FileWrite.h"
 
+#include <QDate>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -434,6 +435,161 @@ QString lastSourcePath()
 QStringList recentSources()
 {
     return QSettings().value(recentSourcesKey()).toStringList();
+}
+
+void renameSource(const QString &oldPath, const QString &newPath)
+{
+    if (oldPath.isEmpty() || newPath.isEmpty())
+        return;
+    const QFileInfo oldInfo(oldPath);
+    QSettings store;
+    if (QFileInfo(store.value(lastSourceKey()).toString()) == oldInfo)
+        store.setValue(lastSourceKey(), newPath);
+
+    QStringList recent = store.value(recentSourcesKey()).toStringList();
+    bool changed = false;
+    for (QString &entry : recent) {
+        if (QFileInfo(entry) == oldInfo) {
+            entry = newPath;
+            changed = true;
+        }
+    }
+    if (changed)
+        store.setValue(recentSourcesKey(), recent);
+}
+
+namespace {
+
+/// The counter keys. Spelled once each, right here: nothing outside this file
+/// increments a counter or reads a raw key, so there is no second spelling to
+/// drift (MIN-53).
+const QString &sessionCountKey()
+{
+    static const QString key = QStringLiteral("stats/sessions");
+    return key;
+}
+
+const QString &buildCountKey()
+{
+    static const QString key = QStringLiteral("stats/builds");
+    return key;
+}
+
+const QString &runCountKey()
+{
+    static const QString key = QStringLiteral("stats/runs");
+    return key;
+}
+
+const QString &openedFileCountKey()
+{
+    static const QString key = QStringLiteral("stats/filesOpened");
+    return key;
+}
+
+const QString &firstLaunchKey()
+{
+    static const QString key = QStringLiteral("stats/firstLaunch");
+    return key;
+}
+
+const QString &lastSessionBuildsKey()
+{
+    static const QString key = QStringLiteral("stats/lastSessionBuilds");
+    return key;
+}
+
+const QString &lastBuildOkKey()
+{
+    static const QString key = QStringLiteral("stats/lastBuildOk");
+    return key;
+}
+
+const QString &lastSessionFileKey()
+{
+    static const QString key = QStringLiteral("stats/lastSessionFile");
+    return key;
+}
+
+/// Add one to the counter under @p key. Read-modify-write through one QSettings
+/// instance, so the write that follows the read is this instance's own.
+int bump(const QString &key)
+{
+    QSettings store;
+    const int value = store.value(key, 0).toInt() + 1;
+    store.setValue(key, value);
+    return value;
+}
+
+} // namespace
+
+int sessionCount()
+{
+    return QSettings().value(sessionCountKey(), 0).toInt();
+}
+
+int buildCount()
+{
+    return QSettings().value(buildCountKey(), 0).toInt();
+}
+
+int runCount()
+{
+    return QSettings().value(runCountKey(), 0).toInt();
+}
+
+int openedFileCount()
+{
+    return QSettings().value(openedFileCountKey(), 0).toInt();
+}
+
+QString firstLaunchDate()
+{
+    return QSettings().value(firstLaunchKey()).toString();
+}
+
+void noteSessionStarted()
+{
+    bump(sessionCountKey());
+    // The first launch is the first launch: the date is written once and never
+    // rewritten, so it keeps saying how long this installation has been here.
+    QSettings store;
+    if (!store.contains(firstLaunchKey()))
+        store.setValue(firstLaunchKey(), QDate::currentDate().toString(Qt::ISODate));
+}
+
+void noteBuild()
+{
+    bump(buildCountKey());
+}
+
+void noteRun()
+{
+    bump(runCountKey());
+}
+
+void noteFileOpened()
+{
+    bump(openedFileCountKey());
+}
+
+void flushLastSession(const LastSession &session)
+{
+    QSettings store;
+    store.setValue(lastSessionBuildsKey(), session.builds);
+    store.setValue(lastBuildOkKey(), session.lastBuildOk);
+    store.setValue(lastSessionFileKey(), session.lastFile);
+}
+
+LastSession lastSession()
+{
+    QSettings store;
+    LastSession session;
+    session.known = store.contains(lastSessionBuildsKey());
+    session.builds = store.value(lastSessionBuildsKey(), 0).toInt();
+    session.lastBuildOk = store.value(lastBuildOkKey(), false).toBool();
+    session.lastFile = store.value(lastSessionFileKey()).toString();
+    return session;
 }
 
 } // namespace settings

@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -43,7 +44,7 @@ public:
 
     /// Stop watching `path` — the document closed, or its file was deleted
     /// deliberately and a watcher event would only repeat what the gesture
-    /// already said.
+    /// already said. Nothing is reported for it afterwards.
     void forget(const QString &path);
 
     /// Re-arm after our own write to `path`. The staged rename in
@@ -56,7 +57,8 @@ public:
     /// changes instead of tracking the difference itself.
     void setPaths(const QStringList &paths);
 
-    /// The paths currently watched, sorted.
+    /// The paths this watcher is responsible for, sorted. The owner's set, not
+    /// Qt's: a path whose watch Qt has dropped is still one the owner asked for.
     QStringList paths() const;
 
 signals:
@@ -66,6 +68,15 @@ signals:
 
 private:
     QFileSystemWatcher *m_watcher = nullptr;
+    /// The paths the owner asked for, and what a report is filtered against.
+    ///
+    /// Qt's own list is not enough. On Windows, removing a path while another
+    /// file in the same directory stays watched does not stop the directory's
+    /// event naming the removed one: measured in CI, deleting a `forget()`-ed
+    /// path still raised `fileChanged` for it. The owner must not see that — it
+    /// is exactly how "the tab was closed" or "the sidebar deleted it" stays
+    /// quiet — so the report is only passed on for a path still in this set.
+    QSet<QString> m_watched;
 };
 
 } // namespace pist

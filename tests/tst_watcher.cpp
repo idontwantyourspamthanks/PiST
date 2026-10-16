@@ -153,10 +153,11 @@ void TstWatcher::forgetStopsTheReports()
 
     // Remove both. `watched` is a control: its report proves the watcher and the
     // event loop delivered everything that was going to arrive, so asserting
-    // "exactly one" is deterministic rather than a guess at a sleep length.
-    // forget() removes the watch synchronously, so no event can be raised for
-    // `forgotten` at all; the QTRY bound is only the point at which we stop
-    // waiting for the control.
+    // "exactly one" is deterministic rather than a guess at a sleep length. The
+    // forgotten path is dropped from the watcher's own set as well as from Qt's
+    // list, because on Windows Qt still raises its directory event for a removed
+    // path while another file in that directory stays watched — filtering the
+    // report is what makes "nothing is heard for it" hold on every platform.
     QVERIFY(QFile::remove(forgotten));
     QVERIFY(QFile::remove(watched));
 

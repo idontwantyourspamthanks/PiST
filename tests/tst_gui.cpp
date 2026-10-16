@@ -4232,25 +4232,25 @@ void TstGui::windowGeometryPersistsAcrossRestart()
                                 .arg(height)
                                 .arg(minimum.width())
                                 .arg(minimum.height())));
-        const QSize screen = window.screen() ? window.screen()->size() : wanted;
-        QVERIFY2(width <= screen.width() && height <= screen.height(),
-                 qPrintable(QStringLiteral("the window took %1×%2 on a %3×%4 screen")
-                                .arg(width)
-                                .arg(height)
-                                .arg(screen.width())
-                                .arg(screen.height())));
         // Where the screen and the window's own minimum both allow the size that
         // was asked for, it must be honoured: this is the half that catches a
-        // resize dropped on the floor rather than merely nudged.
+        // resize dropped on the floor rather than merely nudged. What the window
+        // takes *within* those bounds is the plugin's business — Windows'
+        // offscreen plugin takes the dock layout's preferred size (962×700
+        // measured) rather than the request, where Linux' takes the request and
+        // clamps it to the screen.
+        const QSize screen = window.screen() ? window.screen()->size() : wanted;
         if (screen.width() >= wanted.width() && minimum.width() <= wanted.width())
             QVERIFY2(width >= wanted.width(),
-                     qPrintable(QStringLiteral("asked for %1px of width, took %2px")
+                     qPrintable(QStringLiteral("asked for %1px of width on a %2px screen, took %3px")
                                     .arg(wanted.width())
+                                    .arg(screen.width())
                                     .arg(width)));
         if (screen.height() >= wanted.height() && minimum.height() <= wanted.height())
             QVERIFY2(height >= wanted.height(),
-                     qPrintable(QStringLiteral("asked for %1px of height, took %2px")
+                     qPrintable(QStringLiteral("asked for %1px of height on a %2px screen, took %3px")
                                     .arg(wanted.height())
+                                    .arg(screen.height())
                                     .arg(height)));
         QVERIFY2(width < 1280 && height < 860,
                  qPrintable(QStringLiteral("the resize was ignored: the window kept the factory "

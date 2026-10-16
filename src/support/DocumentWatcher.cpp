@@ -7,6 +7,8 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 
+#include <utility>
+
 namespace pist {
 
 namespace {
@@ -26,11 +28,17 @@ DocumentWatcher::DocumentWatcher(QObject *parent)
     , m_watcher(new QFileSystemWatcher(this))
 {
     connect(m_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
+        // Qt can report a path the owner has stopped caring about — see
+        // m_watched — so those are dropped here, which is what makes forget()
+        // and setPaths() mean what they say on every platform.
+        if (!m_watched.contains(path))
+            return;
+
         if (QFileInfo::exists(path)) {
-            // Still there: this is a replace — our own save's staged rename, or
-            // another writer's. Qt may have dropped the watch with the inode it
-            // pointed at, so put it back and stay quiet: nothing happened that a
-            // document has to be told about.
+            // Still there: a replace — our own save's staged rename, or another
+            // writer's. Qt may have dropped the watch with the inode it pointed
+            // at, so put it back and stay quiet: nothing happened that a document
+            // has to be told about.
             if (!m_watcher->files().contains(path))
                 m_watcher->addPath(path);
             return;
@@ -48,6 +56,7 @@ void DocumentWatcher::addPath(const QString &path)
     if (path.isEmpty())
         return;
     const QString absolute = normalised(path);
+    m_watched.insert(absolute);
     if (!m_watcher->files().contains(absolute))
         m_watcher->addPath(absolute);
 }
@@ -56,7 +65,9 @@ void DocumentWatcher::forget(const QString &path)
 {
     if (path.isEmpty())
         return;
-    m_watcher->removePath(normalised(path));
+    const QString absolute = normalised(path);
+    m_watched.remove(absolute);
+    m_watcher->removePath(absolute);
 }
 
 void DocumentWatcher::rearm(const QString &path)
@@ -64,27 +75,29 @@ void DocumentWatcher::rearm(const QString &path)
     if (path.isEmpty())
         return;
     const QString absolute = normalised(path);
-    // removePaths first is not a formality: a watch that survived the rename
-    // still points at the old inode, and addPath() on a path Qt already lists
-    // would leave it exactly as it is.
+    // The owner is saying this path is live: watch it again, by remove-then-add,
+    // because a watch that survived the rename still points at the old inode and
+    // addPath() alone would leave it exactly as it is.
+    m_watched.insert(absolute);
     m_watcher->removePath(absolute);
     m_watcher->addPath(absolute);
 }
 
 void DocumentWatcher::setPaths(const QStringList &paths)
 {
-    QStringList wanted;
+    QSet<QString> wanted;
     for (const QString &path : paths) {
-        if (path.isEmpty())
-            continue;
-        wanted.append(normalised(path));
+        if (!path.isEmpty())
+            wanted.insert(normalised(path));
     }
 
-    const QStringList watched = m_watcher->files();
-    for (const QString &path : watched) {
+    const QSet<QString> previous = std::move(m_watched);
+    m_watched = wanted;
+    for (const QString &path : previous) {
         if (!wanted.contains(path))
             m_watcher->removePath(path);
     }
+    const QStringList watched = m_watcher->files();
     for (const QString &path : wanted) {
         if (!watched.contains(path))
             m_watcher->addPath(path);
@@ -93,7 +106,7 @@ void DocumentWatcher::setPaths(const QStringList &paths)
 
 QStringList DocumentWatcher::paths() const
 {
-    QStringList paths = m_watcher->files();
+    QStringList paths(m_watched.cbegin(), m_watched.cend());
     paths.sort();
     return paths;
 }

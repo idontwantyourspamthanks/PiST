@@ -4311,6 +4311,13 @@ void TstGui::statusBarShowsCaretAndBuild()
     // chip is empty rather than naming a buffer that no longer exists.
     QVERIFY2(caret->text().isEmpty(), qPrintable(caret->text()));
 
+    // The suite's scratch source, written here rather than assumed: the chip
+    // names the file the caret is in, and a test that opened whatever another
+    // test happened to leave behind would hang the moment it ran alone —
+    // openPath's "could not open" is a modal, and nobody is there to dismiss it
+    // (the CI workflow re-runs a failing suite's functions one at a time).
+    QVERIFY(writeFile(m_source, QByteArrayLiteral("\ttext\nstart:\tnop\n\teven\n\tend\n")));
+
     window.openPath(m_source);
     auto *editor = window.findChild<CodeEditor *>();
     QVERIFY(editor);

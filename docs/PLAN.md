@@ -55,7 +55,9 @@ TOS ROMs         /usr/share/hatari/TOS*.img   supplied by the distro package
 | `-dwarf=3` + `-Ftos` (multi-section) | **fails**: `error 3004: section attributes <r> not supported` / `fatal error 3008`, exit 1 |
 | `-dwarf=3` + `-Felf` | works, emits `.debug_{aranges,info,abbrev,ranges,line}` |
 | `-linedebug` | **Amiga hunk output module only** — unusable for `.PRG` |
-| Symbols | DRI/GST emitted by default; `-devpac` suppresses them; `-monst` retains |
+| Symbols | DRI/GST emitted by default; `-devpac` suppresses them; `-monst` does **not** restore the table, but Devpac's `-opt-x+` (extended names) and `-opt-d+` (names truncated to eight characters) do, as can the source's own `opt` directive. Verified on 2.0f, and Hatari's `symbols prg` loads the `-opt-x+` table |
+| Strip symbols | `-nosym` removes the PRG symbol table outright, in any mode (including plain, without `-devpac`) |
+| Optimisation | On by default (`move.l #5,dn` → `moveq`); `-no-opt` disables it and keeps the symbol table; `-devpac` disables it too (its symbol table can be restored with `-opt-x+`). `-optim` is **not** an option in 2.0f |
 | Not options | `-g`, `-l` do not exist (`-L` is the *listing* file) |
 
 ### 2.3 Hatari debug surfaces (upstream)
@@ -331,6 +333,39 @@ than raw POSIX sockets. On Unix these are `AF_UNIX`/`SOCK_STREAM`, exactly match
 vasmm68k_mot -quiet -Ftos -I<incdirs> -D<defines> -L <listing> -o <out.prg> <source.s>
 ```
 
+PiST passes the project's assembler arguments — one editable list per build mode,
+**Debug** and **Release**, each with a reset — ahead of the arguments it manages:
+the output format (`-Ftos`, or `-Fvobj` per module in a linked build), `-I`, `-D`,
+`-L`, `-o` and the source file. The managed format is emitted **after** the user's
+list, so a stray `-F` in it cannot change the output module the launch depends on
+(vasm takes the last `-F`; a duplicate is not an error).
+
+Both defaults use `-devpac` so one source assembles to the same code in either
+mode — Devpac compatibility, which also disables vasm's optimisations. `-devpac`
+additionally drops the DRI/GST symbol table Hatari's `symbols prg` reads; the
+Debug default restores it with Devpac's own `-opt-x+` (extended names — `-opt-d+`
+restores it too but truncates names to eight characters), while Release strips it
+with `-nosym` (redundant — `-devpac` sets the same `no_symbols` — but it states
+the mode's intent and survives the `-devpac` being changed) for a clean shipping
+`.PRG`. Verified on vasm 2.0f: `-monst` does *not*
+restore the table under `-devpac`, `-opt-x+`/`-opt-d+` do, and Hatari loads the
+`-opt-x+` table.
+
+A source's own `opt` directive is applied *during assembly*, after the command
+line, so it overrides these lists in either direction: a source carrying `opt x+`
+keeps its symbols even in a Release build, and one carrying `opt d-` drops them
+even in Debug. The defaults are therefore best-effort, not a guarantee — and a
+good reason not to rewrite sources to inject `opt` lines, which would fight the
+file's own directives anyway.
+
+Because the migration gives a pre-split project these lists, the switch to
+`-devpac` also reaches projects written and building before it: their source is
+now parsed in Devpac compatibility mode, which changes more than the optimiser —
+a construct that assembled under plain Motorola syntax can fail or assemble
+differently. That is the intended fix (plain vasm's optimiser produced wrong
+programs), but it is a behaviour change on upgrade, not just a new default, and
+worth saying in the release notes and the issue reply.
+
 Diagnostics parsing (stderr):
 
 ```
@@ -358,7 +393,7 @@ Multi-file projects are assembled one module at a time and linked, because
 `vasm -Ftos` can only produce a program from a single file:
 
 ```
-vasmm68k_mot -quiet -Fvobj -I<dirs> -L <mod>.lst -o <mod>.o <mod>.s     # per module
+vasmm68k_mot <mode args> -Fvobj -I<dirs> -L <mod>.lst -o <mod>.o <mod>.s  # per module
 vlink -b ataritos -M<prog>.map -o <prog>.prg <mod>.o ...                 # then link
 ```
 
@@ -629,7 +664,8 @@ writes to any real `hatari.cfg`.
 
 - `ProjectSettings` persisted to a `.pistproject` JSON file beside the source, auto-discovered on
   open, with recent paths in `QSettings`. Never touches `hatari.cfg` (§5 rule 7)
-- `SettingsDialog` (Build and Emulator tabs): include paths, defines, CPU, extra assembler args;
+- `SettingsDialog` (Build and Emulator tabs): include paths, defines, CPU, per-mode assembler
+  arguments (Debug and Release, each editable with a reset to defaults);
   machine, TOS ROM, monitor, RAM, hard disk, floppy A/B, extra emulator args
 - `Machine` models the machine/ROM pairing, so a project cannot silently be handed a ROM Hatari
   will reject, and ROM selection prefers the newest compatible version

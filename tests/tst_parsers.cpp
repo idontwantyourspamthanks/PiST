@@ -43,6 +43,7 @@ private slots:
     void buildServiceFlushesFinalUnterminatedLine();
     void buildServiceWithoutALinkerSaysSo();
     void buildServiceRefusesCollidingObjectPaths();
+    void assemblerArgumentsOrderProjectFlagsFirst();
     void symbolTableReadsTheTablesInEitherOrder();
     void floppyImageGeometry();
     void floppyListsAutoFolder();
@@ -506,6 +507,38 @@ void TstParsers::buildServiceWithoutALinkerSaysSo()
     QVERIFY(bs.objectFiles().isEmpty());
     QVERIFY(bs.listingFiles().isEmpty());
     QVERIFY(!bs.isRunning());
+}
+
+// The managed `-F` is emitted *after* the project's own flags: vasm takes the
+// last `-F`, so a swapped order would let a stray `-F` in a project's list change
+// the output module the launch depends on. The comment in planSteps() used to be
+// the only record of this; the ordering is what this pins.
+void TstParsers::assemblerArgumentsOrderProjectFlagsFirst()
+{
+    const QStringList args = vasmAssemblerArguments(
+        {QStringLiteral("-quiet"), QStringLiteral("-devpac"), QStringLiteral("-opt-x+")},
+        QStringLiteral("-Ftos"), QStringLiteral("68000"), {QStringLiteral("inc")},
+        {QStringLiteral("DEBUG"), QStringLiteral("VERSION=2")}, QStringLiteral("prog.lst"),
+        QStringLiteral("prog.prg"), QStringLiteral("prog.s"));
+
+    QCOMPARE(args, QStringList({QStringLiteral("-quiet"), QStringLiteral("-devpac"),
+                                QStringLiteral("-opt-x+"), QStringLiteral("-Ftos"),
+                                QStringLiteral("-m68000"), QStringLiteral("-Iinc"),
+                                QStringLiteral("-DDEBUG"), QStringLiteral("-DVERSION=2"),
+                                QStringLiteral("-L"), QStringLiteral("prog.lst"),
+                                QStringLiteral("-o"), QStringLiteral("prog.prg"),
+                                QStringLiteral("prog.s")}));
+    QVERIFY(args.indexOf(QStringLiteral("-Ftos"))
+            > args.lastIndexOf(QStringLiteral("-opt-x+")));
+
+    // An empty CPU or listing drops its argument rather than leaving a hole.
+    const QStringList bare = vasmAssemblerArguments({QStringLiteral("-quiet")},
+                                                    QStringLiteral("-Fvobj"), QString(),
+                                                    {}, {}, QString(), QStringLiteral("m.o"),
+                                                    QStringLiteral("m.s"));
+    QCOMPARE(bare, QStringList({QStringLiteral("-quiet"), QStringLiteral("-Fvobj"),
+                                QStringLiteral("-o"), QStringLiteral("m.o"),
+                                QStringLiteral("m.s")}));
 }
 
 // `a.s` and `a.asm` in one directory both derive `a.o`/`a.lst`: the second

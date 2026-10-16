@@ -237,11 +237,14 @@ other's subprocess directly.
 
 ### Build
 
-`MainWindow::build()` saves the editor, derives the output paths (`<base>.prg` / `.lst` / `.map`)
+`MainWindow::buildImpl()` saves the editor, derives the output paths (`<base>.prg` / `.lst` / `.map`)
 from the source via `ProjectSettings`, configures a `BuildService` from those settings (includes,
-defines, CPU, sources), and runs it asynchronously. `BuildService::planSteps()` emits one vasm step
+defines, CPU, sources, and the project's assembler arguments — the debug list for `build()`/`run()`,
+the release list for `buildReleaseInteractive()`), and runs it asynchronously.
+`BuildService::planSteps()` emits one vasm step
 (`-Ftos -L listing`) for a single-file project, or a `-Fvobj` step per module plus a `vlink` step
-for multi-file. Diagnostics are parsed into `Diagnostic` values; `MainWindow::onBuildFinished()`
+for multi-file, prefixing each with the project's assembler arguments. Diagnostics are parsed into
+`Diagnostic` values; `MainWindow::onBuildFinished()`
 fills the Problems tree and rebuilds the `ProgramLineMap` from the listings (+ `LinkMap` when
 linked). Editor error markers are set for the currently open file only.
 

@@ -251,6 +251,9 @@ private slots:
     /// Build/Run from the menu, toolbar and their shortcuts: the same
     /// operations with the modal refusals they have always shown.
     void buildInteractive();
+    /// Build with the release assembler arguments (no debug symbols), from the
+    /// Build menu. Interactive refusals, like buildInteractive().
+    void buildReleaseInteractive();
     void runInteractive();
     void stopSession() override;
     void step() override;
@@ -451,8 +454,9 @@ private:
     /// Shared bodies of the quiet (remote-invoked) and interactive entries.
     /// `quiet` suppresses the modal dialogs on the refusal paths; it is carried
     /// on the window because a run's launch happens after the build's async
-    /// hop, where the argument is gone.
-    void buildImpl(bool quiet);
+    /// hop, where the argument is gone. `release` picks the project's release
+    /// assembler arguments over the debug ones.
+    void buildImpl(bool quiet, bool release);
     void runImpl(bool quiet);
 
     /// Load the project settings that sit beside a source file, if any.
@@ -788,6 +792,7 @@ private:
     QAction *m_actSettings = nullptr;
     QAction *m_actSave = nullptr;
     QAction *m_actBuild = nullptr;
+    QAction *m_actBuildRelease = nullptr;
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
     QAction *m_actNextDiagnostic = nullptr;

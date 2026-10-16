@@ -21,7 +21,7 @@ namespace {
 /// The version this build writes, and the newest it can read. Bumping it is what
 /// lets a later PiST change the schema without an older build dropping the fields
 /// it does not understand and then saving over them.
-constexpr int kProjectFileVersion = 1;
+constexpr int kProjectFileVersion = 2;
 
 QJsonArray toArray(const QStringList &list)
 {
@@ -156,6 +156,22 @@ QStringList resolveRelativeToProject(const QStringList &entries, const QString &
 
 } // namespace
 
+QStringList defaultDebugAssemblerArgs()
+{
+    // -devpac for Devpac compatibility (and no optimisation); -opt-x+ to put the
+    // DRI/GST symbol table that -devpac suppresses back, with full-length names.
+    return {QStringLiteral("-quiet"), QStringLiteral("-devpac"), QStringLiteral("-opt-x+")};
+}
+
+QStringList defaultReleaseAssemblerArgs()
+{
+    // -devpac for the same Devpac build as the debug list; -nosym to strip the
+    // symbol table explicitly. -devpac already sets vasm's no_symbols, so the
+    // -nosym is redundant — it is kept because it states what the mode is for,
+    // and survives the -devpac being changed. See docs/PLAN.md §4.1.
+    return {QStringLiteral("-quiet"), QStringLiteral("-devpac"), QStringLiteral("-nosym")};
+}
+
 namespace settings {
 
 OutputPaths outputPathsFor(const QString &sourcePath)
@@ -193,7 +209,8 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     build[QStringLiteral("cpu")] = s.cpu;
     build[QStringLiteral("includePaths")] = toArray(s.includePaths);
     build[QStringLiteral("defines")] = toArray(s.defines);
-    build[QStringLiteral("extraArgs")] = toArray(s.extraBuildArgs);
+    build[QStringLiteral("debugArgs")] = toArray(s.debugAssemblerArgs);
+    build[QStringLiteral("releaseArgs")] = toArray(s.releaseAssemblerArgs);
     root[QStringLiteral("build")] = build;
 
     QJsonObject emu;
@@ -294,10 +311,35 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
         || !readStringList(build.value(QStringLiteral("includePaths")),
                            QStringLiteral("build.includePaths"), path, &includePaths, error)
         || !readStringList(build.value(QStringLiteral("defines")), QStringLiteral("build.defines"),
-                           path, &s->defines, error)
-        || !readStringList(build.value(QStringLiteral("extraArgs")),
-                           QStringLiteral("build.extraArgs"), path, &s->extraBuildArgs, error))
+                           path, &s->defines, error))
         return false;
+
+    // The assembler argument lists: a key that is present replaces the default,
+    // an absent one leaves it. The defaults are deliberately non-empty, so
+    // readStringList's own "absent yields empty" would silently discard them.
+    if (build.contains(QStringLiteral("debugArgs"))
+        && !readStringList(build.value(QStringLiteral("debugArgs")),
+                           QStringLiteral("build.debugArgs"), path, &s->debugAssemblerArgs, error))
+        return false;
+    if (build.contains(QStringLiteral("releaseArgs"))
+        && !readStringList(build.value(QStringLiteral("releaseArgs")),
+                           QStringLiteral("build.releaseArgs"), path, &s->releaseAssemblerArgs,
+                           error))
+        return false;
+
+    // A file written before the mode split stored one trailing "extraArgs" list,
+    // appended after the managed arguments; there was no release mode, so the
+    // list described what is now the debug build. Keyed on the *absent* new key
+    // rather than on the version, so a hand-edited or third-party file carrying
+    // only the old key still keeps its arguments instead of losing them: either
+    // way they are folded into the debug list, never dropped.
+    if (!build.contains(QStringLiteral("debugArgs"))) {
+        QStringList legacy;
+        if (!readStringList(build.value(QStringLiteral("extraArgs")),
+                            QStringLiteral("build.extraArgs"), path, &legacy, error))
+            return false;
+        s->debugAssemblerArgs += legacy;
+    }
 
     s->additionalSources = resolveRelativeToProject(additionalSources, projectDir);
     s->includePaths = resolveRelativeToProject(includePaths, projectDir);

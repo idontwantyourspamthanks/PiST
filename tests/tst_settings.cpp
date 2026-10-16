@@ -122,6 +122,9 @@ private slots:
     void rejectsMalformedFile();
     void projectFileSitsBesideSource();
     void appliesDefaultsForMissingKeys();
+    // A version-1 file had a single trailing "extraArgs" list; it must survive
+    // as the debug list rather than being dropped when the mode split landed.
+    void migratesLegacyExtraArgs();
 
     // A relative path in the file means "beside the project", so it has to be
     // read against the project file's directory, not the process's.
@@ -177,7 +180,8 @@ void TstSettings::roundTripsEverything()
     original.includePaths = {QStringLiteral("/inc/one"), QStringLiteral("/inc/two")};
     original.defines = {QStringLiteral("DEBUG"), QStringLiteral("VERSION=2")};
     original.cpu = QStringLiteral("68020");
-    original.extraBuildArgs = {QStringLiteral("-align"), QStringLiteral("-spaces")};
+    original.debugAssemblerArgs = {QStringLiteral("-quiet"), QStringLiteral("-no-opt")};
+    original.releaseAssemblerArgs = {QStringLiteral("-quiet"), QStringLiteral("-devpac")};
     original.additionalSources = {QStringLiteral("/p/utils.s"), QStringLiteral("/p/data.s")};
     original.assemblerPath = QStringLiteral("/opt/vasm/vasmm68k_mot");
     original.linkerPath = QStringLiteral("/usr/local/bin/vlink");
@@ -203,7 +207,8 @@ void TstSettings::roundTripsEverything()
     QCOMPARE(loaded.includePaths, original.includePaths);
     QCOMPARE(loaded.defines, original.defines);
     QCOMPARE(loaded.cpu, original.cpu);
-    QCOMPARE(loaded.extraBuildArgs, original.extraBuildArgs);
+    QCOMPARE(loaded.debugAssemblerArgs, original.debugAssemblerArgs);
+    QCOMPARE(loaded.releaseAssemblerArgs, original.releaseAssemblerArgs);
     QCOMPARE(loaded.additionalSources, original.additionalSources);
     QCOMPARE(loaded.assemblerPath, original.assemblerPath);
     QCOMPARE(loaded.linkerPath, original.linkerPath);
@@ -276,6 +281,37 @@ void TstSettings::appliesDefaultsForMissingKeys()
     QCOMPARE(settings.monitor, QStringLiteral("mono"));
     QVERIFY(settings.includePaths.isEmpty());
     QVERIFY(settings.fastForward);
+    // The assembler-argument defaults are deliberately non-empty, so they must
+    // survive an absent key: a reader that let "absent yields empty" clear the
+    // list would strip -quiet (and -devpac) from every project without them.
+    QCOMPARE(settings.debugAssemblerArgs, defaultDebugAssemblerArgs());
+    QCOMPARE(settings.releaseAssemblerArgs, defaultReleaseAssemblerArgs());
+}
+
+// A version-1 project stored a single trailing "extraArgs" list. There was no
+// release mode then, so it described what is now the debug build and must be
+// folded into the debug arguments rather than dropped on load.
+void TstSettings::migratesLegacyExtraArgs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("legacy.pistproject"));
+
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QByteArrayLiteral(
+        "{\"version\":1,\"build\":{\"extraArgs\":[\"-no-opt\",\"-align\"]}}"));
+    f.close();
+
+    ProjectSettings settings;
+    QString error;
+    QVERIFY2(settings::load(&settings, path, &error), qPrintable(error));
+
+    QStringList expected = defaultDebugAssemblerArgs();
+    expected << QStringLiteral("-no-opt") << QStringLiteral("-align");
+    QCOMPARE(settings.debugAssemblerArgs, expected);
+    // Pre-split files knew no release arguments, so the release default stands.
+    QCOMPARE(settings.releaseAssemblerArgs, defaultReleaseAssemblerArgs());
 }
 
 // A relative `-I` or additional source in the file means "beside the project",
@@ -344,7 +380,7 @@ void TstSettings::refusesNewerProjectVersion()
 
     QFile f(path);
     QVERIFY(f.open(QIODevice::WriteOnly));
-    f.write(QByteArrayLiteral("{\"version\":2,\"build\":{\"cpu\":\"68030\"},"
+    f.write(QByteArrayLiteral("{\"version\":3,\"build\":{\"cpu\":\"68030\"},"
                               "\"somedayKey\":{\"a\":1}}"));
     f.close();
 
@@ -355,8 +391,8 @@ void TstSettings::refusesNewerProjectVersion()
     QString error;
     QVERIFY2(!settings::load(&settings, path, &error),
              "a project file from a newer PiST must not load");
-    QVERIFY2(error.contains(QStringLiteral("project version 2")), qPrintable(error));
-    QVERIFY2(error.contains(QStringLiteral("version 1")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("project version 3")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("version 2")), qPrintable(error));
 
     // Refusing is not the same as rewriting: this file is the only copy of that
     // project, and nothing may have saved over it.

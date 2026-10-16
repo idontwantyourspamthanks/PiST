@@ -85,6 +85,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QProcess>
+#include <QScreen>
 #include <QRegularExpression>
 #include <QTreeView>
 #include <QAbstractItemModel>
@@ -4206,22 +4207,58 @@ void TstGui::windowGeometryPersistsAcrossRestart()
     int width = 0;
     int height = 0;
     {
-        // Inside the offscreen screen (800×800). The welcome view the window
-        // shows with no documents gives it a tall minimum (619 on a bare
-        // machine), so the request is 700 — above that minimum and inside the
-        // screen. The plugin nudges a requested size, so the contract is the
-        // size the window actually took, and that it stayed near the request.
+        // The offscreen plugin nudges a requested size, and on a virtual screen
+        // smaller than the request it clamps to that screen — the platform's
+        // business, and not the same on every leg of CI. So the contract is the
+        // size the window actually took: at least its own minimum, no larger
+        // than the screen, and smaller than the factory 1280×860 the window
+        // would otherwise keep — which is what shows the resize was applied at
+        // all, rather than the persistence check below pinning the default.
         MainWindow window;
-        window.resize(760, 700);
+        const QSize wanted(760, 700);
+        window.resize(wanted);
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
-        window.resize(760, 700);
+        // Again once it is up: a resize while hidden is the one a plugin may
+        // have nudged.
+        window.resize(wanted);
         width = window.width();
         height = window.height();
+
+        const QSize minimum = window.minimumSizeHint();
+        QVERIFY2(width >= minimum.width() && height >= minimum.height(),
+                 qPrintable(QStringLiteral("the window took %1×%2, below its own minimum %3×%4")
+                                .arg(width)
+                                .arg(height)
+                                .arg(minimum.width())
+                                .arg(minimum.height())));
+        const QSize screen = window.screen() ? window.screen()->size() : wanted;
+        QVERIFY2(width <= screen.width() && height <= screen.height(),
+                 qPrintable(QStringLiteral("the window took %1×%2 on a %3×%4 screen")
+                                .arg(width)
+                                .arg(height)
+                                .arg(screen.width())
+                                .arg(screen.height())));
+        // Where the screen and the window's own minimum both allow the size that
+        // was asked for, it must be honoured: this is the half that catches a
+        // resize dropped on the floor rather than merely nudged.
+        if (screen.width() >= wanted.width() && minimum.width() <= wanted.width())
+            QVERIFY2(width >= wanted.width(),
+                     qPrintable(QStringLiteral("asked for %1px of width, took %2px")
+                                    .arg(wanted.width())
+                                    .arg(width)));
+        if (screen.height() >= wanted.height() && minimum.height() <= wanted.height())
+            QVERIFY2(height >= wanted.height(),
+                     qPrintable(QStringLiteral("asked for %1px of height, took %2px")
+                                    .arg(wanted.height())
+                                    .arg(height)));
+        QVERIFY2(width < 1280 && height < 860,
+                 qPrintable(QStringLiteral("the resize was ignored: the window kept the factory "
+                                           "%1×%2")
+                                .arg(width)
+                                .arg(height)));
         QVERIFY(window.close());
     }
-    QVERIFY(qAbs(width - 760) < 80);
-    QVERIFY(qAbs(height - 700) < 80);
     {
         MainWindow window;
         window.show();

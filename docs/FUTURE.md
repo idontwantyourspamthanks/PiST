@@ -425,3 +425,27 @@ Not in this pass, on purpose:
 - **Merge-conflict editor.** Conflict markers in the buffer, plus `git status` unmerged
   paths. Do not invent a mergetool config — that would be writing git config, which this
   IDE does not do.
+
+---
+
+## 14. Teaching layer: lessons, checkpoints, explain-in-place
+
+**Status:** L0–L3 landed (2026-10-16); L4 unstarted. The plan of record is
+[docs/tutorial-plan.md](tutorial-plan.md). In the tree: `lessons/*/lesson.pil` (five
+lessons), `src/lessons/` (the format, its parser, the checkpoint evaluator and the runner),
+the `Lesson` dock with a `Learn` layout preset, the welcome doorway, the problems pane's
+"what this means" column, and six remote verbs plus six MCP tools — so an agent can point
+at a line, make a starter file, ask where the PC is and set or clear (not toggle) a
+breakpoint.
+What remains is L4: `Example:`/`Used in:`/`Typical use` across the 233 reference entries,
+and further lessons.
+
+**Why it is separate from §9:** a lesson must work offline, deterministically, with no
+endpoint or key. The assistant in §9 would *consume* lessons as its script rather than
+replace them.
+
+**How to start:** with L4. The earlier phases are in the tree as of 2026-10-16, §1.2's
+front-door defect included; what is left is authoring — `Example:`/`Used in:`/`Typical
+use` onto the reference tables (`src/editor/InstrRef.cpp`, `src/editor/OsCallRef.cpp`, with
+the dock's detail pane in `src/ui/InstructionRefView.cpp`) and more `.pil` lessons under
+`lessons/` — rather than wiring.

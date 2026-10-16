@@ -47,6 +47,12 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
   GEMDOS/BIOS/XBIOS call being made and what it is being called with
+- **Lessons** — guided walkthroughs that run beside the debugger: a first program, the
+  hardware and the keyboard, the sprite pipeline, and finding a bug the assembler cannot see.
+  Each step says what it is about to do, does it, and *checks the machine* against what it
+  claims — so a lesson that stops being true fails a test rather than teaching something
+  wrong. **Learn 68000 assembly** on the welcome view starts the first one, and
+  **View ▸ Layout ▸ Learn** arranges the panels a lesson points at.
 - **Documents are files** — every tab is a real file on disk; there is no scratch or untitled
   buffer. With nothing open the window shows a **welcome view**: your recent files and projects (the
   bundled demos on a first run), Open/New actions, and whether the assembler and a TOS ROM are
@@ -512,6 +518,12 @@ run                build and start the emulator; the reply arrives when it is ru
 stop               stop the emulator session
 step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
+setbreakpoint <n|label>  set a breakpoint, never clearing one that is already there
+clearbreakpoint <n|label>  take a breakpoint away
+goto <line|file:line>  put the editor on a line, without taking the keyboard focus
+newfile <blank|gemdos|keyboard|image> <path>  create a file from a New File template
+reference [topic]  raise the instruction / OS-call reference dock, on a mnemonic or a TOS call
+where              the source line the program counter maps to, as JSON (block reply)
 symbols [filter]   the build's symbols as a JSON array (block reply)
 tabs               the open documents as a JSON array (block reply)
 save               save the current document
@@ -582,12 +594,14 @@ locally started IDE needs no configuration at all. The tools are
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
 `pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
 `pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
-`pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
+`pist_profile_start`, `pist_profile_stop`, `pist_profile_results`,
+`pist_set_breakpoint`, `pist_clear_breakpoint`, `pist_goto`, `pist_new_file`, `pist_reference`,
+`pist_where` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
 rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
 `destructiveHint`, so a client can decide what needs your confirmation.
 `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
-`pist_disasm`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
+`pist_disasm`, `pist_tabs`, `pist_where` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,

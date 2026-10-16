@@ -95,9 +95,11 @@ code. Use this table for a quick lookup:
 | The debug backends (native stdin transport, HRDB TCP) | `src/emu/DebugBackend.h` (the contract), `src/emu/{EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 |The emulator display panel (media channel frames, input grab)|`src/ui/EmulatorDisplayWidget.{h,cpp}`|
 | The MCP shim (`pist-mcp`, a shipped binary) | `src/control/mcp/` |
+| A lesson, its format or the runner that performs it | `lessons/*/lesson.pil` (the data), `src/lessons/{Lesson,LessonRunner}.{h,cpp}` (the format and the runner; `docs/tutorial-plan.md` is the design) |
+| The Lesson dock, the doorway to it, the `Learn` layout | `src/ui/LessonView.{h,cpp}`, `src/ui/WelcomeView.{h,cpp}`, `MainWindow::showLessons`/`applyLayoutPreset` |
 | The name, author and licence a software centre reports | `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, `packaging/copyright`, and the CPack block in `CMakeLists.txt` |
 | What the Linux installers put where (private prefix, what is pruned and why) | `.github/workflows/release.yml`, the deb/rpm step; `docs/PLAN.md` Phase 4 records the evidence |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_lessons`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

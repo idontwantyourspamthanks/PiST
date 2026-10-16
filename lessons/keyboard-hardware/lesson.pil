@@ -1,0 +1,32 @@
+title:   The keyboard, the screen and supervisor mode
+level:   after the first program
+needs:   assembler, emulator, rom
+learn:   why the hardware is off limits in user mode, and what Super(0) buys you
+source:  template "Keyboard/input skeleton" as keyboard.s
+
+step  Assemble and run it
+  teach  This template reads a key at a time with GEMDOS Cconin and loops until
+         ESC. {key:run} boots it and stops at the entry point, the same way the
+         first lesson did.
+  do     build
+  expect problems == none
+
+step  Read keys
+  teach  Cconin is GEMDOS trap #1, function 1: it waits for a key, echoes it to
+         the screen the way a TOS prompt would, and leaves it in D0. That is all
+         this program does, and it is all a *user-mode* program can do with the
+         keyboard.
+  do     run
+  expect stopped
+  do     explain Cconin
+
+step  Why the next program needs something this one does not
+  teach  The ST's hardware registers are not in user space. Writing $ffff8240 —
+         palette entry zero — from user mode does not set a colour; it bus-errors
+         and takes the program down. demo/keyred.s is the same idea one step
+         further: it calls GEMDOS Super(0) to enter supervisor mode, sets the
+         palette with XBIOS Setcolor, and beeps the PSG, and every one of those
+         needs the supervisor bit. If a hardware write dies on you, that is the
+         first thing to check, and the reference below has the call you need.
+  nominal the check is the next program's, not this one's
+  do     explain Setcolor

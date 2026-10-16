@@ -10,6 +10,7 @@
 #include <QWidget>
 
 class QLabel;
+class QPushButton;
 class QVBoxLayout;
 
 namespace pist {
@@ -73,6 +74,11 @@ public:
 
     void setStats(const Stats &stats);
 
+    /// Whether there are lessons to run at all: an installed build with none
+    /// hides the doorway rather than offering a button that does nothing
+    /// (docs/tutorial-plan.md §8).
+    void setLearnAvailable(bool available);
+
     /// Re-apply the theme's inks to the fixed labels. MainWindow's
     /// applyAppearance() calls this with every other panel, so switching theme
     /// with the welcome view on show does not leave the old theme's greys.
@@ -95,6 +101,8 @@ signals:
     void newImageRequested();
     void browseRequested();
     void setupRequested();
+    /// The user asked to be taught: open the lesson the IDE opens with.
+    void learnRequested();
 
 private:
     void rebuildDoorways();
@@ -103,6 +111,7 @@ private:
     QLabel *m_doorTitle = nullptr;
     QLabel *m_readiness = nullptr;
     QLabel *m_stats = nullptr;
+    QPushButton *m_learn = nullptr;
     /// Whether the readiness lines name a missing piece, so applyAppearance()
     /// can ink them the way setReadiness() did.
     bool m_readinessMissing = false;

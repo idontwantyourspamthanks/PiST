@@ -1,0 +1,40 @@
+title:   Hello, TOS
+level:   first steps
+needs:   assembler, emulator, rom
+learn:   what a GEMDOS trap is; that breakpoints are file:line; where a call leaves its answer
+source:  template "GEMDOS hello" as hello.s
+
+step  Assemble the file
+  teach  {key:build} assembles hello.s beside it and maps anything the assembler
+         objects to straight onto the line it objects to. Nothing here is
+         screen-scraped: the file is assembled from disk, which is the only
+         form this IDE knows — a document is a file, never a scratch buffer.
+  do     build
+  expect problems == none
+
+step  Run it
+  teach  {key:run} starts the emulator with the program and stops at its entry
+         point before the first instruction has run, so you are looking at the
+         machine with your program loaded and nothing done yet.
+  do     run
+  expect stopped
+
+step  Stop where the program asks for a key
+  teach  Breakpoints are file:line, never addresses — GEMDOS relocates the
+         program on every run, so the line is the only stable name for a place
+         in it. Line 16 is the Crawcin call, the same one the template's own
+         header points at. {key:toggle-breakpoint} in the gutter sets one;
+         Continue runs on until it fires.
+  do     breakpoint 16
+  do     continue
+  expect stopped
+  expect at hello.s:16
+
+step  The keyboard is the emulator's
+  teach  Click the emulator panel to hand it the keyboard and type any key; F12
+         gives the keyboard back. Crawcin returns what you typed in D0, and the
+         Registers panel is showing it — D0 in the first column, the data
+         registers. A lesson cannot press the key for you, and any key is a
+         correct answer.
+  nominal only you can press a key in the emulator
+  do     explain Crawcin

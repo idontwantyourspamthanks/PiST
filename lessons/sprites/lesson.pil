@@ -1,0 +1,32 @@
+title:   Sprites: from the sheet to the screen
+level:   the image editor and the assembler
+needs:   assembler, emulator, rom
+learn:   what File ▸ Export Bitplanes writes, and how a masked blit reads it
+source:  repo demo/spritedemo/sprites.s
+
+step  Assemble the demo
+  teach  This one already exists in the tree: demo/spritedemo. It is a whole
+         bitplane pipeline — the palette, a pre-shifted masked blit, six frames of
+         animation and a Vsync to hold them apart. It assembles the same way
+         anything else does, which is the point: nothing about it is special.
+  do     build
+  expect problems == none
+
+step  Run it
+  teach  {key:run} boots it and stops at the entry point. From there Continue is
+         the program's own loop: a sprite moving through the frames, held in step
+         with the screen by Vsync.
+  do     run
+  expect stopped
+
+step  What is actually in the .dat
+  teach  File ▸ Export Bitplanes wrote sprites.dat beside the source, and the
+         listing pulls it in with `incbin`. A 16-pixel group in that data is a
+         mask word followed by four plane words: the blit ANDs the mask into the
+         screen and ORs each plane over it, so a set mask bit keeps whatever was
+         underneath. That is why a sprite can be drawn over a background instead
+         of punching a hole in it. The export dialog's file map lists every
+         block's label and offset, and the `equ`s at the end of the listing are
+         that map, trimmed to what the program uses.
+  do     disasm
+  nominal the data layout is the lesson here, and the listing is the evidence

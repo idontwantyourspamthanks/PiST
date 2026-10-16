@@ -677,6 +677,84 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         else
             reply(guarded, QStringLiteral("error ") + error);
 
+    } else if (cmd == QLatin1String("setbreakpoint") || cmd == QLatin1String("clearbreakpoint")) {
+        // Set or clear, never toggle: an agent re-running its script must not
+        // remove the breakpoint it just added. `breakpoint` stays the toggle.
+        const bool on = cmd == QLatin1String("setbreakpoint");
+        if (arg.isEmpty()) {
+            reply(guarded, QStringLiteral("error usage: %1 <line|label>").arg(cmd));
+            return;
+        }
+        bool numeric = false;
+        const int line = arg.toInt(&numeric);
+        if (numeric) {
+            reply(guarded,
+                  m_host->setBreakpointAtLine(line, on)
+                      ? QStringLiteral("ok")
+                      : QStringLiteral("error no source file open, or an invalid line number"));
+        } else {
+            QString detail;
+            m_host->setBreakpointAtLabel(arg, on, &detail);
+            reply(guarded, detail);
+        }
+
+    } else if (cmd == QLatin1String("goto")) {
+        // The teaching layer's "look at this line" (docs/tutorial-plan.md §7.1):
+        // the caret moves and the view scrolls, and the keyboard stays where the
+        // user left it.
+        if (arg.isEmpty()) {
+            reply(guarded, QStringLiteral("error usage: goto <line|file:line>"));
+            return;
+        }
+        QString file;
+        int line = arg.toInt();
+        const int colon = arg.lastIndexOf(QLatin1Char(':'));
+        if (colon > 0) {
+            file = arg.left(colon);
+            line = arg.mid(colon + 1).toInt();
+        }
+        if (line <= 0) {
+            reply(guarded, QStringLiteral("error usage: goto <line|file:line>"));
+        } else if (m_host->navigateToLine(file, line)) {
+            reply(guarded, QStringLiteral("ok"));
+        } else {
+            reply(guarded, QStringLiteral("error no editor for that file, or no such line"));
+        }
+
+    } else if (cmd == QLatin1String("newfile")) {
+        const QString kind = arg.section(QLatin1Char(' '), 0, 0);
+        const QString path = arg.section(QLatin1Char(' '), 1);
+        if (kind.isEmpty() || path.isEmpty()) {
+            reply(guarded, QStringLiteral("error usage: newfile <blank|gemdos|keyboard|image> <path>"));
+            return;
+        }
+        QString error;
+        if (!m_host->createFileFromTemplate(kind, path, &error))
+            reply(guarded, QStringLiteral("error ") + error);
+        else if (m_host->openPathQuiet(path))
+            reply(guarded, QStringLiteral("ok"));
+        else
+            reply(guarded, QStringLiteral("error created %1 but could not open it").arg(path));
+
+    } else if (cmd == QLatin1String("reference")) {
+        reply(guarded, m_host->raiseReference(arg)
+                           ? QStringLiteral("ok")
+                           : QStringLiteral("error nothing open to raise"));
+
+    } else if (cmd == QLatin1String("where")) {
+        // The PC's source line, which is what the `at file:line` a lesson checks
+        // is evaluated against — and, for an agent, the missing half of "set a
+        // breakpoint at file:line".
+        QString file;
+        int line = 0;
+        QJsonObject object;
+        if (m_host->pcSourcePosition(&file, &line)) {
+            object.insert(QStringLiteral("file"), file);
+            object.insert(QStringLiteral("line"), line);
+        }
+        replyBlock(guarded,
+                   QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
+
     } else if (cmd == QLatin1String("tabs")) {
         replyBlock(guarded, QString::fromUtf8(
             QJsonDocument(m_host->tabsJson()).toJson(QJsonDocument::Compact)));

@@ -66,6 +66,13 @@ WelcomeView::WelcomeView(QWidget *parent)
     column->addWidget(m_rowsHost);
 
     auto *actions = new QHBoxLayout;
+    // The teaching layer's doorway comes first: a person who has never written
+    // 68000 assembly is the reason the lessons exist, and Open… assumes they
+    // already have something to open (docs/tutorial-plan.md §8).
+    m_learn = new QPushButton(tr("Learn 68000 assembly"), this);
+    m_learn->setObjectName(QStringLiteral("welcomeLearn"));
+    m_learn->setToolTip(tr("Work through a lesson with the debugger beside you"));
+    connect(m_learn, &QPushButton::clicked, this, &WelcomeView::learnRequested);
     auto *open = new QPushButton(tr("Open…"), this);
     open->setObjectName(QStringLiteral("welcomeOpen"));
     connect(open, &QPushButton::clicked, this, &WelcomeView::browseRequested);
@@ -75,6 +82,7 @@ WelcomeView::WelcomeView(QWidget *parent)
     auto *newImage = new QPushButton(tr("New Image…"), this);
     newImage->setObjectName(QStringLiteral("welcomeNewImage"));
     connect(newImage, &QPushButton::clicked, this, &WelcomeView::newImageRequested);
+    actions->addWidget(m_learn);
     actions->addWidget(open);
     actions->addWidget(newFile);
     actions->addWidget(newImage);
@@ -132,6 +140,12 @@ void WelcomeView::setReadiness(bool missing, const QStringList &lines)
     m_readinessMissing = missing;
     m_readiness->setText(lines.join(QLatin1Char('\n')));
     applyAppearance();
+}
+
+void WelcomeView::setLearnAvailable(bool available)
+{
+    if (m_learn)
+        m_learn->setVisible(available);
 }
 
 void WelcomeView::setStats(const Stats &stats)

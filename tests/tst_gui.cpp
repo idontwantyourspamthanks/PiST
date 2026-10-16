@@ -640,6 +640,10 @@ private slots:
     /// The welcome view's doors follow the session: demo rows on a first run,
     /// the user's own recents once there are any, and a row opens its file.
     void welcomeViewDoorwaysFollowTheState();
+    /// A demo row hands the doorway a .pistproject; clicking it opens the source
+    /// that project is named after, never the project file as a text document
+    /// (docs/tutorial-plan.md §1.2).
+    void welcomeDemoRowOpensTheSource();
     /// Losing an open document's file on disk is a question the user answers,
     /// not a silent ghost tab.
     void deletingAnOpenFileOnDiskAsksForRescue();
@@ -6964,6 +6968,59 @@ void TstGui::shippedTemplatesAssemble()
         QVERIFY2(QFileInfo::exists(prg),
                  qPrintable(QStringLiteral("no output for %1").arg(templateLabel(kind))));
     }
+}
+
+// The welcome view's demo rows hand over a `.pistproject`. Clicking one must open the
+// *source* that project is named after: `openPathImpl` has no branch for a project file, so
+// the path used to fall through to the editor and the JSON opened as a text document
+// (docs/tutorial-plan.md §1.2 — this test is that defect's pin).
+void TstGui::welcomeDemoRowOpensTheSource()
+{
+    if (WelcomeView::demoProjects().isEmpty())
+        QSKIP("this build is not running from a source tree with demo/");
+
+    MainWindow window;
+    auto *welcome = window.findChild<WelcomeView *>(QStringLiteral("welcomeView"));
+    QVERIFY(welcome);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+
+    // This test opens a real file, which sets the remembered last source and
+    // adds a recent. Put it back: the doorway tests that follow assert on the
+    // recents the session actually had, and a test must not hand them its own.
+    const QString previousLastSource = settings::lastSourcePath();
+
+    QToolButton *demoRow = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !welcome->findChildren<QToolButton *>(QStringLiteral("welcomeRow")).isEmpty(), 5000);
+    for (QToolButton *row : welcome->findChildren<QToolButton *>(QStringLiteral("welcomeRow"))) {
+        if (row->toolTip().endsWith(QLatin1String(settings::kProjectSuffix))) {
+            demoRow = row;
+            break;
+        }
+    }
+    QVERIFY2(demoRow, "a demo row must point at a .pistproject");
+
+    const QString project = demoRow->toolTip();
+    const QString implied = project.left(project.size() - QLatin1String(settings::kProjectSuffix).size())
+                            + QStringLiteral(".s");
+    QVERIFY2(QFileInfo::exists(implied), qPrintable(implied));
+
+    const int before = tabs->count();
+    demoRow->click();
+    QTRY_COMPARE_WITH_TIMEOUT(tabs->count(), before + 1, 5000);
+
+    auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY2(editor, "a demo row must open a source editor");
+    QVERIFY2(!editor->filePath().endsWith(QLatin1String(settings::kProjectSuffix)),
+             qPrintable(editor->filePath()));
+    QCOMPARE(QFileInfo(editor->filePath()).fileName(), QFileInfo(implied).fileName());
+
+    // Opening the source is what loads the project beside it, so the row's whole
+    // promise — "start with this demo" — is kept by the source being current.
+    QCOMPARE(QFileInfo(settings::lastSourcePath()).fileName(), QFileInfo(implied).fileName());
+
+    settings::rememberLastSource(previousLastSource);
 }
 
 // The welcome view's doors are the session's state made visible: the demos on

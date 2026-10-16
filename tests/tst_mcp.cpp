@@ -280,16 +280,20 @@ private slots:
         // Pin the whole set: a renamed or dropped tool is how an agent's
         // workflow breaks without anything here noticing.
         QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
-                                     "pist_build_release", "pist_cmd", "pist_console",
+                                     "pist_build_release", "pist_clear_breakpoint",
+                                     "pist_cmd", "pist_console",
                                      "pist_continue",
-                                     "pist_disasm", "pist_open", "pist_problems",
+                                     "pist_disasm", "pist_goto", "pist_new_file", "pist_open",
+                                     "pist_problems",
                                      "pist_profile_results", "pist_profile_start",
                                      "pist_profile_stop", "pist_read", "pist_readmem",
+                                     "pist_reference",
                                      "pist_run", "pist_save", "pist_screenshot",
+                                     "pist_set_breakpoint",
                                      "pist_setmem", "pist_setreg", "pist_state",
                                      "pist_step", "pist_stepover", "pist_stop",
                                      "pist_symbols", "pist_tabs", "pist_watch",
-                                     "pist_watchpoint"}));
+                                     "pist_watchpoint", "pist_where"}));
     }
 
     void buildReleaseMapsToTheVerb()
@@ -306,6 +310,71 @@ private slots:
         ide.send("ok\n");
         const QJsonObject reply = waitReply(1);
         QCOMPARE(resultText(reply), QStringLiteral("ok"));
+        QVERIFY(!resultIsError(reply));
+    }
+
+    void teachingToolsMapToTheirVerbs_data()
+    {
+        QTest::addColumn<QString>("tool");
+        QTest::addColumn<QJsonObject>("args");
+        QTest::addColumn<QString>("expected");
+
+        const auto args = [](std::initializer_list<QPair<QString, QJsonValue>> pairs) {
+            QJsonObject object;
+            for (const auto &pair : pairs)
+                object.insert(pair.first, pair.second);
+            return object;
+        };
+
+        // The teaching layer's tools: an agent has to be able to point at a line,
+        // make a starter file, ask where the program is and set a breakpoint
+        // without that breakpoint being a toggle (docs/tutorial-plan.md §13 L3).
+        QTest::newRow("set_breakpoint line")
+            << QStringLiteral("pist_set_breakpoint") << args({ { QStringLiteral("line"), 16 } })
+            << QStringLiteral("setbreakpoint 16");
+        QTest::newRow("set_breakpoint label")
+            << QStringLiteral("pist_set_breakpoint") << args({ { QStringLiteral("label"), QStringLiteral("count") } })
+            << QStringLiteral("setbreakpoint count");
+        QTest::newRow("clear_breakpoint line")
+            << QStringLiteral("pist_clear_breakpoint") << args({ { QStringLiteral("line"), 21 } })
+            << QStringLiteral("clearbreakpoint 21");
+        QTest::newRow("goto line")
+            << QStringLiteral("pist_goto") << args({ { QStringLiteral("line"), QStringLiteral("16") } })
+            << QStringLiteral("goto 16");
+        QTest::newRow("goto file:line")
+            << QStringLiteral("pist_goto") << args({ { QStringLiteral("line"), QStringLiteral("hello.s:16") } })
+            << QStringLiteral("goto hello.s:16");
+        QTest::newRow("goto a numeric line")
+            << QStringLiteral("pist_goto") << args({ { QStringLiteral("line"), 16 } })
+            << QStringLiteral("goto 16");
+        QTest::newRow("newfile")
+            << QStringLiteral("pist_new_file")
+            << args({ { QStringLiteral("kind"), QStringLiteral("gemdos") },
+                      { QStringLiteral("path"), QStringLiteral("/tmp/a.s") } })
+            << QStringLiteral("newfile gemdos /tmp/a.s");
+        QTest::newRow("reference on a call")
+            << QStringLiteral("pist_reference") << args({ { QStringLiteral("topic"), QStringLiteral("Cconws") } })
+            << QStringLiteral("reference Cconws");
+        QTest::newRow("reference bare") << QStringLiteral("pist_reference") << args({})
+                                        << QStringLiteral("reference");
+        QTest::newRow("where") << QStringLiteral("pist_where") << args({})
+                               << QStringLiteral("where");
+    }
+
+    void teachingToolsMapToTheirVerbs()
+    {
+        QFETCH(QString, tool);
+        QFETCH(QJsonObject, args);
+        QFETCH(QString, expected);
+
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"), callParams(tool, args));
+        QCOMPARE(ide.nextLine(), expected);
+        ide.send("ok\n");
+        const QJsonObject reply = waitReply(1);
         QVERIFY(!resultIsError(reply));
     }
 

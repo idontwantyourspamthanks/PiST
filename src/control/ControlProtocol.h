@@ -60,6 +60,16 @@ inline constexpr Verb kVerbs[] = {
     {"continue", "continue         resume execution", false},
     {"breakpoint", "breakpoint <n|label>   toggle a breakpoint at a source line (code\n"
                    "                 lines only) or at a symbol's definition", false},
+    {"setbreakpoint", "setbreakpoint <n|label>   set a breakpoint, never clearing one that is\n"
+                      "                 already there", false},
+    {"clearbreakpoint", "clearbreakpoint <n|label>   take a breakpoint away", false},
+    {"goto", "goto <line|file:line>   put the editor on a line, without taking the keyboard",
+     false},
+    {"newfile", "newfile <blank|gemdos|keyboard|image> <path>   create a file from a New File\n"
+                "                 template", false},
+    {"reference", "reference [topic]   raise the instruction/reference dock, on a mnemonic or\n"
+                  "                 an OS call when one is named", false},
+    {"where", "where            the source line the program counter maps to, as JSON", true},
     {"symbols", "symbols [filter] the build's symbols as a JSON array", true},
     {"readmem", "readmem <a> <n>  read <n> bytes at <a> as JSON rows (when stopped)", true},
     {"disasm", "disasm [a]       disassembly as JSON rows (when stopped)", true},

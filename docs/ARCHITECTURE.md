@@ -7,8 +7,8 @@ reasoning, is [FUTURE.md](FUTURE.md).
 
 PiST is a Qt 6 (Widgets) IDE for writing 68000 assembly for the Atari ST. You write assembly in
 the editor, build it with `vasmm68k_mot`, run it in Hatari, and debug it — breakpoints, stepping,
-registers, memory, disassembly, watchpoints, a stack view and hardware registers — with the editor
-following the program counter.
+registers, memory, disassembly, watchpoints, a stack view and hardware registers — with the
+execution point marked in the editor and the caret left where the user put it.
 
 ## The one rule that shapes everything
 
@@ -32,7 +32,7 @@ Everything else in this document is a consequence of that rule. The debug transp
 |---|---|
 | `src/main.cpp` | Entry point. Pins `QT_QPA_PLATFORM=xcb` when `DISPLAY` is set (needed for X11 embedding), parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
 | `src/ui/` | `MainWindow` (the application shell: document tabs via a central `QTabWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor) and `ConsoleInput` (the debug console's history/completion line edit) — the emulator display panel (`EmulatorDisplayWidget`, media frames and the input grab), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`). |
-| `src/editor/` | `CodeEditor` (the editor widget: line-number gutter with breakpoint dots, execution-line highlight, error markers and profiler heat, an optional git blame lane to the left of that gutter, find/replace bar), `AsmHighlighter` (m68k Motorola syntax, painted with the `EditorTheme` it is handed), `EditorTheme` (the monospace font, the effective darkness and exactly the colours the editor and its highlighter read — the value `ui/` builds and hands over, so `editor/` includes nothing from `ui/`), `InstrRef` (the instruction-reference table and lookup behind the dock), `OsCallRef`/`OsCallScan` (the GEMDOS/BIOS/XBIOS table and the trap-sequence scanner behind the same dock), `OsCallBinding` (the canonical insertable call sequence — argument pushes, function number, trap, stack cleanup — and the stack byte count beside it) and `IncludeNav` (include-target/label resolution behind Ctrl+click). |
+| `src/editor/` | `CodeEditor` (the editor widget: line-number gutter with breakpoint dots and the program counter's marker — the execution-line highlight, the PC bar, and the ▶ whose click engages following (`executionMarkerClicked`), with `followExecutionLine()` as the follow path's caret move — error markers and profiler heat, an optional git blame lane to the left of that gutter, find/replace bar), `AsmHighlighter` (m68k Motorola syntax, painted with the `EditorTheme` it is handed), `EditorTheme` (the monospace font, the effective darkness and exactly the colours the editor and its highlighter read — the value `ui/` builds and hands over, so `editor/` includes nothing from `ui/`), `InstrRef` (the instruction-reference table and lookup behind the dock), `OsCallRef`/`OsCallScan` (the GEMDOS/BIOS/XBIOS table and the trap-sequence scanner behind the same dock), `OsCallBinding` (the canonical insertable call sequence — argument pushes, function number, trap, stack cleanup — and the stack byte count beside it) and `IncludeNav` (include-target/label resolution behind Ctrl+click). |
 | `src/git/` | `GitService` drives `git` as a subprocess (argument lists only: status, blame, commit, pull, push, `switch` / `switch -c`, `diff`, `log`, `show`) and `GitParse` reads porcelain. The panel is `ui/GitPanel`. |
 | `src/image/` | Sprite document and ST graphics: `ImageDocument` (v2 `.pim` JSON: phases own their frames and cell size and carry sprite-sheet placement; `StFormats::composeSheet()`/`sliceSheetCells()` move between placed phases and sheet images), `Palette` (STfm 512 / STe 4096 cubes and colour words — the 4-bit-per-channel machine words, with `rgbFromStfmWord`/`stfmColourWord` for the 3-bit words the file formats actually store), `Tools` (brush/line/rect/fill), `Transform` (flip, rotate, region cut/stamp/move, onion/phase math), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include, plus `spriteSafeDocument()` — the palette shift that keeps colour 0 as background so an export re-imports losslessly — and `bitplaneLayout()`/`exportBitplaneData()` for the sprite editor's `.dat` — the selected blocks of one phase, every frame of it, laid out so a frame and a pre-shift are strides — plus `exportScrollDemo()`, which writes an `incbin`ing scroller that animates and scrolls them). |
 | `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — `SymbolTable` (labels/equates from a vasm listing, feeding the Symbols dock and console completion) and `FloppyImage` (AUTO-folder FAT12 writer for pre-1.04 TOS, plus `.st` / `.msa` listing, export, and in-place edits — `readFileRaw` extracts a file's bytes and `updateImage` rewrites an existing image with entries added and removed) with `FloppyTransfer` (`floppy::Transfer` — the one implementation of the three disk/host/between-disk transfers the browser runs, widget-free behind a `Host` interface). |
@@ -309,6 +309,40 @@ Source lines come from vasm's `-L` listing, **not** DWARF. Each listing maps a s
 live basepage supplies the runtime *section addresses*. `ProgramLineMap::setLiveBases()` combines
 the three to resolve line ↔ address in both directions. This is what turns a gutter click into a
 `b pc = $addr` and a stopped PC back into a highlighted source line.
+
+### Where the caret is (the program counter's marker)
+
+`MainWindow::locationFromPc()` runs on every `stateUpdated` and turns the stopped PC into a source
+line — but it does **not** move the caret unless the user has handed it over. The rules, and the
+state they are made of (docs/cursor-plan.md §3, the spec of record for this behaviour):
+
+- **Placement vs movement.** The session's first mapped stop is a *placement* (`m_pcPlaced`):
+  marker, chips, and nothing else. Every later stop is a *movement*, and a movement moves the caret
+  only while `m_pcFollow` is set. The asymmetry is what stops Run's entry stop — which lands on the
+  program's first line, near the top of the file, nowhere near the caret — from yanking the caret
+  out from under whoever is editing, without giving up "the caret walks the code" for a user who
+  asks for it.
+- **Ownership.** `m_pcFollow` is set by the three engage affordances: Run ▸ Follow Execution
+  (`m_actFollow`, checkable — the tick *is* the state), a click on the session chip
+  (`statusSession`, handled in `MainWindow::eventFilter` because a `QLabel` has no clicked signal),
+  and a click on the ▶ the gutter paints beside the marker line (`CodeEditor::
+  executionMarkerClicked`). Every other caret movement — typing, a click, an arrow key, a
+  navigation such as the Go-to bar or an error jump — releases it, arriving through the same
+  `cursorPositionChanged`; the follow path therefore sets `m_pcFollowInProgress` around its own
+  move so that move is not mistaken for the user's. Run-to-Cursor releases explicitly: it is a
+  caret gesture that never moves the caret.
+- **The marker.** `setExecutionMarker()` sets `CodeEditor::setCurrentExecutionLine()` on the PC's
+  file and clears it on every other open editor, so a marker always means "the program is here";
+  `clearSessionViews()` clears it everywhere when the session ends. An unmapped PC (library or ROM
+  code) clears it and nothing else.
+- **The move itself.** `CodeEditor::followExecutionLine()` is the follow path's caret move: it
+  takes no focus and scrolls only when the marker's line is not already fully visible, whereas
+  `gotoLine()` — centre, focus — stays the *user* navigation (Go-to bar, error jump, breakpoint,
+  symbol). Which tab is on top is raised only while following; a stop on a file that is not open
+  opens it only while following, and a released stop leaves both alone (the session chip carries
+  the location). The path itself never calls `setFocus()`: the one way the keyboard can move with a
+  stop is Qt's own, when the raise hides the page focus was in — a hidden editor cannot hold it —
+  and that only happens to a user who asked for the raise by engaging.
 
 ### The debug surface
 

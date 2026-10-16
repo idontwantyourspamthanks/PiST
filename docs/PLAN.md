@@ -1187,6 +1187,21 @@ load-bearing dependency — which the detection order above already guarantees.
   directory, which a flagless `pist-mcp` reads (verified live: raw connection refused, shim
   authenticates with no flags). `listen(0)` publishes nothing, so tests no longer overwrite a
   real IDE's file. All pinned in `tst_remotecontrol`
+- **The editor does not follow the program counter at every stop.** The session's first mapped
+  stop is a *placement* — marker and chips, with the caret, the scroll position, the focus and
+  the tab layout untouched — and only the stops after it move the caret, and only while the user
+  has engaged following (Run ▸ Follow Execution, a click on the session chip, or the ▶ the gutter
+  paints on the marker line). Any caret move of the user's own releases it, and there is no
+  save/restore state anywhere. Verified in live Hatari sessions by the seven `tst_gui` tests of
+  docs/cursor-plan.md §8, each of which fails on the pre-change tree: three behaviourally — the
+  entry stop dragged the caret to the program's first line, a breakpoint hit moved it, and an
+  unmapped PC left a stale marker behind on a second editor — and four because they engage the
+  follow path, which did not exist. So the placement/movement asymmetry is pinned, not merely
+  asserted. This supersedes "the editor follows the program counter at every stop", which
+  the README, `AGENTS.md`, the `locationFromPc` comment and two `tst_gui` comment blocks claimed
+  and this plan never did; the claim is gone from all of them. Rationale, and the alternatives
+  rejected:
+  docs/cursor-plan.md §1, §3, §6
 
 ### Verified by CI (executed on real runners)
 

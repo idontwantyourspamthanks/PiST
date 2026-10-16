@@ -14,6 +14,7 @@
 class QFrame;
 class QLabel;
 class QLineEdit;
+class QPointF;
 class QPushButton;
 class QToolButton;
 
@@ -96,7 +97,26 @@ public:
     void setBlame(const GitBlameMap &lines);
     QString blameTip(int line) const;
 
+    /// Move the caret to `line`, centre the view on it and put the keyboard
+    /// there — the user navigation ("take me to this line"). The program
+    /// counter's own move is followExecutionLine() below.
     void gotoLine(int line);
+
+    /// Move the caret to `line` for the program counter — the debugger's path
+    /// to the caret, and the deliberate counterpart of gotoLine() above.
+    ///
+    /// A gotoLine() call is the user saying "take me there": it centres the
+    /// view and takes the keyboard. A stop is not: it arrives while the user is
+    /// typing, so this moves the caret and nothing else — no focus, and no
+    /// scroll unless the line is not already fully on screen. The caret is only
+    /// ever moved by the user or by this call, made on their behalf when they
+    /// have handed it to the program counter (docs/cursor-plan.md §3.2, §4.1).
+    void followExecutionLine(int line);
+
+    /// Whether a click at `pos` in the line-number area lands on the PC wedge
+    /// beside `line` — the gutter's engage affordance (cursor-plan §5). False
+    /// on any other line, so the ordinary click still toggles a breakpoint.
+    bool isPcWedgeClick(const QPointF &pos, int line) const;
 
     /// Whether the find bar is showing, and how many hits the current search
     /// has. Exposed so a test can assert what the user sees without reaching
@@ -119,6 +139,12 @@ signals:
     /// this toggles a breakpoint or opens an editor for its condition.
     void gutterClicked(int line, Qt::MouseButton button);
     void gutterContextMenuRequested(int line, const QPoint &globalPos);
+
+    /// The PC wedge in the gutter was clicked: the user is handing the caret to
+    /// the program counter (cursor-plan §3.3). The editor only reports the
+    /// gesture — the window does the navigation, because the PC's location is
+    /// its business, not the editor's.
+    void executionMarkerClicked();
 
     /// The viewport stopped moving, or the text changed, while blame is on.
     /// The window blames this range and no other.
@@ -156,6 +182,9 @@ private slots:
 
 private:
     void refreshExtraSelections();
+    /// Whether the whole of `line` is inside the viewport, so a follower can
+    /// leave the scroll alone rather than centring on a line already in view.
+    bool isLineFullyVisible(int line) const;
     void buildFindBar();
     void buildGotoBar();
     void updateViewportMargins();

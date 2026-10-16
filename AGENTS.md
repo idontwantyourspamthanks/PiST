@@ -7,8 +7,9 @@ you what the project is, the rules you must not break, and where to find everyth
 
 **PiST** — an IDE for Atari ST 68000 assembly development, built with Qt 6 (Widgets). You write
 assembly, build it with `vasmm68k_mot`, run it in the Hatari emulator, and debug it (breakpoints,
-stepping, registers, memory, disassembly, watchpoints, stack, hardware registers) with the editor
-following the program counter. C++17, CMake, GPL-2.0-or-later.
+stepping, registers, memory, disassembly, watchpoints, stack, hardware registers) with the
+execution point marked in the editor and your caret left where you put it. C++17, CMake,
+GPL-2.0-or-later.
 
 ## Build and test
 

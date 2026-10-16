@@ -19,7 +19,9 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPolygonF>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QStringConverter>
 #include <QTextBlock>
@@ -73,8 +75,18 @@ protected:
             return;
         }
         const int line = m_editor->lineAtY(event->position().y());
-        if (line > 0)
-            emit m_editor->gutterClicked(line, event->button());
+        if (line > 0) {
+            // The PC wedge is the marker's own affordance: a left click there
+            // hands the caret to the program counter rather than toggling a
+            // breakpoint on the line the machine happens to be stopped at. Only
+            // the left button: the right one belongs to the breakpoint
+            // condition menu, as it does everywhere else in the gutter.
+            if (event->button() == Qt::LeftButton
+                && m_editor->isPcWedgeClick(event->position(), line))
+                emit m_editor->executionMarkerClicked();
+            else
+                emit m_editor->gutterClicked(line, event->button());
+        }
         event->accept();
     }
 
@@ -88,6 +100,9 @@ protected:
         const int line = m_editor->lineAtY(event->position().y());
         if (event->position().x() < m_editor->blameLaneWidth() && line > 0)
             setToolTip(m_editor->blameTip(line));
+        else if (m_editor->isPcWedgeClick(event->position(), line))
+            setToolTip(CodeEditor::tr("The program is here — click to move the caret "
+                                      "with the program counter"));
         else
             setToolTip(QString());
         QWidget::mouseMoveEvent(event);
@@ -117,6 +132,17 @@ bool isWordCharacter(const QChar &character)
 /// total the walk never reached, and the replace actions re-scan without it, so
 /// nothing but the label and the reach of Next/Previous depends on it.
 constexpr int kMaxMatches = 2000;
+
+/// The gutter column to the right of the line numbers that the program
+/// counter's ▶ occupies, and nothing else.
+///
+/// It is reserved on every row, like the dot column to the left of the
+/// numbers, so a stop never shifts the digits beside it (cursor-plan §5), and
+/// it is wide enough for the wedge to clear both the number it follows and the
+/// breakpoint dot, which shares its line whenever the machine stops *at* a
+/// breakpoint. The wedge is also the click target that hands the caret to the
+/// program counter — see CodeEditor::isPcWedgeClick.
+constexpr int kPcWedgeColumn = 12;
 
 /// The hit the selection is on when it is one of `hits`, else -1.
 int indexOfSelectedHit(const QList<QTextCursor> &hits, const QTextCursor &selection)
@@ -354,7 +380,11 @@ int CodeEditor::lineNumberAreaWidth() const
         max /= 10;
         ++digits;
     }
-    return blameLaneWidth() + 16 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    // Blame lane | dot column | digits | the PC wedge's column. The wedge
+    // column is part of every row for the reason in its own comment above: the
+    // line numbers must not move when the program counter does.
+    return blameLaneWidth() + 16 + kPcWedgeColumn
+           + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
 }
 
 void CodeEditor::updateLineNumberAreaWidth(int)
@@ -508,12 +538,20 @@ void CodeEditor::setCurrentExecutionLine(int line)
 {
     m_currentExecutionLine = line;
     refreshExtraSelections();
+    // The marker is in the gutter too (the PC bar and its wedge), and the
+    // gutter is a widget of its own: setExtraSelections repaints the viewport
+    // only. The follow path used to move the caret and scroll, which repainted
+    // it as a side effect; a stop that moves neither now has to say so.
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
 }
 
 void CodeEditor::clearCurrentExecutionLine()
 {
     m_currentExecutionLine = 0;
     refreshExtraSelections();
+    if (m_lineNumberArea)
+        m_lineNumberArea->update();
 }
 
 void CodeEditor::setErrorLines(const QList<int> &lines)
@@ -637,6 +675,48 @@ void CodeEditor::gotoLine(int line)
     setFocus();
 }
 
+bool CodeEditor::isLineFullyVisible(int line) const
+{
+    if (line <= 0 || line > blockCount())
+        return false;
+    const QRectF box = blockBoundingGeometry(document()->findBlockByNumber(line - 1))
+                           .translated(contentOffset());
+    return box.top() >= 0 && box.bottom() <= viewport()->height();
+}
+
+void CodeEditor::followExecutionLine(int line)
+{
+    if (line <= 0 || line > blockCount())
+        return;
+
+    // Asked before the move: once the caret is on the line, whether it *was*
+    // on screen is gone.
+    const bool onScreen = isLineFullyVisible(line);
+    const int scrollX = horizontalScrollBar()->value();
+    const int scrollY = verticalScrollBar()->value();
+
+    setTextCursor(QTextCursor(document()->findBlockByNumber(line - 1)));
+
+    if (onScreen) {
+        // The line was already in view, so the stop must not move the viewport:
+        // setTextCursor may scroll to bring the caret into view, and that nudge
+        // is precisely the unasked-for movement this path exists to avoid.
+        horizontalScrollBar()->setValue(scrollX);
+        verticalScrollBar()->setValue(scrollY);
+    } else {
+        centerCursor();
+    }
+    // Deliberately no setFocus(): a stop arrives while the user is typing, and
+    // the keyboard is theirs. gotoLine() is the path that takes it.
+}
+
+bool CodeEditor::isPcWedgeClick(const QPointF &pos, int line) const
+{
+    if (line <= 0 || line != m_currentExecutionLine)
+        return false;
+    return pos.x() >= lineNumberAreaWidth() - kPcWedgeColumn;
+}
+
 void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
 {
     QPainter painter(m_lineNumberArea);
@@ -647,7 +727,11 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
     // click toggles it. With the lane off the shift is zero.
     const int lane = blameLaneWidth();
     const int width = m_lineNumberArea->width();
-    const int gutter = width - lane;
+    // The number column's own width: the blame lane when it is on, then the dot
+    // column and the digits — `gutter` is a width, and `lane + gutter` is where
+    // the reserve for the wedge begins. The numbers were exactly this wide
+    // before the wedge existed, and they keep that geometry.
+    const int gutter = width - lane - kPcWedgeColumn;
     if (lane > 0) {
         painter.setPen(m_theme.muted);
         painter.drawLine(lane - 1, event->rect().top(), lane - 1, event->rect().bottom());
@@ -692,8 +776,24 @@ void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent *event)
                 painter.fillRect(lane, top, gutter, bottom - top, tint);
             }
 
-            if (line == m_currentExecutionLine)
+            if (line == m_currentExecutionLine) {
                 painter.fillRect(lane, top, 3, bottom - top, m_theme.gutterPc);
+                // The ▶ beside the number: what makes the stop read as "the
+                // program is here" rather than as a stray selection when the
+                // caret (and its current-line painting) is on another line. It
+                // is also the click target that hands the caret to the PC —
+                // see isPcWedgeClick and executionMarkerClicked.
+                const qreal mid = top + (bottom - top) / 2.0;
+                const int left = lane + gutter + 2;
+                const QPolygonF wedge({ QPointF(left, mid - 4),
+                                        QPointF(left, mid + 4),
+                                        QPointF(left + kPcWedgeColumn - 4, mid) });
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                painter.setBrush(m_theme.gutterPc);
+                painter.setPen(Qt::NoPen);
+                painter.drawPolygon(wedge);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+            }
 
             if (m_breakpointLines.contains(line)) {
                 // A filled dot, drawn rather than glyph-based so it does not

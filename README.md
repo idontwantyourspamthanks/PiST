@@ -101,6 +101,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     the machine is on, and every stop brings it along until you move the caret yourself.
     Run ▸ Follow Execution, or click the session chip in the status bar, or the ▶ in the gutter
   - **edit registers and memory** while stopped — poke a value and keep debugging
+  - **Stop hooks** — a **Lua script that runs at every stop**, able to read and write memory and
+    registers, log to the console and `continue()` the program, so a harness, a trainer or a
+    logging pass needs no rebuild (Run ▸ Stop hooks…, documented below)
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
     armed as change-tracking breakpoints), settable from Run ▸ Add watchpoint or the remote control
@@ -238,12 +241,16 @@ control socket is absent.
 
 ## Building
 
-Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets and Network), a C++17 compiler.
+Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets, Network and Multimedia), a C++17 compiler.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+The configure step fetches **Lua 5.4.8**, the stop-hook scripting engine, by checksum into the
+build tree (never into the repository). A build with no network passes the file it already has:
+`-DPIST_LUA_TARBALL=/path/to/lua-5.4.8.tar.gz` — the hash is verified either way.
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
@@ -559,6 +566,55 @@ close it. Because `watch` and its `ok` share the socket with the events, a clien
 must read the `ok` before treating subsequent lines as events.
 
 The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
+
+## Stop hooks
+
+A stop hook is a **Lua script that runs at every debugger stop** — every breakpoint, watchpoint,
+pause, step, and the entry stop — with the machine held stopped. It can look at the machine, change
+it, print to the console and decide whether the program continues. Nothing about your program
+changes, so behaviour is extended without a rebuild: feed a harness its input, poke a value for a
+trainer, or log what a routine is working on.
+
+Set one up in **Run ▸ Stop hooks…**: choose the script, switch the hook on, and say whether the
+script's `continue()` may resume the program without asking. The choice lives in the project file
+(a `hooks` object in `.pistproject`), so it travels with the source.
+
+The whole API — flat globals, nothing imported:
+
+| Call | Meaning |
+|---|---|
+| `readmem(addr, len)` | a string of `len` bytes at `addr` (1 to 4096) |
+| `writemem(addr, value)` | write one byte |
+| `readreg(name)` | a register: `d0`–`d7`, `a0`–`a7`, `pc`, `sr`, `usp`, `isp` |
+| `writereg(name, value)` | the writable ones: `d0`–`d7`, `a0`–`a7`, `pc`, `sr` |
+| `log(text)` (also `print`) | one line in the console dock, prefixed `[hook] ` |
+| `continue()` (also `resume`) | let the program run on |
+
+A trainer, in full — hold the player's lives at 9 and say so:
+
+```lua
+local lives = string.byte(readmem(0x0001a2f4, 1))
+if lives < 9 then
+  writemem(0x0001a2f4, 9)
+  log("lives were " .. lives .. ", restored")
+end
+```
+
+The limits, stated rather than discovered:
+
+- **No I/O.** A script reaches the machine, the console and `continue()` — not the filesystem, the
+  network or the environment. Only Lua's `base`, `table`, `string` and `math` libraries are open,
+  so this table is the whole surface.
+- **A 500 ms budget per stop.** A script that runs longer is interrupted and the console says so;
+  the machine is left stopped.
+- **An error leaves the machine stopped** and reports the script and the line: the program is never
+  resumed on a state a script only half-changed.
+- **Writes happen only while stopped.** A hook only ever runs at a stop, so this does not constrain
+  a script — but a debugger command that arrives while the machine is running would be deferred by
+  the emulator to the *next* stop, and nothing here relies on that.
+
+The engine is [Lua 5.4.8](https://www.lua.org/), pinned by checksum and linked statically;
+[docs/stop-hooks-plan.md](docs/stop-hooks-plan.md) is the design and the measurement behind it.
 
 ## MCP server (`pist-mcp`)
 

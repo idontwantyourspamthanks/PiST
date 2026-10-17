@@ -26,6 +26,7 @@
 #include "emu/SessionConfig.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "hooks/StopHookRunner.h"
 #include "toolchain/Toolchain.h"
 
 #include <QDir>
@@ -377,6 +378,9 @@ private slots:
     void breaksInOnIllegalInstruction();
     void doesNotBreakInOnNormalRun();
     void sourceLineBreakpointFiresAndResolvesBack();
+    /// The stop hook end to end: the shipped runner, a real Lua script, a real
+    /// session — the scripted write read back from the debugger itself.
+    void stopHookScriptWritesThroughTheDebugger();
     /// Continue at the entry stop used to discard unsent `b pc=` commands.
     void resumeFlushesPendingBreakpointCommands();
     /// A command whose stderr output pauses longer than the settle period must
@@ -1085,6 +1089,99 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     QCOMPARE(back.line, 5);
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));
+
+    host.stop();
+}
+
+/// The stop hook against a real session (docs/stop-hooks-plan.md §12): the
+/// shipped runner is driven at the entry stop with a Lua script that writes a
+/// byte and a register, reads the byte back, and logs what it read; the debugger
+/// is then asked to read both back itself. The engine, the runner's round-trips
+/// and the typed intents are exercised end to end — everything but MainWindow's
+/// trigger wiring, which is UI.
+///
+/// Nothing is resumed: the point is the round trip, not a second stop.
+void TstEmulatorHost::stopHookScriptWritesThroughTheDebugger()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/hook");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &line) { m_log.append(line); });
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &state) { last = state; });
+
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "no entry stop");
+
+    host.loadSymbols();
+    QVERIFY(finished.wait(15000));
+    finished.clear();
+    host.readBasepage();
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.hasBases(), 5000);
+
+    // A byte inside the program's own data area; nothing resumes, so no layout
+    // assumption can do harm beyond the value being read back.
+    const quint32 target = (last.dataBase ? last.dataBase : last.textBase) + 0x100;
+
+    const QString script = m_work->path() + QStringLiteral("/hook.lua");
+    QFile file(script);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write(QStringLiteral("writemem(0x%1, 0x5a)\n"
+                              "writereg(\"d0\", 0x1234)\n"
+                              "local back = string.byte(readmem(0x%1, 1))\n"
+                              "log(\"read back \" .. back)\n")
+                   .arg(target, 8, 16, QLatin1Char('0'))
+                   .toUtf8());
+    file.close();
+
+    QStringList console;
+    StopHookRunner::Host hookHost;
+    hookHost.backend = [&host] { return &host; };
+    hookHost.log = [&console](const QString &line) { console << line; };
+    hookHost.scriptPath = [&script] { return script; };
+    hookHost.enabled = [] { return true; };
+    hookHost.autoContinue = [] { return false; };
+    hookHost.resume = [] {};
+    hookHost.refresh = [] {};
+    hookHost.holdConsole = [](bool) {};
+    StopHookRunner runner(hookHost);
+
+    runner.onStopPublished(last);
+    QTRY_VERIFY_WITH_TIMEOUT(!runner.lastRunSummary().isEmpty(), 30000);
+
+    // The script read its own write back through the transport, byte-exact.
+    QVERIFY2(console.contains(QStringLiteral("[hook] read back 90")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // Now the debugger itself: the byte is where the script put it.
+    QList<MemoryRow> rows;
+    connect(&host, &EmulatorHost::memoryDumpReady, this,
+            [&rows](quint32, const QList<MemoryRow> &dump, int) { rows = dump; });
+    finished.clear();
+    host.requestMemoryDump(target, 1, -1);
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(!rows.isEmpty(), 5000);
+    QCOMPARE(rows.first().address, target);
+    QCOMPARE(rows.first().bytes.value(0), quint8(0x5a));
+
+    // ...and so is the register.
+    host.dumpRegisters();
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+    QCOMPARE(last.regs.d[0], quint32(0x1234));
 
     host.stop();
 }

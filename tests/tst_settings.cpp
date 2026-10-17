@@ -129,6 +129,10 @@ private slots:
     // A relative path in the file means "beside the project", so it has to be
     // read against the project file's directory, not the process's.
     void resolvesRelativePathsAgainstProjectFile();
+    // The stop hook's project keys: the object survives a round-trip, its script
+    // path rebases like every other relative path, and a wrong-typed `hooks`
+    // value is refused by name rather than read as "off".
+    void stopHookSettingsRoundTrip();
 
     // A file written by a newer PiST must be refused, not silently downgraded and
     // then overwritten, and a malformed entry must fail the load by name.
@@ -366,6 +370,48 @@ void TstSettings::resolvesRelativePathsAgainstProjectFile()
              QStringLiteral("inc"));
     QCOMPARE(build.value(QStringLiteral("additionalSources")).toArray().at(0).toString(),
              QStringLiteral("src/extra.s"));
+}
+
+void TstSettings::stopHookSettingsRoundTrip()
+{
+    QTemporaryDir projectDir;
+    QVERIFY(projectDir.isValid());
+    const QString path = projectDir.filePath(QStringLiteral("proj.pistproject"));
+
+    ProjectSettings original;
+    original.stopHookPath = QStringLiteral("hooks/trainer.lua");
+    original.stopHookEnabled = true;
+    original.stopHookAutoContinue = true;
+
+    QString error;
+    QVERIFY2(settings::save(original, path, &error), qPrintable(error));
+
+    ProjectSettings loaded;
+    QVERIFY2(settings::load(&loaded, path, &error), qPrintable(error));
+    QCOMPARE(loaded.stopHookEnabled, true);
+    QCOMPARE(loaded.stopHookAutoContinue, true);
+    QCOMPARE(loaded.stopHookPath,
+             projectDir.filePath(QStringLiteral("hooks/trainer.lua")));
+
+    // Absent — which is every project written before the feature: off, no error.
+    QFile bare(path);
+    QVERIFY(bare.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    bare.write(QByteArrayLiteral("{\"version\":2}"));
+    bare.close();
+    ProjectSettings defaulted;
+    QVERIFY2(settings::load(&defaulted, path, &error), qPrintable(error));
+    QVERIFY(!defaulted.stopHookEnabled);
+    QVERIFY(!defaulted.stopHookAutoContinue);
+    QVERIFY(defaulted.stopHookPath.isEmpty());
+
+    // Present but of the wrong type: refused by name, like every other container
+    // in this file, rather than read as an empty object and silently disabled.
+    QVERIFY(bare.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    bare.write(QByteArrayLiteral("{\"version\":2,\"hooks\":\"yes\"}"));
+    bare.close();
+    ProjectSettings refused;
+    QVERIFY(!settings::load(&refused, path, &error));
+    QVERIFY2(error.contains(QStringLiteral("hooks")), qPrintable(error));
 }
 
 // `version` was written but never read, so a file from a newer PiST loaded with

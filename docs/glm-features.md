@@ -108,13 +108,17 @@ test, not a mock).
 **The plan of record is [docs/stop-hooks-plan.md](stop-hooks-plan.md)**, and it
 refines two points above. The hook fires on the *published* stop — after the
 register batch, not on the raw `stoppedChanged(true)` event, where the state is
-still a batch stale and the entry stop may still be printing its dump. And the
-engine is a measured choice in the plan's L0: Lua stays on record (audience,
-in-thread interruption), with `QJSEngine` as the default candidate because the
-packaging evidence is exactly the "packaging fights back" case this entry named
-as the fallback trigger — the tree has no vendoring mechanism at all, and the
-shipped licence set is derived from the linked artifact, which a statically
-linked Lua is invisible to.
+still a batch stale and the entry stop may still be printing its dump — and it
+runs at steps too, which needed a flag of their own because `s`/`n` are not
+running→stopped transitions. The engine is settled, and it is this entry's own
+choice: **Lua 5.4.8**, pinned by checksum and linked statically. Both candidates
+were measured first (the plan's L0): Qt's `QJSEngine` costs 8,770,048 bytes of
+extra shipped libraries and can only be interrupted from a second thread, where
+Lua's count hook stops a runaway script in-thread and adds ~345 KiB. The one Lua
+cost this entry's fallback clause did not anticipate is bookkeeping rather than
+packaging — a statically linked library is invisible to the artifact scan that
+derives the shipped licence set, so its MIT notice is named explicitly and that
+exception is written down.
 
 ---
 

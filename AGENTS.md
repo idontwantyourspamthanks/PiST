@@ -94,10 +94,11 @@ code. Use this table for a quick lookup:
 | First-run tool/ROM setup | `src/ui/SetupDialog.{h,cpp}` + `src/toolchain/ToolFetch.{h,cpp}` |
 | The debug backends (native stdin transport, HRDB TCP) | `src/emu/DebugBackend.h` (the contract), `src/emu/{EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 |The emulator display panel (media channel frames, input grab)|`src/ui/EmulatorDisplayWidget.{h,cpp}`|
+| The stop hook (script API, Lua engine, the runner that drives it at a stop) | `src/hooks/` (`HookApi.h`, `StopHookEngine.{h,cpp}`, `StopHookRunner.{h,cpp}`) |
 | The MCP shim (`pist-mcp`, a shipped binary) | `src/control/mcp/` |
 | The name, author and licence a software centre reports | `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, `packaging/copyright`, and the CPack block in `CMakeLists.txt` |
 | What the Linux installers put where (private prefix, what is pruned and why) | `.github/workflows/release.yml`, the deb/rpm step; `docs/PLAN.md` Phase 4 records the evidence |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_stophooks`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

@@ -47,6 +47,7 @@ class DebugSessionController;
 class DocumentWatcher;
 class ProfilerController;
 class SessionLauncher;
+class StopHookRunner;
 class InstructionRefView;
 class SymbolsView;
 class RemoteControl;
@@ -322,6 +323,9 @@ private slots:
     void clearAllDebugTargets();
     void addWatchpoint();
     void removeWatchpoint(int index);
+    /// Run ▸ Stop hooks…: choose the script, switch it on, decide whether it may
+    /// continue. Persisted in the project file (docs/stop-hooks-plan.md §9).
+    void editStopHooks();
 
 public:
     /// Write a memory byte through the debugger (the `writeMemoryByte` intent:
@@ -730,6 +734,10 @@ private:
     BreakpointWatchpointModel *m_bpModel = nullptr;
     ProfilerController *m_profiling = nullptr;
     RemoteStateAdapter *m_remoteState = nullptr;
+    /// The stop hook (docs/stop-hooks-plan.md): runs the project's script at
+    /// every published stop, from a queued turn so its read-backs are outside
+    /// the transport's emit stack.
+    StopHookRunner *m_hooks = nullptr;
 
     DebugSessionController *sessionController() const { return m_session; }
     BreakpointWatchpointModel *breakpointsModel() const { return m_bpModel; }
@@ -937,6 +945,7 @@ private:
     QAction *m_actPause = nullptr;
     QAction *m_actReleaseInput = nullptr;
     QAction *m_actAddWatchpoint = nullptr;
+    QAction *m_actStopHooks = nullptr;
 };
 
 } // namespace pist

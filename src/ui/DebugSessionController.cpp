@@ -39,6 +39,13 @@ bool DebugSessionController::consumeStopEventPending()
     return pending;
 }
 
+bool DebugSessionController::consumeStepEventPending()
+{
+    const bool pending = m_stepEventPending;
+    m_stepEventPending = false;
+    return pending;
+}
+
 bool DebugSessionController::consumeProfileSavePending()
 {
     const bool pending = m_profileSavePending;
@@ -86,6 +93,7 @@ void DebugSessionController::resetSessionState()
     m_breakpointsArmedThisSession = false;
     m_stepOutPending = false;
     m_stopEventPending = false;
+    m_stepEventPending = false;
     m_bootTurboDropped = false;
 }
 

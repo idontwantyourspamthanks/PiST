@@ -10,6 +10,11 @@ has already happened once in reverse: whether Hatari links Capstone depends on
 whether the build host had it, and a static list either ships a BSD text for a
 library that is absent or misses the text for one that is present.
 
+The deliberate exception is STATIC_LIBS below: a library linked *into* PiST
+leaves no file in the bundle to discover, so it can only be named. Lua is one,
+and its text is checked for presence like every other — the list says what to
+ship, not whether to bother.
+
 Used by the release workflow on the staged tree before archiving — and on the
 AppDir before linuxdeploy consumes it (a second linuxdeploy pass is not an
 option: re-running the qt plugin on a populated AppDir demands QML tooling a
@@ -55,6 +60,17 @@ KNOWN_LIBS = {
         ["GPL-3.0.txt", "GCC-Runtime-Exception.txt"],
         "GPL v3 or later, with the GCC Runtime Library Exception"),
 }
+
+# Components linked into the PiST binaries themselves -> (component, [texts],
+# licence name, note). A statically linked library leaves nothing in the bundle
+# for the scan above to match, so it can only be declared — and it must be, or
+# a release would ship its code with no notice at all. Keep this in step with
+# what CMake links (see `pist_lua` in CMakeLists.txt); nothing here can check
+# that for us, which is exactly why the list is short and commented.
+STATIC_LIBS = [
+    ("Lua 5.4.8", ["MIT-Lua.txt"], "MIT licence",
+     "source: https://www.lua.org/ (checksum-pinned tarball, linked statically into pist)"),
+]
 
 
 def fail(message):
@@ -270,6 +286,10 @@ def main():
     for lib in sorted(found_libs):
         if not any(needle in lib for needle in all_needles):
             print(f"collect-notices: note: {lib} present, no licence text required")
+
+    # Linked into the binary, so invisible to the scan above: declared instead.
+    for name, texts, licence, note in STATIC_LIBS:
+        components.append((f"{name} (linked into pist)", licence, texts, note))
 
     # Copy the licence texts for the components actually present.
     for name, licence, texts, note in components:

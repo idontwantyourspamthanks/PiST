@@ -12,6 +12,8 @@
 #include "ui/ProfilerController.h"
 #include "ui/RemoteStateAdapter.h"
 #include "ui/SessionLauncher.h"
+#include "hooks/StopHookRunner.h"
+#include "ui/StopHooksDialog.h"
 #include "ui/UiText.h"
 
 #include "build/BuildService.h"
@@ -496,6 +498,30 @@ MainWindow::MainWindow(QWidget *parent)
         target->setToolTip(tooltip);
     };
     m_profiling = new ProfilerController(profilerHost, this);
+
+    // The stop hook (docs/stop-hooks-plan.md). A seam like the others: it owns
+    // the script's run and what the script may reach, and gets the window's
+    // operations as callbacks. `resume` is the window's own slot, deliberately,
+    // so a script's continue is the Continue action — arms queued at the entry
+    // stop survive it (invariant 5).
+    StopHookRunner::Host hookHost;
+    hookHost.backend = backendNow;
+    hookHost.log = logLine;
+    hookHost.scriptPath = [this] { return m_settings.stopHookPath; };
+    hookHost.enabled = [this] { return m_settings.stopHookEnabled; };
+    hookHost.autoContinue = [this] { return m_settings.stopHookAutoContinue; };
+    hookHost.resume = [this] { resume(); };
+    hookHost.refresh = [this] { m_host->refresh(); };
+    // Held for the duration of a run: with no command of the user's in flight,
+    // the completion that arrives is the one the hook issued — so a script's
+    // write cannot be pruned by the resume it asks for (R5). The console's
+    // enabled state is otherwise the session's (MainWindow's stoppedChanged
+    // handler), hence the same expression when releasing it.
+    hookHost.holdConsole = [this](bool hold) {
+        if (m_consoleInput)
+            m_consoleInput->setEnabled(hold ? false : m_host->isRunning());
+    };
+    m_hooks = new StopHookRunner(hookHost, this);
 
     RemoteStateAdapter::Host stateHost;
     stateHost.editor = [this]() -> const CodeEditor * { return m_editor; };
@@ -1519,6 +1545,13 @@ void MainWindow::createActions()
     m_actAddWatchpoint = new QAction(tr("Add &watchpoint…"), this);
     connect(m_actAddWatchpoint, &QAction::triggered, this, &MainWindow::addWatchpoint);
 
+    m_actStopHooks = new QAction(tr("Stop &hooks…"), this);
+    m_actStopHooks->setObjectName(QStringLiteral("stopHooksAction"));
+    m_actStopHooks->setToolTip(
+        tr("Run a script at every debugger stop: read and change memory and registers, log, "
+           "and decide to continue."));
+    connect(m_actStopHooks, &QAction::triggered, this, &MainWindow::editStopHooks);
+
     m_actResume = new QAction(tr("&Continue"), this);
     m_actResume->setObjectName(QStringLiteral("continueAction"));
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
@@ -1881,6 +1914,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actToggleBreakpoint);
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
+    runMenu->addAction(m_actStopHooks);
 }
 
 void MainWindow::showAbout()
@@ -4325,13 +4359,17 @@ void MainWindow::step()
     // A plain step is not a running->stopped transition, so stoppedChanged does
     // not fire and onDebuggerStopped is never called — the refresh has to be
     // explicit or nothing updates (registers, disassembly, the editor, and the
-    // step-back snapshot all depend on it).
+    // step-back snapshot all depend on it). The same fact is why the stop hook
+    // needs the step flag: the state batch that follows is the only report of
+    // the movement (docs/stop-hooks-plan.md §6).
+    m_session->setStepEventPending(true);
     m_host->step();
     m_host->refresh();
 }
 
 void MainWindow::stepOver()
 {
+    m_session->setStepEventPending(true);
     m_host->stepOver();
     m_host->refresh();
 }
@@ -4471,6 +4509,37 @@ void MainWindow::rebuildProgramMap()
 void MainWindow::addWatchpoint()
 {
     m_bpModel->addWatchpoint();
+}
+
+void MainWindow::editStopHooks()
+{
+    StopHooksDialog dialog(m_settings.stopHookPath, m_settings.stopHookEnabled,
+                           m_settings.stopHookAutoContinue, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_settings.stopHookPath = dialog.scriptPath();
+    m_settings.stopHookEnabled = dialog.enabled();
+    m_settings.stopHookAutoContinue = dialog.autoContinue();
+
+    // The hook lives in the project file, and a project file is named after a
+    // source: with none open there is nowhere to keep it, and saying so beats a
+    // setting that quietly disappears.
+    if (buildSourcePath().isEmpty()) {
+        m_log->appendPlainText(tr("[hook] set for this session; open a source (and save the "
+                                  "project) to keep it"));
+        return;
+    }
+    persistSettings();
+
+    if (m_settings.stopHookEnabled)
+        m_log->appendPlainText(
+            tr("[hook] %1 runs at every stop%2")
+                .arg(m_settings.stopHookPath,
+                     m_settings.stopHookAutoContinue ? tr(", and may continue on its own")
+                                                     : QString()));
+    else
+        m_log->appendPlainText(tr("[hook] off"));
 }
 
 void MainWindow::debugCommand(const QString &command)
@@ -4767,6 +4836,19 @@ void MainWindow::onStateUpdated(const MachineState &state)
         if (m_eventSink)
             m_eventSink->publishEvent(QStringLiteral("stopped"),
                                       QStringLiteral("pc=0x%1").arg(hex::hex32(state.pc, hex::Case::Lower)));
+        // The stop hook runs from here, and nowhere earlier: this is the moment
+        // the stop is real enough to report — the register batch has landed, so
+        // readreg() has the machine's actual truth, and the attach's own
+        // commands have completed (docs/stop-hooks-plan.md D1).
+        if (m_hooks)
+            m_hooks->onStopPublished(state);
+    } else if (m_session->stepEventPending() && state.regs.valid) {
+        // A step never reaches the branch above: `s`/`n` are not running→stopped
+        // transitions, so stoppedChanged does not fire for them (see step()).
+        // The flag makes "every stop" include them.
+        m_session->setStepEventPending(false);
+        if (m_hooks)
+            m_hooks->onStopPublished(state);
     }
     m_disassembly->setState(state);
 

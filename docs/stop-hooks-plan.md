@@ -43,20 +43,20 @@ rebuild.
   the `m_awaitingEntryPrompt` guard is armed *before* the emit (`:1153-1161`).
 
 There is exactly one production consumer: `MainWindow`'s handler
-(`src/ui/MainWindow.cpp:1701-1746`), which toggles the session actions, publishes the watcher events,
+(`src/ui/MainWindow.cpp:1734-1789`), which toggles the session actions, publishes the watcher events,
 and calls `DebugSessionController::onDebuggerStopped()`.
 
 **The detailed stop.** The `stopped` event a watcher sees is published from
-`MainWindow::onStateUpdated()` (`src/ui/MainWindow.cpp:4765-4769`) *once `state.regs.valid`*, with
+`MainWindow::onStateUpdated()` (`src/ui/MainWindow.cpp:4834-4844`) *once `state.regs.valid`*, with
 `pc=0x…`, because the entry attach's standalone `info basepage` answer carries `pc = 0` and
 publishing that told watchers the machine had stopped at address 0. It is the same code path that
 installs the live bases and calls `armBreakpoints()`. The sink is `RemoteControl::publishEvent`
 (wired in `src/main.cpp:200-201`), and the MCP shim relays it as a log notification.
 
-**Writes while stopped.** `MainWindow::setMemoryByte` (`:4516`) and `setRegister` (`:4533`) gate on
+**Writes while stopped.** `MainWindow::setMemoryByte` (`:4585`) and `setRegister` (`:4602`) gate on
 `isStopped()`, log a refusal when not stopped, and go through the typed intents
 `IDebugBackend::writeMemoryByte` / `writeRegister` (`src/emu/DebugBackend.h`) — never debugger text.
-`MainWindow::debugCommand` (`:4476`) is free text and is *not* stop-gated.
+`MainWindow::debugCommand` (`:4545`) is free text and is *not* stop-gated.
 
 **Reads.** Typed intents only: `requestMemoryDump()` → `memoryDumpReady(address, rows, tag)` (parsed
 once, `src/emu/MemoryDump.h`), `dumpRegisters()` → `stateUpdated`, `readBasepage()`. There is **no
@@ -81,7 +81,7 @@ lifecycle flags, the entry-stop attach, the arming gate and the step-out state, 
 window only through a `Host` of callbacks — including `log` ("one line on the console"). The five
 seams are constructed in `MainWindow`'s constructor and are drivable with no window at all.
 `Host::log` is the console append (`m_log->appendPlainText`, the `QPlainTextEdit` at
-`src/ui/MainWindow.cpp:2226-2228` in `consoleDock`).
+`src/ui/MainWindow.cpp:2260-2262` in `consoleDock`).
 
 **Configuration.** `.pistproject` is JSON, `kProjectFileVersion = 2`
 (`src/project/ProjectSettings.cpp:25`), with nested `build` / `emulator` objects and paths resolved
@@ -99,19 +99,20 @@ implemented by `MainWindow`. The MCP shim declares tools in `McpServer::tools()`
 **Build and packaging.** Exactly one build-time dependency: Qt 6 (`CMakeLists.txt:34`). No
 FetchContent, ExternalProject, `add_subdirectory` of vendored code and no submodules anywhere; the
 external tools (vasm, vlink, Hatari, EmuTOS) are fetched by CI shell steps with pinned sha256 and are
-never committed (`docs/PLAN.md:1088`). CI builds against Qt 6.8.1 and today selects only the
+never committed (`docs/PLAN.md:1096`). CI builds against Qt 6.8.1 and today selects only the
 `qtmultimedia` module (`.github/workflows/ci.yml:117`, `.github/workflows/release.yml:255`);
-`Qt6::Qml` is not linked anywhere. Licence
+`Qt6::Qml` is not linked anywhere — and it stayed that way: the engine that landed is Lua (D4),
+not Qt's. Licence
 bookkeeping is `NOTICE`, `packaging/copyright` (DEP-5, layout-agnostic path patterns) and
 `packaging/notices/*.txt`, with the shipped set **derived from the built artifact's linked libraries**
-by `packaging/collect-notices.py` (`KNOWN_LIBS` at `:45`, `linked_libraries()` at `:72`,
-`bundled_library_names()` at `:89`). The project installs no runtime libraries of its own; Qt's are
+by `packaging/collect-notices.py` (`KNOWN_LIBS` at `:50`, `linked_libraries()` at `:88`,
+`bundled_library_names()` at `:105`). The project installs no runtime libraries of its own; Qt's are
 deployed by `qt_generate_deploy_app_script` into `lib/`.
 
 **Tests.** Unit suites are declared in the root `CMakeLists.txt` through `pist_add_test()`
-(`:565-568`); offscreen integration suites skip themselves unless the emulator, assembler and a ROM
-are present (`tests/tst_emulatorhost.cpp:491-546`), and `PIST_REQUIRE_EMULATOR=1` turns a skip into a
-failure. `tests/tst_emulatorhost.cpp:977-1070`
+(`:647-650`); offscreen integration suites skip themselves unless the emulator, assembler and a ROM
+are present (`tests/tst_emulatorhost.cpp:494-550`), and `PIST_REQUIRE_EMULATOR=1` turns a skip into a
+failure. `tests/tst_emulatorhost.cpp:987-1094`
 (`sourceLineBreakpointFiresAndResolvesBack`) is the model for a real-session assertion: assemble,
 map, wait for the entry stop, arm, resume, then assert a debugger-visible effect at the second stop.
 
@@ -157,7 +158,7 @@ is still printing its dump (`m_awaitingEntryPrompt`). A script fired there would
 stop's registers and write into a stop whose dump has not finished — exactly the class of mistake
 MAJ-14 already cost the transport. The hook therefore fires where the detailed stop is published:
 `MainWindow::onStateUpdated()`, once `state.regs.valid`, beside the watcher event
-(`src/ui/MainWindow.cpp:4765-4769`).
+(`src/ui/MainWindow.cpp:4834-4844`).
 
 **D2 — The runner executes from a queued invocation, outside the transport's emit stack.**
 Scripted reads need to wait for a response, which means a nested event loop — the same shape
@@ -178,28 +179,32 @@ Rule: each scripted read and write waits for its own command to complete (with a
 `continue()` is **recorded** by the API and issued only after the script returns, i.e. after
 everything it queued has finished, through the same path the UI's Continue uses.
 
-**D4 — Engine: `QJSEngine` (`Qt6::Qml`) is the default candidate; Lua is the alternative, and L0
-measures both before the pick is written down.**
-The sheet chose Lua and named `QJSEngine` as the fallback "if packaging fights back". The evidence
-says it does:
+**D4 — Engine: Lua 5.4.8, pinned by checksum and linked statically. Decided by measurement.**
+The sheet chose Lua and named `QJSEngine` as the fallback "if packaging fights back". Both were
+spiked as throwaway programs before this was written, and the numbers decided it:
 
-- The tree has no FetchContent, no submodule and no committed third-party code; every external
-  dependency is fetched by CI shell steps with a pinned checksum. Vendoring Lua means inventing a
-  fourth acquisition mechanism and applying it on three platforms.
-- The licence set is **derived from the linked artifact** (`packaging/collect-notices.py:45,72,89,265`). A
-  statically linked Lua is invisible to that derivation, so its notice would have to be hand-added
-  and the release-time check could not verify it — the exact silent-gap shape this project's rules
-  exist to avoid.
-- `Qt6::Qml` is a shared module inside the deployment path already used for the rest of Qt, whose
-  notice is generic over the Qt version. The expected cost is a `find_package` component and possibly
-  one `modules:` line per workflow.
+| | Lua 5.4.8 | QJSEngine (Qt 6.8.1) |
+|---|---|---|
+| Shipped size | **+345 KiB** (`liblua.a` is 661 KiB, linked statically) | +8,770,048 B — exactly `libQt6Qml.so` (6,611,968) + `libQt6Network.so` (2,158,080); no QML plugin or import tree is needed (verified under `bwrap` with both trees masked) |
+| Stopping a runaway script | count hook: same-thread, 20/20 aborts, 0.23–0.36 ms | only from another thread: 500.122 ms wall for a 500 ms budget, 0.051 ms latency, 8/8 — a same-thread `QTimer` **provably cannot fire**, measured firing 1452 ms after the 1952 ms script it was meant to stop |
+| Where it comes from | one 374,332-byte tarball, sha256 `4f18ddae…`, 34 `.c` files, no build system | one Qt module — but a **dev** module: this machine's distro Qt has `QmlPlugins/` and no `Qt6QmlConfig.cmake`, and the official 6.8.1 kit lacks Multimedia instead, so no installed Qt here could build it without a change |
+| API fit | `readmem` returns a byte-exact string; `continue()` is not a reserved word | an array of byte values (a JS string is UTF-16 and loses any byte above 0x7F); `continue` is reserved, so `globalThis.continue()` |
 
-The costs are real and are what L0 measures: the installed size QtQml adds, and whether
-`QJSEngine::setInterrupted()` can stop a runaway script safely (the function exists in Qt 6.8; its
-safe usage is a spike item, §15 Q2). Lua's case stays on record — the audience already writes it
-(BizHawk/Mesen), its count hook interrupts a runaway loop in-thread with certainty, and it is small.
-If L0 finds QJSEngine cannot be interrupted or costs too much to ship, Lua wins and this section says
-so with numbers instead of a preference.
+Two corrections to this document's earlier draft, which had preferred QJSEngine:
+
+- *"Vendoring Lua invents a fourth acquisition mechanism"* was wrong. Every external dependency here
+  is already fetched by a pinned URL + sha256 (vasm, vlink, Hatari, EmuTOS); `file(DOWNLOAD …
+  EXPECTED_HASH …)` in `CMakeLists.txt` is that same rule applied to a linked library. The mechanism
+  is new to the *build*, not to the project.
+- The Lua-specific cost is narrower, and is stated rather than hidden: a **statically linked**
+  library is invisible to `packaging/collect-notices.py`, which derives the shipped licence set from
+  what the artifact loads (`:50,88,105,281`). Lua's MIT notice is therefore hand-listed and the
+  release check cannot catch it going stale; the honest fix is a static-component rule in that script
+  beside the notice text, and the script's own prose records why the artifact scan cannot see it.
+
+What Lua costs: it is the first non-Qt code linked into the binary (today it links Qt and nothing
+else — no Capstone; that is Hatari's external disassembler), and configure now fetches it. Offline
+and packaging builds pass `-DPIST_LUA_TARBALL=<file>`; the checksum is verified either way.
 
 **D5 — One script per project, opt-in, in `.pistproject`.** Keys `hooks.scriptPath` (relative to the
 project directory, like `includePaths`), `hooks.enabled`, `hooks.autoContinue`. A list of scripts and
@@ -207,15 +212,15 @@ per-breakpoint bindings are L2/L3; one script keeps the API and the failure mode
 honest about.
 
 **D6 — The API surface is the documentation, and the standard library is not.**
-Even where the engine would allow more (Lua's `io`/`os`/`debug`/`package` if Lua is chosen), the
-documented and supported surface is §7's function list; the README says exactly what is reachable. A
-script is the user's own code on the user's own machine, so this is not a sandbox claim — it is a
-"the docs are true" claim.
+Lua's `io`, `os`, `debug` and `package` are never opened: the interpreter is created with `base`,
+`table`, `string` and `math` and nothing else, so §7's function list *is* the whole reachable
+surface. A script is the user's own code on the user's own machine, so this is not a sandbox claim —
+it is a "the docs are true" claim.
 
-**D7 — `continue()` has a spelling problem in JavaScript.** `continue` is a reserved word, so the
-name cannot be a bare global; `QJSEngine` would expose it as `globalThis.continue` with `resume()`
-as the alias. The README will document whichever the pick requires. (A small cost of D4's default,
-recorded here so it is not discovered late.)
+**D7 — `continue()` is spelled as the sheet wrote it.** Lua reserves nothing here, so `continue()`
+works as a bare global; `resume()` is bound to the same function because the surrounding prose uses
+that word. The base library's `print` is rebound to the console line for the same reason a GUI app
+cannot trust stdout to exist — a script that prints is not a script that lost its output.
 
 ---
 
@@ -229,6 +234,11 @@ recorded here so it is not discovered late.)
   and the bases are live (they are installed in the same handler that publishes the stop, and the
   runner is queued behind it). The script's own commands therefore queue *behind* the attach's and
   the arming commands, which is the correct order: FIFO, and the arms keep their resume guarantee.
+  A single step counts too. `s` and `n` are not running→stopped transitions, so `stoppedChanged`
+  never fires for them — `MainWindow::step` says exactly that — which is why the session controller
+  carries a step flag beside its stop flag, consumed by the register batch that answers the step.
+  *Step out* and *run to cursor* arm a breakpoint and resume, so they arrive as ordinary stops and
+  need no flag of their own.
 - **The stop's identity.** The runner exposes the stop's `pc`. It does **not** claim a reason
   (`breakpoint` / `step` / `pause`): the transport detects a prompt, and step-vs-breakpoint is not
   distinguishable from it today. A `reason` field arrives with L2's hit identification, not before —
@@ -239,20 +249,27 @@ recorded here so it is not discovered late.)
 ## 7. The API (v0)
 
 ```
-readmem(addr, len)      -> bytes   (len bytes as a string; refuses len < 1 or len > kMaxRead)
-readreg(name)           -> number  (the stop's cached state when it is valid, else a typed read)
+readmem(addr, len)      -> a string of len bytes (refuses len < 1 or len > 4096)
+readreg(name)           -> an integer (the stop's own registers when valid, else a typed read)
 writemem(addr, value)              (one byte, via writeMemoryByte)
 writereg(name, value)              (via writeRegister)
 log(msg)                           (one line on the console, prefixed "[hook] ")
 continue()                         (recorded; issued after the script returns — see D3)
 ```
 
-- **Addresses** are numbers. **Register names** are exactly the set `writeRegister` accepts
-  (the registers view's set), matched case-insensitively; an unknown name raises an error naming it.
-  Whether `pc` is in that writable set is a test question, not an assumption (§15 Q4).
+- **Addresses and values are integers**, and Lua's own checks refuse a non-number by naming the
+  function and the argument; the range checks (`0..$FFFFFFFF`, `1..4096`, `0..255`) name the range.
+  `readmem`'s result is a **Lua string**, which is byte-exact: `string.byte` reads a byte out of it
+  and nothing passes through UTF-8 on the way.
+- **Register names** are exactly the set `writeRegister` accepts (the registers view's set), matched
+  case-insensitively; an unknown name raises an error naming it. `usp` and `isp` are readable but not
+  writable — Hatari cannot set them by name, which is why the registers view leaves those cells
+  read-only too — and the refusal says so.
 - **`pc` comes from the stop's own state**, so reading it costs no round-trip; that state is the
   machine's truth at the stop, which is what makes answering from it honest rather than an
-  optimisation that can be wrong.
+  optimisation that can be wrong. A scripted write makes the copy stale, and the next read then makes
+  a real round-trip instead of answering from it.
+- **`print` is bound to the console line**, and `resume` to the same function as `continue` (D7).
 - **Every refusal raises**, naming the call and the reason: unknown register, out-of-range length, no
   session, machine not stopped. The runner reports it as `[hook] <file>:<line>: <message>` and leaves
   the machine stopped.
@@ -320,51 +337,54 @@ gated on L1/L2 being in real use, not designed further here.
 | Runaway script | Interrupted at the budget; the engine is discarded; logged as an error naming the budget | Console |
 | A read or write times out | The script is abandoned; the machine stays stopped | Console |
 | Not stopped when the run starts | One logged refusal, no run | Console |
-| Write refused (not stopped) | The backend's existing refusal (already logged) surfaces as the script's error | Console |
-| `readmem` beyond `kMaxRead` | Raises; nothing is queued | Console |
+| A scripted write while the machine is running | Refused by the runner's own gate (`isStopped()` per operation) before the backend sees it: a command written while running would be deferred by Hatari to the *next* stop, a different stop from the script's | Console |
+| `readmem` beyond `HookApi::kMaxReadBytes` | Raises; nothing is queued | Console |
 | Symbol unresolvable (L2) | Raises naming the symbol; never 0 | Console |
 
 The README's API list is the contract; if a capability is not in it, the docs do not claim it.
 
 ## 12. Testing
 
-- **`tst_stophooks`** — a new unit suite (always runs, no emulator). The runner is a seam, so it is
-  constructed against a fake `IDebugBackend` with no window at all. Cases: a read answers from a valid
-  cached state without a round-trip and queues one when the state is invalid; **write-then-continue
-  ordering** (the fake records that the write completed before `resume()` — the R5 bug is silent, so
-  only a test catches it); a script error is reported with file and line and does not resume; a
-  runaway script is interrupted; a non-stopped run is refused; a missing file yields one refusal; an
-  out-of-range `readmem` raises.
+- **`tst_stophooks`** — built and green: 16 cases, no emulator and no window. The engine half runs
+  the real Lua against a fake `HookApi` (byte-exact `readmem`, a caught refusal and an uncaught one,
+  Lua's own argument refusal, a runaway script stopped inside its budget, a missing file, both spellings
+  of `continue`, and the line an error came from). The runner half drives a fake `IDebugBackend`
+  whose commands complete a turn later, as the transport's do, and asserts what only a test can see:
+  the **write is acknowledged before the `continue()` it asked for** (R5 — the silent bug), the
+  console is held across the run and released after it, a register read answers from the stop's own
+  copy and makes a round-trip once a scripted write has staled it, a non-stopped run is refused, an
+  unanswered command abandons the script without resuming, and a disabled hook does nothing at all.
+- **`tst_settings`** — the `.pistproject` round-trip: the `hooks` object survives save/load, a
+  relative script path resolves against the project directory, and a `hooks` value of the wrong type
+  is refused by name rather than silently dropped.
 - **`tst_emulatorhost`** — the sheet's acceptance test, on a real session:
-  `sourceLineBreakpointFiresAndResolvesBack` (`:977-1070`) is the pattern. Stop at a line, have the
+  `sourceLineBreakpointFiresAndResolvesBack` (`:987-1094`) is the pattern. Stop at a line, have the
   script write a byte at a known address, then read that address back with `requestMemoryDump()` and
-  assert the value; a second case has the script `continue()` and asserts the program reaches a
-  second breakpoint.
-- **`tst_gui`** (offscreen) — the Run ▸ Stop hooks… action exists and the dialog round-trips
-  `.pistproject` (save → reload → same values); the console receives the `[hook]` line
-  (`debugConsoleText()` backs the assertion, as the remote `console` verb does).
+  assert the value.
 - **`tst_hrdb`** (L2) — one stop-hook case against the fork, skipping without `$PIST_HRDB_HATARI`.
 
-None of these asserts wiring, forwarding or "it did not throw": each fails on a plausible bug —
+Not covered, and said so rather than implied: the **dialog's own behaviour**. `accept()` validates
+the path through a modal warning, which an offscreen test cannot answer without hanging — the same
+hazard that keeps modal dialogs out of this suite. The dialog's values are read back in the window,
+not in a test, and a later suite can drive it through `QApplication::notify` if that becomes worth
+proving.
+
+None of the rest asserts wiring, forwarding or "it did not throw": each fails on a plausible bug —
 stale state, silent drop, wedged session, wrong stop.
 
 ## 13. Phasing
 
-**L0 — engine spike (throwaway, ~1 day).**
-Measure, do not decide: the installed size QtQml adds to the Linux artifact; whether the `modules:`
-inputs need it named (`.github/workflows/ci.yml:117`, `.github/workflows/release.yml:255`); whether a
-runaway script can be interrupted
-(and by what mechanism); whether a nested event loop at a queued post-stop invocation really can
-perform a synchronous `readmem` on a real Hatari session. Acceptance: a script logs a line on a real
-breakpoint stop, and the numbers are recorded in `docs/PLAN.md` §9 and §5 D4 of this document.
-Nothing from L0 is merged except the measurements.
+**L0 — engine spike (throwaway). Done 2026-10-17.**
+Both engines were built as standalone programs and measured; the outcome is D4 and the numbers are in
+`docs/PLAN.md` §9. What the spike did *not* measure: the sizes are Linux-only, and the CI `modules:`
+question became moot once the Qt route was dropped on the interruption and API findings.
 
-**L1 — the runner and the human surface (v0).**
-`StopHookRunner` as a sixth seam (its own `Host`: backend, the stop's state, symbols, the console,
-resume), the trigger wiring at the stop publication, the §7 API, the `.pistproject` keys, Run ▸ Stop
-hooks…, the console prefix, the README section. Acceptance: `tst_stophooks` + the
-`tst_emulatorhost` case + the `tst_gui` round-trip pass; a real session where a scripted write
-visibly changes a value read back from the debugger; the full suite green offscreen.
+**L1 — the runner and the human surface (v0). Implemented; §12 is what proves it.**
+`src/hooks/HookApi.h` (the contract the engine binds to), `src/hooks/StopHookEngine.{h,cpp}` (Lua,
+pinned and static), `src/hooks/StopHookRunner.{h,cpp}` (the API over the typed intents,
+the waits, the budget, the continue policy), the trigger at the stop publication plus the step flag
+in `DebugSessionController`, the `hooks` object in `ProjectSettings`, Run ▸ Stop hooks… with
+`StopHooksDialog`, the `[hook]` console prefix, and the README section.
 
 **L2 — symbols, cause, and per-breakpoint scripts.**
 `sym()`; the stop *cause* (the armed breakpoint or watchpoint whose resolved address equals the PC,
@@ -387,26 +407,30 @@ behaviour in particular, both of which contradict nothing today but are not yet 
 | A runaway script wedges the IDE | High | The run budget and engine discard; L0 measures the mechanism |
 | A script reads a batch-stale state | Medium | D1's trigger; the cache is consulted only when valid (R4) |
 | Console noise on every stop | Low | Silent unless the script logs or errors |
-| QtQml's size or deployment surprises on one platform | Medium | L0 measures all three artifacts before L1 |
+| A statically linked Lua is invisible to the release licence scan | Medium | The MIT notice is hand-listed and `collect-notices.py` gains a static-component rule for it; the limitation is written down in that script, not discovered later |
+| Configure now fetches Lua, so an offline build needs the tarball | Low | `-DPIST_LUA_TARBALL=<file>`, hash-checked the same way; documented in the README's build section |
 | HRDB's stop edges and `needsStop` gating differ from native's | Medium | Typed intents only (R8) + the L2 `tst_hrdb` case |
 | The script API drifts from the remote verbs' semantics | Medium | The README API list is the contract; L3's verb reports the same facts |
 | Users expect hooks while running | Low | Documented, and refused honestly by R7 |
 
-## 15. Open questions (answer by measuring, not by reasoning)
+## 15. Answers, and what remains open
 
-1. **Engine** — §5 D4. Lua or `QJSEngine`, decided by the L0 numbers.
-2. **Interruption** — can `QJSEngine::setInterrupted()` be driven safely from a watchdog while
-   `evaluate()` runs on the UI thread? The function exists in Qt 6.8; the safe pattern is unverified.
-   If it cannot, the fallback is running the engine on a worker thread with an interrupt — a real
-   complication, and one of the things that would move the decision to Lua.
-3. **Unknown keys in `.pistproject` version 2** — confirm an older PiST ignores the `hooks` object
-   rather than refusing the file.
-4. **The writable-register set** — exactly which names `writeRegister` accepts, and whether `pc` is
-   among them; `writereg("pc", …)` refuses if it is not, rather than pretending.
-5. **Correlating a hook with an agent's view** — is the published `stopped` event enough for an agent
-   to attribute a run, or does L3 need a stop id? (Deferred to L3.)
-6. **QtQml deployment** — does `qt_generate_deploy_app_script` pick up the module on all three
-   platforms without extra install rules?
+1. **Engine — answered: Lua 5.4.8** (§5 D4), on the measured numbers rather than on preference.
+2. **Interruption — answered by measurement.** Lua's count hook stops a runaway loop in-thread, 20/20,
+   in 0.23–0.36 ms. The QJSEngine route needed a second thread and a sticky `setInterrupted` flag, and
+   went out with the engine.
+3. **Unknown keys in `.pistproject` version 2 — answered.** The loader reads the keys it knows and
+   ignores the rest, so an older PiST opens a project carrying `hooks` without complaint; a `hooks`
+   value of the wrong *type* is refused by name rather than dropped (`tst_settings`). The residual is
+   the ordinary one for any newer key: a round-trip through an older PiST loses the setting, and
+   Run ▸ Stop hooks… sets it again.
+4. **The writable-register set — answered.** `d0`–`d7`, `a0`–`a7`, `pc` and `sr`, which is the set the
+   registers view offers as editable; `usp` and `isp` are readable and refuse a write with Hatari's
+   reason, because Hatari cannot set them by name (the registers view's own comment).
+5. **Correlating a hook with an agent's view** — still open, deliberately: L3 decides whether the
+   published `stopped` event is enough for an agent to attribute a run, or whether a stop id is
+   needed.
+6. **QtQml deployment** — withdrawn with the engine.
 
 ## 16. Relationship to other documents
 
@@ -421,7 +445,13 @@ behaviour in particular, both of which contradict nothing today but are not yet 
 
 ## 17. Status
 
-Planned 2026-10-17, branch `v0.10.0`. **L0 not started. Nothing in this document has been executed**;
-its claims are source readings (cited above) and two external facts (the Lua licence and
-`QJSEngine::setInterrupted`'s existence in Qt 6.8). The engine decision is deliberately left open
-until L0 produces numbers.
+Planned 2026-10-17 on `v0.10.0`, implemented the same day on `feature/stop-hooks`. **L0 is decided
+and its numbers are in `docs/PLAN.md` §9; L1 is implemented and green** — the unit suite, the
+`.pistproject` round-trip, and the full suite run offscreen against a real emulator.
+
+L2 (symbols, the stop's cause, per-breakpoint scripts) and L3 (the `hook` verb, the MCP tool, the
+event field) are the next work on this branch, which is where the whole feature lives.
+
+What is *not* verified here: the three platform archives (the feature's cost is a static library and a
+configure-time fetch, but the artifacts themselves need CI), HRDB (L2), and the dialog's own
+behaviour (§12 says why).

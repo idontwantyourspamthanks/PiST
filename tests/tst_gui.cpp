@@ -736,6 +736,9 @@ private slots:
     /// the window at that minimum, and nothing about the content resizes the
     /// dialog once it is shown.
     void settingsDialogFitsAShortScreenWithReachableButtons();
+    // Run ▸ Stop hooks… is the feature's only doorway: an action that exists but
+    // was never added to a menu would leave it unreachable.
+    void runMenuOffersStopHooks();
 
 private:
     QString m_vasm;
@@ -9141,6 +9144,32 @@ void TstGui::settingsDialogFitsAShortScreenWithReachableButtons()
 
     dialog.removeEventFilter(&counter);
     QCOMPARE(counter.resizes, 0);
+}
+
+// Run ▸ Stop hooks… is the stop hook's only doorway. An action that exists but
+// was never added to the menu would leave the whole feature unreachable, and
+// nothing else in the suite would notice — tst_stophooks drives the runner
+// directly, and tst_settings only persists the keys the dialog writes.
+void TstGui::runMenuOffersStopHooks()
+{
+    MainWindow window;
+
+    auto *action = window.findChild<QAction *>(QStringLiteral("stopHooksAction"));
+    QVERIFY2(action, "the Stop hooks action must exist (objectName stopHooksAction)");
+    QVERIFY(action->isEnabled());
+    QVERIFY(!action->text().isEmpty());
+
+    // ...and it is in a menu, not merely a child of the window.
+    QMenu *menu = nullptr;
+    for (QMenu *candidate : window.findChildren<QMenu *>()) {
+        if (candidate->actions().contains(action)) {
+            menu = candidate;
+            break;
+        }
+    }
+    QVERIFY2(menu, "the Stop hooks action belongs to no menu");
+    QVERIFY2(menu->title().contains(QStringLiteral("Run")),
+             qPrintable(QStringLiteral("found it in '%1'").arg(menu->title())));
 }
 
 // Settings are redirected to a throwaway directory for the whole run, so the

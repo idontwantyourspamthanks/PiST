@@ -12,6 +12,7 @@
 
 #include "editor/CodeEditor.h"
 #include "editor/AsmHighlighter.h"
+#include "editor/LuaHighlighter.h"
 #include "editor/InstrRef.h"
 #include "image/ImageDocument.h"
 #include "image/StFormats.h"
@@ -722,6 +723,16 @@ private slots:
     /// vasm reads the first field as a label wherever it starts, so an indented
     /// label definition is a label.
     void anIndentedLabelIsALabel();
+    /// A `.lua` stop-hook script is painted as Lua, not as 68000 assembly: its
+    /// `--` line comment, `--[[ … ]]` block comment, quoted and long strings,
+    /// numbers and keywords all come out in the theme's colours.
+    void luaHighlighterColoursItsTokens();
+    /// A long comment or long string that does not close on its line keeps its
+    /// colour into the lines below, and the code after `]]` is code again.
+    void luaLongCommentsAndStringsSpanLines();
+    /// The editor chooses the language from the path: a `.lua` file — where a
+    /// stop hook lives — gets the Lua highlighter, a `.s` file the 68000 one.
+    void editorPicksHighlighterByPath();
     /// REGRESSION GUARD, not a RED test: the gutter repaints when the error
     /// lines are set, the mark is visible in it, and clearing restores the plain
     /// rendering. Qt's updateRequest chain already reached the gutter on HEAD;
@@ -743,6 +754,9 @@ private slots:
     /// The stop-hook dialog's own logic: fields that mean nothing while the hook
     /// is off, and a last-run line that is never blank.
     void stopHooksDialogGatesItsFieldsOnWhetherItRuns();
+    /// The dialog's offer to make the script, and the window operation behind it.
+    void stopHooksDialogOffersToMakeAScript();
+    void createStopHookScriptWritesItBesideTheSource();
 
 private:
     QString m_vasm;
@@ -8830,6 +8844,19 @@ void highlight(QPlainTextEdit *edit, const QString &source)
              "the highlighter's formats never reached the layout");
 }
 
+/// The Lua counterpart of highlight(): the same fresh-widget-and-layout dance,
+/// but with LuaHighlighter so the `--` of a stop-hook script is a comment.
+void highlightLua(QPlainTextEdit *edit, const QString &source)
+{
+    new LuaHighlighter(edit->document(), appearance::editorTheme()); // owned by the document
+    edit->setPlainText(source);
+    edit->resize(600, 120);
+    edit->show();
+    QCoreApplication::processEvents();
+    QVERIFY2(!edit->document()->firstBlock().layout()->formats().isEmpty(),
+             "the highlighter's formats never reached the layout");
+}
+
 /// Counts the paint events a widget receives. The gutter is a plain QWidget, so
 /// its repaints are observable only through an event filter.
 class PaintCounter : public QObject
@@ -8934,6 +8961,127 @@ void TstGui::anIndentedLabelIsALabel()
     QVERIFY(moveq > 0);
     QCOMPARE(highlightColourAt(edit, 1), appearance::colors().label);
     QCOMPARE(highlightColourAt(edit, moveq), appearance::colors().keyword);
+}
+
+void TstGui::luaHighlighterColoursItsTokens()
+{
+    // `--` runs to the end of the line; the keyword before it keeps its colour.
+    QPlainTextEdit lineComment;
+    const QString lineSource = QStringLiteral("local x = 1 -- a note");
+    highlightLua(&lineComment, lineSource);
+    QCOMPARE(highlightColourAt(lineComment, 0), appearance::colors().keyword);
+    const int note = lineSource.indexOf(QLatin1String("note"));
+    QVERIFY(note > 0);
+    QCOMPARE(highlightColourAt(lineComment, note), appearance::colors().comment);
+
+    // `--[[ … ]]` closed on one line; the code after the `]]` is code again.
+    QPlainTextEdit blockComment;
+    const QString blockSource = QStringLiteral("--[[ a block ]] local y");
+    highlightLua(&blockComment, blockSource);
+    const int block = blockSource.indexOf(QLatin1String("block"));
+    const int afterBlock = blockSource.indexOf(QLatin1String("local"));
+    QVERIFY(block > 0 && afterBlock > block);
+    QCOMPARE(highlightColourAt(blockComment, block), appearance::colors().comment);
+    QCOMPARE(highlightColourAt(blockComment, afterBlock), appearance::colors().keyword);
+
+    // A quoted string, including the escaped quote inside it.
+    QPlainTextEdit quoted;
+    const QString quotedSource = QStringLiteral("local s = 'a \\'quoted\\' word'");
+    highlightLua(&quoted, quotedSource);
+    const int innerQuote = quotedSource.indexOf(QLatin1String("quoted"));
+    QVERIFY(innerQuote > 0);
+    QCOMPARE(highlightColourAt(quoted, innerQuote), appearance::colors().string);
+
+    // A long string: the `--` inside it is text, not the start of a comment.
+    QPlainTextEdit longString;
+    const QString longSource = QStringLiteral("local s = [[ raw -- text ]]");
+    highlightLua(&longString, longSource);
+    const int dashes = longSource.indexOf(QLatin1String("--"));
+    QVERIFY(dashes > 0);
+    QCOMPARE(highlightColourAt(longString, dashes), appearance::colors().string);
+
+    // A hex literal and a decimal one.
+    QPlainTextEdit numbers;
+    const QString numberSource = QStringLiteral("local n = 0xFF + 12");
+    highlightLua(&numbers, numberSource);
+    const int hex = numberSource.indexOf(QLatin1Char('F'));
+    const int decimal = numberSource.indexOf(QLatin1String("12"));
+    QVERIFY(hex > 0 && decimal > hex);
+    QCOMPARE(highlightColourAt(numbers, hex), appearance::colors().number);
+    QCOMPARE(highlightColourAt(numbers, decimal), appearance::colors().number);
+
+    // `self` is painted as a keyword, and a hook API call in its own colour.
+    QPlainTextEdit api;
+    const QString apiSource = QStringLiteral("function f(self) return readmem(0x100) end");
+    highlightLua(&api, apiSource);
+    const int self = apiSource.indexOf(QLatin1String("self"));
+    const int readmem = apiSource.indexOf(QLatin1String("readmem"));
+    QVERIFY(self > 0 && readmem > self);
+    QCOMPARE(highlightColourAt(api, self), appearance::colors().keyword);
+    QCOMPARE(highlightColourAt(api, readmem), appearance::colors().directive);
+}
+
+void TstGui::luaLongCommentsAndStringsSpanLines()
+{
+    // A block comment opened on one line paints the lines below it until `]]`.
+    QPlainTextEdit comment;
+    highlightLua(&comment, QStringLiteral("local a = 1\n"
+                                          "--[[ note\n"
+                                          "spans lines ]] print(a)\n"));
+    QCOMPARE(highlightColourAt(comment, 0, 2), appearance::colors().comment);
+    // The code after the `]]` on that same line is code again.
+    const int print = comment.document()->findBlockByNumber(2).text().indexOf(
+        QLatin1String("print"));
+    QVERIFY(print > 0);
+    QCOMPARE(highlightColourAt(comment, print, 2), appearance::colors().directive);
+
+    // A long string behaves the same way, and a `--` inside it is no comment.
+    QPlainTextEdit string;
+    highlightLua(&string, QStringLiteral("local s = [[\n"
+                                         "raw -- text\n"
+                                         "]] local t = 1\n"));
+    QCOMPARE(highlightColourAt(string, 0, 1), appearance::colors().string);
+}
+
+void TstGui::editorPicksHighlighterByPath()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString asmPath = dir.filePath(QStringLiteral("hook.s"));
+    const QString luaPath = dir.filePath(QStringLiteral("hook.lua"));
+    {
+        QFile file(asmPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("\tmoveq\t#1,d0\n") > 0);
+    }
+    {
+        QFile file(luaPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("local x = 1\n") > 0);
+    }
+
+    // A `.s` path keeps the 68000 highlighter: `moveq` is a mnemonic.
+    CodeEditor asmEditor(appearance::editorTheme());
+    QVERIFY(asmEditor.loadFile(asmPath));
+    asmEditor.resize(600, 120);
+    asmEditor.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(highlightColourAt(asmEditor, 1), appearance::colors().keyword);
+
+    // Re-pointing the same editor at a `.lua` path swaps in the Lua rules:
+    // `local` is a Lua keyword and no mnemonic at all.
+    asmEditor.setFilePath(luaPath);
+    asmEditor.setPlainText(QStringLiteral("local x = 1\n"));
+    QCoreApplication::processEvents();
+    QCOMPARE(highlightColourAt(asmEditor, 0), appearance::colors().keyword);
+
+    // A fresh `.lua` path — where a stop hook lives — is painted as Lua.
+    CodeEditor luaEditor(appearance::editorTheme());
+    QVERIFY(luaEditor.loadFile(luaPath));
+    luaEditor.resize(600, 120);
+    luaEditor.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(highlightColourAt(luaEditor, 0), appearance::colors().keyword);
 }
 
 void TstGui::settingErrorLinesRepaintsTheGutter()
@@ -9181,6 +9329,84 @@ void TstGui::stopHooksDialogGatesItsFieldsOnWhetherItRuns()
     QVERIFY(neverLast);
     QVERIFY2(neverLast->text().contains(QStringLiteral("none yet")),
              qPrintable(neverLast->text()));
+}
+
+// The dialog's offer to make the script: no handler, no button (it stays a
+// value dialog); with one, the button takes what it hands back and switches the
+// hook on, and a handler that could not make anything leaves the field alone.
+void TstGui::stopHooksDialogOffersToMakeAScript()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    StopHooksDialog dialog(QString(), false, false, QString());
+    auto *button = dialog.findChild<QPushButton *>(QStringLiteral("stopHooksNewScript"));
+    auto *path = dialog.findChild<QLineEdit *>(QStringLiteral("stopHooksPath"));
+    QVERIFY2(button && path, "the button and the field must exist");
+    QVERIFY2(button->isHidden(), "no handler means the button is not offered");
+
+    const QString made = dir.filePath(QStringLiteral("hello.hooks.lua"));
+    dialog.setCreateScriptHandler([&made] { return made; });
+    QVERIFY2(!button->isHidden(), "a handler means the button is offered");
+
+    button->click();
+    QCOMPARE(dialog.scriptPath(), made);
+    QVERIFY2(dialog.enabled(),
+             "making a script is asking to use it, so the hook switches on");
+
+    // A handler that cannot make one says nothing and changes nothing.
+    StopHooksDialog failing(QStringLiteral("kept.lua"), false, false, QString());
+    failing.setCreateScriptHandler([] { return QString(); });
+    auto *failingButton =
+        failing.findChild<QPushButton *>(QStringLiteral("stopHooksNewScript"));
+    QVERIFY(failingButton);
+    failingButton->click();
+    QCOMPARE(failing.scriptPath(), QStringLiteral("kept.lua"));
+    QVERIFY(!failing.enabled());
+}
+
+// Making the script in the IDE, end to end: the file lands beside the source it
+// hooks, carries the API as its documentation, opens ready to edit, and is never
+// overwritten — a script someone has edited is the whole point of the file.
+void TstGui::createStopHookScriptWritesItBesideTheSource()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("hello.s"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("\ttext\nstart:\tnop\n\tbra.s\tstart\n\tend\n");
+    file.close();
+
+    MainWindow window;
+    window.openPath(source);
+
+    const QString made = window.createStopHookScript();
+    QCOMPARE(made, dir.filePath(QStringLiteral("hello.hooks.lua")));
+
+    QFile script(made);
+    QVERIFY2(script.open(QIODevice::ReadOnly), "the script should have been written");
+    const QByteArray starter = script.readAll();
+    script.close();
+    QVERIFY2(starter.contains("readmem(addr, len)"), "the starter must name the API");
+    QVERIFY2(starter.contains("log(string.format"), "the starter must be runnable as written");
+
+    // It is open in a tab, ready for the edit that is the point of the gesture.
+    bool opened = false;
+    for (CodeEditor *editor : window.findChildren<CodeEditor *>())
+        opened = opened || editor->filePath() == made;
+    QVERIFY2(opened, "the script should be open in an editor tab");
+
+    // Asking again adopts the file rather than replacing it.
+    QFile edited(made);
+    QVERIFY(edited.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    edited.write("-- mine now\n");
+    edited.close();
+    QCOMPARE(window.createStopHookScript(), made);
+
+    QFile again(made);
+    QVERIFY(again.open(QIODevice::ReadOnly));
+    QCOMPARE(again.readAll(), QByteArray("-- mine now\n"));
 }
 
 // Run ▸ Stop hooks… is the stop hook's only doorway. An action that exists but

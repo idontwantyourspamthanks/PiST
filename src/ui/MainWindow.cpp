@@ -4511,11 +4511,115 @@ void MainWindow::addWatchpoint()
     m_bpModel->addWatchpoint();
 }
 
+namespace {
+
+/// The suffix that marks a file as a hook script, so the naming rule can tell one
+/// from the source a script would be named after.
+constexpr const char *kStopHookScriptSuffix = ".hooks.lua";
+
+/// Where the project's stop-hook script lives when PiST makes one: beside the
+/// source it hooks, named after it (`hello.s` → `hello.hooks.lua`).
+///
+/// Named after the source rather than a bare `hooks.lua` so that a directory
+/// holding two projects cannot have them fight over one file, and so a project's
+/// hook is findable without anyone being told where it is — which is what lets
+/// the dialog offer it.
+QString stopHookScriptPathFor(const QString &sourcePath)
+{
+    if (sourcePath.isEmpty())
+        return QString();
+    // Already a hook script — which it is whenever the script is the focused
+    // tab, since the "source" is whatever is in front of you. Naming a script
+    // after a script would give `hello.hooks.hooks.lua`: the second ask would
+    // grow the name every time instead of adopting what is there.
+    if (sourcePath.endsWith(QLatin1String(kStopHookScriptSuffix), Qt::CaseInsensitive))
+        return QFileInfo(sourcePath).absoluteFilePath();
+    const QFileInfo info(sourcePath);
+    if (info.fileName().isEmpty())
+        return QString();
+    return info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+         + QLatin1String(kStopHookScriptSuffix);
+}
+
+/// The starter script: a working example with the API written where the person
+/// editing it will read it. A file PiST makes should be documentation as well as
+/// a starting point — the alternative is sending someone to the manual before
+/// their first line.
+QByteArray stopHookStarterScript()
+{
+    return QByteArrayLiteral(R"lua(-- Stop hook: runs at every debugger stop, with the machine held still.
+--
+-- Available here, and nothing else (no io, os, require or debug):
+--
+--   readmem(addr, len)      a string of len bytes at addr; string.byte(s, 1)
+--                           reads one byte, string.byte(s, 1, 4) reads four
+--   writemem(addr, value)   write one byte
+--   readreg(name)           d0-d7, a0-a7, pc, sr, usp, isp
+--   writereg(name, value)   d0-d7, a0-a7, pc, sr  (Hatari cannot set usp/isp)
+--   log(text) / print(...)  one line in the Build & debug console, as [hook]
+--   continue() / resume()   let the program run on; without "continue without
+--                           asking" switched on, the stop holds instead
+--
+-- Two things worth knowing before you rely on it:
+--
+--   * Addresses move. GEMDOS relocates the program on every run, so a data
+--     address that worked last run is wrong this run. Breakpoints dodge this by
+--     being file:line; a script has to re-read the bases itself.
+--   * Every stop gets a fresh interpreter: nothing carries over, so state that
+--     must survive a stop belongs in the guest's own memory.
+--
+-- The line below is a starting point. Edit it, press Continue, and watch the
+-- console.
+
+log(string.format("stop at $%06x  d0=$%08x", readreg("pc"), readreg("d0")))
+)lua");
+}
+
+} // namespace
+
+QString MainWindow::createStopHookScript()
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
+        m_log->appendPlainText(
+            tr("[hook] open a source first: the script is named after it"));
+        return QString();
+    }
+
+    const QString path = stopHookScriptPathFor(source);
+    if (QFileInfo::exists(path)) {
+        // Never overwritten. A script someone has edited is the whole point of
+        // the file, and this gesture is as likely to mean "take me to it".
+        m_log->appendPlainText(
+            tr("[hook] using the script already beside the source: %1").arg(path));
+    } else {
+        QString error;
+        if (!files::write(path, stopHookStarterScript(), &error)) {
+            QMessageBox::critical(this, tr("Stop hooks"), error);
+            return QString();
+        }
+        m_log->appendPlainText(tr("[hook] wrote %1 — edit it, then press Continue").arg(path));
+    }
+
+    openPath(path);
+    return path;
+}
+
 void MainWindow::editStopHooks()
 {
-    StopHooksDialog dialog(m_settings.stopHookPath, m_settings.stopHookEnabled,
-                           m_settings.stopHookAutoContinue,
+    // An empty setting offers the conventional script when one already sits
+    // beside the source — the naming rule exists precisely so nobody has to be
+    // told where a project's hook is.
+    QString path = m_settings.stopHookPath;
+    if (path.isEmpty()) {
+        const QString beside = stopHookScriptPathFor(buildSourcePath());
+        if (!beside.isEmpty() && QFileInfo::exists(beside))
+            path = beside;
+    }
+
+    StopHooksDialog dialog(path, m_settings.stopHookEnabled, m_settings.stopHookAutoContinue,
                            m_hooks ? m_hooks->lastRunSummary() : QString(), this);
+    dialog.setCreateScriptHandler([this] { return createStopHookScript(); });
     if (dialog.exec() != QDialog::Accepted)
         return;
 

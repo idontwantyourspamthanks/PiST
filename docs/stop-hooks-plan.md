@@ -309,10 +309,25 @@ prevents:
   is backward-compatible with version 2 — an older PiST ignores an unknown object rather than
   refusing the file, which is the behaviour to confirm in L1 (§15 Q3).
 - **Run ▸ Stop hooks…** (`m_actStopHooks`, beside `m_actAddWatchpoint`) opens a small dialog built
-  the way `SettingsDialog`'s fields are: an enabled checkbox, the script path with a Browse… button
-  (`QFileDialog::getOpenFileName`), an auto-continue checkbox, and a read-only line showing the last
-  run's outcome. It persists through `ProjectSettings` + `files::write()` — never a bare `QFile`
-  write (invariant 16).
+  the way `SettingsDialog`'s fields are: an enabled checkbox, the script path with Browse… and
+  **New script…**, an auto-continue checkbox, and a read-only line showing the last run's outcome.
+  *New script…* is the authoring path, because asking someone to invent a file elsewhere and then
+  find it again is the friction this feature exists to remove: `MainWindow::createStopHookScript()`
+  writes `hello.s` → `hello.hooks.lua` beside the source (through `files::write()`, never a bare
+  `QFile` — invariant 16) from a starter whose comments *are* the API reference, opens it in an
+  editor tab, and switches the hook on. An existing script is adopted, never overwritten, and an
+  empty setting offers the conventional path when one already sits beside the source — the naming
+  rule exists so nobody has to be told where a project's hook is. The rule also recognises its own
+  output: with the script itself focused (it is "the source" by `buildSourcePath()`'s rule, whatever
+  is in front of you), the path *is* that script rather than a source to name another after.
+  Underneath it stays a value dialog: no create-handler, no button, which is how a test drives it
+  with no window behind it, and why the creation itself is a public `MainWindow` operation the suite
+  calls directly rather than something buried in a modal.
+- **The editor**: a `.lua` file is painted by `LuaHighlighter` rather than `AsmHighlighter` —
+  keywords, `--` and `--[[ ]]` comments, short and long strings, numbers, and the hook API names,
+  all in the existing `EditorTheme` colours. `CodeEditor::installHighlighter()` picks by path and
+  re-picks on `setFilePath()`, because a rename can change the extension; exactly one of the two
+  highlighters is live, and both are owned by the document as the assembly one always was.
 - **The console**: `[hook]` lines through the existing `Host::log` closure. They carry no `> ` echo:
   that prefix means "a command was typed here", and a script typed nothing.
 - **README**: a *Stop hooks* section listing the API verbatim, the registers accepted, and the honest
@@ -361,6 +376,13 @@ The README's API list is the contract; if a capability is not in it, the docs do
   `sourceLineBreakpointFiresAndResolvesBack` (`:987-1094`) is the pattern. Stop at a line, have the
   script write a byte at a known address, then read that address back with `requestMemoryDump()` and
   assert the value.
+- **`tst_gui`** (offscreen) — the doorway and the dialog:
+  `runMenuOffersStopHooks` (the action exists *and* sits in the Run menu),
+  `stopHooksDialogGatesItsFieldsOnWhetherItRuns`,
+  `stopHooksDialogOffersToMakeAScript` (no handler means no button; a handler's path lands in the
+  field and switches the hook on; a handler that fails changes nothing) and
+  `createStopHookScriptWritesItBesideTheSource` (the file lands beside the source with the starter,
+  opens in a tab, and is adopted rather than overwritten on a second ask).
 - **`tst_hrdb`** (L2) — one stop-hook case against the fork, skipping without `$PIST_HRDB_HATARI`.
 
 Not covered, and said so rather than implied: the dialog's **validation**. `accept()` refuses an
@@ -384,7 +406,9 @@ question became moot once the Qt route was dropped on the interruption and API f
 pinned and static), `src/hooks/StopHookRunner.{h,cpp}` (the API over the typed intents,
 the waits, the budget, the continue policy), the trigger at the stop publication plus the step flag
 in `DebugSessionController`, the `hooks` object in `ProjectSettings`, Run ▸ Stop hooks… with
-`StopHooksDialog`, the `[hook]` console prefix, and the README section.
+`StopHooksDialog`, the `[hook]` console prefix, the README section, `LuaHighlighter` in the editor,
+and the pinned Lua build. The script is authored in the IDE too: **New script…** writes it beside
+the source and opens it (§9), so the feature is usable without leaving PiST or inventing a file.
 
 **L2 — symbols, cause, and per-breakpoint scripts.**
 `sym()`; the stop *cause* (the armed breakpoint or watchpoint whose resolved address equals the PC,

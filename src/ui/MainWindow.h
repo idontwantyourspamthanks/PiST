@@ -328,6 +328,16 @@ private slots:
     void editStopHooks();
 
 public:
+    /// Write the project's stop-hook script beside the source (or adopt one that
+    /// is already there) and open it in the editor, returning its path — empty
+    /// when there is no source to name it after or the write failed.
+    ///
+    /// Public because the stop-hooks dialog calls it and `tst_gui` drives it
+    /// directly: the naming rule, the starter bytes and the no-overwrite rule
+    /// are this operation's whole contract, and none of them need a modal to be
+    /// worth testing.
+    QString createStopHookScript();
+
     /// Write a memory byte through the debugger (the `writeMemoryByte` intent:
     /// `w b $<addr> $<val>` on the native transport, the fork's `memset`
     /// otherwise), when stopped. The memory views' editing path; the remote

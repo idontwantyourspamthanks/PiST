@@ -7,6 +7,8 @@
 #include <QDialog>
 #include <QString>
 
+#include <functional>
+
 class QCheckBox;
 class QLineEdit;
 
@@ -38,6 +40,16 @@ public:
     /// Whether the script's `continue()` is honoured without asking.
     bool autoContinue() const;
 
+    /// What the dialog's *New script…* button does: make the project's hook
+    /// script (or adopt one that is already there) and return its path, which
+    /// the dialog puts in the field and switches the hook on with. An empty
+    /// return means it could not, and the field keeps what it had.
+    ///
+    /// Unset — the default — means the button is not shown at all: this stays a
+    /// plain value dialog, which is what lets a test drive it with no window
+    /// behind it and no modal in the way.
+    void setCreateScriptHandler(std::function<QString()> handler);
+
 protected:
     /// Refuses to close with the hook enabled and no readable script: a hook
     /// that cannot load would only report itself at a stop, which is the worst
@@ -50,6 +62,8 @@ private:
     QCheckBox *m_enabled = nullptr;
     QLineEdit *m_path = nullptr;
     QCheckBox *m_autoContinue = nullptr;
+    QPushButton *m_newScript = nullptr;
+    std::function<QString()> m_createScript;
 };
 
 } // namespace pist

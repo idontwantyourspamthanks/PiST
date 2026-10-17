@@ -42,11 +42,32 @@ StopHooksDialog::StopHooksDialog(const QString &scriptPath, bool enabled, bool a
     browse->setObjectName(QStringLiteral("stopHooksBrowse"));
     connect(browse, &QPushButton::clicked, this, &StopHooksDialog::browse);
 
+    // Offered only once the window has said what making a script means (and it
+    // hides again with no handler), so the dialog keeps working as a plain value
+    // dialog for callers — and tests — that have no project behind them.
+    m_newScript = new QPushButton(tr("New script…"), this);
+    m_newScript->setObjectName(QStringLiteral("stopHooksNewScript"));
+    m_newScript->setToolTip(
+        tr("Write a starter script beside the source, open it in the editor, and use it"));
+    connect(m_newScript, &QPushButton::clicked, this, [this] {
+        if (!m_createScript)
+            return;
+        const QString made = m_createScript();
+        if (made.isEmpty())
+            return; // the window has already said why
+        m_path->setText(made);
+        // Asking for a script is asking to use it: leaving the hook switched off
+        // afterwards would be a puzzle, and the box is right here to undo.
+        m_enabled->setChecked(true);
+    });
+    m_newScript->hide();
+
     auto *pathRow = new QWidget(this);
     auto *pathLayout = new QHBoxLayout(pathRow);
     pathLayout->setContentsMargins(0, 0, 0, 0);
     pathLayout->addWidget(m_path, 1);
     pathLayout->addWidget(browse);
+    pathLayout->addWidget(m_newScript);
 
     m_autoContinue = new QCheckBox(tr("Let the script continue without asking"), this);
     m_autoContinue->setObjectName(QStringLiteral("stopHooksAutoContinue"));
@@ -111,6 +132,12 @@ bool StopHooksDialog::enabled() const
 bool StopHooksDialog::autoContinue() const
 {
     return m_autoContinue->isChecked();
+}
+
+void StopHooksDialog::setCreateScriptHandler(std::function<QString()> handler)
+{
+    m_createScript = std::move(handler);
+    m_newScript->setVisible(bool(m_createScript));
 }
 
 void StopHooksDialog::browse()

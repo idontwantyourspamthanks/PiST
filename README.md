@@ -249,8 +249,10 @@ cmake --build build
 ```
 
 The configure step fetches **Lua 5.4.8**, the stop-hook scripting engine, by checksum into the
-build tree (never into the repository). A build with no network passes the file it already has:
-`-DPIST_LUA_TARBALL=/path/to/lua-5.4.8.tar.gz` — the hash is verified either way.
+build tree (never into the repository). CI and release builds pre-seed it instead of letting the
+configure do it; a local build with no network passes the file it already has:
+`-DPIST_LUA_TARBALL=/path/to/lua-5.4.8.tar.gz` — the hash is verified either way. Nothing here is
+needed to *use* PiST: the release archives carry the engine inside the binary.
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
@@ -575,9 +577,12 @@ it, print to the console and decide whether the program continues. Nothing about
 changes, so behaviour is extended without a rebuild: feed a harness its input, poke a value for a
 trainer, or log what a routine is working on.
 
-Set one up in **Run ▸ Stop hooks…**: choose the script, switch the hook on, and say whether the
-script's `continue()` may resume the program without asking. The choice lives in the project file
-(a `hooks` object in `.pistproject`), so it travels with the source.
+Set one up in **Run ▸ Stop hooks…**: press **New script…** and PiST writes a starter beside your
+source (`hello.s` → `hello.hooks.lua`), opens it in the editor and switches the hook on — or point
+the dialog at a script you already have. The starter's comments are the API reference, so the first
+thing you edit is also the documentation. The dialog shows how the last run went and whether the
+script's `continue()` may resume the program without asking, and the whole setting lives in the
+project file (a `hooks` object in `.pistproject`), so it travels with the source.
 
 The whole API — flat globals, nothing imported:
 
@@ -614,7 +619,9 @@ The limits, stated rather than discovered:
   the emulator to the *next* stop, and nothing here relies on that.
 
 The engine is [Lua 5.4.8](https://www.lua.org/), pinned by checksum and linked statically;
-[docs/stop-hooks-plan.md](docs/stop-hooks-plan.md) is the design and the measurement behind it.
+[docs/stop-hooks-plan.md](docs/stop-hooks-plan.md) is the design and the measurement behind it. A
+`.lua` file opens in the editor with Lua highlighting — keywords, comments (including `--[[ ]]`),
+strings (including `[[ ]]`) and numbers — while assembly sources keep the m68k rules.
 
 ## MCP server (`pist-mcp`)
 

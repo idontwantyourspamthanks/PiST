@@ -6,6 +6,7 @@
 
 #include "editor/AsmHighlighter.h"
 #include "editor/EditorTheme.h"
+#include "editor/LuaHighlighter.h"
 #include "support/FileWrite.h"
 
 #include <QContextMenuEvent>
@@ -44,6 +45,14 @@ bool fitsLatin1(const QString &text)
             return false;
     }
     return true;
+}
+
+/// Whether `path` names a Lua script — the language the editor paints it with.
+/// Case-insensitive so `HOOK.LUA` written on a case-insensitive filesystem is
+/// still Lua.
+bool isLuaPath(const QString &path)
+{
+    return path.endsWith(QLatin1String(".lua"), Qt::CaseInsensitive);
 }
 
 class LineNumberArea : public QWidget
@@ -176,7 +185,9 @@ CodeEditor::CodeEditor(const EditorTheme &theme, QWidget *parent)
 {
     setLineWrapMode(QPlainTextEdit::NoWrap);
 
-    m_highlighter = new AsmHighlighter(document(), m_theme);
+    // The path is empty here, so this starts on the assembly highlighter; a
+    // later loadFile() or setFilePath() swaps in the Lua one for a `.lua` file.
+    installHighlighter();
 
     // After the highlighter exists: it also applies the theme's font and colours.
     setTheme(theme);
@@ -208,6 +219,27 @@ CodeEditor::CodeEditor(const EditorTheme &theme, QWidget *parent)
     buildGotoBar();
 
     updateLineNumberAreaWidth(0);
+}
+
+void CodeEditor::installHighlighter()
+{
+    // The two highlighters are QSyntaxHighlighters owned by the document (no
+    // widget parent), but a language change has to delete the one in place:
+    // otherwise it stays attached and keeps painting alongside the new one.
+    // Nothing to do while the path still names the installed language.
+    const bool lua = isLuaPath(m_filePath);
+    if ((lua && m_luaHighlighter) || (!lua && m_asmHighlighter))
+        return;
+
+    delete m_asmHighlighter;
+    m_asmHighlighter = nullptr;
+    delete m_luaHighlighter;
+    m_luaHighlighter = nullptr;
+
+    if (lua)
+        m_luaHighlighter = new LuaHighlighter(document(), m_theme);
+    else
+        m_asmHighlighter = new AsmHighlighter(document(), m_theme);
 }
 
 void CodeEditor::buildFindBar()
@@ -357,7 +389,10 @@ void CodeEditor::setTheme(const EditorTheme &theme)
     setFont(m_theme.font);
     setTabStopDistance(8 * QFontMetricsF(m_theme.font).horizontalAdvance(QLatin1Char(' ')));
 
-    m_highlighter->setTheme(m_theme);
+    if (m_asmHighlighter)
+        m_asmHighlighter->setTheme(m_theme);
+    if (m_luaHighlighter)
+        m_luaHighlighter->setTheme(m_theme);
     refreshExtraSelections();
     if (m_lineNumberArea)
         updateLineNumberAreaWidth(0);
@@ -1167,6 +1202,13 @@ bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
     return QPlainTextEdit::eventFilter(watched, event);
 }
 
+void CodeEditor::setFilePath(const QString &path)
+{
+    m_filePath = path;
+    // A rename can change the extension, and with it the language.
+    installHighlighter();
+}
+
 bool CodeEditor::loadFile(const QString &path)
 {
     QFile file(path);
@@ -1199,6 +1241,8 @@ bool CodeEditor::loadFile(const QString &path)
 
     setPlainText(text);
     m_filePath = path;
+    // The path's language decides the highlighter, now that there is a path.
+    installHighlighter();
     document()->setModified(false);
     return true;
 }
@@ -1248,6 +1292,8 @@ bool CodeEditor::saveFile(const QString &path)
     }
 
     m_filePath = path;
+    // The path's language decides the highlighter, now that there is a path.
+    installHighlighter();
     document()->setModified(false);
     return true;
 }

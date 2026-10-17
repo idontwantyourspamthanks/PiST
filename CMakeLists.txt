@@ -241,6 +241,8 @@ pist_module(pist_editor
     src/editor/AsmHighlighter.h
     src/editor/CodeEditor.cpp
     src/editor/CodeEditor.h
+    src/editor/LuaHighlighter.cpp
+    src/editor/LuaHighlighter.h
     src/editor/EditorTheme.h
     src/editor/InstrRef.cpp
     src/editor/InstrRef.h

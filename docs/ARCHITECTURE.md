@@ -146,7 +146,12 @@ Everything else in this document is a consequence of that rule. The debug transp
 - **`build/LineMap.{h,cpp}`** — parses one vasm `-L` listing into section:offset ↔ source-line
   entries and the section extents. **`LinkMap.{h,cpp}`** parses a vlink `-M` map.
   **`ProgramLineMap.{h,cpp}`** aggregates one `LineMap` per module plus the `LinkMap`, and resolves
-  line ↔ address once `setLiveBases()` supplies the runtime section addresses.
+  line ↔ address once `setLiveBases()` supplies the runtime section addresses. Two resolvers sit on
+  top of that in `SymbolTable`: `labelSite()` answers *where do I break* (the first **code** line at
+  or after the definition) and `labelAddress()` answers *what address does this name have* (the
+  definition's own line, else `LineMap::nextAddressLine()` — the first line that emits anything in
+  **any** section, because `buffer:` above `ds.b 256` is bss). They differ deliberately; both refuse
+  an `equ`, which has a value rather than a place.
 - **`emu/EmulatorHost.{h,cpp}`** — the heart of the debug side: owns the Hatari `QProcess`, both
   debug channels, the command queue, the prompt/settle framing, the stderr/stdout parsers, and
   `writeBootstrapScript()` (the entry-stop generator). See the transport section below.
@@ -190,14 +195,31 @@ Everything else in this document is a consequence of that rule. The debug transp
   `MainWindow` signals. The screenshot verb hands the path to the host: a media session's capture
   is the last streamed frame, anything else's is `QScreen::grabWindow` of the IDE window.
 
+- **`hooks/HookApi.h` / `hooks/StopHookEngine.{h,cpp}` / `hooks/StopHookRunner.{h,cpp}`** — the
+  stop-hook subsystem (docs/stop-hooks-plan.md). `HookApi` is the whole surface a Lua script may
+  reach; `StopHookEngine::run()` binds a fresh Lua 5.4.8 interpreter to it — `base`, `table`,
+  `string` and `math` only, with a count hook enforcing the wall-clock budget — and reports which
+  line an error came from; `StopHookRunner` is the seam that drives it at a stop: the typed intents
+  (never debugger text), the wait for each answer (a nested event loop, as `RemoteControl`'s
+  blocking verbs use — which is why it is entered one turn *after* the stop is published, outside
+  the transport's emit stack, rather than from inside it), the console hold that keeps a user's
+  command from being mistaken for the script's, and the `continue()` policy. Deliberately
+  widget-free: `pist_hooks` links QtCore, Lua and `emu/`, which is what lets `tst_emulatorhost`
+  drive the shipped runner against a real session with no display at all. `ui/StopHooksDialog` is
+  the only UI it has. It is also readable from outside: the `hook` verb, its `pist_hook` MCP tool and
+  the `hook` event all report what `StopHookRunner::LastRun` holds — the fields, not the dialog's
+  sentence (docs/stop-hooks-plan.md §10).
+
 ### The build graph
 
 `CMakeLists.txt` builds one static library per module through the `pist_module()` helper —
 `pist_support`, `pist_image`, `pist_build`, `pist_debug`, `pist_emu`, `pist_model`, `pist_project`,
-`pist_toolchain`, `pist_git`, `pist_editor`, `pist_control`, `pist_mcp`, `pist_ui` — plus the two
+`pist_toolchain`, `pist_git`, `pist_editor`, `pist_control`, `pist_mcp`, `pist_hooks`, `pist_ui` —
+plus the two
 executables (`pist`, `pist-mcp`) and one test executable per suite. The module graph is declared with
 one edge per include in the sources, and the layering is enforced by the linker: `support`, `image`,
-`build`, `debug`, `emu`, `model`, `project`, `toolchain`, `git` and `mcp` link no `Qt6::Widgets`, so
+`build`, `debug`, `emu`, `model`, `project`, `toolchain`, `git`, `hooks` and `mcp` link no
+`Qt6::Widgets`, so
 a core module cannot reach a widget (and by extension cannot reach the UI).
 
 The graph is acyclic, so no link line has to repeat an archive to break a cycle. Two static-library
@@ -591,7 +613,7 @@ There are two kinds of test:
 
 - **Parser/unit tests** (`tst_parsers`, `tst_image`, `tst_tosrom`, `tst_debug`, `tst_link`,
   `tst_settings`, `tst_toolfetch`, `tst_oscall`, `tst_profile`, `tst_git`, `tst_watcher`,
-  `tst_mcp`) — always run, no emulator and no display needed (`tst_link`'s end-to-end case runs a
+  `tst_mcp`, `tst_stophooks`) — always run, no emulator and no display needed (`tst_link`'s end-to-end case runs a
   real vasm + vlink when both are present and skips otherwise; `tst_git` skips its live cases
   without `git`). `tst_watcher` pins the document watcher's behaviour, headless, against real temp
   files: a staged temp-file rename over the watched path — exactly what `files::write()` does —
@@ -624,6 +646,12 @@ be proven against a real emulator run, not a mock (see PLAN.md §11 "Definition 
   free of UI types; if the verb answers with JSON, the serialisation belongs in
   `RemoteStateAdapter`, whose readers come in through its own `Host`. Document the verb in
   README §Remote control.
+- **Add a scripted API function**: add the virtual to `hooks/HookApi.h`, implement it in
+  `StopHookRunner` using the typed intents only (never debugger text — MAJ-21), and bind it in the
+  `kApi` table in `hooks/StopHookEngine.cpp`, which is the one place the script-visible names live.
+  Document it in README §Stop hooks: that list is the contract, and `tst_stophooks` covers the
+  engine with a fake `HookApi` and the runner with a fake backend, while the real-session path is
+  `tst_emulatorhost`'s stop-hook case.
 - **Add a Hatari CLI option**: emit it in `SessionConfig::toArgv()`, gated on a `HatariCapabilities`
   flag from `probeHatari()` if it is not universal.
 - **Add a machine**: extend the `Machine` enum and the TOS-compatibility table in

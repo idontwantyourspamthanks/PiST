@@ -12,6 +12,8 @@
 #include "ui/ProfilerController.h"
 #include "ui/RemoteStateAdapter.h"
 #include "ui/SessionLauncher.h"
+#include "hooks/StopHookRunner.h"
+#include "ui/StopHooksDialog.h"
 #include "ui/UiText.h"
 
 #include "build/BuildService.h"
@@ -497,6 +499,45 @@ MainWindow::MainWindow(QWidget *parent)
     };
     m_profiling = new ProfilerController(profilerHost, this);
 
+    // The stop hook (docs/stop-hooks-plan.md). A seam like the others: it owns
+    // the script's run and what the script may reach, and gets the window's
+    // operations as callbacks. `resume` is the window's own slot, deliberately,
+    // so a script's continue is the Continue action — arms queued at the entry
+    // stop survive it (invariant 5).
+    StopHookRunner::Host hookHost;
+    hookHost.backend = backendNow;
+    hookHost.log = logLine;
+    hookHost.scriptPath = [this] { return m_settings.stopHookPath; };
+    // `sym()` in a script: the same rule the remote `breakpoint <label>` verb
+    // uses, through the model that owns the symbols and the program map.
+    hookHost.symbol = [this](const QString &name, quint32 *address, QString *error) {
+        return m_bpModel->resolveLabel(name, address, error);
+    };
+    hookHost.enabled = [this] { return m_settings.stopHookEnabled; };
+    hookHost.autoContinue = [this] { return m_settings.stopHookAutoContinue; };
+    hookHost.resume = [this] { resume(); };
+    hookHost.refresh = [this] { m_host->refresh(); };
+    // Held for the duration of a run: with no command of the user's in flight,
+    // the completion that arrives is the one the hook issued — so a script's
+    // write cannot be pruned by the resume it asks for (R5). The console's
+    // enabled state is otherwise the session's (MainWindow's stoppedChanged
+    // handler), hence the same expression when releasing it.
+    hookHost.holdConsole = [this](bool hold) {
+        if (m_consoleInput)
+            m_consoleInput->setEnabled(hold ? false : m_host->isRunning());
+    };
+    m_hooks = new StopHookRunner(hookHost, this);
+
+    // What the hook did reaches a watcher here rather than as part of `stopped`:
+    // that event is published *before* the script runs, because the run needs the
+    // stop's state to be real first (D1). Emitted before the continue policy, so
+    // the wire order is stopped → hook → running.
+    connect(m_hooks, &StopHookRunner::runFinished, this,
+            [this](const StopHookRunner::LastRun &run) {
+                if (m_eventSink)
+                    m_eventSink->publishEvent(QStringLiteral("hook"), hookEventDetail(run));
+            });
+
     RemoteStateAdapter::Host stateHost;
     stateHost.editor = [this]() -> const CodeEditor * { return m_editor; };
     stateHost.backend = [this]() -> const IDebugBackend * { return m_host; };
@@ -508,6 +549,12 @@ MainWindow::MainWindow(QWidget *parent)
     stateHost.symbols = symbolsNow;
     stateHost.programMap = programMapNow;
     stateHost.profile = [this]() -> const AttributedProfile & { return m_profiling->results(); };
+    stateHost.hookEnabled = [this] { return m_settings.stopHookEnabled; };
+    stateHost.hookPath = [this] { return m_settings.stopHookPath; };
+    stateHost.hookAutoContinue = [this] { return m_settings.stopHookAutoContinue; };
+    stateHost.hookLastRun = [this]() -> const StopHookRunner::LastRun & {
+        return m_hooks->lastRun();
+    };
     m_remoteState = new RemoteStateAdapter(stateHost, this);
 
     // Documents live in tabs. openPath() dispatches `.pim` / ST still-images
@@ -735,11 +782,14 @@ void MainWindow::wireEditor(CodeEditor *editor)
                 QAction *toggle = menu.addAction(hasBreakpoint ? tr("Remove breakpoint")
                                                                : tr("Add breakpoint"));
                 QAction *condition = menu.addAction(tr("Edit condition…"));
+                QAction *script = menu.addAction(tr("Stop-hook script…"));
                 QAction *chosen = menu.exec(pos);
                 if (chosen == toggle)
                     toggleBreakpointAtLine(line);
                 else if (chosen == condition)
                     editBreakpointCondition(line);
+                else if (chosen == script)
+                    editBreakpointScript(line);
             });
 }
 
@@ -1519,6 +1569,13 @@ void MainWindow::createActions()
     m_actAddWatchpoint = new QAction(tr("Add &watchpoint…"), this);
     connect(m_actAddWatchpoint, &QAction::triggered, this, &MainWindow::addWatchpoint);
 
+    m_actStopHooks = new QAction(tr("Stop &hooks…"), this);
+    m_actStopHooks->setObjectName(QStringLiteral("stopHooksAction"));
+    m_actStopHooks->setToolTip(
+        tr("Run a script at every debugger stop: read and change memory and registers, log, "
+           "and decide to continue."));
+    connect(m_actStopHooks, &QAction::triggered, this, &MainWindow::editStopHooks);
+
     m_actResume = new QAction(tr("&Continue"), this);
     m_actResume->setObjectName(QStringLiteral("continueAction"));
     m_actResume->setShortcut(QKeySequence(Qt::Key_F9));
@@ -1881,6 +1938,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actToggleBreakpoint);
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
+    runMenu->addAction(m_actStopHooks);
 }
 
 void MainWindow::showAbout()
@@ -4325,13 +4383,17 @@ void MainWindow::step()
     // A plain step is not a running->stopped transition, so stoppedChanged does
     // not fire and onDebuggerStopped is never called — the refresh has to be
     // explicit or nothing updates (registers, disassembly, the editor, and the
-    // step-back snapshot all depend on it).
+    // step-back snapshot all depend on it). The same fact is why the stop hook
+    // needs the step flag: the state batch that follows is the only report of
+    // the movement (docs/stop-hooks-plan.md §6).
+    m_session->setStepEventPending(true);
     m_host->step();
     m_host->refresh();
 }
 
 void MainWindow::stepOver()
 {
+    m_session->setStepEventPending(true);
     m_host->stepOver();
     m_host->refresh();
 }
@@ -4473,6 +4535,154 @@ void MainWindow::addWatchpoint()
     m_bpModel->addWatchpoint();
 }
 
+namespace {
+
+/// The suffix that marks a file as a hook script, so the naming rule can tell one
+/// from the source a script would be named after.
+constexpr const char *kStopHookScriptSuffix = ".hooks.lua";
+
+/// Where the project's stop-hook script lives when PiST makes one: beside the
+/// source it hooks, named after it (`hello.s` → `hello.hooks.lua`).
+///
+/// Named after the source rather than a bare `hooks.lua` so that a directory
+/// holding two projects cannot have them fight over one file, and so a project's
+/// hook is findable without anyone being told where it is — which is what lets
+/// the dialog offer it.
+QString stopHookScriptPathFor(const QString &sourcePath)
+{
+    if (sourcePath.isEmpty())
+        return QString();
+    // Already a hook script — which it is whenever the script is the focused
+    // tab, since the "source" is whatever is in front of you. Naming a script
+    // after a script would give `hello.hooks.hooks.lua`: the second ask would
+    // grow the name every time instead of adopting what is there.
+    if (sourcePath.endsWith(QLatin1String(kStopHookScriptSuffix), Qt::CaseInsensitive))
+        return QFileInfo(sourcePath).absoluteFilePath();
+    const QFileInfo info(sourcePath);
+    if (info.fileName().isEmpty())
+        return QString();
+    return info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+         + QLatin1String(kStopHookScriptSuffix);
+}
+
+/// The starter script: a working example with the API written where the person
+/// editing it will read it. A file PiST makes should be documentation as well as
+/// a starting point — the alternative is sending someone to the manual before
+/// their first line.
+QByteArray stopHookStarterScript()
+{
+    return QByteArrayLiteral(R"lua(-- Stop hook: runs at every debugger stop, with the machine held still.
+--
+-- Available here, and nothing else (no io, os, require or debug):
+--
+--   readmem(addr, len)      a string of len bytes at addr; string.byte(s, 1)
+--                           reads one byte, string.byte(s, 1, 4) reads four
+--   writemem(addr, value)   write one byte
+--   readreg(name)           d0-d7, a0-a7, pc, sr, usp, isp
+--   writereg(name, value)   d0-d7, a0-a7, pc, sr  (Hatari cannot set usp/isp)
+--   sym(name)               a label's address in this run; addresses move
+--                           between runs, which is why this exists
+--   log(text) / print(...)  one line in the Build & debug console, as [hook]
+--   continue() / resume()   let the program run on; without "continue without
+--                           asking" switched on, the stop holds instead
+--
+-- Two values describe the stop itself:
+--
+--   reason                  "breakpoint", "step", or "unknown" (a pause, an
+--                           exception or a watchpoint — the emulator does not
+--                           say which)
+--   at                      the breakpoint that fired, "file:line"; only set
+--                           when reason is "breakpoint"
+--
+--
+-- Two things worth knowing before you rely on it:
+--
+--   * Addresses move. GEMDOS relocates the program on every run, so a data
+--     address that worked last run is wrong this run. Breakpoints dodge this by
+--     being file:line, and sym() resolves a name through this run's bases; an
+--     address written into the script by hand cannot dodge it.
+--   * Every stop gets a fresh interpreter: nothing carries over, so state that
+--     must survive a stop belongs in the guest's own memory.
+--
+-- The line below is a starting point. Edit it, press Continue, and watch the
+-- console.
+
+log(string.format("stop at $%06x  d0=$%08x", readreg("pc"), readreg("d0")))
+)lua");
+}
+
+} // namespace
+
+QString MainWindow::createStopHookScript()
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
+        m_log->appendPlainText(
+            tr("[hook] open a source first: the script is named after it"));
+        return QString();
+    }
+
+    const QString path = stopHookScriptPathFor(source);
+    if (QFileInfo::exists(path)) {
+        // Never overwritten. A script someone has edited is the whole point of
+        // the file, and this gesture is as likely to mean "take me to it".
+        m_log->appendPlainText(
+            tr("[hook] using the script already beside the source: %1").arg(path));
+    } else {
+        QString error;
+        if (!files::write(path, stopHookStarterScript(), &error)) {
+            QMessageBox::critical(this, tr("Stop hooks"), error);
+            return QString();
+        }
+        m_log->appendPlainText(tr("[hook] wrote %1 — edit it, then press Continue").arg(path));
+    }
+
+    openPath(path);
+    return path;
+}
+
+void MainWindow::editStopHooks()
+{
+    // An empty setting offers the conventional script when one already sits
+    // beside the source — the naming rule exists precisely so nobody has to be
+    // told where a project's hook is.
+    QString path = m_settings.stopHookPath;
+    if (path.isEmpty()) {
+        const QString beside = stopHookScriptPathFor(buildSourcePath());
+        if (!beside.isEmpty() && QFileInfo::exists(beside))
+            path = beside;
+    }
+
+    StopHooksDialog dialog(path, m_settings.stopHookEnabled, m_settings.stopHookAutoContinue,
+                           m_hooks ? m_hooks->lastRunSummary() : QString(), this);
+    dialog.setCreateScriptHandler([this] { return createStopHookScript(); });
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_settings.stopHookPath = dialog.scriptPath();
+    m_settings.stopHookEnabled = dialog.enabled();
+    m_settings.stopHookAutoContinue = dialog.autoContinue();
+
+    // The hook lives in the project file, and a project file is named after a
+    // source: with none open there is nowhere to keep it, and saying so beats a
+    // setting that quietly disappears.
+    if (buildSourcePath().isEmpty()) {
+        m_log->appendPlainText(tr("[hook] set for this session; open a source (and save the "
+                                  "project) to keep it"));
+        return;
+    }
+    persistSettings();
+
+    if (m_settings.stopHookEnabled)
+        m_log->appendPlainText(
+            tr("[hook] %1 runs at every stop%2")
+                .arg(m_settings.stopHookPath,
+                     m_settings.stopHookAutoContinue ? tr(", and may continue on its own")
+                                                     : QString()));
+    else
+        m_log->appendPlainText(tr("[hook] off"));
+}
+
 void MainWindow::debugCommand(const QString &command)
 {
     // Route through the host; the response comes back on debugCommandFinished,
@@ -4579,6 +4789,11 @@ bool MainWindow::toggleBreakpointAtLabel(const QString &name, QString *detail)
 QJsonArray MainWindow::symbolsJson(const QString &filter) const
 {
     return m_remoteState->symbolsJson(filter);
+}
+
+QJsonObject MainWindow::hookJson() const
+{
+    return m_remoteState->hookJson();
 }
 
 QJsonObject MainWindow::documentJson() const
@@ -4743,6 +4958,11 @@ void MainWindow::editBreakpointCondition(int line)
     m_bpModel->editCondition(line);
 }
 
+void MainWindow::editBreakpointScript(int line)
+{
+    m_bpModel->editScript(line);
+}
+
 void MainWindow::clearAllBreakpoints()
 {
     m_bpModel->clear();
@@ -4767,6 +4987,33 @@ void MainWindow::onStateUpdated(const MachineState &state)
         if (m_eventSink)
             m_eventSink->publishEvent(QStringLiteral("stopped"),
                                       QStringLiteral("pc=0x%1").arg(hex::hex32(state.pc, hex::Case::Lower)));
+        // The stop hook runs from here, and nowhere earlier: this is the moment
+        // the stop is real enough to report — the register batch has landed, so
+        // readreg() has the machine's actual truth, and the attach's own
+        // commands have completed (docs/stop-hooks-plan.md D1).
+        if (m_hooks) {
+            // The cause, as far as the transport can tell us: a breakpoint whose
+            // armed address is this PC. A pause, an exception and a watchpoint
+            // are indistinguishable from here, so they stay "unknown" rather
+            // than being guessed at.
+            StopTrigger how;
+            if (const Breakpoint *hit = breakpointAt(m_bpModel->breakpoints(), state.pc)) {
+                how.reason = StopReason::Breakpoint;
+                how.at = hit->label();
+                how.script = hit->scriptPath;
+            }
+            m_hooks->onStopPublished(state, how);
+        }
+    } else if (m_session->stepEventPending() && state.regs.valid) {
+        // A step never reaches the branch above: `s`/`n` are not running→stopped
+        // transitions, so stoppedChanged does not fire for them (see step()).
+        // The flag makes "every stop" include them.
+        m_session->setStepEventPending(false);
+        if (m_hooks) {
+            StopTrigger how;
+            how.reason = StopReason::Step;
+            m_hooks->onStopPublished(state, how);
+        }
     }
     m_disassembly->setState(state);
 

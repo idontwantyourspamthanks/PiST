@@ -8,6 +8,7 @@
 #include "build/SymbolTable.h"
 #include "emu/AttributedProfile.h"
 #include "emu/MachineState.h"
+#include "hooks/StopHookRunner.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -71,6 +72,13 @@ public:
         std::function<const ProgramLineMap &()> programMap;
         /// The session's attributed profile (the `profile results` verb).
         std::function<const AttributedProfile &()> profile;
+        /// The project's stop hook: whether it is switched on, the script it
+        /// names, whether the script's `continue()` is honoured without asking,
+        /// and what its last run did (the `hook` verb).
+        std::function<bool()> hookEnabled;
+        std::function<QString()> hookPath;
+        std::function<bool()> hookAutoContinue;
+        std::function<const StopHookRunner::LastRun &()> hookLastRun;
     };
 
     explicit RemoteStateAdapter(Host host, QObject *parent = nullptr);
@@ -108,6 +116,15 @@ public:
     /// A plain-text snapshot of the machine state (registers, PC, running
     /// state), for the remote-control interface. Read-only.
     QString stateSummary() const;
+
+    /// The stop hook as JSON: {enabled, path, autoContinue, last}, where `last`
+    /// is {ran, ok, timedOut, pc, file, line, logs, writes, message?} — the
+    /// fields of the last run rather than the dialog's sentence, which is
+    /// translated and would have an agent parsing prose. `last.ran` is false
+    /// before the session's first run, so a consumer never has to tell a missing
+    /// key from a run that did nothing. For the remote `hook` verb, which the
+    /// MCP shim serves as structured content.
+    QJsonObject hookJson() const;
 
 private:
     Host m_host;

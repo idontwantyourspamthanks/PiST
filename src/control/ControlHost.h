@@ -133,6 +133,10 @@ public:
     virtual QJsonArray symbolsJson(const QString &filter) const = 0;
     /// The profiler's hot lines as JSON rows {line, count}, worst first.
     virtual QJsonArray profilerResultsJson() const = 0;
+    /// The stop hook as JSON {enabled, path, autoContinue, last} — the project's
+    /// script and what its last run did, for the `hook` verb an agent uses to
+    /// learn what a hook it never sees ran.
+    virtual QJsonObject hookJson() const = 0;
 
     /// Capture the IDE's window into `path` (the `screenshot` verb). False
     /// when the capture or the write failed. The capturing itself is the UI's:

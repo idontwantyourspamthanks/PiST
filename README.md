@@ -101,6 +101,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     the machine is on, and every stop brings it along until you move the caret yourself.
     Run ▸ Follow Execution, or click the session chip in the status bar, or the ▶ in the gutter
   - **edit registers and memory** while stopped — poke a value and keep debugging
+  - **Stop hooks** — a **Lua script that runs at every stop**, able to read and write memory and
+    registers, log to the console and `continue()` the program, so a harness, a trainer or a
+    logging pass needs no rebuild (Run ▸ Stop hooks…, documented below)
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
     armed as change-tracking breakpoints), settable from Run ▸ Add watchpoint or the remote control
@@ -238,12 +241,18 @@ control socket is absent.
 
 ## Building
 
-Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets and Network), a C++17 compiler.
+Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets, Network and Multimedia), a C++17 compiler.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+The configure step fetches **Lua 5.4.8**, the stop-hook scripting engine, by checksum into the
+build tree (never into the repository). CI and release builds pre-seed it instead of letting the
+configure do it; a local build with no network passes the file it already has:
+`-DPIST_LUA_TARBALL=/path/to/lua-5.4.8.tar.gz` — the hash is verified either way. Nothing here is
+needed to *use* PiST: the release archives carry the engine inside the binary.
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
@@ -513,6 +522,8 @@ stop               stop the emulator session
 step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
 symbols [filter]   the build's symbols as a JSON array (block reply)
+hook               the stop-hook script and what its last run did, as a JSON
+                   object (block reply)
 tabs               the open documents as a JSON array (block reply)
 save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
@@ -545,20 +556,101 @@ waiting to be asked:
 
 ```
 event stopped pc=0x12596
+event hook ok file=hello.hooks.lua line=-1 writes=2 logs=1 pc=0x00012596
 event running
 ```
 
+The second is the stop hook's report, and it is a separate event on purpose: the
+script runs *after* the stop is published, because it needs the stop's registers
+to be real before it reads them, so its outcome does not exist yet when `stopped`
+goes out. Its status is `ok`, `timeout` (the budget cut the script off), `error`,
+or `norun` (the script could not be read, so it never ran), followed by `file`,
+`line` (`-1` when there is none), `writes`, `logs`, `pc`, and — when there is one —
+`message`, which is the script's own words and always last: everything after
+`message=` belongs to it. Read the same thing on demand with the `hook` verb.
+
 The format is `event <name>` with optional trailing detail, always one line. The
-IDE currently publishes `stopped` (with the program counter, when known) and
-`running`; more event names may be added, so a client should ignore names it does
-not recognise rather than treat them as errors. Watching is additive: a watcher
-still gets ordinary replies to ordinary commands, and a connection that never
-sends `watch` behaves exactly as it always did. Several connections may watch at
-once. Send `unwatch` to stop the events while keeping the connection, or just
-close it. Because `watch` and its `ok` share the socket with the events, a client
-must read the `ok` before treating subsequent lines as events.
+IDE currently publishes `stopped` (with the program counter, when known),
+`hook` and `running`; more event names may be added, so a client should ignore
+names it does not recognise rather than treat them as errors. Watching is
+additive: a watcher still gets ordinary replies to ordinary commands, and a
+connection that never sends `watch` behaves exactly as it always did. Several
+connections may watch at once. Send `unwatch` to stop the events while keeping
+the connection, or just close it. Because `watch` and its `ok` share the socket
+with the events, a client must read the `ok` before treating subsequent lines as
+events.
 
 The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
+
+## Stop hooks
+
+A stop hook is a **Lua script that runs at every debugger stop** — every breakpoint, watchpoint,
+pause, step, and the entry stop — with the machine held stopped. It can look at the machine, change
+it, print to the console and decide whether the program continues. Nothing about your program
+changes, so behaviour is extended without a rebuild: feed a harness its input, poke a value for a
+trainer, or log what a routine is working on.
+
+Set one up in **Run ▸ Stop hooks…**: press **New script…** and PiST writes a starter beside your
+source (`hello.s` → `hello.hooks.lua`), opens it in the editor and switches the hook on — or point
+the dialog at a script you already have. The starter's comments are the API reference, so the first
+thing you edit is also the documentation. The dialog shows how the last run went and whether the
+script's `continue()` may resume the program without asking, and the whole setting lives in the
+project file (a `hooks` object in `.pistproject`), so it travels with the source.
+
+One breakpoint can run a script of its own instead: right-click its line in the gutter and pick
+**Stop-hook script…** (empty goes back to the project's). The path may be absolute or relative to the
+source's directory, which is where **New script…** puts one.
+
+The whole API — flat globals, nothing imported:
+
+| Call | Meaning |
+|---|---|
+| `readmem(addr, len)` | a string of `len` bytes at `addr` (1 to 4096) |
+| `writemem(addr, value)` | write one byte |
+| `readreg(name)` | a register: `d0`–`d7`, `a0`–`a7`, `pc`, `sr`, `usp`, `isp` |
+| `sym(name)` | the address that label has **in this run** — GEMDOS moves the program, so a hard-coded address goes stale and a name does not |
+| `writereg(name, value)` | the writable ones: `d0`–`d7`, `a0`–`a7`, `pc`, `sr` |
+| `log(text)` (also `print`) | one line in the console dock, prefixed `[hook] ` |
+| `continue()` (also `resume`) | let the program run on |
+
+Two globals describe the stop itself: `reason` is `"breakpoint"`, `"step"` or `"unknown"`, and `at`
+is the breakpoint that fired, `"file:line"`, or `nil` when there is no breakpoint to name. A pause, an
+exception and a watchpoint all report `"unknown"`: the emulator says it stopped, not why, and a
+watchpoint fires on a data change rather than a program position.
+
+A trainer, in full — hold the player's lives at 9 and say so:
+
+```lua
+local lives = string.byte(readmem(0x0001a2f4, 1))
+if lives < 9 then
+  writemem(0x0001a2f4, 9)
+  log("lives were " .. lives .. ", restored")
+end
+```
+
+The limits, stated rather than discovered:
+
+- **No I/O.** A script reaches the machine, the console and `continue()` — not the filesystem, the
+  network or the environment. Only Lua's `base`, `table`, `string` and `math` libraries are open,
+  so this table is the whole surface.
+- **A 500 ms budget per stop.** A script that runs longer is interrupted and the console says so;
+  the machine is left stopped.
+- **An error leaves the machine stopped** and reports the script and the line: the program is never
+  resumed on a state a script only half-changed.
+- **Writes happen only while stopped.** A hook only ever runs at a stop, so this does not constrain
+  a script — but a debugger command that arrives while the machine is running would be deferred by
+  the emulator to the *next* stop, and nothing here relies on that.
+
+An agent sees the same thing without the dialog: the remote-control `hook` verb and its `pist_hook`
+MCP tool answer with the project's script, whether the hook is on, whether the script's `continue()`
+is honoured without asking, and what the last run did — as fields, not as the sentence the dialog
+shows. A `hook` event follows each `stopped` when a script ran, so a watcher learns what it did
+without asking; see **Remote control** above.
+
+The engine is [Lua 5.4.8](https://www.lua.org/), pinned by checksum and linked statically;
+[docs/stop-hooks-plan.md](docs/stop-hooks-plan.md) is the design and the measurement behind it. A
+`.lua` file opens in the editor with Lua highlighting — keywords, comments (including `--[[ ]]`),
+strings (including `[[ ]]`) and numbers — while assembly sources keep the m68k rules.
 
 ## MCP server (`pist-mcp`)
 
@@ -580,14 +672,14 @@ locally started IDE needs no configuration at all. The tools are
 `pist_run`, `pist_build`, `pist_build_release`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
-`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
+`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`, `pist_hook`,
 `pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
 `pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
 rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
 `destructiveHint`, so a client can decide what needs your confirmation.
 `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
-`pist_disasm`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
+`pist_disasm`, `pist_hook`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,

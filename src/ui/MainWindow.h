@@ -47,6 +47,7 @@ class DebugSessionController;
 class DocumentWatcher;
 class ProfilerController;
 class SessionLauncher;
+class StopHookRunner;
 class InstructionRefView;
 class SymbolsView;
 class RemoteControl;
@@ -315,6 +316,9 @@ private slots:
     bool toggleBreakpointAtLine(int line) override;
 
     void editBreakpointCondition(int line);
+    /// Gutter menu: the Lua script this breakpoint runs when it fires, instead of
+    /// the project's hook (empty clears it back).
+    void editBreakpointScript(int line);
     void clearAllBreakpoints();
     /// The breakpoints dock's "Clear all": removes breakpoints AND watchpoints
     /// (its button enables when only watchpoints are present), unlike the Run-menu
@@ -322,8 +326,21 @@ private slots:
     void clearAllDebugTargets();
     void addWatchpoint();
     void removeWatchpoint(int index);
+    /// Run ▸ Stop hooks…: choose the script, switch it on, decide whether it may
+    /// continue. Persisted in the project file (docs/stop-hooks-plan.md §9).
+    void editStopHooks();
 
 public:
+    /// Write the project's stop-hook script beside the source (or adopt one that
+    /// is already there) and open it in the editor, returning its path — empty
+    /// when there is no source to name it after or the write failed.
+    ///
+    /// Public because the stop-hooks dialog calls it and `tst_gui` drives it
+    /// directly: the naming rule, the starter bytes and the no-overwrite rule
+    /// are this operation's whole contract, and none of them need a modal to be
+    /// worth testing.
+    QString createStopHookScript();
+
     /// Write a memory byte through the debugger (the `writeMemoryByte` intent:
     /// `w b $<addr> $<val>` on the native transport, the fork's `memset`
     /// otherwise), when stopped. The memory views' editing path; the remote
@@ -393,6 +410,12 @@ public:
     /// the program map has live bases — SymbolsView's honesty rule. For the
     /// remote `symbols` verb.
     QJsonArray symbolsJson(const QString &filter) const override;
+
+    /// The stop hook as JSON {enabled, path, autoContinue, last {ran, ok,
+    /// timedOut, pc, file, line, logs, writes, message?}} — the project's script
+    /// and what its last run did. For the remote `hook` verb, which the MCP shim
+    /// serves as structured content.
+    QJsonObject hookJson() const override;
 
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use
@@ -730,6 +753,10 @@ private:
     BreakpointWatchpointModel *m_bpModel = nullptr;
     ProfilerController *m_profiling = nullptr;
     RemoteStateAdapter *m_remoteState = nullptr;
+    /// The stop hook (docs/stop-hooks-plan.md): runs the project's script at
+    /// every published stop, from a queued turn so its read-backs are outside
+    /// the transport's emit stack.
+    StopHookRunner *m_hooks = nullptr;
 
     DebugSessionController *sessionController() const { return m_session; }
     BreakpointWatchpointModel *breakpointsModel() const { return m_bpModel; }
@@ -937,6 +964,7 @@ private:
     QAction *m_actPause = nullptr;
     QAction *m_actReleaseInput = nullptr;
     QAction *m_actAddWatchpoint = nullptr;
+    QAction *m_actStopHooks = nullptr;
 };
 
 } // namespace pist

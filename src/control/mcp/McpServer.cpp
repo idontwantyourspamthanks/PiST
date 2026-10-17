@@ -562,6 +562,8 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         const QString filter = args.value(QStringLiteral("filter")).toString();
         command = filter.isEmpty() ? QStringLiteral("symbols")
                                    : QStringLiteral("symbols ") + filter;
+    } else if (name == QLatin1String("pist_hook")) {
+        command = QStringLiteral("hook");
     } else if (name == QLatin1String("pist_readmem")) {
         command = QStringLiteral("readmem %1 %2")
                       .arg(args.value(QStringLiteral("address")).toString(),
@@ -688,7 +690,8 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_tabs")
                      || outstanding.tool == QLatin1String("pist_read")
                      || outstanding.tool == QLatin1String("pist_readmem")
-                     || outstanding.tool == QLatin1String("pist_disasm"))) {
+                     || outstanding.tool == QLatin1String("pist_disasm")
+                     || outstanding.tool == QLatin1String("pist_hook"))) {
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &parseError);
         if (parseError.error == QJsonParseError::NoError) {
@@ -855,6 +858,18 @@ QJsonArray McpServer::tools()
                            "structuredContent): name, file and line, and the address "
                            "once the program is loaded."),
             props, {}));
+    }
+
+    {
+        list.append(toolObject(
+            QStringLiteral("pist_hook"), QStringLiteral("Stop hook"),
+            QStringLiteral("The project's stop-hook script and what its last run did, as a "
+                           "JSON object (also in structuredContent): enabled, path and "
+                           "autoContinue, and last {ran, ok, timedOut, pc, file, line, logs, "
+                           "writes, message?}. `last.ran` says whether a script has run at all "
+                           "in this session; the `stopped` event says a stop happened, and a "
+                           "`hook` event follows it when a script ran."),
+            empty, {}));
     }
 
     {
@@ -1046,7 +1061,7 @@ QJsonArray McpServer::tools()
         QStringLiteral("pist_symbols"), QStringLiteral("pist_readmem"),
         QStringLiteral("pist_disasm"), QStringLiteral("pist_profile_results"),
         QStringLiteral("pist_breakpoints"), QStringLiteral("pist_watch"),
-        QStringLiteral("pist_tabs"),
+        QStringLiteral("pist_tabs"), QStringLiteral("pist_hook"),
     };
     const QStringList destructive = {
         QStringLiteral("pist_stop"), QStringLiteral("pist_setreg"),

@@ -83,6 +83,12 @@ public:
     /// `breakpoint <label>` form.
     bool toggleAtLabel(const QString &name, QString *detail);
 
+    /// Resolve a label to the address it has in this run — what a hook script's
+    /// `sym()` calls. Refuses by name: 0 is a valid address, so there is no "not
+    /// found" value to return, and "no code at its definition" and "the bases are
+    /// not live yet" are refusals of their own rather than a wrong number.
+    bool resolveLabel(const QString &name, quint32 *address, QString *error) const;
+
     void remove(const QString &file, int line);
 
     /// The Run menu's "Clear Breakpoints": breakpoints only.
@@ -94,6 +100,12 @@ public:
     /// Prompt for and set a breakpoint's extra condition, a breakpoint being
     /// created if the line had none.
     void editCondition(int line);
+
+    /// Prompt for and set the Lua script this breakpoint runs when it fires;
+    /// empty clears it back to the project's hook. Creates the breakpoint if the
+    /// line had none, like the condition edit — and, like it, needs no re-arm:
+    /// the script is read at the stop, not armed with the condition.
+    void editScript(int line);
 
     /// Prompt for and add an address watchpoint (the Add-watchpoint action).
     void addWatchpoint();

@@ -51,6 +51,7 @@ private slots:
     void saveWritesOrRefuses();
     void statejsonIsAJsonObject();
     void problemsIsAJsonArray();
+    void hookIsAJsonObject();
     void symbolsAfterBuildListTheLabels();
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
@@ -483,6 +484,33 @@ void TstRemoteControl::statejsonIsAJsonObject()
     const QJsonObject object = doc.object();
     QCOMPARE(object.value(QStringLiteral("running")).toBool(), false);
     QCOMPARE(object.value(QStringLiteral("stopped")).toBool(), false);
+}
+
+void TstRemoteControl::hookIsAJsonObject()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // No project and no script: every field an agent could ask about is answered,
+    // including the ones with nothing in them yet — "there has been no run" is an
+    // answer, not a missing key.
+    QString reply = blockBody(roundTripBlock(s.client, "hook"));
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8(), &parseError);
+    QVERIFY2(parseError.error == QJsonParseError::NoError, qPrintable(reply));
+    const QJsonObject object = doc.object();
+    QCOMPARE(object.value(QStringLiteral("enabled")).toBool(), false);
+    QCOMPARE(object.value(QStringLiteral("path")).toString(), QString());
+    QCOMPARE(object.value(QStringLiteral("autoContinue")).toBool(), false);
+
+    const QJsonObject last = object.value(QStringLiteral("last")).toObject();
+    QVERIFY2(!last.isEmpty(), "the run is reported even before there has been one");
+    QCOMPARE(last.value(QStringLiteral("ran")).toBool(), false);
+    QCOMPARE(last.value(QStringLiteral("ok")).toBool(), false);
+    QCOMPARE(last.value(QStringLiteral("logs")).toInt(), 0);
+    QCOMPARE(last.value(QStringLiteral("writes")).toInt(), 0);
+    QVERIFY(!last.contains(QStringLiteral("message")));
 }
 
 void TstRemoteControl::problemsIsAJsonArray()

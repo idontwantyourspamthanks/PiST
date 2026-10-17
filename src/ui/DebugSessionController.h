@@ -120,6 +120,15 @@ public:
     void setStopEventPending(bool on) { m_stopEventPending = on; }
     bool consumeStopEventPending();
 
+    /// The same shape for a step. `s` and `n` are not running→stopped
+    /// transitions, so `stoppedChanged` never fires for them and the step paths
+    /// say so themselves (MainWindow::step) — which leaves nothing else to
+    /// report that the machine moved. Set by the step, consumed by the register
+    /// batch that answers it; the stop hook runs from there.
+    bool stepEventPending() const { return m_stepEventPending; }
+    void setStepEventPending(bool on) { m_stepEventPending = on; }
+    bool consumeStepEventPending();
+
     /// A `profile save` is in flight; its commandFinished parses the file.
     bool profileSavePending() const { return m_profileSavePending; }
     void setProfileSavePending(bool on) { m_profileSavePending = on; }
@@ -191,6 +200,7 @@ private:
     bool m_breakpointsArmedThisSession = false;
     bool m_stepOutPending = false;
     bool m_stopEventPending = false;
+    bool m_stepEventPending = false;
     bool m_profileSavePending = false;
     bool m_launchAfterBuild = false;
     /// The boot's fast-forward was dropped (or never needed dropping) this

@@ -342,6 +342,22 @@ jobs:
           print("ROM:", dest / "etos1024k.img")
           PY
 
+      # Lua, the stop-hook scripting engine, pinned in CMakeLists.txt
+      # (PIST_LUA_VERSION 5.4.8, PIST_LUA_SHA256) and fetched here for the same
+      # reason as vasm and EmuTOS above: the configure must not reach the
+      # network, and the checksum is what makes the input reproducible. The
+      # absolute path is what the configure below names, so it does not depend
+      # on the working directory either.
+      - name: Fetch and verify Lua
+        shell: bash
+        run: |
+          set -euo pipefail
+          LUA_URL=https://www.lua.org/ftp/lua-5.4.8.tar.gz
+          LUA_SHA256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
+          curl -fsSL -o "${{ github.workspace }}/lua-5.4.8.tar.gz" "$LUA_URL"
+          echo "$LUA_SHA256  ${{ github.workspace }}/lua-5.4.8.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$LUA_SHA256  ${{ github.workspace }}/lua-5.4.8.tar.gz" | sha256sum -c -
+
       - name: Configure
         shell: bash
         run: |
@@ -350,7 +366,8 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ] && command -v ninja >/dev/null 2>&1; then
             gen=(-G Ninja)
           fi
-          cmake -S . -B build "${gen[@]}" -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build "${gen[@]}" -DCMAKE_BUILD_TYPE=Release \
+            -DPIST_LUA_TARBALL="${{ github.workspace }}/lua-5.4.8.tar.gz"
 
       - name: Build
         shell: bash

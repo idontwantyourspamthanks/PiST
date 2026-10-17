@@ -1038,9 +1038,11 @@ here. The other five features do not touch it and start immediately.
 rather than the raw `stoppedChanged(true)` event, the runner executes from a
 queued invocation so its read-back nested loop is not inside the transport's
 single-entry drain, scripted writes must complete before a script's `continue()`
-(because `resume()` prunes everything without `keepOnResume`), and the engine is
-still a measured choice — that plan's L0 produces the numbers, which land in §9
-below.
+(because `resume()` prunes everything without `keepOnResume`), and the engine
+measured out to **Lua 5.4.8** — pinned, linked statically, the first third-party
+code linked into the binary (the numbers are in §9) — and L2 landed with it: `sym()` over the live
+bases, the stop's cause, and a script attached to a breakpoint. L3 is the agent surface: the `hook`
+verb, its `pist_hook` MCP tool, and the `hook` event a watcher gets when a script runs.
 
 ---
 
@@ -1057,6 +1059,7 @@ below.
 | Original Atari TOS ROMs | Proprietary | No | User-supplied; validate size/version; add our own hash check |
 | EmuTOS | GPLv2 | Yes | Data file, not linked. GPLv2 text + source offer |
 | Qt 6 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only / commercial | Yes | **Dynamic linking** under LGPLv3 (deliver Qt source, relink ability, Installation Information). Qt's GPL-2.0-only option is also available to us, since PiST is GPL-2.0-or-later |
+| **Lua 5.4.8** (the stop-hook scripting engine) | MIT (Expat) | Yes | **Statically linked** into `pist`, built unmodified from the checksum-pinned upstream tarball. The first third-party code linked into the binary, so its notice cannot be derived from the artifact: `collect-notices.py` names it in `STATIC_LIBS` and it ships as `licenses/MIT-Lua.txt` |
 | SDL2 (only if embedding upstream Hatari) | zlib | Yes | Acknowledgement |
 | Capstone | BSD-3-Clause | Yes | Attach `LICENSE.TXT` |
 
@@ -1295,6 +1298,50 @@ load-bearing dependency — which the detection order above already guarantees.
   rejected:
   docs/cursor-plan.md §1, §3, §6
 
+- **The stop-hook scripting engine is Lua 5.4.8, chosen by measurement rather than preference**
+  (2026-10-17, `feature/stop-hooks`; docs/stop-hooks-plan.md §5 D4). Both candidates were spiked as
+  throwaway programs. Lua: `liblua.a` is 676,688 B and adds 353,072 B to a tiny binary (323,664 B
+  stripped); its `LUA_MASKCOUNT` hook aborted `while true do end` 20/20 times in 0.234–0.356 ms; a
+  long C call (`('a'):rep(200000000)`) is *not* interrupted mid-call, because the hook only fires on
+  VM instructions — 325.867 ms to completion, which is the same shape of gap as any C function of
+  ours. Qt 6.8.1's `QJSEngine` adds exactly 8,770,048 B (`libQt6Qml.so` 6,611,968 +
+  `libQt6Network.so` 2,158,080) and needs no QML plugin or import tree (verified under `bwrap` with
+  both trees masked); it can only be interrupted from *another* thread — `setInterrupted` from a
+  second thread stopped the same loop in 500.122 ms of a 500 ms budget, 0.051 ms latency, 8/8, while
+  a same-thread `QTimer` provably cannot fire: it was measured firing 1452 ms after the 1952 ms
+  script it was meant to stop. The Qt route additionally could not configure on this machine at all
+  (distro Qt has `QmlPlugins/` and no `Qt6QmlConfig.cmake`).
+- **A statically linked library is invisible to the release notice scan.** `collect-notices.py`
+  derives the shipped set from what the bundle loads (`linked_libraries()`, `bundled_library_names()`),
+  so Lua — compiled into `pist` — has no library file for a pattern to match. It is named in that
+  script's new `STATIC_LIBS` list instead; running the script against a staged prefix was verified to
+  emit `licenses/MIT-Lua.txt` and a `Lua 5.4.8 (linked into pist)` manifest row. The limitation is
+  stated in the script's docstring, in `NOTICE` and in `packaging/copyright` rather than left
+  implicit — the script's own prose explains why it avoids static lists, and this is the exception
+  that has no scan to replace.
+
+- **A stop hook's `sym()` and its stop cause were verified against a live machine, over both
+  transports** (2026-10-17, `feature/stop-hooks`). In a real session a script's `sym("start")` equalled
+  the machine's actual PC at the entry stop, `sym("msg")` read the program's own `"HI"` back through
+  `readmem`, and `sym()` refused a name that resolves to nothing rather than returning 0 — a legal
+  address. The same script over the **hrdb-main fork** wrote a byte and a register that the fork's own
+  dump and register paths then read back, which is the evidence that the runner holds no
+  transport-specific assumption. This is also the first proof that a *name* survives GEMDOS
+  relocation from a script; the two resolution rules (break-here vs address, D8 in
+  [docs/stop-hooks-plan.md](stop-hooks-plan.md)) are pinned separately in `tst_debug`.
+
+- **The stop hook's agent surface is verified, and its one departure from the sheet is recorded**
+  (2026-10-17, `feature/stop-hooks`). `hook` answers with JSON built from the same
+  `StopHookRunner::LastRun` that renders the dialog's sentence, so the two cannot disagree: the
+  fields are asserted with no project at all (`tst_remotecontrol`), and the MCP tool's mapping,
+  block framing and parsed `structuredContent` in `tst_mcp`, whose catalog list is pinned whole
+  because a dropped or renamed tool breaks an agent silently. The sheet asked for "a `hook` field on
+  the published `stopped` event", which is not implementable: the script runs *after* the stop is
+  published, by design (D1), because it reads registers that must be real first — so the run reports
+  itself in its own `hook` event, emitted before the `continue()` policy so the wire order is
+  `stopped` → `hook` → `running`. The reasoning lives in `docs/stop-hooks-plan.md` §10 rather than
+  being absorbed silently.
+
 ### Verified by CI (executed on real runners)
 
 **Current status: Linux, macOS and Windows all build, pass every suite, and
@@ -1396,6 +1443,13 @@ project; everything before it was either Linux-only or read from source.
 - **Only the tab's × reached zero documents before this change** (no Close action existed), which is
   why File ▸ Close File / Close All were added; and `demo/spritedemo/` was carried in the working
   tree while `docs/ARCHITECTURE.md` already described it — this change adds it to the repository.
+
+- **A single step does not emit `stoppedChanged`.** `MainWindow::step`/`stepOver` call
+  `m_host->step()`/`stepOver()` and then an explicit `refresh()`, and the code says why: `s`/`n` are
+  not running→stopped transitions, so `stoppedChanged` never fires for them and `onDebuggerStopped`
+  is never called. The stop hook therefore needed a step flag of its own in `DebugSessionController`
+  to make "every stop" include stepping — glm-features §1 lists stepping among the triggers
+  `stoppedChanged(true)` covers, and it does not cover it.
 
 ### Unverified — to resolve during Phase 0/1
 
@@ -1635,6 +1689,12 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- A test must be portable in what it *asserts*, not only in what it builds. A case whose expectations
+  came from a literal `/p/demo/hello.s` passed on Linux and macOS and failed on Windows MSVC, where
+  that is not an absolute path at all; `QTemporaryDir` is where an absolute path comes from.
+- A field appended to a struct the tree initialises with brace lists gets a default member
+  initializer (`QString scriptPath{}`). A bare declaration turned every `Breakpoint{file, line, …}`
+  in the tree into a `-Wmissing-field-initializers` warning, and zero warnings is the standard.
 
 
 ---

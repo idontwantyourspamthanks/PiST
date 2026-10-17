@@ -68,43 +68,75 @@ bool BreakpointWatchpointModel::toggle(const QString &file, int line)
 
 bool BreakpointWatchpointModel::toggleAtLabel(const QString &name, QString *detail)
 {
-    for (const SymbolEntry &sym : m_host.symbols()) {
-        if (sym.name != name)
-            continue;
-        if (sym.file.isEmpty()) {
+    LabelSite site;
+    LabelProblem problem = LabelProblem::None;
+    if (!labelSite(m_host.symbols(), m_host.programMap(), name, &site, &problem)) {
+        switch (problem) {
+        case LabelProblem::NoSourcePosition:
             // A command-line define or macro-generated name has no source
             // position to break at.
             *detail = MainWindow::tr("error symbol '%1' has no source position").arg(name);
-            return false;
-        }
-        // Breakpoints key by base name everywhere (gutter, arming, the
-        // panel); the symbol table carries full paths.
-        const QString base = QFileInfo(sym.file).fileName();
-        // A label written on its own line has no code there — `count:`
-        // followed by the instruction on the next line is the norm — and a
-        // breakpoint on that line can never fire. Resolve to the first code
-        // line at or after the definition; base-independent, so this holds
-        // before a session supplies live bases too. An `equ` has no code of
-        // its own and finds nothing, rather than resolving to whatever
-        // unrelated instruction follows it.
-        const int line = m_host.programMap().nextCodeLine(sym.file, sym.line);
-        if (!line) {
+            break;
+        case LabelProblem::NoCode:
             *detail = MainWindow::tr("error '%1' has no code at or after its definition "
                                      "(an equate cannot be broken on)").arg(name);
-            return false;
+            break;
+        case LabelProblem::UnknownName:
+        case LabelProblem::None:
+            *detail = MainWindow::tr("error no symbol named '%1' (has the project been built?)")
+                          .arg(name);
+            break;
         }
-        toggle(base, line);
-        *detail = QStringLiteral("ok %1:%2").arg(base).arg(line);
-        // Tell the agent the address too, when the map can — it confirms the
-        // label resolved to the instruction they meant.
-        quint32 address = 0;
-        if (m_host.programMap().isResolved()
-            && m_host.programMap().codeAddressFor(sym.file, line, &address))
-            *detail += QStringLiteral(" = 0x%1").arg(address, 8, 16, QLatin1Char('0'));
-        return true;
+        return false;
     }
-    *detail = MainWindow::tr("error no symbol named '%1' (has the project been built?)").arg(name);
-    return false;
+
+    // Breakpoints key by base name everywhere (gutter, arming, the panel); the
+    // symbol table carries full paths.
+    toggle(site.file, site.line);
+    *detail = QStringLiteral("ok %1:%2").arg(site.file).arg(site.line);
+    // Tell the agent the address too, when the map can — it confirms the label
+    // resolved to the instruction they meant.
+    if (site.hasAddress)
+        *detail += QStringLiteral(" = 0x%1").arg(site.address, 8, 16, QLatin1Char('0'));
+    return true;
+}
+
+bool BreakpointWatchpointModel::resolveLabel(const QString &name, quint32 *address,
+                                             QString *error) const
+{
+    LabelAddress where;
+    LabelAddressProblem problem = LabelAddressProblem::None;
+    if (!labelAddress(m_host.symbols(), m_host.programMap(), name, &where, &problem)) {
+        switch (problem) {
+        case LabelAddressProblem::NoSourcePosition:
+            *error = MainWindow::tr("sym: '%1' has no source position (a command-line define, "
+                                    "or a name a macro built)")
+                         .arg(name);
+            break;
+        case LabelAddressProblem::Equate:
+            *error = MainWindow::tr("sym: '%1' is an equate — it has a value, not a place, and "
+                                    "sym() resolves labels")
+                         .arg(name);
+            break;
+        case LabelAddressProblem::NotLive:
+            *error = MainWindow::tr("sym: '%1' has no address yet — no stop has reported the "
+                                    "program's bases")
+                         .arg(name);
+            break;
+        case LabelAddressProblem::NoAddress:
+            *error = MainWindow::tr("sym: '%1' emits nothing, and nothing after it does either")
+                         .arg(name);
+            break;
+        case LabelAddressProblem::UnknownName:
+        case LabelAddressProblem::None:
+            *error = MainWindow::tr("sym: no symbol named '%1' (has the project been built?)")
+                         .arg(name);
+            break;
+        }
+        return false;
+    }
+    *address = where.address;
+    return true;
 }
 
 void BreakpointWatchpointModel::remove(const QString &file, int line)
@@ -202,6 +234,54 @@ void BreakpointWatchpointModel::editCondition(int line)
     // the same gate as every other edit (see canReArmBreakpoints).
     if (m_host.session()->canReArmBreakpoints())
         m_host.session()->armBreakpoints();
+}
+
+void BreakpointWatchpointModel::editScript(int line)
+{
+    CodeEditor *const editor = m_host.editor();
+    if (!editor || editor->filePath().isEmpty() || line <= 0)
+        return;
+
+    const QString file = QFileInfo(editor->filePath()).fileName();
+    auto findBreakpoint = [&] {
+        return std::find_if(m_breakpoints.begin(), m_breakpoints.end(),
+                            [&](const Breakpoint &bp) {
+                                return bp.line == line && bp.file == file;
+                            });
+    };
+
+    auto it = findBreakpoint();
+    const bool existed = it != m_breakpoints.end();
+
+    bool accepted = false;
+    const QString script = QInputDialog::getText(
+        dialogParent(this), MainWindow::tr("Breakpoint script"),
+        MainWindow::tr("Lua script to run when %1:%2 stops, instead of the project's stop "
+                       "hook.\n\nAn absolute path, or one relative to this source's directory. "
+                       "Leave empty to use the project's.")
+            .arg(file)
+            .arg(line),
+        QLineEdit::Normal, existed ? it->scriptPath : QString(), &accepted);
+    if (!accepted)
+        return;
+
+    if (!existed) {
+        // The same rule as the condition edit: nothing is created until the dialog
+        // is accepted, so cancelling leaves no breakpoint behind.
+        m_breakpoints.append(Breakpoint{file, line, QString(), true, 0, false});
+        it = findBreakpoint();
+        refreshMarkers();
+    }
+
+    it->scriptPath = resolveScriptPath(script, editor->filePath());
+    // No re-arm: the script is read when this breakpoint stops the machine, and it
+    // is not part of the debugger's armed condition.
+    m_host.log(MainWindow::tr("[breakpoints] %1:%2 runs %3 when it stops")
+                   .arg(file)
+                   .arg(line)
+                   .arg(it->scriptPath.isEmpty()
+                            ? MainWindow::tr("the project's stop hook")
+                            : it->scriptPath));
 }
 
 void BreakpointWatchpointModel::addWatchpoint()

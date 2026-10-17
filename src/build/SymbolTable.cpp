@@ -7,6 +7,7 @@
 #include "build/LineMap.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QSet>
 #include <QTextStream>
@@ -296,7 +297,7 @@ QVector<SymbolEntry> symbolsFromListing(const QString &listingPath, const QStrin
         auto equ = equRe().match(statement);
         if (equ.hasMatch()) {
             if (keep(currentFile))
-                definitions.append(SymbolEntry{equ.captured(1), currentFile, line});
+                definitions.append(SymbolEntry{equ.captured(1), currentFile, line, true});
             continue;
         }
 
@@ -348,6 +349,75 @@ QVector<SymbolEntry> symbolsFromListing(const QString &listingPath, const QStrin
     });
 
     return out;
+}
+
+bool labelSite(const QVector<SymbolEntry> &symbols, const ProgramLineMap &map,
+               const QString &name, LabelSite *site, LabelProblem *problem)
+{
+    *problem = LabelProblem::UnknownName;
+    for (const SymbolEntry &sym : symbols) {
+        if (sym.name != name)
+            continue;
+        if (sym.file.isEmpty()) {
+            *problem = LabelProblem::NoSourcePosition;
+            return false;
+        }
+        // The IDE keys breakpoints by base name everywhere (gutter, arming, the
+        // panel); the symbol table carries full paths.
+        site->file = QFileInfo(sym.file).fileName();
+        site->line = map.nextCodeLine(sym.file, sym.line);
+        if (!site->line) {
+            *problem = LabelProblem::NoCode;
+            return false;
+        }
+        if (map.isResolved())
+            site->hasAddress = map.codeAddressFor(sym.file, site->line, &site->address);
+        *problem = LabelProblem::None;
+        return true;
+    }
+    return false;
+}
+
+bool labelAddress(const QVector<SymbolEntry> &symbols, const ProgramLineMap &map,
+                  const QString &name, LabelAddress *address, LabelAddressProblem *problem)
+{
+    *problem = LabelAddressProblem::UnknownName;
+    for (const SymbolEntry &sym : symbols) {
+        if (sym.name != name)
+            continue;
+        if (sym.file.isEmpty()) {
+            *problem = LabelAddressProblem::NoSourcePosition;
+            return false;
+        }
+        if (sym.equate) {
+            // A value, not a place: nothing is emitted on an equate's line, so
+            // there is no address here to give — and the next line's would be a
+            // lie, not an approximation.
+            *problem = LabelAddressProblem::Equate;
+            return false;
+        }
+        if (!map.isResolved()) {
+            *problem = LabelAddressProblem::NotLive;
+            return false;
+        }
+        // A label sharing its line with the code or data it names takes that
+        // line's address; one alone on its line takes the next line that emits
+        // anything, in whichever section — `buffer:` above `ds.b 256` is data.
+        if (map.addressFor(sym.file, sym.line, &address->address)) {
+            address->line = sym.line;
+            *problem = LabelAddressProblem::None;
+            return true;
+        }
+        const int next = map.nextAddressLine(sym.file, sym.line);
+        if (next > 0 && map.addressFor(sym.file, next, &address->address)) {
+            address->line = next;
+            *problem = LabelAddressProblem::None;
+            return true;
+        }
+        *problem = LabelAddressProblem::NoAddress;
+        return false;
+    }
+    return false;
 }
 
 } // namespace pist

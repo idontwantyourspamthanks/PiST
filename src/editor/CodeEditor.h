@@ -21,6 +21,7 @@ class QToolButton;
 namespace pist {
 
 class AsmHighlighter;
+class LuaHighlighter;
 
 /// A plain-text assembly editor with line numbers, current-line highlighting,
 /// an error gutter marker, and a find/replace bar over its bottom edge.
@@ -42,8 +43,9 @@ public:
     QString filePath() const { return m_filePath; }
 
     /// Re-point the editor at a different path without touching the document
-    /// or its modified state: the file was renamed on disk underneath us.
-    void setFilePath(const QString &path) { m_filePath = path; }
+    /// or its modified state: the file was renamed on disk underneath us. The
+    /// highlighter follows the path's language, since a rename can change it.
+    void setFilePath(const QString &path);
 
     /// (Re)apply a theme: the monospace font and its tab stop, the syntax
     /// colours, and the colours the extra selections and the gutter paint with.
@@ -182,6 +184,9 @@ private slots:
 
 private:
     void refreshExtraSelections();
+    /// (Re)install the highlighter for the current path's language, deleting the
+    /// one in place. Called wherever m_filePath is assigned.
+    void installHighlighter();
     /// Whether the whole of `line` is inside the viewport, so a follower can
     /// leave the scroll alone rather than centring on a line already in view.
     bool isLineFullyVisible(int line) const;
@@ -224,7 +229,13 @@ private:
     /// What the widget paints with: the font, and the colours behind the extra
     /// selections and the gutter. Set by setTheme().
     EditorTheme m_theme;
-    AsmHighlighter *m_highlighter = nullptr;
+    /// The document's highlighter, exactly one of the two: a `.lua` file — a
+    /// stop-hook script — is painted as Lua, anything else as 68000 assembly
+    /// (installHighlighter()). Both are QSyntaxHighlighters parented to the
+    /// document, so a language change deletes the old one rather than leaving
+    /// it painting alongside the new.
+    AsmHighlighter *m_asmHighlighter = nullptr;
+    LuaHighlighter *m_luaHighlighter = nullptr;
     QWidget *m_lineNumberArea = nullptr;
     bool m_blameShown = false;
     GitBlameMap m_blame;

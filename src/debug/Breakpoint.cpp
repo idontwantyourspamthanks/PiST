@@ -4,6 +4,9 @@
 
 #include "debug/Breakpoint.h"
 
+#include <QDir>
+#include <QFileInfo>
+
 namespace pist {
 
 namespace {
@@ -134,6 +137,26 @@ QList<Breakpoint> renameFile(const QList<Breakpoint> &breakpoints,
         migrated.append(entry);
     }
     return migrated;
+}
+
+const Breakpoint *breakpointAt(const QList<Breakpoint> &breakpoints, quint32 pc)
+{
+    for (const Breakpoint &bp : breakpoints) {
+        // `resolved` is the arming gate's word: address 0 belongs to a breakpoint
+        // no session ever armed, and code never runs there.
+        if (bp.resolved && bp.address == pc)
+            return &bp;
+    }
+    return nullptr;
+}
+
+QString resolveScriptPath(const QString &typed, const QString &sourceFile)
+{
+    const QString path = typed.trimmed();
+    if (path.isEmpty() || QDir::isAbsolutePath(path))
+        return path;
+
+    return QDir::cleanPath(QFileInfo(sourceFile).absolutePath() + QLatin1Char('/') + path);
 }
 
 } // namespace pist

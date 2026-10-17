@@ -37,11 +37,40 @@ struct Breakpoint
     quint32 address = 0;
     bool resolved = false;
 
+    /// A Lua script to run when this breakpoint stops the machine, *instead of*
+    /// the project's stop hook. Empty is the usual case and means the project's.
+    /// Read at the stop, not part of the armed command, so changing it needs no
+    /// re-arm. The default is written out because the struct is built with brace
+    /// lists all over the tree (`Breakpoint{file, line, cond, enabled, addr,
+    /// resolved}`); a bare declaration would make every one of them a
+    /// `-Wmissing-field-initializers` warning.
+    QString scriptPath{};
+
     /// Whether this breakpoint can be armed at all, given the current listing.
     bool isResolvable() const { return line > 0 && !file.isEmpty() && enabled; }
 
     QString label() const { return QStringLiteral("%1:%2").arg(file).arg(line); }
 };
+
+/// The armed breakpoint whose resolved address is `pc`, or nullptr.
+///
+/// This is as far as the IDE can honestly go in naming a stop's cause: the
+/// transport reports a prompt, not which breakpoint fired. Two breakpoints
+/// resolved to the same address are indistinguishable, and the first is named;
+/// a watchpoint is not in this set at all, because it fires on a *data change*
+/// and its address says nothing about the program counter.
+const Breakpoint *breakpointAt(const QList<Breakpoint> &breakpoints, quint32 pc);
+
+/// The absolute path a breakpoint's script is read from, given what the gutter
+/// dialog was told and the source the breakpoint is in.
+///
+/// Empty stays empty — the project's hook runs instead — and an absolute path is
+/// kept as it is. A relative one is resolved against the directory of that
+/// source, which is the rule `ProjectSettings` already uses for the project's own
+/// `hooks.scriptPath`, and where *New script…* puts one. The alternative is
+/// resolving against whatever working directory PiST happens to have been launched
+/// with, which is not something the person typing a path can see.
+QString resolveScriptPath(const QString &typed, const QString &sourceFile);
 
 /// The commands needed to arm a set of breakpoints, plus what could not be armed.
 struct ArmPlan

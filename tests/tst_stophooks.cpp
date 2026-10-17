@@ -18,6 +18,8 @@
 
 #include <QElapsedTimer>
 #include <QFile>
+#include <QHash>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest>
@@ -223,6 +225,7 @@ private slots:
     void stopsARunawayScript();
     void reportsAMissingFile();
     void offersContinueAndResume();
+    void printJoinsItsArgumentsOnTheConsole();
     void reportsTheLineAnErrorCameFrom();
 
     // --- the runner ------------------------------------------------------
@@ -354,6 +357,21 @@ void TstStopHooks::offersContinueAndResume()
     const QString resumed = writeScript(dir, QStringLiteral("resume()"));
     QVERIFY(hooks::StopHookEngine::run(resumed, api).ok);
     QCOMPARE(api.continues, 2);
+}
+
+void TstStopHooks::printJoinsItsArgumentsOnTheConsole()
+{
+    QTemporaryDir dir;
+    FakeApi api;
+
+    // `print` is rebound to the console (a windowed application may have no
+    // stdout), and it keeps Lua's own behaviour: arguments joined with tabs.
+    const QString path =
+        writeScript(dir, QStringLiteral("print(\"lives\", 3, true)"));
+    const hooks::StopHookResult result = hooks::StopHookEngine::run(path, api);
+
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(api.logs, QStringList{QStringLiteral("lives\t3\ttrue")});
 }
 
 void TstStopHooks::reportsTheLineAnErrorCameFrom()

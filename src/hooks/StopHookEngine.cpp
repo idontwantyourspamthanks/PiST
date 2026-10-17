@@ -149,7 +149,7 @@ int apiPrint(lua_State *L)
 {
     Run *run = currentRun(L);
     const int count = lua_gettop(L);
-    std::string line;
+    QByteArray line;
     for (int i = 1; i <= count; ++i) {
         luaL_tolstring(L, i, nullptr);
         if (i > 1)
@@ -157,7 +157,7 @@ int apiPrint(lua_State *L)
         line += lua_tostring(L, -1);
         lua_pop(L, 1);
     }
-    run->api->log(QString::fromUtf8(line.c_str()));
+    run->api->log(QString::fromUtf8(line));
     return 0;
 }
 

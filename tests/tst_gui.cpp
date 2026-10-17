@@ -34,6 +34,7 @@
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
 #include "ui/MainWindow.h"
+#include "ui/SymbolPaletteDialog.h"
 #include "ui/StopHooksDialog.h"
 #include "build/BuildService.h"
 #include "build/FloppyImage.h"
@@ -79,6 +80,7 @@
 #include <QLabel>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QToolTip>
 #include <QTreeWidget>
 #include <QTimer>
 #include <QSpinBox>
@@ -703,6 +705,15 @@ private slots:
     /// A second query replaces the first's results wholesale: a row left over
     /// from the replaced walk is exactly what a cancel race would look like.
     void findInFilesShowsOnlyTheCurrentQuery();
+    /// Tab completion in the editor: the vocabulary the window pushes in, the word
+    /// at the caret as the prefix, and the keys that take a candidate.
+    void editorCompletionOffersTheVocabularyAndTakesACandidate();
+    /// The symbol palette: the same candidates completion filters, presented as a
+    /// jump list — filter, pick, and the file opens at the definition.
+    void symbolPaletteJumpsToADefinition();
+    /// The hover card: the dock's facts as a tooltip at the pointer, and nothing at
+    /// all where nothing resolves.
+    void hoverShowsTheReferenceAndRefusesToGuess();
     void themeSheetFramesItsDocks();
     void settingsDialogAndEditorChromeExposeTheirControls();
     void hardwareAndDisassemblyViewsNameWhatTheyShow();
@@ -8600,6 +8611,206 @@ void TstGui::buildAndSearchMenusCarryTheirActions()
                 QVERIFY(!action->text().contains(QStringLiteral("Diagnostic")));
         }
     }
+}
+
+// The symbol palette: one candidate list with completion's, presented as a jump
+// list — filter it, take a row, and the window opens the file at the definition.
+void TstGui::symbolPaletteJumpsToADefinition()
+{
+    const QString source = m_work->path() + QStringLiteral("/palette.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\n"
+               "start:\tmoveq\t#1,d0\n"
+               "counter\tequ\t$1234\n"
+               "\trts\n"
+               "\tend\n");
+    file.close();
+
+    MainWindow window;
+    window.openPath(source);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QVERIFY2(built.count() >= 1 || built.wait(30000), "the build did not finish");
+    QVERIFY2(built.last().at(0).toBool(), "the fixture must build");
+
+    // The doorway: Search -> Go to Symbol... carries Ctrl+Shift+O and brings the
+    // palette up with the build's symbols.
+    auto *action = window.findChild<QAction *>(QStringLiteral("symbolPaletteAction"));
+    QVERIFY2(action, "Search ▸ Go to Symbol…");
+    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    action->trigger();
+    auto *palette = window.findChild<SymbolPaletteDialog *>();
+    QVERIFY2(palette, "the palette");
+    QVERIFY(palette->isVisible());
+    auto *filter = palette->findChild<QLineEdit *>(QStringLiteral("symbolPaletteFilter"));
+    auto *list = palette->findChild<QTreeWidget *>(QStringLiteral("symbolPaletteList"));
+    QVERIFY(filter && list);
+
+    // The build's symbols, with where they are defined; an equate says what it is.
+    QTreeWidgetItem *counter = nullptr;
+    for (int i = 0; i < list->topLevelItemCount(); ++i) {
+        if (list->topLevelItem(i)->text(0) == QLatin1String("counter"))
+            counter = list->topLevelItem(i);
+    }
+    QVERIFY2(counter, "the equate is listed");
+    QCOMPARE(counter->text(1), QStringLiteral("equate"));
+    QVERIFY2(counter->text(2).endsWith(QStringLiteral("palette.s:3")),
+             qPrintable(counter->text(2)));
+
+    // Filtering narrows as it is typed; Return takes the row and closes the
+    // palette, and the editor is on the definition's line.
+    filter->setText(QStringLiteral("coun"));
+    QCOMPARE(list->topLevelItemCount(), 1);
+    QCOMPARE(list->topLevelItem(0)->text(0), QStringLiteral("counter"));
+    QTest::keyClick(filter, Qt::Key_Return);
+    QVERIFY(!palette->isVisible());
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 3);
+}
+
+// Hovering: the reference dock's facts as a tooltip at the pointer, and nothing at
+// all where nothing resolves — never a card built from a partial match.
+void TstGui::hoverShowsTheReferenceAndRefusesToGuess()
+{
+    const QString source = m_work->path() + QStringLiteral("/hover.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\n"                        // 1
+               "start:\tmoveq\t#1,d0\n"          // 2
+               "\tmove.w\t#9,-(a7)\n"            // 3  the function push
+               "\ttrap\t#1\n"                    // 4  Cconws
+               "\taddq.l\t#6,a7\n"               // 5
+               "\tdc.b\t'hi',0\n"                // 6  a directive
+               "\t; frobnicate the input\n"       // 7  a word nothing knows
+               "\tend\n");                        // 8
+    file.close();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.openPath(source);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QVERIFY2(built.count() >= 1 || built.wait(30000), "the build did not finish");
+    QVERIFY2(built.last().at(0).toBool(), "the fixture must build");
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    const auto positionOf = [editor](int line, int column) {
+        QTextCursor cursor = editor->textCursor();
+        cursor.setPosition(editor->document()->findBlockByNumber(line - 1).position() + column);
+        return editor->cursorRect(cursor).center();
+    };
+
+    // The tooltip path itself: a hover event shows the card. (This is the one
+    // assertion that goes through Qt's tooltip widget; the rest read the card
+    // directly, because what a tip widget does with its text is Qt's business.)
+    const QPoint atMoveq = positionOf(2, 9);
+    QHelpEvent tip(QEvent::ToolTip, atMoveq, editor->viewport()->mapToGlobal(atMoveq));
+    QApplication::sendEvent(editor->viewport(), &tip);
+    QVERIFY2(QToolTip::isVisible() && QToolTip::text().contains(QStringLiteral("MOVEQ")),
+             qPrintable(QToolTip::text()));
+    QToolTip::hideText();
+
+    // The facts, through the same function the handler uses. A mnemonic is the
+    // reference's own entry, an OS call wins on its line (because the line *is* the
+    // call), and a label says where the build put it.
+    QVERIFY2(window.referenceCardAt(editor, positionOf(2, 9)).contains(QStringLiteral("MOVEQ")),
+             "the mnemonic's reference entry");
+    QVERIFY2(window.referenceCardAt(editor, positionOf(4, 2)).contains(QStringLiteral("Cconws")),
+             "the OS call on its line");
+    QVERIFY2(window.referenceCardAt(editor, positionOf(2, 1)).contains(QStringLiteral("hover.s:2")),
+             "the label's definition");
+
+    // A directive and a word nothing knows resolve to nothing at all: no card is the
+    // honest answer, and the reference table refuses directives the same way.
+    QVERIFY2(window.referenceCardAt(editor, positionOf(6, 2)).isEmpty(),
+             "a directive gets no card");
+    QVERIFY2(window.referenceCardAt(editor, positionOf(7, 4)).isEmpty(),
+             "a word nothing knows gets no card");
+}
+
+// Completion in the editor: one candidate list (the assembler's vocabulary plus
+// whatever symbols the window pushed in), the word at the caret as the prefix, and
+// Tab/Return taking a candidate without disturbing the rest of the line.
+void TstGui::editorCompletionOffersTheVocabularyAndTakesACandidate()
+{
+    CodeEditor editor(appearance::editorTheme());
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowActive(&editor));
+    editor.setCompletions(CompletionModel::vocabulary());
+    editor.setPlainText(QStringLiteral("\tmo"));
+    QTextCursor cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+
+    // Typing a word character lists what the word so far could become.
+    QTest::keyClick(&editor, Qt::Key_V);
+    // The completer shows its popup on the next event-loop turn, not inside the
+    // key press.
+    QTRY_VERIFY2_WITH_TIMEOUT(editor.completionVisible(), "a word character opens the list", 2000);
+    const QStringList candidates = editor.completionCandidates();
+    QVERIFY2(!candidates.isEmpty(), "the vocabulary is offered");
+    QVERIFY2(candidates.first().startsWith(QStringLiteral("mov")),
+             qPrintable(candidates.first()));
+
+    // Tab takes one: the word at the caret is replaced, not the line.
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QVERIFY(!editor.completionVisible());
+    const QString completed = editor.toPlainText();
+    QVERIFY2(completed.startsWith(QStringLiteral("\t")), qPrintable(completed));
+    QVERIFY2(candidates.contains(completed.mid(1)), qPrintable(completed));
+
+    // A word character keeps the list following the word; Escape dismisses it
+    // without touching the text.
+    editor.setPlainText(QStringLiteral("\tad"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("d"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.completionVisible(), 2000);
+    QVERIFY2(editor.completionCandidates().contains(QStringLiteral("addq")),
+             qPrintable(editor.completionCandidates().join(QLatin1Char(','))));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QVERIFY(!editor.completionVisible());
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tadd"));
+
+    // A word already typed in full is not offered back: the only match is what is
+    // on screen, so the list stays shut.
+    QTest::keyClicks(&editor, QStringLiteral("q"));
+    QTest::qWait(50);
+    QVERIFY2(!editor.completionVisible(), "nothing to offer for the exact word");
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\taddq"));
+
+    // A comment is prose: nothing is offered inside one.
+    editor.setPlainText(QStringLiteral("; add"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("q"));
+    QVERIFY2(!editor.completionVisible(), "no completion in a comment");
+
+    // Symbols are candidates too, with the definition the window gave them.
+    QList<CompletionItem> items = CompletionModel::vocabulary();
+    CompletionItem label;
+    label.text = QStringLiteral("counter");
+    label.kind = CompletionKind::Label;
+    label.file = QStringLiteral("main.s");
+    label.line = 12;
+    items.append(label);
+    editor.setCompletions(items);
+    editor.setPlainText(QStringLiteral("\tmove.w\tcou"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("n"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.completionVisible(), 2000);
+    QCOMPARE(editor.completionCandidates().first(), QStringLiteral("counter"));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove.w\tcounter"));
 }
 
 // Find in Files reads the project as text and lists what it found, grouped by

@@ -241,6 +241,10 @@ pist_module(pist_editor
     src/editor/AsmHighlighter.h
     src/editor/CodeEditor.cpp
     src/editor/CodeEditor.h
+    src/editor/CompletionModel.cpp
+    src/editor/CompletionModel.h
+    src/editor/CursorReference.cpp
+    src/editor/CursorReference.h
     src/editor/LuaHighlighter.cpp
     src/editor/LuaHighlighter.h
     src/editor/EditorTheme.h
@@ -257,6 +261,8 @@ pist_module(pist_editor
     src/editor/OsCallScan.cpp
     src/editor/OsCallScan.h
     src/editor/AsmLex.h
+    src/editor/Vocabulary.cpp
+    src/editor/Vocabulary.h
 )
 
 # control/ — the remote-control TCP protocol (RemoteControl drives the IDE through ControlHost).
@@ -308,6 +314,8 @@ pist_module(pist_ui
     src/ui/ProfilerController.h
     src/ui/StopHooksDialog.cpp
     src/ui/StopHooksDialog.h
+    src/ui/SymbolPaletteDialog.cpp
+    src/ui/SymbolPaletteDialog.h
     src/ui/RemoteStateAdapter.cpp
     src/ui/RemoteStateAdapter.h
     src/ui/RegistersView.cpp
@@ -722,6 +730,15 @@ qt_add_executable(tst_find
 )
 target_link_libraries(tst_find PRIVATE pist_ui Qt6::Test)
 pist_add_test(find)
+
+# The completion feature's widget-free half: the shared vocabulary, the ranking the
+# popup and the palette both use, and the cursor resolver the dock and the hover
+# both use. No window, no emulator.
+qt_add_executable(tst_completion
+    tests/tst_completion.cpp
+)
+target_link_libraries(tst_completion PRIVATE pist_editor Qt6::Test)
+pist_add_test(completion)
 
 # Multi-module source mapping through a linker's map file. The end-to-end case
 # runs a real vasm+vlink when both are available and skips otherwise, so CI

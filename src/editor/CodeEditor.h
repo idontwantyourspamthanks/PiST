@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "editor/CompletionModel.h"
 #include "editor/EditorTheme.h"
 #include "editor/FindScan.h"
 #include "git/GitTypes.h"
@@ -11,12 +12,16 @@
 #include <QHash>
 #include <QList>
 #include <QPlainTextEdit>
+#include <QPointer>
 
+class QAbstractItemView;
+class QCompleter;
 class QFrame;
 class QLabel;
 class QLineEdit;
 class QPointF;
 class QPushButton;
+class QStringListModel;
 class QToolButton;
 
 namespace pist {
@@ -132,6 +137,16 @@ public:
     /// has. Exposed so a test can assert what the user sees without reaching
     /// into the bar's widgets.
     bool findBarVisible() const;
+    /// The candidates completion offers: the assembler's vocabulary plus the build's
+    /// symbols, pushed in by the window — the editor sees no symbol table
+    /// (`MainWindow::rebuildProgramMap` owns it). Replacing the list at any time is
+    /// expected: symbols only exist once a build has produced them.
+    void setCompletions(const QList<CompletionItem> &items);
+    /// Whether the completion popup is showing.
+    bool completionVisible() const;
+    /// The words the popup is offering, in rank order — the test surface for it,
+    /// as `findMatchCount()` is the find bar's.
+    QStringList completionCandidates() const;
     bool gotoBarVisible() const;
     int findMatchCount() const { return m_matches.size(); }
     /// The hit the selection is currently on, 0-based, or -1.
@@ -179,6 +194,7 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    bool event(QEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
 
 private slots:
@@ -200,6 +216,23 @@ private:
     bool isLineFullyVisible(int line) const;
     void buildFindBar();
     void buildGotoBar();
+    void buildCompletions();
+    /// Refresh the popup for the word at the caret. `explicitRequest` is
+    /// Ctrl+Space, which offers the whole list even with nothing typed yet.
+    void showCompletions(bool explicitRequest);
+    void hideCompletions();
+    /// Put the popup under the caret: QCompleter places one for a line edit and
+    /// would put this at the editor's bottom edge.
+    void placeCompletionPopup();
+    /// Take the key the popup owns (Tab/Return accept, Up/Down move, Escape
+    /// dismisses) — from the popup's filter, or from event() when the popup could
+    /// not take the keyboard.
+    bool completionKey(QKeyEvent *key);
+    /// Replace the word the popup was completing with `word`.
+    void insertCompletion(const QString &word);
+    /// The word characters immediately before the caret — what a candidate would
+    /// replace — and empty inside a comment, where completion is noise.
+    QString completionPrefix() const;
     void updateViewportMargins();
     void layoutFindBar();
     /// Recompute the hits and, when `selectHit` is set, put the selection on
@@ -260,6 +293,12 @@ private:
     /// scale against, so every heated line is drawn at full strength).
     double m_lineHeatScale = 0.0;
     QString m_lastError;
+
+    CompletionModel m_completions;
+    QCompleter *m_completer = nullptr;
+    QStringListModel *m_completionWords = nullptr;
+    /// The completer's popup, which the completer owns and deletes with itself.
+    QPointer<QAbstractItemView> m_completionPopup;
 
     QFrame *m_findBar = nullptr;
     QWidget *m_replaceRow = nullptr;

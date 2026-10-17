@@ -253,18 +253,9 @@ first line of every file read as its last, and the status wording above.
 
 ## 4. Editor completion, symbol palette, hover card
 
-**Status:** agreed; the console has this and the editor does not — which is
-backwards. Verified 2026-10-16:
-
-- The **debugger console** (`src/ui/ConsoleInput.cpp`) has full `QCompleter`
-  symbol completion with a popup and history — over the debugger's command and
-  symbol models.
-- The **editor** (`src/editor/CodeEditor.cpp`) has Ctrl+click to open an
-  `include` or jump to a label, and the reference dock that follows the cursor
-  — but no completion, no palette, no hover.
-- The symbol table the console completes against is in-process already (the
-  symbols dock lists every label and equate with its address once the program
-  runs; `EmulatorHost::symbolsJson()` serves it over the remote protocol).
+**Status:** delivered 2026-10-17 on `feature/completion`. The verification below
+is the state it was written against: the console had completion and the editor did
+not, which is the asymmetry this feature removed.
 
 ### The design
 
@@ -287,11 +278,66 @@ Three surfaces over the *same* model:
    The rule to keep: resolve to *nothing* rather than to a guess (the reference
    already refuses labels and directives; the hover must inherit that).
 
-### How to start
+### What was built, and the decisions it took
 
-The completion model first (editor + palette are two views of one model), then
-hover. Reuse `ConsoleInput`'s completer wiring conventions — it was written
-with the ownership and popup quirks already understood and documented in-place.
+- **One vocabulary, shared with the highlighter.** `editor/Vocabulary.{h,cpp}`
+  holds the two word lists — the mnemonics (the 68000 reference plus the
+  68020+/FPU names vasm accepts and the reference deliberately leaves out) and
+  the directives — and `AsmHighlighter` now builds *both* of its patterns from
+  them. Completion therefore offers exactly what the editor paints. The
+  directive list had existed only as a regex inside the highlighter, and a second
+  hand-written copy is what drifted by nineteen entries the first time this was
+  tried for mnemonics.
+- **One candidate model.** `editor/CompletionModel` is `CompletionItem` (text,
+  kind, definition, one line of detail) and the ranking: prefix matches before
+  substring ones, case-insensitively, model order within each, a limit. The
+  window builds the list once per build — the static vocabulary plus the build's
+  labels and equates with their file:line — and pushes it into every editor's
+  popup and into the palette. The hover asks the same list what a word *is*,
+  which is what keeps the three surfaces from disagreeing about the assembler.
+- **One cursor resolver.** `editor/CursorReference` is the dispatch the reference
+  dock used to inline: an OS call in context wins, a trap whose function number
+  is unknown is trap context, otherwise the word under the position. The dock and
+  the hover card both call it, so a line cannot mean one thing in the panel and
+  another in a tooltip. The dock's word now comes from `asmlex`'s token alphabet
+  instead of a private loop, so a label keeps its underscore — a small fix the
+  shared rule brought with it.
+- **The popup is driven by hand, from `ConsoleInput`'s conventions.** QCompleter
+  supplies the model, the popup and the filtering; the prefix, the keys and the
+  placement are ours. Two quirks cost a measurement each: a completer attached
+  with `setWidget()` to anything that is not a `QLineEdit` **hides its own popup
+  on the next keystroke** — it cannot read the word being typed, decides the
+  prefix is empty and hides — so its widget filter is removed; and its generic
+  popup placement is the *widget's* bottom edge, so the popup is moved under the
+  caret on every show.
+- **The palette is a jump list, not a report.** **Ctrl+Shift+O** (Search ▸ Go to
+  Symbol…) opens a non-modal list of the build's labels and equates with their
+  definitions — only symbols with a definition, because a row that cannot jump is
+  noise — filtered as you type. Enter takes the row and closes it, and the
+  filter's Up/Down walk the list. It works before a run: the definitions come from
+  the build, not from the live bases.
+- **The hover refuses to guess.** The app-level event filter answers
+  `QEvent::ToolTip` for an editor viewport from the resolver: a mnemonic gets the
+  reference's summary and flags, an OS call its name, summary, prototype and
+  arguments, a label its definition. A directive, an extra mnemonic the reference
+  does not carry, and a word nothing knows produce **no card at all**, and the
+  event is not swallowed, so a widget's own tooltip still works.
+  `MainWindow::referenceCardAt()` is that card as a function — the handler's
+  caller and the tests' — because a `QToolTip` label's text is not ours to drive
+  (it keeps the previous text for a moment after `hideText()`; measured).
+
+### Tested
+
+`tst_completion` (new, no window and no emulator) pins the vocabulary's two
+families (names, lowercase, no duplicates, the extras present), the ranking
+(prefix before substring, case-insensitivity, the limit, the empty prefix) and
+the resolver (an OS call wins; an unresolved trap is context; a word keeps `.`
+and `_`; out of range is nothing). `tst_gui` pins all three surfaces against real
+widgets: the popup offers the word at the caret and Tab/Return replace it, while
+a comment offers nothing and a word already typed in full offers nothing back;
+the palette lists a build's symbols, filters, and Return opens the definition's
+line; and the hover shows the mnemonic, the OS call and the label — and shows
+nothing for a directive or a word nothing knows.
 
 ---
 

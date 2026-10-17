@@ -8,12 +8,15 @@
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
 #include "control/ControlHost.h"
+#include "editor/CompletionModel.h"
+#include "editor/CursorReference.h"
 #include "emu/HatariProbe.h"
 #include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
 #include "ui/RemoteStateAdapter.h"
+#include "ui/SymbolPaletteDialog.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -406,6 +409,12 @@ public:
     /// has been collected.
     QJsonArray profilerResultsJson() const override;
 
+    /// The hover's card for a position in an editor: the same facts the reference
+    /// dock shows, in fewer words, and **empty when nothing resolves** — the rule
+    /// both surfaces keep. The tooltip handler is its one caller in the window; the
+    /// tests read it directly, because a tooltip widget's text is not ours to drive.
+    QString referenceCardAt(CodeEditor *editor, const QPoint &viewportPos) const;
+
     /// The build's symbols as JSON objects {name, file?, line?, address?},
     /// optionally name-filtered (case-insensitive). Addresses appear only once
     /// the program map has live bases — SymbolsView's honesty rule. For the
@@ -462,6 +471,10 @@ private:
     /// editor, at the word under the caret. Runs whether or not the
     /// Instructions dock is the tab on top.
     void followCursorReference(CodeEditor *editor);
+    /// The text window the OS-call scanner needs around `blockNumber`, resolved
+    /// for `column`: the one way the reference dock and the hover card ask what a
+    /// position in the source *is* (docs/glm-features.md §4).
+    CursorReference referenceAroundCursor(CodeEditor *editor, int blockNumber, int column) const;
 
     /// Bring the Instructions dock forward. The strip under the editor does this.
     void raiseInstructionRef();
@@ -646,6 +659,9 @@ private:
     /// Bring the Find in Files dock forward with its query focused (Ctrl+Shift+F),
     /// re-reading the scope first: the project may have moved since the last search.
     void showFindInFiles();
+    /// Bring the symbol palette up (Ctrl+Shift+O) with the build's symbols: a
+    /// filter-as-you-type jump list over the labels and equates.
+    void showSymbolPalette();
 
     void openRecentSource();
 
@@ -867,6 +883,12 @@ private:
     QDockWidget *m_gitDock = nullptr;
     QAction *m_actGitBlame = nullptr;
     QVector<struct SymbolEntry> m_symbols;
+    /// The candidates completion and the palette work from: the assembler's
+    /// vocabulary plus the build's symbols, rebuilt whenever the listings are.
+    QList<CompletionItem> m_completionItems;
+    /// The palette, created on first use and kept: reopening it should not lose
+    /// anything (it re-reads the candidates on every show).
+    SymbolPaletteDialog *m_symbolPalette = nullptr;
     QStringList m_consoleVerbs;
     /// Where session events are published for remote-control watchers
     /// (control/RemoteControl); null when no one wired one up (tests).
@@ -979,6 +1001,7 @@ private:
     QAction *m_actClearBreakpoints = nullptr;
     QAction *m_actToggleBreakpoint = nullptr;
     QAction *m_actGotoLine = nullptr;
+    QAction *m_actSymbolPalette = nullptr;
     QAction *m_actPause = nullptr;
     QAction *m_actReleaseInput = nullptr;
     QAction *m_actAddWatchpoint = nullptr;

@@ -1676,6 +1676,12 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- A test must be portable in what it *asserts*, not only in what it builds. A case whose expectations
+  came from a literal `/p/demo/hello.s` passed on Linux and macOS and failed on Windows MSVC, where
+  that is not an absolute path at all; `QTemporaryDir` is where an absolute path comes from.
+- A field appended to a struct the tree initialises with brace lists gets a default member
+  initializer (`QString scriptPath{}`). A bare declaration turned every `Breakpoint{file, line, …}`
+  in the tree into a `-Wmissing-field-initializers` warning, and zero warnings is the standard.
 
 
 ---

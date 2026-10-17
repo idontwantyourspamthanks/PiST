@@ -78,8 +78,8 @@ StopHooksDialog::StopHooksDialog(const QString &scriptPath, bool enabled, bool a
 
     auto *api = new QLabel(
         tr("The script is Lua. It may call readmem(addr, len), writemem(addr, value), "
-           "readreg(name), writereg(name, value), log(text) and continue(). No file or network "
-           "access is offered."),
+           "readreg(name), writereg(name, value), sym(name), log(text) and continue(). No file or "
+           "network access is offered."),
         this);
     api->setObjectName(QStringLiteral("stopHooksApi"));
     api->setWordWrap(true);

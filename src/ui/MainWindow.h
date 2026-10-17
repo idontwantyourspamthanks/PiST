@@ -316,6 +316,9 @@ private slots:
     bool toggleBreakpointAtLine(int line) override;
 
     void editBreakpointCondition(int line);
+    /// Gutter menu: the Lua script this breakpoint runs when it fires, instead of
+    /// the project's hook (empty clears it back).
+    void editBreakpointScript(int line);
     void clearAllBreakpoints();
     /// The breakpoints dock's "Clear all": removes breakpoints AND watchpoints
     /// (its button enables when only watchpoints are present), unlike the Run-menu

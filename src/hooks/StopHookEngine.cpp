@@ -161,6 +161,20 @@ int apiPrint(lua_State *L)
     return 0;
 }
 
+/// `sym(name)` — a label's address in this run. Refuses by name; never 0, which
+/// is a valid address and so cannot stand for "not found".
+int apiSym(lua_State *L)
+{
+    Run *run = currentRun(L);
+    const char *name = luaL_checkstring(L, 1);
+    quint32 address = 0;
+    QString error;
+    if (!run->api->resolveSymbol(QString::fromUtf8(name), &address, &error))
+        return luaL_error(L, "%s", error.toUtf8().constData());
+    lua_pushinteger(L, lua_Integer(address));
+    return 1;
+}
+
 int apiContinue(lua_State *L)
 {
     currentRun(L)->api->requestContinue();
@@ -173,6 +187,7 @@ const luaL_Reg kApi[] = {
     {"writemem", apiWritemem},
     {"readreg", apiReadreg},
     {"writereg", apiWritereg},
+    {"sym", apiSym},
     {"log", apiLog},
     // `continue` is not a keyword in Lua, so the sheet's spelling works as
     // written; `resume` is kept as the same function under the name the plan's
@@ -256,6 +271,18 @@ StopHookResult StopHookEngine::run(const QString &scriptPath, HookApi &api, int 
     }
     lua_pushcfunction(L, apiPrint);
     lua_setglobal(L, "print");
+
+    // `reason` and `at` are values, not calls: they describe the stop the script
+    // is running at, and testing `reason == "breakpoint"` should not need a call
+    // in the way. `at` is only set when there is something to name, so a script
+    // checks `if at then` rather than comparing against an empty string.
+    lua_pushstring(L, api.stopReason().toUtf8().constData());
+    lua_setglobal(L, "reason");
+    const QString at = api.stopAt();
+    if (!at.isEmpty()) {
+        lua_pushstring(L, at.toUtf8().constData());
+        lua_setglobal(L, "at");
+    }
 
     // "@path" makes Lua name the file in every message it raises.
     const QByteArray chunkName = QByteArrayLiteral("@") + scriptPath.toUtf8();

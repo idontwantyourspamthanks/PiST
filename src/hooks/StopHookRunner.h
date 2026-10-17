@@ -16,6 +16,23 @@ namespace pist {
 
 class IDebugBackend;
 
+/// Why the machine stopped, as far as the IDE can honestly tell. The transport
+/// reports a prompt, not a reason: only a breakpoint (whose program counter we
+/// armed) and a step (which we asked for) can be named.
+enum class StopReason { Unknown, Breakpoint, Step };
+
+/// What a stop is, beyond the machine's state: why it happened, which breakpoint
+/// it was, and whether that breakpoint carries a script of its own.
+struct StopTrigger
+{
+    StopReason reason = StopReason::Unknown;
+    /// The breakpoint that fired, `"file:line"`, when `reason` is Breakpoint.
+    QString at;
+    /// A script attached to that breakpoint, run *instead of* the project's hook.
+    /// Empty means the project's, which is the usual case.
+    QString script;
+};
+
 /// Runs the project's stop-hook script at every debugger stop, with the machine
 /// held stopped at its prompt (docs/stop-hooks-plan.md).
 ///
@@ -38,6 +55,9 @@ public:
         std::function<void(const QString &)> log;
         /// The script to run — the project's stop hook. Empty means none.
         std::function<QString()> scriptPath;
+        /// Resolve a label to its address in this run (`sym()` in a script).
+        /// Unset, or refusing, makes `sym()` raise — never return 0.
+        std::function<bool(const QString &name, quint32 *address, QString *error)> symbol;
         /// Whether the project has the hook switched on.
         std::function<bool()> enabled;
         /// Whether the script's `continue()` is honoured without asking.
@@ -63,13 +83,14 @@ public:
     explicit StopHookRunner(Host host, QObject *parent = nullptr);
 
     /// A stop was published with a validated state (from `MainWindow`'s stop
-    /// publication): run the hook, if the project has one.
+    /// publication): run the hook, if the project — or the breakpoint that fired
+    /// — has one.
     ///
     /// The run happens one event-loop turn later, outside the transport's emit
     /// stack — a nested read-back loop started *inside* it could never see the
     /// answer it waits for, because the drain is single-entry
     /// (docs/stop-hooks-plan.md D2).
-    void onStopPublished(const MachineState &state);
+    void onStopPublished(const MachineState &state, const StopTrigger &trigger = StopTrigger());
 
     /// How the last run ended, for the dialog's "last run" line. Empty before the
     /// first run.
@@ -88,6 +109,10 @@ private:
     bool writeRegister(const QString &name, quint32 value, QString *error);
     void scriptLog(const QString &message);
     void requestContinue();
+    /// The API's `reason`/`at`: what this stop is, from the trigger it carried.
+    QString stopReason() const;
+    QString stopAt() const { return m_trigger.at; }
+    bool resolveSymbol(const QString &name, quint32 *address, QString *error);
 
     void runQueued();
     void doRun();
@@ -113,6 +138,9 @@ private:
     /// A scripted write happened, so the copy above is no longer what the machine
     /// says: the next register read makes a round-trip instead of answering from it.
     bool m_stateDirty = false;
+    /// Why this stop happened, and which script to run — the API's `reason`,
+    /// `at`, and the per-breakpoint override.
+    StopTrigger m_trigger;
     bool m_continueRequested = false;
     int m_writes = 0;
     int m_loggedLines = 0;

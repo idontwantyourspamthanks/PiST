@@ -87,6 +87,11 @@ public:
     /// codeAddressFor.
     int nextCodeLine(const QString &file, int line) const;
 
+    /// First line at or after `line` in `file` that has an address in any
+    /// section — where a label written on its own line gets one. Base-independent
+    /// like nextCodeLine.
+    int nextAddressLine(const QString &file, int line) const;
+
     /// Address back to source line, searching every module and picking the one
     /// whose span contains it.
     bool lineFor(quint32 address, LineMap::Address *result) const;

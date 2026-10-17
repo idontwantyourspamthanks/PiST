@@ -29,6 +29,7 @@
 #include "emu/EmulatorHost.h"
 #include "emu/HatariProbe.h"
 #include "emu/EmbedSocket.h"
+#include "hooks/StopHookRunner.h"
 #include <QLocalSocket>
 #include <QDir>
 #include <QElapsedTimer>
@@ -173,6 +174,9 @@ private slots:
     /// changed. A regression here fails silently as an NG on the release path.
     void memoryWriteReadsBack();
 
+    /// The stop hook over the fork's transport: the same runner, the same script,
+    /// a different backend — which is what the typed intents buy (R8).
+    void stopHookWritesThroughTheFork();
 
     /// MAJ-12, HRDB side: the response type is carried by the request, never
     /// inferred from the command text. `db` is a dspbreak, and a free-text
@@ -388,6 +392,62 @@ void TstHrdb::memoryDumpReturnsProgramBytes()
     QCOMPARE(b.at(0), quint8(0x70));
     QCOMPARE(b.at(1), quint8(0x01));
     QCOMPARE(b.at(2), quint8(0x61));
+    host.stop();
+}
+
+/// The stop hook over the fork's transport: the same runner and the same script,
+/// a different backend. That is what the typed intents buy (R8) — and this is the
+/// test that would catch a transport assumption creeping into the runner, because
+/// the fork's wire forms (uuencoded dumps, `memset` writes) share nothing with
+/// the native transport's text.
+void TstHrdb::stopHookWritesThroughTheFork()
+{
+    HrdbBackend host;
+    MachineState state;
+    QVERIFY2(startToEntry(&host, &state), "no entry stop over HRDB");
+    QVERIFY(state.hasBases());
+
+    const quint32 target = (state.dataBase ? state.dataBase : state.textBase) + 0x100;
+    const QString script = m_work->path() + QStringLiteral("/hook.lua");
+    QFile file(script);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write(QStringLiteral("writemem(0x%1, 0x5a)\n"
+                              "writereg(\"d0\", 0x1234)\n"
+                              "local back = string.byte(readmem(0x%1, 1))\n"
+                              "log(\"read back \" .. back)\n")
+                   .arg(target, 8, 16, QLatin1Char('0'))
+                   .toUtf8());
+    file.close();
+
+    QStringList console;
+    StopHookRunner::Host hookHost;
+    hookHost.backend = [&host] { return &host; };
+    hookHost.log = [&console](const QString &line) { console << line; };
+    hookHost.scriptPath = [&script] { return script; };
+    hookHost.enabled = [] { return true; };
+    hookHost.autoContinue = [] { return false; };
+    hookHost.resume = [] {};
+    hookHost.refresh = [] {};
+    hookHost.holdConsole = [](bool) {};
+    StopHookRunner runner(hookHost);
+
+    runner.onStopPublished(state);
+    QTRY_VERIFY_WITH_TIMEOUT(!runner.lastRunSummary().isEmpty(), 20000);
+    QVERIFY2(console.contains(QStringLiteral("[hook] read back 90")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // The debugger's own read-back, through the fork's uuencoded dump path.
+    QSignalSpy dumpSpy(&host, &IDebugBackend::memoryDumpReady);
+    host.requestMemoryDump(target, 1, 0);
+    QVERIFY2(dumpSpy.wait(10000), "no memory dump");
+    const QList<MemoryRow> rows = dumpSpy.first().at(1).value<QList<MemoryRow>>();
+    QCOMPARE(rows.first().bytes.value(0), quint8(0x5a));
+
+    QSignalSpy stateSpy(&host, &IDebugBackend::stateUpdated);
+    host.dumpRegisters();
+    QVERIFY2(stateSpy.wait(10000), "no register batch");
+    QCOMPARE(stateSpy.last().at(0).value<MachineState>().regs.d[0], quint32(0x1234));
+
     host.stop();
 }
 

@@ -9,6 +9,7 @@
 #include "hooks/StopHookEngine.h"
 
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QMetaObject>
 #include <QScopeGuard>
 #include <QTimer>
@@ -74,6 +75,12 @@ public:
     }
     void log(const QString &message) override { m_runner->scriptLog(message); }
     void requestContinue() override { m_runner->requestContinue(); }
+    QString stopReason() const override { return m_runner->stopReason(); }
+    QString stopAt() const override { return m_runner->stopAt(); }
+    bool resolveSymbol(const QString &name, quint32 *address, QString *error) override
+    {
+        return m_runner->resolveSymbol(name, address, error);
+    }
 
 private:
     StopHookRunner *m_runner;
@@ -85,11 +92,17 @@ StopHookRunner::StopHookRunner(Host host, QObject *parent)
 {
 }
 
-void StopHookRunner::onStopPublished(const MachineState &state)
+void StopHookRunner::onStopPublished(const MachineState &state, const StopTrigger &trigger)
 {
-    if (m_host.enabled && !m_host.enabled())
-        return;
-    const QString path = m_host.scriptPath ? m_host.scriptPath() : QString();
+    // A script attached to the breakpoint wins, and is enabled by being attached:
+    // the project's switch is about the run-on-every-stop hook, which is what the
+    // dialog's checkbox says. The project's own script still needs that switch.
+    QString path = trigger.script;
+    if (path.isEmpty()) {
+        if (m_host.enabled && !m_host.enabled())
+            return;
+        path = m_host.scriptPath ? m_host.scriptPath() : QString();
+    }
     if (path.isEmpty())
         return;
 
@@ -105,6 +118,8 @@ void StopHookRunner::onStopPublished(const MachineState &state)
     m_regs = state.regs;
     m_pc = state.pc;
     m_stateDirty = false;
+    // What the script may ask about this stop: `reason`, `at`, and which script.
+    m_trigger = trigger;
 
     if (m_queued)
         return;
@@ -153,7 +168,14 @@ void StopHookRunner::doRun()
     if (m_host.holdConsole)
         m_host.holdConsole(true);
 
-    const QString path = m_host.scriptPath ? m_host.scriptPath() : QString();
+    const QString path = m_trigger.script.isEmpty()
+        ? (m_host.scriptPath ? m_host.scriptPath() : QString())
+        : m_trigger.script;
+    if (path.isEmpty()) {
+        // The setting changed between the queue and this turn.
+        scriptLog(tr("skipped: there is no script to run"));
+        return;
+    }
     const int budget = m_host.budgetMs ? m_host.budgetMs() : hooks::StopHookEngine::kDefaultBudgetMs;
 
     ScriptApi api(this);
@@ -180,8 +202,9 @@ void StopHookRunner::doRun()
                           .arg(result.line)
                           .arg(result.error));
     } else {
-        m_lastSummary = tr("ran at pc $%1 — %2 line(s), %3 write(s)")
-                            .arg(hex::hex32(m_pc, hex::Case::Lower))
+        m_lastSummary = tr("%1 ran at pc $%2 — %3 line(s), %4 write(s)")
+                            .arg(QFileInfo(path).fileName(),
+                                 hex::hex32(m_pc, hex::Case::Lower))
                             .arg(m_loggedLines)
                             .arg(m_writes);
     }
@@ -347,6 +370,28 @@ void StopHookRunner::scriptLog(const QString &message)
 void StopHookRunner::requestContinue()
 {
     m_continueRequested = true;
+}
+
+QString StopHookRunner::stopReason() const
+{
+    switch (m_trigger.reason) {
+    case StopReason::Breakpoint:
+        return QStringLiteral("breakpoint");
+    case StopReason::Step:
+        return QStringLiteral("step");
+    case StopReason::Unknown:
+        break;
+    }
+    return QStringLiteral("unknown");
+}
+
+bool StopHookRunner::resolveSymbol(const QString &name, quint32 *address, QString *error)
+{
+    if (!m_host.symbol) {
+        *error = tr("sym: no symbol table is available");
+        return false;
+    }
+    return m_host.symbol(name, address, error);
 }
 
 bool StopHookRunner::fetchRegisters(MachineState *out, QString *error)

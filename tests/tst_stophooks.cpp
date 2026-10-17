@@ -89,6 +89,25 @@ public:
 
     void log(const QString &message) override { logs << message; }
     void requestContinue() override { ++continues; }
+
+    /// What the engine reads back for `stophook.reason` / `.at`.
+    QString reason = QStringLiteral("unknown");
+    QString at;
+    /// `sym()` answers from here — the model, not the debugger, is what resolves
+    /// a label, so the fake only has to be a lookup.
+    QHash<QString, quint32> symbols;
+
+    QString stopReason() const override { return reason; }
+    QString stopAt() const override { return at; }
+    bool resolveSymbol(const QString &name, quint32 *address, QString *error) override
+    {
+        if (!symbols.contains(name)) {
+            *error = QStringLiteral("sym: no symbol named '%1'").arg(name);
+            return false;
+        }
+        *address = symbols.value(name);
+        return true;
+    }
 };
 
 /// A backend that records an ordered event log and completes each command one
@@ -199,9 +218,10 @@ private:
 };
 
 /// A script file in a temporary directory, and its path.
-QString writeScript(QTemporaryDir &dir, const QString &source)
+QString writeScript(QTemporaryDir &dir, const QString &source,
+                    const QString &name = QStringLiteral("hook.lua"))
 {
-    const QString path = dir.filePath(QStringLiteral("hook.lua"));
+    const QString path = dir.filePath(name);
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return QString();
@@ -220,6 +240,7 @@ private slots:
     // --- the engine ------------------------------------------------------
 
     void readsMemoryAsByteValues();
+    void symReturnsTheAddressAndRaisesOnARefusal();
     void raisesAnApiRefusalToTheScript();
     void refusesBadArgumentsByName();
     void stopsARunawayScript();
@@ -237,6 +258,12 @@ private slots:
     void refusesToRunWhileTheMachineIsRunning();
     void doesNotContinueWhenTheDebuggerDoesNotAnswer();
     void doesNothingWhenTheHookIsOff();
+    /// `sym()`, and the two values that describe a stop.
+    void symResolvesThroughTheHost();
+    void theStopReportsItsCauseToScripts();
+    /// A script attached to a breakpoint wins over the project's, and is enabled
+    /// by being attached rather than by the project's switch.
+    void aBreakpointScriptOverridesTheProjectHook();
 };
 
 // ---------------------------------------------------------------------------
@@ -262,6 +289,31 @@ void TstStopHooks::readsMemoryAsByteValues()
     QVERIFY2(result.ok, qPrintable(result.error));
     QCOMPARE(api.reads, 1);
     QCOMPARE(api.logs, QStringList{QStringLiteral("1,254,0")});
+}
+
+/// `sym()` is the one call that answers with a value rather than touching the
+/// machine — and 0 is a legal address, so a name that resolves to nothing must
+/// raise rather than return 0, which a script would happily read from.
+void TstStopHooks::symReturnsTheAddressAndRaisesOnARefusal()
+{
+    QTemporaryDir dir;
+    FakeApi api;
+    api.symbols.insert(QStringLiteral("start"), 0x12596u);
+    api.symbols.insert(QStringLiteral("msg"), 0x125acu);
+
+    const QString path = writeScript(
+        dir,
+        QStringLiteral("log(string.format(\"%08x %s\", sym(\"msg\"), "
+                       "sym(\"start\") == 0x12596 and \"yes\" or \"no\"))\n"
+                       "local ok, err = pcall(sym, \"nope\")\n"
+                       "log(tostring(ok) .. \" \" .. tostring(err))"));
+    const hooks::StopHookResult result = hooks::StopHookEngine::run(path, api);
+
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(api.logs.size(), 2);
+    QCOMPARE(api.logs.at(0), QStringLiteral("000125ac yes"));
+    QVERIFY2(api.logs.at(1).startsWith(QStringLiteral("false sym: no symbol named 'nope'")),
+             qPrintable(api.logs.at(1)));
 }
 
 void TstStopHooks::raisesAnApiRefusalToTheScript()
@@ -624,6 +676,145 @@ void TstStopHooks::doesNothingWhenTheHookIsOff()
     QTest::qWait(80);
 
     QVERIFY(backend.events.isEmpty());
+    QVERIFY(console.isEmpty());
+}
+
+void TstStopHooks::symResolvesThroughTheHost()
+{
+    QTemporaryDir dir;
+    FakeBackend backend;
+    QStringList console;
+    const QHash<QString, quint32> labels{{QStringLiteral("counter"), 0x1234}};
+    const QString path = writeScript(
+        dir,
+        QStringLiteral("local ok, err = pcall(function() return sym(\"nope\") end)\n"
+                       "log(\"refused: \" .. tostring(err ~= nil))\n"
+                       "log(string.format(\"counter=$%06x\", sym(\"counter\")))"));
+
+    StopHookRunner::Host host;
+    host.backend = [&backend] { return &backend; };
+    host.log = [&console](const QString &line) { console << line; };
+    host.scriptPath = [&path] { return path; };
+    host.enabled = [] { return true; };
+    host.autoContinue = [] { return false; };
+    host.resume = [] {};
+    host.refresh = [] {};
+    host.holdConsole = [](bool) {};
+    host.symbol = [&labels](const QString &name, quint32 *address, QString *error) {
+        if (!labels.contains(name)) {
+            *error = QStringLiteral("sym: no symbol named '%1'").arg(name);
+            return false;
+        }
+        *address = labels.value(name);
+        return true;
+    };
+    StopHookRunner runner(host);
+
+    MachineState state;
+    state.regs.valid = true;
+    runner.onStopPublished(state);
+    QTest::qWait(150);
+
+    // A refusal raises — it never comes back as 0, which is a real address.
+    QVERIFY2(console.contains(QStringLiteral("[hook] refused: true")),
+             qPrintable(console.join(QLatin1Char('|'))));
+    QVERIFY2(console.contains(QStringLiteral("[hook] counter=$001234")),
+             qPrintable(console.join(QLatin1Char('|'))));
+}
+
+void TstStopHooks::theStopReportsItsCauseToScripts()
+{
+    QTemporaryDir dir;
+    FakeBackend backend;
+    QStringList console;
+    const QString path = writeScript(dir, QStringLiteral("log(reason .. \" at \" .. tostring(at))"));
+
+    StopHookRunner::Host host;
+    host.backend = [&backend] { return &backend; };
+    host.log = [&console](const QString &line) { console << line; };
+    host.scriptPath = [&path] { return path; };
+    host.enabled = [] { return true; };
+    host.autoContinue = [] { return false; };
+    host.resume = [] {};
+    host.refresh = [] {};
+    host.holdConsole = [](bool) {};
+    StopHookRunner runner(host);
+
+    MachineState state;
+    state.regs.valid = true;
+
+    StopTrigger hit;
+    hit.reason = StopReason::Breakpoint;
+    hit.at = QStringLiteral("hello.s:5");
+    runner.onStopPublished(state, hit);
+    QTest::qWait(150);
+    QVERIFY2(console.contains(QStringLiteral("[hook] breakpoint at hello.s:5")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // A step says so and has no breakpoint to name — `at` stays nil rather than
+    // becoming an empty string a script would have to special-case.
+    StopTrigger step;
+    step.reason = StopReason::Step;
+    runner.onStopPublished(state, step);
+    QTest::qWait(150);
+    QVERIFY2(console.contains(QStringLiteral("[hook] step at nil")),
+             qPrintable(console.join(QLatin1Char('|'))));
+}
+
+void TstStopHooks::aBreakpointScriptOverridesTheProjectHook()
+{
+    QTemporaryDir dir;
+    FakeBackend backend;
+    QStringList console;
+    const QString project = writeScript(dir, QStringLiteral("log(\"project\")"));
+    const QString breakpoint =
+        writeScript(dir, QStringLiteral("log(\"breakpoint\")"), QStringLiteral("bp.lua"));
+
+    StopHookRunner::Host host;
+    host.backend = [&backend] { return &backend; };
+    host.log = [&console](const QString &line) { console << line; };
+    host.scriptPath = [&project] { return project; };
+    host.enabled = [] { return true; };
+    host.autoContinue = [] { return false; };
+    host.resume = [] {};
+    host.refresh = [] {};
+    host.holdConsole = [](bool) {};
+    StopHookRunner runner(host);
+
+    MachineState state;
+    state.regs.valid = true;
+
+    StopTrigger hit;
+    hit.reason = StopReason::Breakpoint;
+    hit.at = QStringLiteral("hello.s:5");
+    hit.script = breakpoint;
+    runner.onStopPublished(state, hit);
+    QTest::qWait(150);
+    // Exactly one script ran, and it was the breakpoint's.
+    QCOMPARE(console, QStringList{QStringLiteral("[hook] breakpoint")});
+
+    // With no script on the breakpoint, the project's hook is what runs.
+    console.clear();
+    StopTrigger plain;
+    plain.reason = StopReason::Breakpoint;
+    runner.onStopPublished(state, plain);
+    QTest::qWait(150);
+    QCOMPARE(console, QStringList{QStringLiteral("[hook] project")});
+
+    // And the project's switch does not gate a breakpoint's own script: it is
+    // enabled by being attached, which is what the dialog's checkbox says it is
+    // for.
+    console.clear();
+    host.enabled = [] { return false; };
+    StopHookRunner offRunner(host);
+    offRunner.onStopPublished(state, hit);
+    QTest::qWait(150);
+    QCOMPARE(console, QStringList{QStringLiteral("[hook] breakpoint")});
+
+    // ...while the project's own hook is off, as before.
+    console.clear();
+    offRunner.onStopPublished(state, plain);
+    QTest::qWait(150);
     QVERIFY(console.isEmpty());
 }
 

@@ -14,10 +14,12 @@
 // runnable on a bare machine.
 
 #include "build/LineMap.h"
+#include "build/SymbolTable.h"
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
 #include "emu/EmulatorHost.h"
 #include "emu/EmbedSocket.h"
+#include "emu/HexFormat.h"
 #include "emu/HrdbBackend.h"
 #include "emu/HatariProbe.h"
 #include "emu/HatariTextParse.h"
@@ -541,9 +543,12 @@ void TstEmulatorHost::initTestCase()
     src.close();
 
     m_program = m_sourceDir + QStringLiteral("/hello.prg");
+    // With a listing: the hook test resolves labels through it, exactly as the
+    // application does with the listing its own build writes.
     QProcess vasm;
-    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"), QStringLiteral("-o"),
-                        m_program, source});
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"),
+                        QStringLiteral("-L"), m_sourceDir + QStringLiteral("/hello.lst"),
+                        QStringLiteral("-o"), m_program, source});
     QVERIFY(vasm.waitForFinished(20000));
     QCOMPARE(vasm.exitCode(), 0);
     QVERIFY(QFileInfo::exists(m_program));
@@ -1132,6 +1137,26 @@ void TstEmulatorHost::stopHookScriptWritesThroughTheDebugger()
     QVERIFY(finished.wait(15000));
     QTRY_VERIFY_WITH_TIMEOUT(last.hasBases(), 5000);
 
+    // The PC and the map, so `sym()` can be checked against where the machine
+    // actually is: the entry stop is the program's first instruction, which is
+    // what `start` names.
+    host.dumpRegisters();
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+
+    const QString source = m_sourceDir + QStringLiteral("/hello.s");
+    const QString listing = m_sourceDir + QStringLiteral("/hello.lst");
+    ProgramLineMap map;
+    QString mapError;
+    QVERIFY2(map.addModule(source, m_program, listing, &mapError), qPrintable(mapError));
+    LineMap::SectionBases bases;
+    bases.text = last.textBase;
+    bases.data = last.dataBase;
+    bases.bss = last.bssBase;
+    map.setLiveBases(bases);
+    const QVector<SymbolEntry> symbols = symbolsFromListing(listing, source);
+    QVERIFY2(!symbols.isEmpty(), "no symbols from the listing");
+
     // A byte inside the program's own data area; nothing resumes, so no layout
     // assumption can do harm beyond the value being read back.
     const quint32 target = (last.dataBase ? last.dataBase : last.textBase) + 0x100;
@@ -1142,7 +1167,10 @@ void TstEmulatorHost::stopHookScriptWritesThroughTheDebugger()
     file.write(QStringLiteral("writemem(0x%1, 0x5a)\n"
                               "writereg(\"d0\", 0x1234)\n"
                               "local back = string.byte(readmem(0x%1, 1))\n"
-                              "log(\"read back \" .. back)\n")
+                              "log(\"read back \" .. back)\n"
+                              "log(string.format(\"start=$%08x pc=$%08x\", sym(\"start\"), "
+                              "readreg(\"pc\")))\n"
+                              "log(\"msg=\" .. readmem(sym(\"msg\"), 2))\n")
                    .arg(target, 8, 16, QLatin1Char('0'))
                    .toUtf8());
     file.close();
@@ -1157,6 +1185,18 @@ void TstEmulatorHost::stopHookScriptWritesThroughTheDebugger()
     hookHost.resume = [] {};
     hookHost.refresh = [] {};
     hookHost.holdConsole = [](bool) {};
+    // The same rule MainWindow's Host uses (`BreakpointWatchpointModel::resolveLabel`
+    // calls `labelAddress`); the model adds the sentence, not the answer.
+    hookHost.symbol = [&symbols, &map](const QString &name, quint32 *address, QString *error) {
+        LabelAddress where;
+        LabelAddressProblem problem = LabelAddressProblem::None;
+        if (!labelAddress(symbols, map, name, &where, &problem)) {
+            *error = QStringLiteral("sym: refused '%1'").arg(name);
+            return false;
+        }
+        *address = where.address;
+        return true;
+    };
     StopHookRunner runner(hookHost);
 
     runner.onStopPublished(last);
@@ -1164,6 +1204,14 @@ void TstEmulatorHost::stopHookScriptWritesThroughTheDebugger()
 
     // The script read its own write back through the transport, byte-exact.
     QVERIFY2(console.contains(QStringLiteral("[hook] read back 90")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // `sym()` resolved the entry label to where the machine actually is, and a
+    // data label to its bytes — through the listing and the live bases.
+    QVERIFY2(console.contains(QStringLiteral("[hook] start=$%1 pc=$%1")
+                                  .arg(hex::hex32(last.pc, hex::Case::Lower))),
+             qPrintable(console.join(QLatin1Char('|'))));
+    QVERIFY2(console.contains(QStringLiteral("[hook] msg=HI")),
              qPrintable(console.join(QLatin1Char('|'))));
 
     // Now the debugger itself: the byte is where the script put it.

@@ -809,7 +809,7 @@ set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 qt_add_executable(tst_hrdb
     tests/tst_hrdb.cpp
 )
-target_link_libraries(tst_hrdb PRIVATE pist_emu pist_project Qt6::Test)
+target_link_libraries(tst_hrdb PRIVATE pist_emu pist_project pist_hooks Qt6::Test)
 pist_add_test(hrdb)
 set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 

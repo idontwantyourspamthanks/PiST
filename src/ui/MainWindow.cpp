@@ -508,6 +508,11 @@ MainWindow::MainWindow(QWidget *parent)
     hookHost.backend = backendNow;
     hookHost.log = logLine;
     hookHost.scriptPath = [this] { return m_settings.stopHookPath; };
+    // `sym()` in a script: the same rule the remote `breakpoint <label>` verb
+    // uses, through the model that owns the symbols and the program map.
+    hookHost.symbol = [this](const QString &name, quint32 *address, QString *error) {
+        return m_bpModel->resolveLabel(name, address, error);
+    };
     hookHost.enabled = [this] { return m_settings.stopHookEnabled; };
     hookHost.autoContinue = [this] { return m_settings.stopHookAutoContinue; };
     hookHost.resume = [this] { resume(); };
@@ -761,11 +766,14 @@ void MainWindow::wireEditor(CodeEditor *editor)
                 QAction *toggle = menu.addAction(hasBreakpoint ? tr("Remove breakpoint")
                                                                : tr("Add breakpoint"));
                 QAction *condition = menu.addAction(tr("Edit condition…"));
+                QAction *script = menu.addAction(tr("Stop-hook script…"));
                 QAction *chosen = menu.exec(pos);
                 if (chosen == toggle)
                     toggleBreakpointAtLine(line);
                 else if (chosen == condition)
                     editBreakpointCondition(line);
+                else if (chosen == script)
+                    editBreakpointScript(line);
             });
 }
 
@@ -4556,15 +4564,27 @@ QByteArray stopHookStarterScript()
 --   writemem(addr, value)   write one byte
 --   readreg(name)           d0-d7, a0-a7, pc, sr, usp, isp
 --   writereg(name, value)   d0-d7, a0-a7, pc, sr  (Hatari cannot set usp/isp)
+--   sym(name)               a label's address in this run; addresses move
+--                           between runs, which is why this exists
 --   log(text) / print(...)  one line in the Build & debug console, as [hook]
 --   continue() / resume()   let the program run on; without "continue without
 --                           asking" switched on, the stop holds instead
+--
+-- Two values describe the stop itself:
+--
+--   reason                  "breakpoint", "step", or "unknown" (a pause, an
+--                           exception or a watchpoint — the emulator does not
+--                           say which)
+--   at                      the breakpoint that fired, "file:line"; only set
+--                           when reason is "breakpoint"
+--
 --
 -- Two things worth knowing before you rely on it:
 --
 --   * Addresses move. GEMDOS relocates the program on every run, so a data
 --     address that worked last run is wrong this run. Breakpoints dodge this by
---     being file:line; a script has to re-read the bases itself.
+--     being file:line, and sym() resolves a name through this run's bases; an
+--     address written into the script by hand cannot dodge it.
 --   * Every stop gets a fresh interpreter: nothing carries over, so state that
 --     must survive a stop belongs in the guest's own memory.
 --
@@ -4917,6 +4937,11 @@ void MainWindow::editBreakpointCondition(int line)
     m_bpModel->editCondition(line);
 }
 
+void MainWindow::editBreakpointScript(int line)
+{
+    m_bpModel->editScript(line);
+}
+
 void MainWindow::clearAllBreakpoints()
 {
     m_bpModel->clear();
@@ -4945,15 +4970,29 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // the stop is real enough to report — the register batch has landed, so
         // readreg() has the machine's actual truth, and the attach's own
         // commands have completed (docs/stop-hooks-plan.md D1).
-        if (m_hooks)
-            m_hooks->onStopPublished(state);
+        if (m_hooks) {
+            // The cause, as far as the transport can tell us: a breakpoint whose
+            // armed address is this PC. A pause, an exception and a watchpoint
+            // are indistinguishable from here, so they stay "unknown" rather
+            // than being guessed at.
+            StopTrigger how;
+            if (const Breakpoint *hit = breakpointAt(m_bpModel->breakpoints(), state.pc)) {
+                how.reason = StopReason::Breakpoint;
+                how.at = hit->label();
+                how.script = hit->scriptPath;
+            }
+            m_hooks->onStopPublished(state, how);
+        }
     } else if (m_session->stepEventPending() && state.regs.valid) {
         // A step never reaches the branch above: `s`/`n` are not running→stopped
         // transitions, so stoppedChanged does not fire for them (see step()).
         // The flag makes "every stop" include them.
         m_session->setStepEventPending(false);
-        if (m_hooks)
-            m_hooks->onStopPublished(state);
+        if (m_hooks) {
+            StopTrigger how;
+            how.reason = StopReason::Step;
+            m_hooks->onStopPublished(state, how);
+        }
     }
     m_disassembly->setState(state);
 

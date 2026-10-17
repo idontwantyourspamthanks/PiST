@@ -1041,7 +1041,8 @@ single-entry drain, scripted writes must complete before a script's `continue()`
 (because `resume()` prunes everything without `keepOnResume`), and the engine
 measured out to **Lua 5.4.8** — pinned, linked statically, the first third-party
 code linked into the binary (the numbers are in §9) — and L2 landed with it: `sym()` over the live
-bases, the stop's cause, and a script attached to a breakpoint.
+bases, the stop's cause, and a script attached to a breakpoint. L3 is the agent surface: the `hook`
+verb, its `pist_hook` MCP tool, and the `hook` event a watcher gets when a script runs.
 
 ---
 
@@ -1328,6 +1329,18 @@ load-bearing dependency — which the detection order above already guarantees.
   transport-specific assumption. This is also the first proof that a *name* survives GEMDOS
   relocation from a script; the two resolution rules (break-here vs address, D8 in
   [docs/stop-hooks-plan.md](stop-hooks-plan.md)) are pinned separately in `tst_debug`.
+
+- **The stop hook's agent surface is verified, and its one departure from the sheet is recorded**
+  (2026-10-17, `feature/stop-hooks`). `hook` answers with JSON built from the same
+  `StopHookRunner::LastRun` that renders the dialog's sentence, so the two cannot disagree: the
+  fields are asserted with no project at all (`tst_remotecontrol`), and the MCP tool's mapping,
+  block framing and parsed `structuredContent` in `tst_mcp`, whose catalog list is pinned whole
+  because a dropped or renamed tool breaks an agent silently. The sheet asked for "a `hook` field on
+  the published `stopped` event", which is not implementable: the script runs *after* the stop is
+  published, by design (D1), because it reads registers that must be real first — so the run reports
+  itself in its own `hook` event, emitted before the `continue()` policy so the wire order is
+  `stopped` → `hook` → `running`. The reasoning lives in `docs/stop-hooks-plan.md` §10 rather than
+  being absorbed silently.
 
 ### Verified by CI (executed on real runners)
 

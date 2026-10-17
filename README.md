@@ -522,6 +522,8 @@ stop               stop the emulator session
 step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
 symbols [filter]   the build's symbols as a JSON array (block reply)
+hook               the stop-hook script and what its last run did, as a JSON
+                   object (block reply)
 tabs               the open documents as a JSON array (block reply)
 save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
@@ -554,18 +556,29 @@ waiting to be asked:
 
 ```
 event stopped pc=0x12596
+event hook ok file=hello.hooks.lua line=-1 writes=2 logs=1 pc=0x00012596
 event running
 ```
 
+The second is the stop hook's report, and it is a separate event on purpose: the
+script runs *after* the stop is published, because it needs the stop's registers
+to be real before it reads them, so its outcome does not exist yet when `stopped`
+goes out. Its status is `ok`, `timeout` (the budget cut the script off), `error`,
+or `norun` (the script could not be read, so it never ran), followed by `file`,
+`line` (`-1` when there is none), `writes`, `logs`, `pc`, and — when there is one —
+`message`, which is the script's own words and always last: everything after
+`message=` belongs to it. Read the same thing on demand with the `hook` verb.
+
 The format is `event <name>` with optional trailing detail, always one line. The
-IDE currently publishes `stopped` (with the program counter, when known) and
-`running`; more event names may be added, so a client should ignore names it does
-not recognise rather than treat them as errors. Watching is additive: a watcher
-still gets ordinary replies to ordinary commands, and a connection that never
-sends `watch` behaves exactly as it always did. Several connections may watch at
-once. Send `unwatch` to stop the events while keeping the connection, or just
-close it. Because `watch` and its `ok` share the socket with the events, a client
-must read the `ok` before treating subsequent lines as events.
+IDE currently publishes `stopped` (with the program counter, when known),
+`hook` and `running`; more event names may be added, so a client should ignore
+names it does not recognise rather than treat them as errors. Watching is
+additive: a watcher still gets ordinary replies to ordinary commands, and a
+connection that never sends `watch` behaves exactly as it always did. Several
+connections may watch at once. Send `unwatch` to stop the events while keeping
+the connection, or just close it. Because `watch` and its `ok` share the socket
+with the events, a client must read the `ok` before treating subsequent lines as
+events.
 
 The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
 
@@ -628,6 +641,12 @@ The limits, stated rather than discovered:
   a script — but a debugger command that arrives while the machine is running would be deferred by
   the emulator to the *next* stop, and nothing here relies on that.
 
+An agent sees the same thing without the dialog: the remote-control `hook` verb and its `pist_hook`
+MCP tool answer with the project's script, whether the hook is on, whether the script's `continue()`
+is honoured without asking, and what the last run did — as fields, not as the sentence the dialog
+shows. A `hook` event follows each `stopped` when a script ran, so a watcher learns what it did
+without asking; see **Remote control** above.
+
 The engine is [Lua 5.4.8](https://www.lua.org/), pinned by checksum and linked statically;
 [docs/stop-hooks-plan.md](docs/stop-hooks-plan.md) is the design and the measurement behind it. A
 `.lua` file opens in the editor with Lua highlighting — keywords, comments (including `--[[ ]]`),
@@ -653,14 +672,14 @@ locally started IDE needs no configuration at all. The tools are
 `pist_run`, `pist_build`, `pist_build_release`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
-`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
+`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`, `pist_hook`,
 `pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
 `pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
 rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
 `destructiveHint`, so a client can decide what needs your confirmation.
 `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
-`pist_disasm`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
+`pist_disasm`, `pist_hook`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,

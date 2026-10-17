@@ -206,7 +206,9 @@ Everything else in this document is a consequence of that rule. The debug transp
   command from being mistaken for the script's, and the `continue()` policy. Deliberately
   widget-free: `pist_hooks` links QtCore, Lua and `emu/`, which is what lets `tst_emulatorhost`
   drive the shipped runner against a real session with no display at all. `ui/StopHooksDialog` is
-  the only UI it has.
+  the only UI it has. It is also readable from outside: the `hook` verb, its `pist_hook` MCP tool and
+  the `hook` event all report what `StopHookRunner::LastRun` holds — the fields, not the dialog's
+  sentence (docs/stop-hooks-plan.md §10).
 
 ### The build graph
 

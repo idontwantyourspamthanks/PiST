@@ -51,11 +51,11 @@ section is the argument it has to beat.
 
 ## 1. Scripted stop hooks
 
-**Status:** agreed; **L1 and L2 delivered** on `feature/stop-hooks` (2026-10-17).
+**Status:** agreed; **L1, L2 and L3 delivered** on `feature/stop-hooks` (2026-10-17).
 [docs/stop-hooks-plan.md](stop-hooks-plan.md) is the plan of record: the decisions (D1–D8), the
-engine measurements, and the phase status. What remains is **L3**, the agent surface. Absorbs
-`docs/FUTURE.md` §10 (which this entry supersedes; §10's analysis of what already exists was verified
-then and re-verified here).
+engine measurements, the agent surface and its one departure from this sheet, and the phase status.
+Absorbs `docs/FUTURE.md` §10 (which this entry supersedes; §10's analysis of what already exists was
+verified then and re-verified here).
 
 ### What exists
 

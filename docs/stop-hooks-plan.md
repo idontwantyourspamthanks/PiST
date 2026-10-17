@@ -207,9 +207,9 @@ else — no Capstone; that is Hatari's external disassembler), and configure now
 and packaging builds pass `-DPIST_LUA_TARBALL=<file>`; the checksum is verified either way.
 
 **D5 — One script per project, opt-in, in `.pistproject`.** Keys `hooks.scriptPath` (relative to the
-project directory, like `includePaths`), `hooks.enabled`, `hooks.autoContinue`. A list of scripts and
-per-breakpoint bindings are L2/L3; one script keeps the API and the failure modes small enough to be
-honest about.
+project directory, like `includePaths`), `hooks.enabled`, `hooks.autoContinue`. A *list* of scripts is
+still not in v0 — one script keeps the API and the failure modes small enough to be honest about —
+while a per-breakpoint script arrived in L2 as the override the runner reads out of its trigger.
 
 **D6 — The API surface is the documentation, and the standard library is not.**
 Lua's `io`, `os`, `debug` and `package` are never opened: the interpreter is created with `base`,
@@ -381,11 +381,53 @@ prevents:
 
 ## 10. The agent surface (L3)
 
-The sheet's direction is to grow the verbs rather than build a chat widget. L3 ships the minimum
-that makes an agent a first-class consumer: a `hook` verb (a block reply: enabled, path, and the last
-run's outcome — ok, or the error's file:line and message), the matching `pist_hook` MCP tool, and a
-`hook` field on the published `stopped` event so an agent learns a script ran and what it did. It is
-gated on L1/L2 being in real use, not designed further here.
+The sheet's direction was to grow the verbs rather than build a chat widget. This is what it came to:
+the `hook` verb, its `pist_hook` MCP tool, and the `hook` event a watcher gets when a script runs.
+
+**The verb.** `hook` answers as a block of JSON, like every other query an agent reads, and for a
+second reason: the dialog's line is prose, and translated.
+
+```json
+{"enabled": true, "path": "/p/demo/hello.hooks.lua", "autoContinue": false,
+ "last": {"ran": true, "ok": false, "timedOut": false, "pc": "0x00012596",
+          "file": "hello.hooks.lua", "line": 4, "logs": 0, "writes": 2,
+          "message": "attempt to index a nil value"}}
+```
+
+`last` is always present and `ran` is what says whether a script has run at all in this session, so a
+consumer tests a field rather than the existence of a key; `message` is the only key that may be
+absent. The serialisation is `RemoteStateAdapter::hookJson()`, like the other JSON verbs, fed through
+that adapter's `Host` — so the verb, the tool, the event and the dialog all read one record. It is
+also what renders the dialog's sentence (`StopHookRunner::lastRunSummary()`), which is why the two
+cannot come to disagree, and why `LastRun` is fields rather than a string.
+
+**The tool.** `pist_hook` maps to the verb and is listed read-only, so a client need not ask before
+calling it; the shim frames it from the same verb table as the server, so the framing cannot drift.
+It answers in `structuredContent` as well as text.
+
+**The event — and why it is not a field on `stopped`.** The sheet asked for "a `hook` field on the
+published `stopped` event". That is not implementable honestly: D1 puts the script's run *after* the
+stop is published — it needs the stop's registers to be real before it reads them — so at publication
+time there is no outcome to report. The stop event therefore keeps what it can honestly carry (the
+PC), and the run reports itself in its own `hook` event, emitted before the `continue()` policy so the
+wire order is `stopped` → `hook` → `running`:
+
+```
+event hook ok file=hello.hooks.lua line=-1 writes=2 logs=1 pc=0x00012596
+event hook error file=hello.hooks.lua line=4 writes=0 logs=0 pc=0x00012596 message=attempt to index a nil value
+event hook norun file=absent.lua line=-1 writes=0 logs=0 pc=0x00000000 message=cannot open …
+```
+
+The status token is `ok`, `timeout` (the budget cut the script off), `error`, or `norun` (the file
+could not be read, so nothing ran — which an agent has to be able to tell from a script that raised).
+`message` is free text and comes last, so everything after `message=` belongs to it. The line is built
+by `hookEventDetail()` (`hooks/StopHookRunner.cpp`), pinned whole in `tst_stophooks`, and listed in the
+README's event section, which is the contract an agent codes against.
+
+**Where it lives.** `control/ControlProtocol.h` gained the verb row — which is what generates `help`
+and the shim's framing — `RemoteControl::execute()` the branch, `ControlHost::hookJson()` the
+operation, `MainWindow` the `runFinished` → `publishEvent` connection, and `McpServer` the tool, its
+mapping, its `structuredContent` shape and its read-only annotation.
 
 ---
 
@@ -393,20 +435,21 @@ gated on L1/L2 being in real use, not designed further here.
 
 | Condition | Behaviour | Who learns |
 |---|---|---|
-| Script file missing or unreadable | One refusal logged per session; the session is untouched | Console |
-| Script raises | `[hook] <file>:<line>: <message>`; the machine stays stopped | Console |
-| Runaway script | Interrupted at the budget; the engine is discarded; logged as an error naming the budget | Console |
+| Script file missing or unreadable | One refusal logged per session; the session is untouched | Console, and a watcher (`hook` → `norun`) |
+| Script raises | `[hook] <file>:<line>: <message>`; the machine stays stopped | Console, and a watcher (`hook` → `error`) |
+| Runaway script | Interrupted at the budget; the engine is discarded; logged as an error naming the budget | Console, and a watcher (`hook` → `timeout`) |
 | A read or write times out | The script is abandoned; the machine stays stopped | Console |
 | Not stopped when the run starts | One logged refusal, no run | Console |
 | A scripted write while the machine is running | Refused by the runner's own gate (`isStopped()` per operation) before the backend sees it: a command written while running would be deferred by Hatari to the *next* stop, a different stop from the script's | Console |
 | `readmem` beyond `HookApi::kMaxReadBytes` | Raises; nothing is queued | Console |
 | Symbol unresolvable (L2) | Raises naming the symbol; never 0 | Console |
+| Hook off, or no script configured | Nothing runs and **nothing is published**: a skip is not a run, which is what `last.ran` false and the absence of a `hook` event both mean | Nobody |
 
 The README's API list is the contract; if a capability is not in it, the docs do not claim it.
 
 ## 12. Testing
 
-- **`tst_stophooks`** — built and green: 19 cases, no emulator and no window. The engine half runs
+- **`tst_stophooks`** — built and green: 21 cases, no emulator and no window. The engine half runs
   the real Lua against a fake `HookApi` (byte-exact `readmem`, a caught refusal and an uncaught one,
   Lua's own argument refusal, `sym()` answering a label and raising on a name that resolves to
   nothing, a runaway script stopped inside its budget, a missing file, both spellings
@@ -419,7 +462,12 @@ The README's API list is the contract; if a capability is not in it, the docs do
   `sym()` resolves through the host, the two stop values reach the script (`at` arriving as `nil`
   rather than `""` after a step, so a script need not special-case an empty string), and a script
   attached to a breakpoint wins over the project's — because the alternative is the project's script
-  running twice, silently.
+  running twice, silently. Two more pin what a run *reports*, since that is now a contract an agent
+  codes against: the fields the `hook` verb, its tool and the event are built from (with the dialog's
+  sentence asserted as a rendering of the same record), and the difference between a script that
+  raised — `ran`, with a line and its own words — and one that could not be read, which ran *nothing*
+  and must not be reported to an agent as the script's own fault. The event's line is asserted whole
+  for the success case, so a field that quietly changes shape fails here rather than in a client.
 - **`tst_debug`** — the two resolution rules (D8), with no session at all: a listing fixture with a
   label sharing its line with its data, a bare label above its data, and an equate.
   `labelAddressResolvesLabelsNotEquates` pins the address rule and its three refusals;
@@ -448,6 +496,13 @@ The README's API list is the contract; if a capability is not in it, the docs do
   backend, which is what R8's typed intents buy. The byte and the register the script wrote are read
   back through the fork's own paths (the uuencoded dump, the register batch). Skips without
   `$PIST_HRDB_HATARI`; run green against the hrdb-main fork on 2026-10-17.
+- **`tst_remotecontrol`** — `hookIsAJsonObject`: with no project and no script the block still parses
+  and every field is answered, `last.ran` false rather than a key that is simply missing — an agent
+  tests a field, not the existence of one.
+- **`tst_mcp`** — the tool catalog is pinned whole, because a dropped or renamed tool is how an
+  agent's workflow breaks with nothing here noticing, and `hookReportsTheScriptAndItsLastRun` asserts
+  the mapping to the verb, the framing that comes from the shared verb table, and the parsed
+  `structuredContent` fields an MCP client actually consumes.
 
 Not covered, and said so rather than implied: the dialog's **validation**. `accept()` refuses an
 unreadable path through a modal warning, which an offscreen test cannot answer without hanging — the
@@ -486,8 +541,12 @@ arming plan, and the `tst_hrdb` case — which is the evidence that the runner h
 transport-specific assumption in it. This is where the sheet's "named scripts on named breakpoints"
 landed.
 
-**L3 — the agent surface** (§10): the `hook` verb, the MCP tool, the `hook` field on the stop event,
-the README §Remote control entry.
+**L3 — the agent surface (§10). Implemented; §12 is what proves it.**
+The `hook` verb and its `pist_hook` tool report the script and its last run as fields (one record,
+which also renders the dialog's sentence), and a `hook` event follows each `stopped` when a script
+ran. The one departure from the sheet — the event being its own rather than a field on `stopped` —
+is argued in §10: the run happens after the stop is published (D1), so there is nothing to put in
+that field when the stop goes out.
 
 Each phase ends by recording what it measured in `docs/PLAN.md` §9 — the engine numbers and the HRDB
 behaviour in particular, both of which contradict nothing today but are not yet verified.
@@ -521,9 +580,12 @@ behaviour in particular, both of which contradict nothing today but are not yet 
 4. **The writable-register set — answered.** `d0`–`d7`, `a0`–`a7`, `pc` and `sr`, which is the set the
    registers view offers as editable; `usp` and `isp` are readable and refuse a write with Hatari's
    reason, because Hatari cannot set them by name (the registers view's own comment).
-5. **Correlating a hook with an agent's view** — still open, deliberately: L3 decides whether the
-   published `stopped` event is enough for an agent to attribute a run, or whether a stop id is
-   needed.
+5. **Correlating a hook run with its stop — answered as far as the wire goes, and said so.** L3
+   publishes the run as a `hook` event carrying the PC it ran at, and `hook`'s `last` is the most
+   recent run, so an agent that watches correlates by order (`stopped` → `hook`) and by PC. What it
+   cannot do is ask afterwards *what the hook did at that stop*, or tell two runs at the same PC
+   apart: there is no stop id, and L3 did not invent one. If that need appears, a counter on both
+   events is the change — small, and nobody has needed it yet.
 6. **QtQml deployment** — withdrawn with the engine.
 
 ## 16. Relationship to other documents
@@ -540,12 +602,10 @@ behaviour in particular, both of which contradict nothing today but are not yet 
 ## 17. Status
 
 Planned 2026-10-17 on `v0.10.0`, implemented the same day on `feature/stop-hooks`. **L0 is decided
-and its numbers are in `docs/PLAN.md` §9; L1 and L2 are implemented and green** — the unit suite, the
-`.pistproject` round-trip, the offscreen GUI cases, and the full suite run against a real emulator,
-including the same script over the hrdb-main fork.
-
-L3 (the `hook` remote verb, the MCP tool, the `hook` field on the published stop event) is the
-remainder on this branch.
+and its numbers are in `docs/PLAN.md` §9; L1, L2 and L3 are implemented and green** — the unit
+suites, the `.pistproject` round-trip, the offscreen GUI cases, the remote-control and MCP suites
+(the agent surface), and the full suite run against a real emulator, including the same script over
+the hrdb-main fork.
 
 What is still *not* verified here: the three platform archives (the feature's cost is a static library
 and a configure-time fetch, but the artifacts themselves need CI), and the dialog's own validation

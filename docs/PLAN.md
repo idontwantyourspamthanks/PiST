@@ -1051,6 +1051,13 @@ surfaces over them (the editor's popup, `ui/SymbolPaletteDialog`, the window's h
 dispatch extracted into `editor/CursorReference` so the dock and the hover cannot disagree. The traps behind
 the decisions are in §9.
 
+**Watchpoint symbols** (sheet §5) are delivered on `feature/watchpoint-symbols`: a watchpoint may
+be asked for by *label*, and `planWatchpoints()` (beside `planBreakpoints()`) resolves it through
+`labelAddress()` — the one rule `sym()` and the remote `breakpoint <label>` verb already use —
+afresh on every arm, because GEMDOS picks the load address again each run. The stored watchpoint
+keeps the name and never the address, so the stale-address failure has nowhere to live; the remote
+verbs are the set/clear pair `watchpoint <a|l>` / `clearwatchpoint [a|l]`, and the MCP tools follow.
+
 **Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock beside Problems backed
 by `ui/FindInFiles` (a chunked, cancellable walk of the project directory) and `ui/FindInFilesView`,
 with the scan itself shared with the editor's find bar through the new `editor/FindScan` — which
@@ -1367,6 +1374,38 @@ load-bearing dependency — which the detection order above already guarantees.
   the rule is now in §11); and **two shortcuts on one key are ambiguous** — Qt logs "ambiguous
   shortcut overload" and fires *neither*, measured in a throwaway program, which is why the dock
   claims F4 with a `ShortcutOverride` instead of binding a second F4 shortcut.
+
+- **A greedy regex tail ate a width suffix, and only a probe found it** (2026-10-17,
+  `feature/watchpoint-symbols`). The text form parses `[label][.b|.w|.l]`, and the label
+  alternative's tail was `[A-Za-z0-9_.$]*` — greedy, so it consumed `.w`/`.l` itself and
+  `counter.l` was looked up as a symbol named `counter.l` and refused. Nothing in the reading
+  suggested it, and the address forms were unaffected; a standalone `QRegularExpression` probe
+  against the exact pattern, run by an independent task, is what showed it. The tail is now lazy
+  (`[A-Za-z0-9_.$]*?`) with a comment saying why, and `tst_gui`'s label case pins the sheet's
+  spelling. Separately, giving `watchpoint` a useful reply (`ok; watch counter.l at $12596`
+  instead of a bare `ok`) broke two existing assertions in `tst_remotecontrol` that had pinned
+  `ok` exactly — a reminder that a single-line reply's *text* is an interface, and that the
+  document of record for the verbs is `ControlProtocol.h`'s table, not the tests.
+
+- **Qt's `arg` overload set grows between minor versions** (2026-10-17, `feature/watchpoint-symbols`).
+  `QStringLiteral("%1.%2").arg(symbol, QLatin1Char(width))` compiles against the development
+  machine's Qt 6.10.2 and has **no overload** in the 6.8.1 the CI pins — it failed on gcc, clang and
+  MSVC at once, at the same line. The chained form (`.arg(symbol).arg(QLatin1Char(width))`) is the
+  one that exists in both, and the local build is not evidence about the floor the project ships
+  against.
+
+- **A watchpoint can be named, and the name is resolved by the rule that already existed**
+  (2026-10-17, `feature/watchpoint-symbols`). `labelAddress()` (`build/SymbolTable.h`) was written
+  for a hook script's `sym()` and the remote `breakpoint <label>` verb, and it documents that *the
+  caller phrases the refusal* because the reader differs; the watchpoint plan is the third caller and
+  phrases its own, so no resolution logic was copied and a label means the same thing in all three
+  places. The design consequence worth keeping: the resolved address is never written back into the
+  model. The plan's `armed` list is what the panel is handed for the run, and the stored watchpoint
+  keeps `symbol` with `resolved == false` until an arm places it — the alternative (storing what a
+  previous run resolved) is precisely the "most confidently-wrong panel in the IDE" the sheet warned
+  about. Measured while wiring it: a pre-bases arm must skip named watchpoints entirely (their
+  address is not known yet, and `command()` on one would arm `$0` — the vector table, firing at
+  once), while a raw address still arms before the program has loaded.
 
 - **Completion's two Qt traps were found by running, and the vocabulary was one regex until now**
   (2026-10-17, `feature/completion`). A `QCompleter` attached with `setWidget()` to a widget that is
@@ -1727,6 +1766,14 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- The CI's pinned Qt is the floor, not the local one. Build locally against something newer and
+  the compiler happily accepts APIs the pinned version lacks — a two-argument
+  `QString::arg(QString, QChar)` is the case that cost a CI round (chain the calls instead). When
+  an overload's existence is in doubt, prefer the spelling that has existed longest.
+- Never store an address a relocated program gave you. GEMDOS picks the load address afresh on
+  every run, so anything derived from one — a breakpoint, a watchpoint resolved from a label, a live
+  base — is resolved at arm time and never written back into a model. `planBreakpoints()` and
+  `planWatchpoints()` are where that happens; the stored entry keeps file:line or the label itself.
 - Never hand Qt's `indexOf`/`lastIndexOf` family a `from` that can be negative: a negative `from`
   means "search from the end", so asking for the line containing position 0 of a file returns the
   *last* line instead. Guard with `position > 0` before subtracting.

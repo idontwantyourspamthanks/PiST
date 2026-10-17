@@ -150,18 +150,23 @@ void BreakpointPanel::refresh()
         m_table->setItem(row, kColCondition, new QTableWidgetItem(bp.condition));
     }
 
-    // Watchpoints are listed below the breakpoints. They are always resolvable
-    // (an address is an address), so the state column just shows the width.
+    // Watchpoints are listed below the breakpoints. A raw address is armable the
+    // moment it is typed; a *name* is not, until a stop has told the debugger
+    // where this run loaded the program — so the state column says which, and the
+    // condition column stays empty rather than naming `$0`, an address nobody
+    // asked to watch.
     const int firstWatch = m_breakpoints.size();
     m_table->setRowCount(firstWatch + m_watchpoints.size());
     for (int i = 0; i < m_watchpoints.size(); ++i) {
         const Watchpoint &wp = m_watchpoints.at(i);
         const int row = firstWatch + i;
         m_table->setItem(row, kColLocation, new QTableWidgetItem(wp.label()));
-        auto *state = new QTableWidgetItem(tr("armed"));
-        state->setForeground(theme.success);
+        auto *state = new QTableWidgetItem(wp.resolved ? tr("armed")
+                                                       : tr("pending (run to resolve)"));
+        state->setForeground(wp.resolved ? theme.success : theme.muted);
         m_table->setItem(row, kColState, state);
-        m_table->setItem(row, kColCondition, new QTableWidgetItem(wp.command().mid(2)));
+        m_table->setItem(row, kColCondition,
+                         new QTableWidgetItem(wp.resolved ? wp.command().mid(2) : QString()));
     }
 
     m_table->resizeColumnsToContents();

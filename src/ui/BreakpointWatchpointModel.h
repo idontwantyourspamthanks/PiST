@@ -107,14 +107,27 @@ public:
     /// the script is read at the stop, not armed with the condition.
     void editScript(int line);
 
-    /// Prompt for and add an address watchpoint (the Add-watchpoint action).
+    /// Prompt for and add a watchpoint (the Add-watchpoint action): an address,
+    /// or a label to resolve on every run.
     void addWatchpoint();
-    /// Parse and add a watchpoint by address text (e.g. "$12345" or
-    /// "$12345.l"). Separated from the dialog so the remote-control interface
-    /// and tests can use it without a prompt. Returns false and sets error on a
-    /// bad address.
-    bool addWatchpointAddress(const QString &text, QString *error);
+    /// Parse and add a watchpoint by text: an address (`$12345`, `0x12345`,
+    /// `12345`) or a label (`counter`), either with an optional `.b`/`.w`/`.l`
+    /// width. Separated from the dialog so the remote-control interface and tests
+    /// can use it without a prompt. Returns false and sets error on a bad address,
+    /// on a name nothing knows, and on a name that has no place to watch.
+    ///
+    /// On success `*added` is what was stored — a label stays a label, because the
+    /// load address GEMDOS picks is not the same twice — with `address`/`resolved`
+    /// filled in when the symbol table can already place it, which is what the
+    /// remote verb reports back.
+    bool addWatchpointAddress(const QString &text, Watchpoint *added, QString *error);
     void removeWatchpoint(int index);
+
+    /// Remove watchpoints: every one when `text` is empty, otherwise those it
+    /// names — a label, `label.width`, what the panel shows, or an address. The
+    /// set/clear pair the remote `watchpoint` verb and its MCP tool use, so
+    /// neither has to toggle. False and a reason when a text matches nothing.
+    bool clearWatchpoints(const QString &text, int *removed, QString *error);
 
     /// Fold the addresses the ArmPlan resolved back into the stored breakpoint
     /// list, so the panel shows where each one actually landed.

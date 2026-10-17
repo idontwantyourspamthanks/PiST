@@ -427,10 +427,16 @@ public:
     /// serves as structured content.
     QJsonObject hookJson() const override;
 
-    /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
+    /// Parse and add a watchpoint by text: an address ("$12345", "$12345.l") or a
+    /// label ("counter.l"), which the arm plan resolves again on every run.
     /// Separated from the dialog so the remote-control interface and tests can use
-    /// it without a prompt. Returns false and sets error on a bad address.
-    bool addWatchpointAddress(const QString &text, QString *error) override;
+    /// it without a prompt. `added` receives what was stored, with the address
+    /// filled in when it is known now. Returns false and sets error otherwise.
+    bool addWatchpointAddress(const QString &text, Watchpoint *added, QString *error) override;
+
+    /// Remove watchpoints: every one when `text` is empty, otherwise those it
+    /// names. False and a reason when the text matches nothing.
+    bool clearWatchpoints(const QString &text, int *removed, QString *error) override;
 
     /// Compose the current phase's sheet and write it to `path`, writing
     /// back into a mounted floppy when the sheet came from one.

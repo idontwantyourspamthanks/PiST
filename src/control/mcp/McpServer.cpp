@@ -593,8 +593,22 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
                             .arg(args.value(QStringLiteral("line")).toInt())
                       : QStringLiteral("breakpoint ") + label;
     } else if (name == QLatin1String("pist_watchpoint")) {
+        // An address or a label: the label is the form that survives a rebuild,
+        // because GEMDOS picks the load address afresh on every run.
+        const QString label = args.value(QStringLiteral("label")).toString();
         const QString address = args.value(QStringLiteral("address")).toString();
-        command = QStringLiteral("watchpoint %1").arg(address);
+        if (label.isEmpty() && address.isEmpty()) {
+            sendError(id, kInvalidParams,
+                      QStringLiteral("pist_watchpoint needs an address or a label"));
+            return;
+        }
+        command = QStringLiteral("watchpoint ") + (label.isEmpty() ? address : label);
+    } else if (name == QLatin1String("pist_clearwatchpoint")) {
+        const QString label = args.value(QStringLiteral("label")).toString();
+        const QString address = args.value(QStringLiteral("address")).toString();
+        command = QStringLiteral("clearwatchpoint");
+        if (!label.isEmpty() || !address.isEmpty())
+            command += QLatin1Char(' ') + (label.isEmpty() ? address : label);
     } else if (name == QLatin1String("pist_cmd")) {
         const QString text = args.value(QStringLiteral("command")).toString();
         command = QStringLiteral("cmd %1").arg(text);
@@ -947,11 +961,42 @@ QJsonArray McpServer::tools()
         address.insert(QStringLiteral("description"),
                        QStringLiteral("Address to watch, with optional size suffix "
                                       "(.b/.w/.l), e.g. $12345.l"));
+        QJsonObject label;
+        label.insert(QStringLiteral("type"), QStringLiteral("string"));
+        label.insert(QStringLiteral("description"),
+                     QStringLiteral("Label to watch instead of an address, with optional "
+                                    "size suffix, e.g. counter.l — resolved through the "
+                                    "build's symbols and the live bases, and again on "
+                                    "every run; the reply names the address it landed on"));
         props.insert(QStringLiteral("address"), address);
+        props.insert(QStringLiteral("label"), label);
         list.append(toolObject(
             QStringLiteral("pist_watchpoint"), QStringLiteral("Add watchpoint"),
-            QStringLiteral("Break when the value at an address changes."),
-            props, QJsonArray{QStringLiteral("address")}));
+            QStringLiteral("Break when the value at an address changes. Pass address or "
+                           "label; a label survives a rebuild, because GEMDOS relocates "
+                           "the program on every run."),
+            props, {}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject address;
+        address.insert(QStringLiteral("type"), QStringLiteral("string"));
+        address.insert(QStringLiteral("description"),
+                       QStringLiteral("Address whose watchpoint should go, or the address "
+                                      "the reply of pist_watchpoint named, e.g. $12345.l"));
+        QJsonObject label;
+        label.insert(QStringLiteral("type"), QStringLiteral("string"));
+        label.insert(QStringLiteral("description"),
+                     QStringLiteral("Label whose watchpoint should go, e.g. counter.l"));
+        props.insert(QStringLiteral("address"), address);
+        props.insert(QStringLiteral("label"), label);
+        list.append(toolObject(
+            QStringLiteral("pist_clearwatchpoint"), QStringLiteral("Clear watchpoints"),
+            QStringLiteral("Remove the watchpoint an address or label names — or every "
+                           "watchpoint when neither is given. Answers with how many went, "
+                           "and refuses a name that matches none."),
+            props, {}));
     }
 
     {
@@ -1065,7 +1110,7 @@ QJsonArray McpServer::tools()
     };
     const QStringList destructive = {
         QStringLiteral("pist_stop"), QStringLiteral("pist_setreg"),
-        QStringLiteral("pist_setmem"),
+        QStringLiteral("pist_setmem"), QStringLiteral("pist_clearwatchpoint"),
     };
     for (int i = 0; i < list.size(); ++i) {
         QJsonObject tool = list[i].toObject();

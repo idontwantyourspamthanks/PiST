@@ -114,7 +114,10 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     logging pass needs no rebuild (Run ▸ Stop hooks…, documented below)
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
-    armed as change-tracking breakpoints), settable from Run ▸ Add watchpoint or the remote control
+    armed as change-tracking breakpoints). Ask for one by **label** — `counter.l` — or by address,
+    from Run ▸ Add watchpoint, the remote control or its MCP tool; a label is resolved again on
+    every run, so it survives the load address GEMDOS picks afresh each time. A watchpoint fires
+    only on a *change*: writing the same value again, or reading, does not trigger it.
   - a **stack view** of the values at the stack pointer, with likely return addresses marked
   - a **hardware registers** view of the shifter, MFP, ACIA/IKBD, sound, blitter and more, from
     Hatari's `info` commands
@@ -581,7 +584,10 @@ tabs               the open documents as a JSON array (block reply)
 save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
 disasm [addr]      disassembly as JSON rows (block reply, when stopped)
-watchpoint <addr>  break when the value at an address changes
+watchpoint <a|l>  break when the value at <a> changes, or at whatever address the
+                  label <l> names in this run (optional .b/.w/.l)
+clearwatchpoint [a|l]
+                  remove the watchpoint the address or label names, or every one
 setreg <name> <value>   set a register (while stopped)
 setmem <addr> <value>  write a memory byte (while stopped)
 cmd <command>      run an arbitrary Hatari debugger command (block reply)
@@ -725,7 +731,8 @@ locally started IDE needs no configuration at all. The tools are
 `pist_run`, `pist_build`, `pist_build_release`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
-`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`, `pist_hook`,
+`pist_watchpoint`, `pist_clearwatchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`,
+`pist_read`, `pist_hook`,
 `pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
 `pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or

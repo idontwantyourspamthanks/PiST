@@ -61,6 +61,10 @@ public:
         std::function<BreakpointWatchpointModel *()> breakpoints;
         /// The program map, which turns a source line into an address.
         std::function<const ProgramLineMap &()> programMap;
+        /// The build's symbols, which turn a *name* into a place. A named
+        /// watchpoint is resolved through this, by the same rule a script's
+        /// `sym()` uses, on every arm (docs/glm-features.md §5).
+        std::function<const QVector<SymbolEntry> &()> symbols;
         /// The section bases the last `info basepage` installed. The arming
         /// gate is whether they are live yet (CRIT-4).
         std::function<const LineMap::SectionBases &()> bases;

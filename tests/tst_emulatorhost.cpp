@@ -2230,9 +2230,26 @@ void TstEmulatorHost::watchpointFiresOnChangeAndNotOnSameValue()
     // A second watch, on the word the program changes next. It exists so the
     // same-value case is bounded by a real stop rather than a timeout: the
     // second run must reach it.
+    //
+    // This one is asked for by *label* and armed through the plan — the whole
+    // path the IDE takes for a named watchpoint (docs/glm-features.md §5). The
+    // name resolves through the build's symbols and the session's live bases,
+    // which is why it can only arm here, after `info basepage`, and why nothing
+    // about it is remembered: the next run's address is a different one. It must
+    // land on exactly the address the map gives `val2`, and its change must be
+    // what stops the run below — so the label path is proven against the machine,
+    // not against its own output.
     Watchpoint val2Watch;
-    val2Watch.address = val2Addr;
-    host.armBreakpoint(val2Watch.command());
+    val2Watch.symbol = QStringLiteral("val2");
+    const WatchpointPlan namedPlan =
+        planWatchpoints(QList<Watchpoint>{val2Watch}, symbolsFromListing(listing, source), map);
+    QVERIFY2(namedPlan.unresolved.isEmpty(), qPrintable(namedPlan.unresolvedReasons.value(0)));
+    QCOMPARE(namedPlan.armed.size(), 1);
+    QVERIFY(namedPlan.armed.first().resolved);
+    QCOMPARE(namedPlan.armed.first().symbol, QStringLiteral("val2"));
+    QCOMPARE(namedPlan.armed.first().address, val2Addr);
+    QCOMPARE(namedPlan.commands.size(), 1);
+    host.armBreakpoint(namedPlan.commands.first());
     QVERIFY2(finished.wait(15000), "no response to the val2 watchpoint");
     const QString val2Arm = finished.takeFirst().at(1).toString();
     QVERIFY2(val2Arm.contains(QLatin1String("breakpoint"), Qt::CaseInsensitive),

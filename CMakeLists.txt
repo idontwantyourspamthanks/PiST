@@ -244,6 +244,8 @@ pist_module(pist_editor
     src/editor/LuaHighlighter.cpp
     src/editor/LuaHighlighter.h
     src/editor/EditorTheme.h
+    src/editor/FindScan.cpp
+    src/editor/FindScan.h
     src/editor/InstrRef.cpp
     src/editor/InstrRef.h
     src/editor/IncludeNav.cpp
@@ -368,6 +370,10 @@ pist_module(pist_ui
     src/ui/NewFileSpec.h
     src/ui/FileTemplates.cpp
     src/ui/FileTemplates.h
+    src/ui/FindInFiles.cpp
+    src/ui/FindInFiles.h
+    src/ui/FindInFilesView.cpp
+    src/ui/FindInFilesView.h
     src/ui/WelcomeView.cpp
     src/ui/WelcomeView.h
     src/ui/AboutDialog.cpp
@@ -706,6 +712,16 @@ qt_add_executable(tst_stophooks
 )
 target_link_libraries(tst_stophooks PRIVATE pist_hooks pist_ui Qt6::Test)
 pist_add_test(stophooks)
+
+# Find in Files: the scan the editor's find bar shares with it (so the two cannot
+# count differently), and the walk's own rules — the skip list, the cap and the
+# honest summary. No window and no emulator, which is why it is a unit test as
+# well as the dock's tst_gui cases.
+qt_add_executable(tst_find
+    tests/tst_find.cpp
+)
+target_link_libraries(tst_find PRIVATE pist_ui Qt6::Test)
+pist_add_test(find)
 
 # Multi-module source mapping through a linker's map file. The end-to-end case
 # runs a real vasm+vlink when both are available and skips otherwise, so CI

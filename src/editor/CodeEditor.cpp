@@ -6,6 +6,7 @@
 
 #include "editor/AsmHighlighter.h"
 #include "editor/EditorTheme.h"
+#include "editor/FindScan.h"
 #include "editor/LuaHighlighter.h"
 #include "support/FileWrite.h"
 
@@ -129,18 +130,6 @@ protected:
 private:
     CodeEditor *m_editor;
 };
-
-bool isWordCharacter(const QChar &character)
-{
-    return character.isLetterOrNumber() || character == QLatin1Char('_');
-}
-
-/// How many hits a keystroke's search keeps. A common token in a large file has
-/// thousands of them, and the search re-runs on every keystroke and every cursor
-/// move; the label admits the cap ("more than N hits") rather than report a
-/// total the walk never reached, and the replace actions re-scan without it, so
-/// nothing but the label and the reach of Next/Previous depends on it.
-constexpr int kMaxMatches = 2000;
 
 /// The gutter column to the right of the line numbers that the program
 /// counter's ▶ occupies, and nothing else.
@@ -710,6 +699,24 @@ void CodeEditor::gotoLine(int line)
     setFocus();
 }
 
+void CodeEditor::selectSpan(int line, int column, int length)
+{
+    if (line <= 0 || line > blockCount() || column < 0 || length <= 0)
+        return;
+    const QTextBlock block = document()->findBlockByNumber(line - 1);
+    // A block's length counts its paragraph separator, so the line's own text
+    // ends one character before it.
+    if (!block.isValid() || column + length > block.length() - 1)
+        return;
+
+    QTextCursor cursor(block);
+    cursor.setPosition(block.position() + column);
+    cursor.setPosition(block.position() + column + length, QTextCursor::KeepAnchor);
+    setTextCursor(cursor);
+    centerCursor();
+    setFocus();
+}
+
 bool CodeEditor::isLineFullyVisible(int line) const
 {
     if (line <= 0 || line > blockCount())
@@ -963,46 +970,16 @@ void CodeEditor::findOptionsChanged()
     refreshMatches(m_findAnchor, true);
 }
 
-bool CodeEditor::isWholeWord(const QTextCursor &hit) const
-{
-    const int start = hit.selectionStart();
-    const int end = hit.selectionEnd();
-    if (start > 0 && isWordCharacter(document()->characterAt(start - 1)))
-        return false;
-    return !isWordCharacter(document()->characterAt(end));
-}
-
 QList<QTextCursor> CodeEditor::collectMatches(int limit, bool *capped) const
 {
-    QList<QTextCursor> hits;
-    if (capped)
-        *capped = false;
-    const QString needle = findNeedle();
-    if (needle.isEmpty())
-        return hits;
+    // The scan itself is editor/FindScan.h's: Find in Files counts with the same
+    // function, so the two cannot come to disagree about what a hit is.
+    return findScan(document(), findNeedle(), findOptions(), limit, capped);
+}
 
-    QTextDocument::FindFlags flags;
-    if (m_findCase && m_findCase->isChecked())
-        flags |= QTextDocument::FindCaseSensitively;
-    const bool wholeWord = m_findWord && m_findWord->isChecked();
-    QTextCursor at(document());
-    while (true) {
-        const QTextCursor hit = document()->find(needle, at, flags);
-        if (hit.isNull())
-            break;
-        at = hit;
-        if (wholeWord && !isWholeWord(hit))
-            continue;
-        // One hit past the limit is what proves the label's "more than": the
-        // limit alone only says the walk stopped.
-        if (limit > 0 && hits.size() >= limit) {
-            if (capped)
-                *capped = true;
-            break;
-        }
-        hits.append(hit);
-    }
-    return hits;
+FindOptions CodeEditor::findOptions() const
+{
+    return {m_findCase && m_findCase->isChecked(), m_findWord && m_findWord->isChecked()};
 }
 
 QList<QTextCursor> CodeEditor::replacementHits() const

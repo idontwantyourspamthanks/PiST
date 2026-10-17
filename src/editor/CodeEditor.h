@@ -5,6 +5,7 @@
 #pragma once
 
 #include "editor/EditorTheme.h"
+#include "editor/FindScan.h"
 #include "git/GitTypes.h"
 
 #include <QHash>
@@ -103,6 +104,13 @@ public:
     /// there — the user navigation ("take me to this line"). The program
     /// counter's own move is followExecutionLine() below.
     void gotoLine(int line);
+
+    /// Move the caret to `line` and select `length` characters from `column`
+    /// (0-based within that line's text), for a caller that knows an exact span
+    /// rather than a line — Find in Files' navigation, which has the match it
+    /// came from. Does nothing when the line or the span is out of range, so a
+    /// stale result cannot put the caret somewhere unintended.
+    void selectSpan(int line, int column, int length);
 
     /// Move the caret to `line` for the program counter — the debugger's path
     /// to the caret, and the deliberate counterpart of gotoLine() above.
@@ -209,7 +217,8 @@ private:
     /// The position of the current hit for the status label: "3 of 12", or
     /// "3 of more than 2000" when the count stopped at the cap.
     QString matchStatusText() const;
-    bool isWholeWord(const QTextCursor &hit) const;
+    /// What the two find-bar toggles currently say, for the shared scan.
+    FindOptions findOptions() const;
     QString findNeedle() const;
 
     QString m_filePath;

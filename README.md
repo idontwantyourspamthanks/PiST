@@ -49,7 +49,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   **Ctrl+click** to open an `include` or jump to a label,
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
-  GEMDOS/BIOS/XBIOS call being made and what it is being called with
+  GEMDOS/BIOS/XBIOS call being made and what it is being called with, and every entry
+  carries a worked example and one line on when to reach for it
 - **Find in Files** — search the whole project, not just the document in front of you
   (**Ctrl+Shift+F**, or the dock beside Problems): results grouped by file with the match
   highlighted, **double-click** or **F4** / **Shift+F4** to walk them, and a header that says how

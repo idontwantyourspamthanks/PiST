@@ -38,6 +38,7 @@
 #include "ui/StopHooksDialog.h"
 #include "build/BuildService.h"
 #include "build/FloppyImage.h"
+#include "debug/Watchpoint.h"
 #include "ui/DisassemblyView.h"
 #include "ui/HardwareView.h"
 #include "ui/MemoryView.h"
@@ -363,6 +364,12 @@ private slots:
     void strokeDedupMakesUndoRestoreOriginal();
     void sheetCanvasBlitsPhaseComposite();
     void removeWatchpointWithoutSessionDoesNotError();
+
+    /// A watchpoint named for a label the build knows but no stop has placed is
+    /// accepted and shown pending, the panel lists it by its name, a name that
+    /// cannot be watched is refused with a message naming it, and clearing by
+    /// that name removes it — all without an emulator.
+    void namedWatchpointIsPendingUntilArmTime();
 
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
@@ -1769,7 +1776,8 @@ void TstGui::clearAllRemovesWatchpoints()
     // (its enable test is "any breakpoint OR any watchpoint"), so it must clear
     // the watchpoint too — the shared clearAllBreakpoints handler used to leave
     // it, so the button stayed enabled.
-    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error), qPrintable(error));
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), nullptr, &error),
+             qPrintable(error));
 
     QPushButton *clear = nullptr;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
@@ -1973,7 +1981,7 @@ void TstGui::removeWatchpointWithoutSessionDoesNotError()
     auto *host = window.findChild<IDebugBackend *>();
     QVERIFY(host);
     QString error;
-    QVERIFY(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error));
+    QVERIFY(window.addWatchpointAddress(QStringLiteral("$1234.w"), nullptr, &error));
 
     QSignalSpy errors(host, &IDebugBackend::errorOccurred);
     // No session running: removing a watchpoint must not push debugger commands
@@ -1981,6 +1989,81 @@ void TstGui::removeWatchpointWithoutSessionDoesNotError()
     // emulator session is running." — a false error on a plain edit).
     QMetaObject::invokeMethod(&window, "removeWatchpoint", Qt::DirectConnection, Q_ARG(int, 0));
     QCOMPARE(errors.count(), 0);
+}
+
+// Watchpoint symbols, without an emulator: after a build the symbol table knows
+// the label but no stop has reported this run's live bases, so a named watchpoint
+// is accepted and listed as pending rather than armed at an address it does not
+// have yet. The refusals name what they refuse, and the dock's panel — not just
+// the model — is where the pending row is checked (docs/glm-features.md §5).
+void TstGui::namedWatchpointIsPendingUntilArmTime()
+{
+    const QString source = m_work->path() + QStringLiteral("/watchsym.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\n"               // 1
+               "start:\tmoveq\t#1,d0\n" // 2
+               "\trts\n"                // 3
+               "\teven\n"               // 4
+               "\tdata\n"               // 5
+               "counter:\tds.w\t1\n"    // 6  a label with an address, no code
+               "LIMIT\tequ\t4\n"        // 7  a value, not a place
+               "\tend\n");              // 8
+    file.close();
+
+    MainWindow window;
+    window.openPath(source);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QVERIFY2(built.count() >= 1 || built.wait(30000), "the build did not finish");
+    QVERIFY2(built.last().at(0).toBool(), "the fixture must build");
+
+    // The label is known to the build, but no stop has reported the program's
+    // bases, so it cannot be placed yet: accepted, stored under its name (the
+    // width is the asked-for part, not the name), and marked unresolved so the
+    // arm plan places it at the next stop rather than now, at $0.
+    QString error;
+    Watchpoint added;
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("counter.l"), &added, &error),
+             qPrintable(error));
+    QCOMPARE(added.symbol, QStringLiteral("counter"));
+    QCOMPARE(added.width, 'l');
+    QVERIFY(!added.resolved);
+
+    // A reflex refusal: nothing knows the name, so the message names it.
+    error.clear();
+    QVERIFY(!window.addWatchpointAddress(QStringLiteral("nosuchsymbol"), nullptr, &error));
+    QVERIFY2(error.contains(QStringLiteral("nosuchsymbol")), qPrintable(error));
+
+    // An equate has a value, not a place: refused the same way. The builder
+    // reports the body's `LIMIT equ 4` as an equate in the symbol table
+    // (SymbolEntry.equate), which is exactly what the model refuses, so the
+    // message says so.
+    error.clear();
+    QVERIFY(!window.addWatchpointAddress(QStringLiteral("LIMIT"), nullptr, &error));
+    QVERIFY2(error.contains(QStringLiteral("LIMIT")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("equate")), qPrintable(error));
+
+    // The dock's panel is where the user sees it: the pending watchpoint in the
+    // state column, named by what was asked for in the location column.
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("breakpointsDock"));
+    QVERIFY(dock);
+    auto *table = dock->findChild<QTableWidget *>();
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), 1);
+    QCOMPARE(table->item(0, 0)->text(), QStringLiteral("watch counter.l"));
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("pending (run to resolve)"));
+
+    // Clearing by the name it was added by removes it; a second clear has nothing
+    // left to match and says so, naming what it looked for.
+    int removed = 0;
+    error.clear();
+    QVERIFY2(window.clearWatchpoints(QStringLiteral("counter.l"), &removed, &error),
+             qPrintable(error));
+    QCOMPARE(removed, 1);
+    error.clear();
+    QVERIFY(!window.clearWatchpoints(QStringLiteral("counter.l"), nullptr, &error));
+    QVERIFY2(error.contains(QStringLiteral("counter.l")), qPrintable(error));
 }
 
 void TstGui::stateSummaryClearsAfterSessionEnds()
@@ -2719,7 +2802,8 @@ void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
 
     // The edit that used to poison the session: a watchpoint added while the
     // debugger is still on its way to the entry breakpoint.
-    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error), qPrintable(error));
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), nullptr, &error),
+             qPrintable(error));
 
     // The entry stop still completes, and the source breakpoint armed with it:
     // resuming must stop on line 3 rather than run the loop forever.

@@ -388,6 +388,7 @@ MainWindow::MainWindow(QWidget *parent)
     sessionHost.profiler = [this] { return m_profiling; };
     sessionHost.breakpoints = [this] { return m_bpModel; };
     sessionHost.programMap = programMapNow;
+    sessionHost.symbols = symbolsNow;
     sessionHost.bases = [this]() -> const LineMap::SectionBases & { return m_bases; };
     // The session boots with fast-forward on either way (a real-speed TOS
     // boot is ~30 s); the project's preference is applied at the entry stop.
@@ -4911,9 +4912,14 @@ bool MainWindow::setRegister(const QString &regName, quint32 value)
     return true;
 }
 
-bool MainWindow::addWatchpointAddress(const QString &text, QString *error)
+bool MainWindow::addWatchpointAddress(const QString &text, Watchpoint *added, QString *error)
 {
-    return m_bpModel->addWatchpointAddress(text, error);
+    return m_bpModel->addWatchpointAddress(text, added, error);
+}
+
+bool MainWindow::clearWatchpoints(const QString &text, int *removed, QString *error)
+{
+    return m_bpModel->clearWatchpoints(text, removed, error);
 }
 
 void MainWindow::removeWatchpoint(int index)

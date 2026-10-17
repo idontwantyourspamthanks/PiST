@@ -6,6 +6,8 @@
 
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
+#include "build/SymbolTable.h"
+#include "debug/Watchpoint.h"
 
 #include <QList>
 #include <QString>
@@ -107,6 +109,44 @@ struct ArmPlan
 /// lives.
 ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
                         const ProgramLineMap &lineMap);
+
+/// The commands needed to arm a set of watchpoints, plus what could not be armed.
+///
+/// The same shape as ArmPlan, and for the same reason: what a watchpoint watches
+/// has to be resolved at arm time, and a watchpoint that cannot be resolved must
+/// say so rather than be armed at a wrong address (0 would read as "watch the
+/// vector table" and fire at once).
+struct WatchpointPlan
+{
+    /// One Hatari `b` command per armable watchpoint, in input order.
+    QStringList commands;
+
+    /// Watchpoints that were armed, with `address` and `resolved` filled in.
+    QList<Watchpoint> armed;
+
+    /// Labels of watchpoints that could not be armed.
+    QStringList unresolved;
+
+    /// Why each entry of `unresolved` was left out, parallel to it: no such
+    /// symbol, an equate, a label that emits nothing, or a name the bases cannot
+    /// place yet.
+    QStringList unresolvedReasons;
+};
+
+/// Resolve watchpoints to Hatari `b` commands.
+///
+/// Pure function, so the resolution rules are testable without an emulator.
+/// A watchpoint asked for by address is already resolved and passes through; one
+/// asked for by *name* goes through `symbols` and the map's live bases, which is
+/// the same rule `labelAddress()` gives a hook script's `sym()` and the remote
+/// `breakpoint <label>` verb — one rule, several callers, so a label means the
+/// same thing wherever it is named.
+///
+/// Resolved on every arm, never remembered: GEMDOS relocates the program each
+/// run, so a name's address is only good for the run it was resolved in.
+WatchpointPlan planWatchpoints(const QList<Watchpoint> &watchpoints,
+                               const QVector<SymbolEntry> &symbols,
+                               const ProgramLineMap &lineMap);
 
 /// Move the breakpoints keyed to `oldFile` over to `newFile`, leaving every
 /// other entry untouched and the order unchanged. The store is keyed by base

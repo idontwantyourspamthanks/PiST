@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include "debug/Watchpoint.h"
 #include "emu/MemoryDump.h"
 
 #include <QJsonArray>
@@ -95,9 +96,18 @@ public:
     /// intent rather than for the window's pane-aware method: the verb has no
     /// pane to refresh.)
     virtual bool writeMemoryByte(quint32 address, quint32 value) = 0;
-    /// Add an address watchpoint from its text form ("$12345", "$12345.l").
-    /// False, with `error` set, on a bad address.
-    virtual bool addWatchpointAddress(const QString &text, QString *error) = 0;
+    /// Add a watchpoint from its text form: an address ("$12345", "12345.l") or a
+    /// label ("counter.l"), which the arm plan resolves again on every run.
+    /// `added` receives what was stored — a label stays a label — with the
+    /// resolved address filled in when the symbol table can already place it.
+    /// False, with `error` set, on a bad address or a name that cannot be watched.
+    virtual bool addWatchpointAddress(const QString &text, Watchpoint *added, QString *error) = 0;
+    /// Remove watchpoints: every one when `text` is empty, otherwise those it
+    /// names — a label, `label.width`, what the panel shows, or an address.
+    /// `removed` reports how many went. False, with `error` set, when a text
+    /// matches nothing, so "clear what I named" can tell "none left" from "never
+    /// there" (docs/glm-features.md §5).
+    virtual bool clearWatchpoints(const QString &text, int *removed, QString *error) = 0;
     /// Save the current document without a dialog. False when no document is
     /// open, or when the write failed.
     virtual bool saveCurrentDocument() = 0;

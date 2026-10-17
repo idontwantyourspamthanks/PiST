@@ -343,63 +343,80 @@ nothing for a directive or a word nothing knows.
 
 ## 5. Watchpoint symbols
 
-**Status:** agreed; current state verified against the source, and it is
-exactly the gap it looked like.
+**Status:** delivered 2026-10-17 on `feature/watchpoint-symbols`. The verification
+below is the state it was written against: a watchpoint could only be a raw address,
+which GEMDOS re-picks every run — the interface a *breakpoint* got, the watchpoint
+never did.
 
 ### What exists
 
-- `src/debug/Watchpoint.h`: a watchpoint *is* a raw `quint32 address` plus a
-  width byte, rendered into Hatari's conditional-breakpoint form
-  `b ($addr).w ! ($addr).w` — Hatari has no data watchpoints (upstream's `w` is
-  compiled out), so the IDE arms change-tracking breakpoints and the debugger's
-  change-notation evaluates as "fire when the value differs from its previous
-  value". (Caveat worth remembering in any UI: the same value written again does
-  not fire, and a read never does.)
-- Breakpoints already know how to take a symbol: the remote
-  `breakpoint <n|label>` verb resolves a label to its definition's file:line
-  and toggles there, replying with where it landed and the address once live
-  bases exist (`RemoteControl.cpp`, the `breakpoint` handler, via
-  `EmulatorHost::toggleBreakpointAtLabel`).
-- The symbol table that can resolve label → address is already in the
-  debugger's hands (`symbols` verb, `EmulatorHost::symbolsJson()`), and
-  breakpoints only arm after `info basepage` delivers the live bases
-  (AGENTS.md rule 4 — `setLiveBases()` → `armBreakpoints()`).
+- `src/debug/Watchpoint.h`: a watchpoint *is* a raw `quint32 address` plus a width
+  byte, rendered into Hatari's conditional-breakpoint form `b ($addr).w ! ($addr).w`
+  — Hatari has no data watchpoints (upstream's `w` is compiled out), so the IDE arms
+  change-tracking breakpoints and the debugger's change-notation evaluates as "fire
+  when the value differs from its previous value". (Caveat worth remembering in any
+  UI: the same value written again does not fire, and a read never does.)
+- Breakpoints already know how to take a symbol: the remote `breakpoint <n|label>`
+  verb resolves a label to its definition's file:line and toggles there, replying
+  with where it landed and the address once live bases exist (`RemoteControl.cpp`,
+  via `EmulatorHost::toggleBreakpointAtLabel`).
+- The symbol table that can resolve label → address is already in the debugger's
+  hands (`symbols` verb, `EmulatorHost::symbolsJson()`), and breakpoints only arm
+  after `info basepage` delivers the live bases (AGENTS.md rule 4 — `setLiveBases()`
+  → `armBreakpoints()`).
 
-### What is missing
+### What was built, and the decisions it took
 
-A watchpoint cannot be named for what it watches. Every one of its users has to
-already know the load address, which GEMDOS re-picks every run — for
-breakpoints the file:line model and label forms exist precisely so nobody has
-to; for watchpoints, the interface a *breakpoint* got, the watchpoint never
-did.
+- **The model carries the name, never the address.** `Watchpoint` gains
+  `symbol` (empty for a raw address) and `resolved`; `label()` names what was asked
+  for (`watch counter.l`) and `command()` still names an address. A named
+  watchpoint's address is *never written back into the model*: the arm plan's
+  resolved copy is what the panel is handed for that run, which makes the
+  "confidently wrong address from last run" failure structurally impossible rather
+  than merely avoided.
+- **One resolution rule, called at arm time.** `planWatchpoints()` (beside
+  `planBreakpoints()` in `debug/Breakpoint.{h,cpp}`) resolves a name through
+  `labelAddress()` — the same function a hook script's `sym()` and the remote
+  `breakpoint <label>` verb already use — so a label means the same thing wherever
+  it is named. The reason strings are phrased by the caller, as `labelAddress()`'s
+  contract requires: `[watchpoints] watch counter.l: no symbol named 'counter' (has
+  the project been built?)`.
+- **Re-resolved on every arm, and armed where the bases are.** A raw address is
+  armable before the program has said where it was loaded, so the pre-bases path
+  still arms those; a *name* is not, so it is listed as pending there and armed by
+  the post-bases path, exactly like a source breakpoint. Nothing about a name
+  survives a run.
+- **Everything that names a watchpoint gained the name.** `addWatchpointAddress()`
+  (Run ▸ Add watchpoint's dialog) takes `label|address` with an optional
+  `.b`/`.w`/`.l`; the remote verbs are the set/clear pair `watchpoint <a|l>` and
+  `clearwatchpoint [a|l]` — never a toggle, so arming the same watch twice is two
+  watchpoints and clearing is explicit — and the MCP tools follow
+  (`pist_watchpoint` with `address` or `label`, and `pist_clearwatchpoint`, marked
+  destructive like the other state-rewriting calls).
+- **The refusals are sentences about the symbol.** A name that resolves to nothing,
+  to an equate, to a symbol with no source position, or to one that emits nothing is
+  refused naming it and saying which of those it is; a name whose bases are not live
+  is *not* refused — it is pending, and the panel says so. A label that exists wins
+  over a hex-looking token, so `watch deadbeef` watches the label when the program
+  has one; the width suffix owns a trailing `.b`/`.w`/`.l`, which is the one spelling
+  a label ending in those cannot use.
 
-### The design
+### Tested
 
-- **Resolve at arm time, IDE-side.** The arm plan (`planBreakpoints()` already
-  carries the arming discipline) expands a named watchpoint through the build's
-  symbol table into the numeric address the `b (... ! ...)` command needs; the
-  user-facing label keeps the symbol name (`watch counter.l`, not
-  `watch $12596.l`).
-- **Re-resolve every run.** Same reason breakpoints are file:line and never
-  raw addresses: an address captured last run is wrong this run. Symbol
-  watchpoints must be part of the re-arm after each entry stop, or they will be
-  the most confidently-wrong panels in the IDE.
-- **Refuse clearly.** A name that resolves to nothing, or to a non-address
-  value, is an error naming the symbol — the honest-reply style the breakpoint
-  verb already has ("ok; line %1 emits no code…").
-- **Every interface gains the name:** Run ▸ Add watchpoint asks for
-  `label|address`, the remote verbs grow `watchpoint <addr|label>` /
-  `setbreakpoint`-style set/clear (never toggle) forms, and the matching MCP
-  tools follow — this is one of the two entries on this sheet (with §3) that
-  visibly grows the agent surface, which is the point of the sheet.
-
-### How to start
-
-In the watchpoint model: accept a name alongside the address, expose a
-resolution step for the arm plan to call. `tst_debug` asserts the model +
-resolution; `tst_remotecontrol` asserts the verb's reply shape against a
-symbol-bearing program; the integration suite exercises it against a real
-session like the existing breakpoint arming does.
+`tst_debug` pins the plan with no emulator: a raw address passes through resolved, a
+name resolves to its label's live address through the same fixtures `sym()`'s test
+uses, an unknown name and an equate are refused with reasons naming them, and before
+the bases arrive a name is unresolved while a raw address still arms. `tst_gui`
+pins the text form and the panel without an emulator: a label is stored as a name
+with `resolved == false`, a symbol nothing knows and an equate are refused by name,
+the panel shows it as pending, and `clearWatchpoints` reports one removed and then
+refuses. `tst_remotecontrol` pins the verb's replies — the raw address form, a
+label's *pending* answer before any stop has reported the bases, the refusal naming
+an unknown symbol, and `clearwatchpoint`'s count and second-call refusal — and
+`tst_emulatorhost` proves the label path against the machine: the plan resolves
+`val2` through the build's symbols and the session's own bases to the address the
+program's data really has, and that command is what stops the run. `tst_mcp` pins
+the two tools and the catalog.
 
 ---
 

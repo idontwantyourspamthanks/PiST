@@ -67,8 +67,10 @@ inline constexpr Verb kVerbs[] = {
     {"disasm", "disasm [a]       disassembly as JSON rows (when stopped)", true},
     {"setreg", "setreg <n> <v>   write register <n> to <v> (when stopped)", false},
     {"setmem", "setmem <a> <v>   write memory byte at <a> to <v> (when stopped)", false},
-    {"watchpoint", "watchpoint <a>   break when the value at address <a> changes "
-                   "(optional .b/.w/.l)", false},
+    {"watchpoint", "watchpoint <a|l> break when the value at <a> changes, or at whatever address "
+                   "the label <l> names in this run (optional .b/.w/.l)", false},
+    {"clearwatchpoint", "clearwatchpoint [a|l] remove the watchpoint the address or label names, "
+                        "or every one when the argument is empty", false},
     {"screenshot", "screenshot <f>   save the window to <f> (default /tmp/pist-screenshot.png)",
      false},
     {"console", "console          the build & debug console text", true},

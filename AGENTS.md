@@ -91,7 +91,7 @@ code. Use this table for a quick lookup:
 | Hatari's command line for a session | `src/emu/SessionConfig.cpp` (`toArgv()`) |
 | Hatari feature detection | `src/emu/HatariProbe.{h,cpp}` |
 | TOS ROM discovery / version | `src/emu/TosRom.{h,cpp}` |
-| Breakpoint/watchpoint model | `src/debug/{Breakpoint,Watchpoint}.*` |
+| Breakpoint/watchpoint model, and what a label resolves to at arm time | `src/debug/{Breakpoint,Watchpoint}.*`, `labelAddress` in `src/build/SymbolTable.{h,cpp}` |
 | The remote-control protocol | `src/control/RemoteControl.{h,cpp}` |
 | Project file (`.pistproject`) | `src/project/ProjectSettings.{h,cpp}` |
 | vasm/vlink/Hatari discovery | `src/toolchain/Toolchain.{h,cpp}` |

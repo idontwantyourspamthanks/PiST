@@ -157,6 +157,11 @@ private slots:
     void watchpointWidthsFormatCorrectly();
     void watchpointLabelShowsAddressAndWidth();
 
+    /// The arm plan: a raw address arms where it is asked for, a name resolves
+    /// through the build's symbols and this run's live bases, and a name that
+    /// cannot be placed is refused with a reason rather than armed at $0.
+    void watchpointPlanResolvesNamesNotAddresses();
+
     // paths
     void outputPathsDeriveFromSource();
 
@@ -758,6 +763,99 @@ void TstDebug::watchpointLabelShowsAddressAndWidth()
     wp.width = 'b';
     QVERIFY(wp.label().contains(QStringLiteral("ff8201")));
     QVERIFY(wp.label().contains(QStringLiteral("b")));
+}
+
+// The arm plan is where a watchpoint name becomes an address, for one run at a
+// time: the symbol table carries the names, the program map carries this run's
+// live bases, and a name that cannot be placed is refused with a reason rather
+// than armed at $0 — which would watch the vector table and fire at once.
+void TstDebug::watchpointPlanResolvesNamesNotAddresses()
+{
+    QTemporaryDir withData;
+    QString error;
+
+    // The fixture's `start` is line 2 and `msg` its data label on line 8; the
+    // symbols and the 0x12596 text base are the ones
+    // labelAddressResolvesLabelsNotEquates() pins next door.
+    ProgramLineMap map;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(withData), &error));
+    const QVector<SymbolEntry> symbols{
+        {QStringLiteral("start"), QStringLiteral("prog.s"), 2},
+        {QStringLiteral("msg"), QStringLiteral("prog.s"), 8},
+    };
+
+    Watchpoint byAddress;
+    byAddress.address = 0x1234;
+    byAddress.width = 'w';
+
+    Watchpoint byName;
+    byName.symbol = QStringLiteral("start");
+    byName.width = 'w';
+
+    Watchpoint unknown;
+    unknown.symbol = QStringLiteral("nope");
+    unknown.width = 'l';
+
+    // Before the bases arrive a name has nowhere to land: each is listed
+    // unresolved with the "no address yet" reason and produces no command. The
+    // raw address arms regardless — it means the same thing before the program
+    // loads as after — and its command is the self-inequality form the change
+    // tracking depends on.
+    const WatchpointPlan before =
+        planWatchpoints(QList<Watchpoint>{byAddress, byName, unknown}, symbols, map);
+    QCOMPARE(before.armed.size(), 1);
+    QVERIFY(before.armed.first().resolved);
+    QCOMPARE(before.armed.first().address, 0x1234u);
+    QCOMPARE(before.commands.size(), 1);
+    QCOMPARE(before.commands.first(), QStringLiteral("b ($1234).w ! ($1234).w"));
+    QCOMPARE(before.unresolved,
+             (QStringList{QStringLiteral("watch start.w"), QStringLiteral("watch nope.l")}));
+    QCOMPARE(before.unresolvedReasons.size(), before.unresolved.size());
+    QVERIFY2(before.unresolvedReasons.at(0).contains(QStringLiteral("no address yet")),
+             qPrintable(before.unresolvedReasons.at(0)));
+    QVERIFY(before.unresolvedReasons.at(0).contains(QStringLiteral("start")));
+    // A name nothing knows is refused by name, not with a generic "unresolved".
+    QVERIFY2(before.unresolvedReasons.at(1).contains(QStringLiteral("nope")),
+             qPrintable(before.unresolvedReasons.at(1)));
+
+    // With the bases live, `start` resolves to the label's address and the
+    // command names that address, while the armed copy keeps the name it was
+    // asked for by — the name is what stays true across runs — and the unknown
+    // name is still refused.
+    map.setLiveBases(liveBases());
+    const WatchpointPlan after =
+        planWatchpoints(QList<Watchpoint>{byAddress, byName, unknown}, symbols, map);
+    QCOMPARE(after.commands.size(), 2);
+    QCOMPARE(after.armed.size(), 2);
+    QCOMPARE(after.armed.at(0).address, 0x1234u);
+    QCOMPARE(after.armed.at(1).symbol, QStringLiteral("start"));
+    QCOMPARE(after.armed.at(1).address, 0x12596u);
+    QVERIFY(after.armed.at(1).resolved);
+    QCOMPARE(after.commands.at(1), QStringLiteral("b ($12596).w ! ($12596).w"));
+    QCOMPARE(after.unresolved, QStringList{QStringLiteral("watch nope.l")});
+    QVERIFY2(after.unresolvedReasons.first().contains(QStringLiteral("nope")),
+             qPrintable(after.unresolvedReasons.first()));
+
+    // An equate has a value, not a place: refused the same way, naming itself,
+    // with no command — answering with the next line's address would be a lie,
+    // not an approximation. The symbol table marks it as an equate
+    // (`SymbolEntry.equate`, which `LIMIT equ 4` sets), and the resolver refuses
+    // it before it ever asks the map for an address.
+    Watchpoint equate;
+    equate.symbol = QStringLiteral("LIMIT");
+    const WatchpointPlan equates =
+        planWatchpoints(QList<Watchpoint>{equate},
+                        QVector<SymbolEntry>{
+                            {QStringLiteral("LIMIT"), QStringLiteral("prog.s"), 8, true}},
+                        map);
+    QVERIFY(equates.commands.isEmpty());
+    QVERIFY(equates.armed.isEmpty());
+    QCOMPARE(equates.unresolved, QStringList{QStringLiteral("watch LIMIT.w")});
+    QVERIFY2(equates.unresolvedReasons.first().contains(QStringLiteral("LIMIT")),
+             qPrintable(equates.unresolvedReasons.first()));
+    QVERIFY2(equates.unresolvedReasons.first().contains(QStringLiteral("equate")),
+             qPrintable(equates.unresolvedReasons.first()));
 }
 
 // The stop hook's "why did we stop": only a breakpoint we armed can be named,

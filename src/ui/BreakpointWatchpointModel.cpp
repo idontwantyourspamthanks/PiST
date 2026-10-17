@@ -289,50 +289,210 @@ void BreakpointWatchpointModel::addWatchpoint()
     bool accepted = false;
     const QString text = QInputDialog::getText(
         dialogParent(this), MainWindow::tr("Add watchpoint"),
-        MainWindow::tr("Address to watch (hex), with optional .b/.w/.l width:"),
+        MainWindow::tr("Address or label to watch, with optional .b/.w/.l width "
+                       "(e.g. counter.l, $12345.w):"),
         QLineEdit::Normal, QString(), &accepted);
     if (!accepted)
         return;
 
     QString error;
-    if (!addWatchpointAddress(text, &error))
+    if (!addWatchpointAddress(text, nullptr, &error))
         QMessageBox::warning(dialogParent(this), MainWindow::tr("Add watchpoint"), error);
 }
 
-bool BreakpointWatchpointModel::addWatchpointAddress(const QString &text, QString *error)
+namespace {
+
+/// Why a name cannot be watched, in terms of what was typed: the reader is the
+/// person or agent who asked, so the sentence names the symbol and says what is
+/// wrong with it rather than repeating an enum.
+QString watchpointRefusal(const QString &name, LabelAddressProblem problem)
+{
+    switch (problem) {
+    case LabelAddressProblem::Equate:
+        return QStringLiteral("'%1' is an equate — it has a value, not a place, and a watchpoint "
+                              "needs an address")
+            .arg(name);
+    case LabelAddressProblem::NoSourcePosition:
+        return QStringLiteral("'%1' has no source position (a command-line define, or a name a "
+                              "macro built), so there is no address to watch")
+            .arg(name);
+    case LabelAddressProblem::NoAddress:
+        return QStringLiteral("'%1' emits nothing, and nothing after it does either, so there is "
+                              "no address to watch")
+            .arg(name);
+    case LabelAddressProblem::NotLive:
+    case LabelAddressProblem::UnknownName:
+    case LabelAddressProblem::None:
+        break;
+    }
+    return QStringLiteral("'%1' could not be resolved to an address").arg(name);
+}
+
+/// Whether `token` is nothing but hex digits — the bare-number address form the
+/// interface has always accepted (`12345` is an address, not a label).
+bool isHexDigits(const QString &token)
+{
+    static const QRegularExpression hex(QStringLiteral("^[0-9a-fA-F]+$"));
+    return hex.match(token).hasMatch();
+}
+
+} // namespace
+
+bool BreakpointWatchpointModel::addWatchpointAddress(const QString &text, Watchpoint *added,
+                                                     QString *error)
 {
     // A watchpoint breaks when the value at an address changes. Hatari has no
     // data watchpoints, so it is armed as a self-inequality breakpoint, which is
     // the debugger's change-tracking (see debug/Watchpoint.h). Width defaults to
     // word; a trailing b/w/l overrides it.
-    static const QRegularExpression re(
-        QStringLiteral("^\\s*(?:\\$|0x)?([0-9a-fA-F]+)(?:\\.(b|w|l))?\\s*$"));
+    //
+    // Either an address or a label. The label is the form that stays true: GEMDOS
+    // relocates the program on every run, so a name is resolved afresh at every
+    // arm and never remembered as an address (docs/glm-features.md §5). A name
+    // that exists wins over a number that merely looks like one, so `watch
+    // deadbeef` watches the label when the program has one.
+    // The label alternative is lazy on purpose: a label may contain dots, so a
+    // greedy tail would swallow a `.b`/`.w`/`.l` width and then resolve a name
+    // that does not exist (`counter.l` is the label `counter` at width `l`).
+    static const QRegularExpression re(QStringLiteral(
+        "^\\s*(\\$[0-9a-fA-F]+|0[xX][0-9a-fA-F]+|[0-9][0-9a-fA-F]*|[A-Za-z_.][A-Za-z0-9_.$]*?)"
+        "(?:\\.(b|w|l))?\\s*$"));
     const auto match = re.match(text);
     if (!match.hasMatch()) {
         if (error)
-            *error = MainWindow::tr("Could not read an address from '%1'.").arg(text);
+            *error = MainWindow::tr("Could not read an address or a label from '%1'.").arg(text);
         return false;
     }
 
-    Watchpoint wp;
-    wp.address = match.captured(1).toUInt(nullptr, 16);
-    if (!match.captured(2).isEmpty())
-        wp.width = match.captured(2).at(0).toLatin1();
+    const QString token = match.captured(1);
+    const QString widthText = match.captured(2);
 
-    if (wp.address == 0) {
+    Watchpoint wp;
+    if (!widthText.isEmpty())
+        wp.width = widthText.at(0).toLatin1();
+
+    // The width syntax owns a trailing `.b`/`.w`/`.l`, so a label ending in one of
+    // those cannot be named here; every other spelling survives it.
+    const bool prefixedWithAddressMarker =
+        token.startsWith(QLatin1Char('$'))
+        || token.startsWith(QLatin1String("0x"), Qt::CaseInsensitive);
+
+    // The one resolution rule, shared with a script's `sym()` and the remote
+    // `breakpoint <label>` verb: same symbols, same program map, same answer.
+    LabelAddress where;
+    LabelAddressProblem problem = LabelAddressProblem::None;
+    const bool resolves = !prefixedWithAddressMarker
+                          && labelAddress(m_host.symbols(), m_host.programMap(), token, &where,
+                                          &problem);
+    const bool named = resolves || problem == LabelAddressProblem::NotLive;
+
+    /// What the caller reports back: resolved here, so the reply can say where it
+    /// landed — while what is *stored* keeps the name, because next run's address
+    /// is a different one.
+    Watchpoint report;
+
+    if (named) {
+        wp.symbol = token;
+        // What it resolves to *now* is reported, never stored: the address belongs
+        // to this run, and a stored one is what the next session — before its entry
+        // stop — would then be confident and wrong about.
+        report = wp;
+        if (resolves) {
+            report.address = where.address;
+            report.resolved = true;
+        }
+    } else if (problem != LabelAddressProblem::UnknownName && !prefixedWithAddressMarker) {
+        // The name is real but unwatchable, and saying which is the honest answer.
         if (error)
-            *error = MainWindow::tr("Address 0 is not a useful thing to watch.");
+            *error = watchpointRefusal(token, problem);
         return false;
+    } else {
+        // An address: written with `$`/`0x`, or a bare run of hex digits that no
+        // symbol claimed.
+        const QString digits =
+            token.startsWith(QLatin1Char('$')) || token.startsWith(QLatin1String("0x"), Qt::CaseInsensitive)
+                ? token.mid(token.startsWith(QLatin1Char('$')) ? 1 : 2)
+                : token;
+        if (!isHexDigits(digits)) {
+            if (error)
+                *error = MainWindow::tr("No symbol named '%1', and it is not an address.").arg(token);
+            return false;
+        }
+        bool ok = false;
+        const quint32 address = digits.toUInt(&ok, 16);
+        if (!ok) {
+            if (error)
+                *error = MainWindow::tr("Could not read an address from '%1'.").arg(text);
+            return false;
+        }
+        if (address == 0) {
+            if (error)
+                *error = MainWindow::tr("Address 0 is not a useful thing to watch.");
+            return false;
+        }
+        wp.address = address;
+        wp.resolved = true;
+        report = wp;
     }
 
     m_watchpoints.append(wp);
-    m_host.log(MainWindow::tr("[watchpoint] %1").arg(wp.label()));
+    if (added)
+        *added = report;
+
+    m_host.log(wp.resolved && !wp.symbol.isEmpty()
+                   ? MainWindow::tr("[watchpoint] %1 ($%2)").arg(wp.label()).arg(wp.address, 0, 16)
+                   : MainWindow::tr("[watchpoint] %1").arg(wp.label()));
     // Re-arm so it takes effect now if a session is running or stopped, or at
     // the next stop if the machine is mid-run — the same gate every other
     // breakpoint edit uses (see canReArmBreakpoints). Without a session there
     // is nothing to arm and `EmulatorHost::command` would log "No emulator
     // session is running" once per command, so just show it and let the next
     // Run arm it.
+    if (m_host.session()->canReArmBreakpoints())
+        m_host.session()->armBreakpoints();
+    else
+        m_host.showWatchpoints(m_watchpoints);
+    return true;
+}
+
+bool BreakpointWatchpointModel::clearWatchpoints(const QString &text, int *removed, QString *error)
+{
+    const QString wanted = text.trimmed();
+    QList<Watchpoint> kept;
+    int count = 0;
+    for (const Watchpoint &wp : m_watchpoints) {
+        // A label, a label with its width, the label the panel shows, or an
+        // address with or without the `$` the interface writes it with. Forgiving
+        // on purpose: this is a cleanup verb, and what it is handed is either what
+        // was typed or what the `watchpoint` reply said. A name's address is not
+        // matched — it is this run's, and only a resolved watchpoint has one.
+        const QString hex = QString::number(wp.address, 16);
+        const QString named =
+            wp.symbol.isEmpty()
+                ? QString()
+                : QStringLiteral("%1.%2").arg(wp.symbol).arg(QLatin1Char(wp.width));
+        const bool matches = wanted.isEmpty() || wanted == wp.label()
+                             || (!named.isEmpty() && (wanted == wp.symbol || wanted == named))
+                             || (wp.resolved && (wanted == hex || wanted == QLatin1Char('$') + hex));
+        if (matches)
+            ++count;
+        else
+            kept.append(wp);
+    }
+
+    if (count == 0) {
+        if (error) {
+            *error = wanted.isEmpty()
+                         ? MainWindow::tr("There are no watchpoints to clear.")
+                         : MainWindow::tr("No watchpoint matches '%1'.").arg(wanted);
+        }
+        return false;
+    }
+
+    m_watchpoints = kept;
+    if (removed)
+        *removed = count;
+    m_host.log(MainWindow::tr("[watchpoint] cleared %1").arg(count));
     if (m_host.session()->canReArmBreakpoints())
         m_host.session()->armBreakpoints();
     else

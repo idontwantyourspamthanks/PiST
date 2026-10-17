@@ -1040,7 +1040,8 @@ queued invocation so its read-back nested loop is not inside the transport's
 single-entry drain, scripted writes must complete before a script's `continue()`
 (because `resume()` prunes everything without `keepOnResume`), and the engine
 measured out to **Lua 5.4.8** — pinned, linked statically, the first third-party
-code linked into the binary (the numbers are in §9).
+code linked into the binary (the numbers are in §9) — and L2 landed with it: `sym()` over the live
+bases, the stop's cause, and a script attached to a breakpoint.
 
 ---
 
@@ -1317,6 +1318,16 @@ load-bearing dependency — which the detection order above already guarantees.
   stated in the script's docstring, in `NOTICE` and in `packaging/copyright` rather than left
   implicit — the script's own prose explains why it avoids static lists, and this is the exception
   that has no scan to replace.
+
+- **A stop hook's `sym()` and its stop cause were verified against a live machine, over both
+  transports** (2026-10-17, `feature/stop-hooks`). In a real session a script's `sym("start")` equalled
+  the machine's actual PC at the entry stop, `sym("msg")` read the program's own `"HI"` back through
+  `readmem`, and `sym()` refused a name that resolves to nothing rather than returning 0 — a legal
+  address. The same script over the **hrdb-main fork** wrote a byte and a register that the fork's own
+  dump and register paths then read back, which is the evidence that the runner holds no
+  transport-specific assumption. This is also the first proof that a *name* survives GEMDOS
+  relocation from a script; the two resolution rules (break-here vs address, D8 in
+  [docs/stop-hooks-plan.md](stop-hooks-plan.md)) are pinned separately in `tst_debug`.
 
 ### Verified by CI (executed on real runners)
 

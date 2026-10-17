@@ -222,6 +222,25 @@ works as a bare global; `resume()` is bound to the same function because the sur
 that word. The base library's `print` is rebound to the console line for the same reason a GUI app
 cannot trust stdout to exist — a script that prints is not a script that lost its output.
 
+**D8 — `sym(name)` and `breakpoint <label>` are two rules, not one lookup.**
+Both resolve a name through the same symbol table and the same live bases, and they still ask
+different questions — a label is not an address the way a watchpoint is not a PC:
+
+- **Where do I break?** `breakpoint <label>` and a breakpoint on a label want the first *code* line at
+  or after the definition, because a label written alone on its line (`count:` above its instruction)
+  has no code of its own. `labelSite()`.
+- **What address does the name have?** `sym()` wants the address the definition *has*: the entry on
+  the definition's own line when it shares one with its data (`msg: dc.b "HI"`), otherwise the first
+  line at or after it that emits anything, in **any** section — `buffer:` above `ds.b 256` is bss, and
+  a script that asks for its address means that one. `labelAddress()`, which is why `LineMap` grew
+  `nextAddressLine()`: `nextCodeLine()`, the break-here rule, skips exactly those entries.
+
+Both refuse an **equate**, and both have to: `count equ 5` emits no bytes, so its line carries no
+address and the line that follows belongs to somebody else. Answering with the next line's address
+would be a lie rather than an approximation. The listing parser records the distinction
+(`SymbolEntry::equate`); the caller phrases the refusal, because its reader differs — a protocol
+reply and a script error are not the same sentence.
+
 ---
 
 ## 6. The script model
@@ -239,10 +258,16 @@ cannot trust stdout to exist — a script that prints is not a script that lost 
   carries a step flag beside its stop flag, consumed by the register batch that answers the step.
   *Step out* and *run to cursor* arm a breakpoint and resume, so they arrive as ordinary stops and
   need no flag of their own.
-- **The stop's identity.** The runner exposes the stop's `pc`. It does **not** claim a reason
-  (`breakpoint` / `step` / `pause`): the transport detects a prompt, and step-vs-breakpoint is not
-  distinguishable from it today. A `reason` field arrives with L2's hit identification, not before —
-  reporting a guess would be worse than reporting nothing.
+- **The stop's identity.** Three values and a lookup reach the script: `pc`, `reason`, `at`, and
+  `sym()` for names. The transport reports a prompt rather than a cause, so `reason` is what the IDE
+  can *honestly* tell, not what the debugger said: `"breakpoint"` when the published PC equals an
+  armed breakpoint's resolved address, `"step"` when the controller consumed its step flag, and
+  `"unknown"` for everything else — a pause, an exception and a **watchpoint** all land there, because
+  a watchpoint fires on a *data change* and its address says nothing about the program counter. `at`
+  is the hit breakpoint as `"file:line"`, and is `nil` rather than `""` when there is no breakpoint to
+  name, so a script tests it once (`if at then … else … end`) instead of special-casing an empty
+  string. Two breakpoints resolved to one address are one stop, and the first armed is named, so the
+  answer is stable rather than whichever happens to be found first.
 - **Quiet by default.** The runner logs nothing per stop. It logs a script's own `log(msg)` and every
   error, both prefixed `[hook]`. A watchpoint-heavy run must not fill the console with hook lines.
 
@@ -251,10 +276,19 @@ cannot trust stdout to exist — a script that prints is not a script that lost 
 ```
 readmem(addr, len)      -> a string of len bytes (refuses len < 1 or len > 4096)
 readreg(name)           -> an integer (the stop's own registers when valid, else a typed read)
+sym(name)               -> the address a label has in this run (raises on a name that resolves to
+                           nothing; 0 is a legal address, so there is no "not found" value)
 writemem(addr, value)              (one byte, via writeMemoryByte)
 writereg(name, value)              (via writeRegister)
 log(msg)                           (one line on the console, prefixed "[hook] ")
 continue()                         (recorded; issued after the script returns — see D3)
+```
+
+Two values describe the stop itself, set before the script runs:
+
+```
+reason                             "breakpoint" | "step" | "unknown"      (see §6)
+at                                 "file:line" of the breakpoint that fired, else nil
 ```
 
 - **Addresses and values are integers**, and Lua's own checks refuse a non-number by naming the
@@ -273,8 +307,12 @@ continue()                         (recorded; issued after the script returns �
 - **Every refusal raises**, naming the call and the reason: unknown register, out-of-range length, no
   session, machine not stopped. The runner reports it as `[hook] <file>:<line>: <message>` and leaves
   the machine stopped.
-- **`sym(name)`** (label → address, resolved through the symbol table and the live bases) is L2, not
-  v0. When it arrives it raises on an unresolvable name rather than returning 0.
+- **`sym(name)`** resolves a label through the symbol table and the live bases (D8), which is what
+  makes a script survive GEMDOS relocation: a hard-coded address from last run is wrong this run, a
+  name is not. It **raises** on a name that resolves to nothing — an unknown name, one with no source
+  position (a `-D` define, a macro-built name), and an `equ` — because its failure value does not
+  exist: 0 is a legal address, so returning it would let a script read or write wherever the program
+  happens to start.
 
 ## 8. The runner and the transport discipline
 
@@ -330,6 +368,14 @@ prevents:
   highlighters is live, and both are owned by the document as the assembly one always was.
 - **The console**: `[hook]` lines through the existing `Host::log` closure. They carry no `> ` echo:
   that prefix means "a command was typed here", and a script typed nothing.
+- **A breakpoint's own script**: the gutter menu (beside *Breakpoint condition…*) offers
+  *Stop-hook script…*, `BreakpointWatchpointModel::editScript()`, which sets `Breakpoint::scriptPath`
+  — the override the runner reads out of the trigger at the stop. Empty means the project's hook, and
+  the line says which of the two will run. An absolute path is kept, a relative one is resolved
+  against the source's directory (`resolveScriptPath()`, `debug/Breakpoint.cpp`) — the same rule
+  `ProjectSettings` applies to `hooks.scriptPath`, and where *New script…* writes one, so a relative
+  path cannot come to mean "wherever PiST was launched from". The prompt is modal, so the resolution
+  is a separate pure function precisely so that `tst_debug` can pin it.
 - **README**: a *Stop hooks* section listing the API verbatim, the registers accepted, and the honest
   limits — no file API, a runaway script is interrupted, an error leaves the machine stopped.
 
@@ -360,22 +406,37 @@ The README's API list is the contract; if a capability is not in it, the docs do
 
 ## 12. Testing
 
-- **`tst_stophooks`** — built and green: 17 cases, no emulator and no window. The engine half runs
+- **`tst_stophooks`** — built and green: 19 cases, no emulator and no window. The engine half runs
   the real Lua against a fake `HookApi` (byte-exact `readmem`, a caught refusal and an uncaught one,
-  Lua's own argument refusal, a runaway script stopped inside its budget, a missing file, both spellings
+  Lua's own argument refusal, `sym()` answering a label and raising on a name that resolves to
+  nothing, a runaway script stopped inside its budget, a missing file, both spellings
   of `continue`, and the line an error came from). The runner half drives a fake `IDebugBackend`
   whose commands complete a turn later, as the transport's do, and asserts what only a test can see:
   the **write is acknowledged before the `continue()` it asked for** (R5 — the silent bug), the
   console is held across the run and released after it, a register read answers from the stop's own
   copy and makes a round-trip once a scripted write has staled it, a non-stopped run is refused, an
-  unanswered command abandons the script without resuming, and a disabled hook does nothing at all.
+  unanswered command abandons the script without resuming, a disabled hook does nothing at all,
+  `sym()` resolves through the host, the two stop values reach the script (`at` arriving as `nil`
+  rather than `""` after a step, so a script need not special-case an empty string), and a script
+  attached to a breakpoint wins over the project's — because the alternative is the project's script
+  running twice, silently.
+- **`tst_debug`** — the two resolution rules (D8), with no session at all: a listing fixture with a
+  label sharing its line with its data, a bare label above its data, and an equate.
+  `labelAddressResolvesLabelsNotEquates` pins the address rule and its three refusals;
+  `breakpointAtNamesTheArmedOne` pins the stop's cause, including that two breakpoints at one address
+  name the first and that an unarmed address (`0` with `resolved` false) matches nothing;
+  `breakpointScriptPathsResolveBesideTheSource` pins that a breakpoint's script is found from the
+  source's directory rather than from the working directory PiST happens to have.
 - **`tst_settings`** — the `.pistproject` round-trip: the `hooks` object survives save/load, a
   relative script path resolves against the project directory, and a `hooks` value of the wrong type
   is refused by name rather than silently dropped.
 - **`tst_emulatorhost`** — the sheet's acceptance test, on a real session:
-  `sourceLineBreakpointFiresAndResolvesBack` (`:987-1094`) is the pattern. Stop at a line, have the
-  script write a byte at a known address, then read that address back with `requestMemoryDump()` and
-  assert the value.
+  `sourceLineBreakpointFiresAndResolvesBack` is the pattern.
+  `stopHookScriptWritesThroughTheDebugger` stops at the entry, has the script write a byte at a known
+  address and read it back, then resolves two labels through the listing and the live bases:
+  `sym("start")` must equal the machine's actual PC, and `sym("msg")` must read the program's own
+  `"HI"`. A *name* proven against a machine that moved is the one thing no fake can show. Verified
+  green on 2026-10-17 against a real Hatari, a TOS ROM and `vasmm68k_mot`.
 - **`tst_gui`** (offscreen) — the doorway and the dialog:
   `runMenuOffersStopHooks` (the action exists *and* sits in the Run menu),
   `stopHooksDialogGatesItsFieldsOnWhetherItRuns`,
@@ -383,13 +444,21 @@ The README's API list is the contract; if a capability is not in it, the docs do
   field and switches the hook on; a handler that fails changes nothing) and
   `createStopHookScriptWritesItBesideTheSource` (the file lands beside the source with the starter,
   opens in a tab, and is adopted rather than overwritten on a second ask).
-- **`tst_hrdb`** (L2) — one stop-hook case against the fork, skipping without `$PIST_HRDB_HATARI`.
+- **`tst_hrdb`** — `stopHookWritesThroughTheFork`: the same script, the same runner, a different
+  backend, which is what R8's typed intents buy. The byte and the register the script wrote are read
+  back through the fork's own paths (the uuencoded dump, the register batch). Skips without
+  `$PIST_HRDB_HATARI`; run green against the hrdb-main fork on 2026-10-17.
 
 Not covered, and said so rather than implied: the dialog's **validation**. `accept()` refuses an
 unreadable path through a modal warning, which an offscreen test cannot answer without hanging — the
 same hazard that keeps modal dialogs out of this suite. What the dialog *decides* is covered:
 `tst_gui`'s `stopHooksDialogGatesItsFieldsOnWhetherItRuns` pins that the path and auto-continue
 fields are inert while the hook is off, and that the last-run line is never blank.
+
+Also not covered, and for the same reason: the *wording* of the model's refusals
+(`BreakpointWatchpointModel::resolveLabel`). The rule it calls is pinned in `tst_debug`, and its
+binding to the script is pinned in `tst_stophooks`; what no test asserts is the sentence, because a
+sentence is presentation and not behaviour.
 
 None of the rest asserts wiring, forwarding or "it did not throw": each fails on a plausible bug —
 stale state, silent drop, wedged session, wrong stop.
@@ -410,11 +479,12 @@ in `DebugSessionController`, the `hooks` object in `ProjectSettings`, Run ▸ St
 and the pinned Lua build. The script is authored in the IDE too: **New script…** writes it beside
 the source and opens it (§9), so the feature is usable without leaving PiST or inventing a file.
 
-**L2 — symbols, cause, and per-breakpoint scripts.**
-`sym()`; the stop *cause* (the armed breakpoint or watchpoint whose resolved address equals the PC,
-with the honest caveat that two identical addresses are one stop); a script name on a `Breakpoint`,
-carried to the backend by the existing arming plan (`planBreakpoints()`, `armBreakpoints()`); the
-`tst_hrdb` case. This is where the sheet's "named scripts on named breakpoints" lands.
+**L2 — symbols, cause, and per-breakpoint scripts. Implemented; §12 is what proves it.**
+`sym()` over the symbol table and the live bases (D8), the stop's cause (`reason`, `at`) as far as
+the transport can honestly support it, a script name on a `Breakpoint` carried by the existing
+arming plan, and the `tst_hrdb` case — which is the evidence that the runner has no
+transport-specific assumption in it. This is where the sheet's "named scripts on named breakpoints"
+landed.
 
 **L3 — the agent surface** (§10): the `hook` verb, the MCP tool, the `hook` field on the stop event,
 the README §Remote control entry.
@@ -470,12 +540,13 @@ behaviour in particular, both of which contradict nothing today but are not yet 
 ## 17. Status
 
 Planned 2026-10-17 on `v0.10.0`, implemented the same day on `feature/stop-hooks`. **L0 is decided
-and its numbers are in `docs/PLAN.md` §9; L1 is implemented and green** — the unit suite, the
-`.pistproject` round-trip, and the full suite run offscreen against a real emulator.
+and its numbers are in `docs/PLAN.md` §9; L1 and L2 are implemented and green** — the unit suite, the
+`.pistproject` round-trip, the offscreen GUI cases, and the full suite run against a real emulator,
+including the same script over the hrdb-main fork.
 
-L2 (symbols, the stop's cause, per-breakpoint scripts) and L3 (the `hook` verb, the MCP tool, the
-event field) are the next work on this branch, which is where the whole feature lives.
+L3 (the `hook` remote verb, the MCP tool, the `hook` field on the published stop event) is the
+remainder on this branch.
 
-What is *not* verified here: the three platform archives (the feature's cost is a static library and a
-configure-time fetch, but the artifacts themselves need CI), HRDB (L2), and the dialog's own
-behaviour (§12 says why).
+What is still *not* verified here: the three platform archives (the feature's cost is a static library
+and a configure-time fetch, but the artifacts themselves need CI), and the dialog's own validation
+(§12 says why).

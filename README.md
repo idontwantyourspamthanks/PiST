@@ -584,6 +584,10 @@ thing you edit is also the documentation. The dialog shows how the last run went
 script's `continue()` may resume the program without asking, and the whole setting lives in the
 project file (a `hooks` object in `.pistproject`), so it travels with the source.
 
+One breakpoint can run a script of its own instead: right-click its line in the gutter and pick
+**Stop-hook script…** (empty goes back to the project's). The path may be absolute or relative to the
+source's directory, which is where **New script…** puts one.
+
 The whole API — flat globals, nothing imported:
 
 | Call | Meaning |
@@ -591,9 +595,15 @@ The whole API — flat globals, nothing imported:
 | `readmem(addr, len)` | a string of `len` bytes at `addr` (1 to 4096) |
 | `writemem(addr, value)` | write one byte |
 | `readreg(name)` | a register: `d0`–`d7`, `a0`–`a7`, `pc`, `sr`, `usp`, `isp` |
+| `sym(name)` | the address that label has **in this run** — GEMDOS moves the program, so a hard-coded address goes stale and a name does not |
 | `writereg(name, value)` | the writable ones: `d0`–`d7`, `a0`–`a7`, `pc`, `sr` |
 | `log(text)` (also `print`) | one line in the console dock, prefixed `[hook] ` |
 | `continue()` (also `resume`) | let the program run on |
+
+Two globals describe the stop itself: `reason` is `"breakpoint"`, `"step"` or `"unknown"`, and `at`
+is the breakpoint that fired, `"file:line"`, or `nil` when there is no breakpoint to name. A pause, an
+exception and a watchpoint all report `"unknown"`: the emulator says it stopped, not why, and a
+watchpoint fires on a data change rather than a program position.
 
 A trainer, in full — hold the player's lives at 9 and say so:
 

@@ -146,7 +146,12 @@ Everything else in this document is a consequence of that rule. The debug transp
 - **`build/LineMap.{h,cpp}`** — parses one vasm `-L` listing into section:offset ↔ source-line
   entries and the section extents. **`LinkMap.{h,cpp}`** parses a vlink `-M` map.
   **`ProgramLineMap.{h,cpp}`** aggregates one `LineMap` per module plus the `LinkMap`, and resolves
-  line ↔ address once `setLiveBases()` supplies the runtime section addresses.
+  line ↔ address once `setLiveBases()` supplies the runtime section addresses. Two resolvers sit on
+  top of that in `SymbolTable`: `labelSite()` answers *where do I break* (the first **code** line at
+  or after the definition) and `labelAddress()` answers *what address does this name have* (the
+  definition's own line, else `LineMap::nextAddressLine()` — the first line that emits anything in
+  **any** section, because `buffer:` above `ds.b 256` is bss). They differ deliberately; both refuse
+  an `equ`, which has a value rather than a place.
 - **`emu/EmulatorHost.{h,cpp}`** — the heart of the debug side: owns the Hatari `QProcess`, both
   debug channels, the command queue, the prompt/settle framing, the stderr/stdout parsers, and
   `writeBootstrapScript()` (the entry-stop generator). See the transport section below.

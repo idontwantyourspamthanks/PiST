@@ -345,7 +345,7 @@ The README's API list is the contract; if a capability is not in it, the docs do
 
 ## 12. Testing
 
-- **`tst_stophooks`** — built and green: 16 cases, no emulator and no window. The engine half runs
+- **`tst_stophooks`** — built and green: 17 cases, no emulator and no window. The engine half runs
   the real Lua against a fake `HookApi` (byte-exact `readmem`, a caught refusal and an uncaught one,
   Lua's own argument refusal, a runaway script stopped inside its budget, a missing file, both spellings
   of `continue`, and the line an error came from). The runner half drives a fake `IDebugBackend`

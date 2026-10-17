@@ -127,13 +127,10 @@ exception is written down.
 
 ## 2. Reference authoring
 
-**Status:** agreed; **re-scoped 2026-10-17** to `Example:` / `Typical use:`. The
-`Used in:` cross-link was dropped when the teaching layer went back for a rethink,
-and with it this feature's dependency on `lessons/` — a field that only means
-something with lessons is not agreed work while the lessons themselves are open.
-This is the remainder FUTURE §14 left unstarted, and it stands on its own: the
-reference should say what an instruction is *for* and show it, whether or not
-anything teaches it.
+**Status:** delivered 2026-10-17 on `feature/reference-authoring`. Re-scoped the
+same day to the reference itself: `Used in:` (which lessons use a mnemonic) was
+dropped when the teaching layer went back for a rethink, and with it the
+dependency on `lessons/`. What is left is the part that stands on its own.
 
 ### What exists
 
@@ -149,37 +146,40 @@ anything teaches it.
   carefully: **a claim that stops being true must fail a test rather than teach
   something wrong** (tutorial-plan §1.1).
 
-### The design
+### What was built
 
-Extend the entry types with two fields — `Example` (a minimal fragment,
-labelled with the context it assumes) and `Typical use` (one sentence of when).
-No LLM text, no markdown, done deliberately so it also serves the remote/MCP
-surface.
+- **Two fields on both entry types.** `InstructionInfo` and `OsCallInfo` gain
+  `example` and `typicalUse`, appended last with default member initializers so the
+  tables' existing brace lists keep compiling untouched (PLAN §11). The dock renders
+  both under the summary and flags: `InstructionRefView` shows the fragment as
+  written — the data carries the indentation a source file would — with the sentence
+  above it.
+- **The authoring rule is a test, not a promise.** `tst_reference` walks both tables
+  and requires, of every entry: a non-empty summary, example and typical use; every
+  example *assembles* under `vasmm68k_mot -quiet -m68060 -Ftos` inside the one
+  wrapper the test documents (`start`, `msg` and `buffer` are the only context an
+  example may assume); an instruction's example starts with the mnemonic it belongs
+  to, and a call's makes that call's own trap; a `typicalUse` is one line, at most
+  120 characters, ending in a full stop. It reports *every* unfinished entry in one
+  pass, because that list is what the authoring is done from.
+- **Two fields kept honest rather than complete.** The `flags` field's rule — say
+  nothing rather than something wrong — is what the gate enforces structurally: an
+  entry with no example fails instead of shipping a fragment nobody checked. The
+  prose itself is deliberately not asserted: whether a sentence is *true* is the
+  author's job and a reviewer's, and a test that pinned wording would simply be
+  re-pinned by whoever changed the wording.
+- **234 entries authored in two passes:** the 123 instructions of `InstrRef.cpp`,
+  then the 111 TOS calls of `OsCallRef.cpp`, each example assembled by the same
+  command the test runs before it was committed.
 
-Two disciplines make this trustworthy:
+### Tested
 
-1. **Author in data, verified by test.** A new unit test walks every entry and
-   asserts each `Example:` (a) exists for entries claimed to have one, (b)
-   parses under the reference's own lookup rules — case-insensitive, size
-   suffix ignored — and (c) where the fragment is self-contained, actually
-   assembles with vasm in CI. That last check is the lesson principle applied to
-   the reference: an example that stops being assemblable fails the suite rather
-   than shipping as prose.
-2. **Never state a wrong thing to be complete.** The `flags` field's rule — say
-   nothing rather than something wrong — governs the new fields too: not every
-   mnemonic has a one-sentence "when", and an empty `Typical use` is a fact the
-   test records, not a gap to be filled with filler. An `Example` is either
-   assemblable under the reference's own lookup rules or absent.
-
-### How to start
-
-On `InstrRef.cpp` first (the 233 mnemonics), then `OsCallRef.cpp`; the detail
-pane in `src/ui/InstructionRefView.cpp` renders the new fields. FUTURE §14's
-"more `.pil` lessons" item is not part of this feature: the two fields stand on
-their own, and the dock should be worth reading before any teaching layer is
-settled.
-
----
+`tst_reference` (new; no window, no emulator, and the assembler case skips without
+vasm like the rest of the suite): every entry authored, every example assembled —
+all 234 of them, inside the documented wrapper — every example attached to its own
+entry, every `typicalUse` shaped as one sentence, and the lookup rules the dock
+promises (`addq.l`, `ADDQ` and `move.w` all resolve, and every entry resolves from
+its own spelling).
 
 ## 3. Find in Files
 

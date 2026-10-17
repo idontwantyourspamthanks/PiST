@@ -1058,6 +1058,13 @@ afresh on every arm, because GEMDOS picks the load address again each run. The s
 keeps the name and never the address, so the stale-address failure has nowhere to live; the remote
 verbs are the set/clear pair `watchpoint <a|l>` / `clearwatchpoint [a|l]`, and the MCP tools follow.
 
+**Reference authoring** (sheet §2, re-scoped to the reference itself) is delivered on
+`feature/reference-authoring`: `InstructionInfo` and `OsCallInfo` carry `example` and
+`typicalUse`, rendered by the dock that follows the cursor, and `tst_reference` makes
+the authoring mechanical — every entry carries both fields, every example assembles
+under vasm inside the wrapper the test documents, and an example belongs to the entry
+it is attached to.
+
 **Floppy-image pane residue** (sheet §6) is delivered on `feature/floppy-residue`: the pane can
 now Delete…, Rename… and create a New Folder… inside a mounted image, as three more operations on
 `floppy::Transfer` (`removeEntries`/`renameEntry`/`makeDirectory`) behind the transfers' own
@@ -1380,6 +1387,17 @@ load-bearing dependency — which the detection order above already guarantees.
   the rule is now in §11); and **two shortcuts on one key are ambiguous** — Qt logs "ambiguous
   shortcut overload" and fires *neither*, measured in a throwaway program, which is why the dock
   claims F4 with a `ShortcutOverride` instead of binding a second F4 shortcut.
+
+- **The reference's examples are assembled, not eyeballed** (2026-10-17,
+  `feature/reference-authoring`). 234 examples — every instruction and every TOS call —
+  are run through `vasmm68k_mot -quiet -m68060 -Ftos` by `tst_reference`, each inside one
+  documented wrapper whose whole point is to fix what a fragment may assume (`start`,
+  `msg`, `buffer` and nothing else). The rule that made this cheap to author: an
+  example is a *sentence about the assembler*, so the assembler is the authority on
+  whether it is true. The prose is deliberately unchecked — a test that pinned wording
+  is a test whoever changes the wording re-pins. Measured while doing it: 234 assembler
+  invocations cost ~0.5 s, which is why the whole table can be gated rather than
+  sampled.
 
 - **A name the disk already shows must be refused, not numbered** (2026-10-17, `feature/floppy-residue`).
   `updateImage`'s documented rule for an addition whose 8.3 name is taken is to *number* it, which is

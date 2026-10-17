@@ -144,6 +144,22 @@ public slots:
     /// `dirInImage` (empty for the image root). Returns true on success.
     bool pasteIntoFloppy(int drive, const QString &dirInImage);
 
+    /// Delete `entryPaths` — image-relative paths as `selectedFloppyEntries`
+    /// reports them — from floppy `drive`, after a question names what goes. A
+    /// selected folder takes its subtree. Failures are reported and the pane
+    /// re-read, exactly as a transfer's are.
+    void deleteFloppyEntries(int drive, const QStringList &entryPaths);
+
+    /// Rename the entry `entryPath` (image-relative) inside floppy `drive`,
+    /// asking for the new name in its own directory. The name is validated
+    /// here, because the controller refuses a bad one silently.
+    void renameFloppyEntry(int drive, const QString &entryPath);
+
+    /// Create an empty folder in floppy `drive`, inside the image directory
+    /// `dirInImage` (empty for the image root). The name is validated here, as
+    /// in `renameFloppyEntry`.
+    void makeFloppyDirectory(int drive, const QString &dirInImage);
+
     /// Ask before an operation that rewrites `imagePath`: every write goes
     /// through floppy::updateImage, which rebuilds the image with PiST's
     /// canonical 720 KiB layout. A disk that is not already that shape loses

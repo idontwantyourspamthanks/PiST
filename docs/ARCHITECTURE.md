@@ -167,9 +167,15 @@ Everything else in this document is a consequence of that rule. The debug transp
   **`ui/ImageEditor.{h,cpp}`** is the document tab (always created with a path — `addImageTab()` asserts one — but it may become path-less *later*, when `importFile()` adopts a still image as a fresh sheet: that untitled scratch is a deliberate image workflow, not a source document, and the asymmetry is documented on `addImageTab()`); **`ui/ImageCanvas`** paints the grid with onion-skin, and owns the selection rectangle: the select tool drags a marquee, dragging inside it moves the pixels (live cut+patch preview, committed through `ImageEditor::moveSelection` as one undoable layer edit), and copy/cut/paste/delete/deselect run off an internal palette-index clipboard. **`ui/SheetCanvas`** shows the composed sheet (strips, phase dragging, the staging gutter, raw-sheet slicing), with **`ui/SheetSlicing`** the slice-phase dialog, **`ui/BitplaneExportController`** the per-document recipe a re-export repeats and **`ui/AnimationPreviewWidget`** the frame player.
 - **`build/FloppyTransfer.{h,cpp}`** — `floppy::Transfer`: the three disk transfers the file browser
   offers (host files onto a disk, entries off a disk, entries between disks) written **once** over a
-  source/destination pair instead of three times. It is widget-free: the two questions it cannot
-  answer itself — which image a drive holds, and whether rebuilding one is acceptable — come in
-  through its `Host` interface (finding MAJ-43).
+  source/destination pair instead of three times, plus the three edits of the disk's own contents —
+  `removeEntries()`, `renameEntry()` (the entry's bytes are re-added under the new root in the same
+  `updateImage` call that drops the old paths, so a folder and its contents move in one rebuild) and
+  `makeDirectory()`. All six run the same confirm/resync preamble; the listing is taken *after* the
+  question, because a dialog runs an event loop and a directory listed before it can be stale. A
+  name the disk already shows is refused (`NameTaken`) rather than numbered, which is what
+  `updateImage` does for an addition and the wrong answer for a rename. It is widget-free: the two
+  questions it cannot answer itself — which image a drive holds, and whether rebuilding one is
+  acceptable — come in through its `Host` interface (finding MAJ-43).
 - **`build/BuildService.{h,cpp}`** — `planSteps()` chooses a single-file `-Ftos` build or a
   per-module `-Fvobj` build plus a `vlink -b ataritos` link; `runNextStep()` streams output and
   parses vasm/linker diagnostics. Emits `finished(success, diagnostics)`.

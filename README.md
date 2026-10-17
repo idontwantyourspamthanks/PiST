@@ -47,6 +47,11 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
   GEMDOS/BIOS/XBIOS call being made and what it is being called with
+- **Find in Files** — search the whole project, not just the document in front of you
+  (**Ctrl+Shift+F**, or the dock beside Problems): results grouped by file with the match
+  highlighted, **double-click** or **F4** / **Shift+F4** to walk them, and a header that says how
+  many files were searched and what was skipped. It counts exactly the way the editor's find bar
+  does, because the two run the same scan ([below](#find-in-files))
 - **Documents are files** — every tab is a real file on disk; there is no scratch or untitled
   buffer. With nothing open the window shows a **welcome view**: your recent files and projects (the
   bundled demos on a first run), Open/New actions, and whether the assembler and a TOS ROM are
@@ -476,6 +481,28 @@ otherwise fails *silently*: the emulator boots, the program never starts, and de
 attaches. (A run started over the remote-control socket has nobody to answer that question, so it
 takes the AUTO-folder floppy path — which works on every TOS version — and says so in the console.)
 A ROM that is *known* too old never asks: it boots via the AUTO-folder floppy, on either path.
+
+## Find in files
+
+**Ctrl+Shift+F** (Search ▸ Find in Files…) brings the dock up beside Problems. Type a query,
+pause, and the project directory is searched as one walk: results are grouped by file, each row
+carrying the line number and the line itself, with the match marked in the same colour the editor
+uses for its own hits. **Double-click** a row (or press Return) to open that file at that line
+with the match selected, or walk the list with **F4** / **Shift+F4** while the dock has the focus —
+elsewhere those keys stay the diagnostics tour, and the search's own F4 is claimed only where its
+list is.
+
+The two options are the find bar's, and count the same way, because both run the same scan: match
+case, and whole words only (so `move` matches `move.w` but not the `move` inside `movem`). The cap
+is admitted rather than hidden — past 2000 hits the header says so instead of pretending to a total
+the walk never reached.
+
+The header reports what was searched as well as what was found: *"12 hit(s) in 8 file(s) searched ·
+3 file(s) skipped"*. Executables, objects, disk and still-image formats, ROM images and vasm's
+listings are skipped by suffix; a NUL byte settles anything whose name says nothing; hidden
+directories (`​.git` and friends) are not walked; and a file too large to be source is left alone.
+The directory searched is the one the file browser is pointed at, or the focused document's own —
+the same "project" the Git panel uses.
 
 ## Remote control (driving the IDE from a script or an AI agent)
 

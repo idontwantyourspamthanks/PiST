@@ -51,6 +51,7 @@
 #include <QAudioDevice>
 #include <QMediaDevices>
 #include "ui/FileBrowser.h"
+#include "ui/FindInFilesView.h"
 #include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
@@ -942,6 +943,7 @@ void MainWindow::onTabChanged(int index)
     if (m_editor)
         followCursorReference(m_editor);
     syncGitDirectory();
+    syncFindInFilesScope();
     applyGitBlame();
     // Zero tabs is reachable — by the × button, by Close File, by Closing All —
     // and it means the welcome view, not a stranded empty editor.
@@ -1443,6 +1445,14 @@ void MainWindow::createActions()
     m_actReplace->setEnabled(false);
     connect(m_actReplace, &QAction::triggered, this, &MainWindow::showReplaceBar);
 
+    // Project-wide search: always available, because its scope is a directory
+    // rather than the focused document — and the dock says so when there is not
+    // one yet.
+    m_actFindInFiles = new QAction(tr("Find in &Files…"), this);
+    m_actFindInFiles->setObjectName(QStringLiteral("findInFilesAction"));
+    m_actFindInFiles->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+    connect(m_actFindInFiles, &QAction::triggered, this, &MainWindow::showFindInFiles);
+
     m_actExportBitplanes = new QAction(tr("Export Bitplane &Data…"), this);
     m_actExportBitplanes->setEnabled(false);
     m_actExportBitplanes->setToolTip(
@@ -1907,6 +1917,8 @@ void MainWindow::createMenus()
     searchMenu->addAction(m_actFindPrevious);
     searchMenu->addSeparator();
     searchMenu->addAction(m_actReplace);
+    searchMenu->addSeparator();
+    searchMenu->addAction(m_actFindInFiles);
 
     auto *buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->setObjectName(QStringLiteral("buildMenu"));
@@ -2322,6 +2334,23 @@ void MainWindow::buildPanels()
     addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
     tabifyDockWidget(m_problemsDock, consoleDock);
 
+    // Find in Files joins the same group: it is the same shape of answer as
+    // Problems — a list of places to go to — asked of the whole project rather
+    // than of one build.
+    m_findInFiles = new FindInFilesView(this);
+    m_findInFiles->navigate = [this](const QString &path, int line, int column, int length) {
+        if (!navigateToSourceLine(path, line))
+            return;
+        // The caret is on the line now, and marking the match itself is the
+        // rest of what "take me to that hit" means.
+        if (m_editor)
+            m_editor->selectSpan(line, column, length);
+    };
+    m_findInFilesDock =
+        makeDock(tr("Find in Files"), QStringLiteral("findInFilesDock"), m_findInFiles);
+    addDockWidget(Qt::BottomDockWidgetArea, m_findInFilesDock);
+    tabifyDockWidget(m_problemsDock, m_findInFilesDock);
+
     // The first memory pane (tag 0) tabs onto this group; more can be added
     // from its "+" button.
     addMemoryPane();
@@ -2531,6 +2560,7 @@ void MainWindow::buildViewMenu()
             QStringLiteral("symbolsDock"),
             QStringLiteral("profilerDock"),
             QStringLiteral("problemsDock"),
+            QStringLiteral("findInFilesDock"),
             QStringLiteral("consoleDock"),
             QStringLiteral("memoryDock"),
         };
@@ -3325,6 +3355,7 @@ bool MainWindow::openPathImpl(const QString &path, bool quiet)
     // per-tab pass in onTabChanged cannot be relied on here. Both calls are
     // idempotent (MIN-81).
     syncGitDirectory();
+    syncFindInFilesScope();
     applyGitBlame();
     return true;
 }
@@ -3654,26 +3685,41 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
         6000);
 }
 
+QString MainWindow::projectScopeDirectory() const
+{
+    // Only a directory the user actually opened counts as the project. The
+    // browser's model root is the process working directory until something is
+    // opened, and an unsaved document has no directory at all, so an unguarded
+    // answer here points project-wide work at whatever happens to contain the
+    // launch directory (MIN-81) — which is why nothing is answered rather than
+    // guessed when there is nothing open.
+    if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
+        return m_fileBrowser->directory();
+    if (m_editor && !m_editor->filePath().isEmpty())
+        return QFileInfo(m_editor->filePath()).absolutePath();
+    if (m_image && !m_image->filePath().isEmpty())
+        return QFileInfo(m_image->filePath()).absolutePath();
+    return {};
+}
+
 void MainWindow::syncGitDirectory()
 {
     if (!m_gitPanel)
         return;
-    // Only a directory the user actually opened counts as the project. The
-    // browser's model root is the process working directory until something is
-    // opened — so aiming git at it made a window with no project run `git
-    // status` in whichever repository happened to contain the launch directory.
-    // PiST's own suite, run from a build tree inside its checkout, did exactly
-    // that ~90 times per run; an abandoned status child at teardown leaves
-    // `.git/index.lock` in the developer's repository (MIN-81). With nothing
-    // open the panel is told so, and it says as much instead of guessing.
-    QString dir;
-    if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
-        dir = m_fileBrowser->directory();
-    else if (m_editor)
-        dir = QFileInfo(m_editor->filePath()).absolutePath();
-    else if (m_image && !m_image->filePath().isEmpty())
-        dir = QFileInfo(m_image->filePath()).absolutePath();
-    m_gitPanel->setDirectory(dir);
+    // With nothing open the panel is told so, and it says as much instead of
+    // guessing: aiming git at the browser's unguarded root made a window with no
+    // project run `git status` in whichever repository happened to contain the
+    // launch directory. PiST's own suite, run from a build tree inside its
+    // checkout, did exactly that ~90 times per run, and an abandoned status
+    // child at teardown leaves `.git/index.lock` in the developer's repository
+    // (MIN-81).
+    m_gitPanel->setDirectory(projectScopeDirectory());
+}
+
+void MainWindow::syncFindInFilesScope()
+{
+    if (m_findInFiles)
+        m_findInFiles->setScope(projectScopeDirectory());
 }
 
 void MainWindow::applyGitBlame()
@@ -4918,6 +4964,18 @@ bool MainWindow::navigateToSourceLine(const QString &file, int line)
 void MainWindow::goToBreakpoint(const QString &file, int line)
 {
     navigateToSourceLine(file, line);
+}
+
+void MainWindow::showFindInFiles()
+{
+    if (!m_findInFilesDock)
+        return;
+    // The scope can have moved since it was last searched (another file opened,
+    // another directory chosen), and the dock re-runs its query when it has.
+    syncFindInFilesScope();
+    m_findInFilesDock->show();
+    m_findInFilesDock->raise();
+    m_findInFiles->focusQuery();
 }
 
 void MainWindow::stepDiagnostic(int direction)

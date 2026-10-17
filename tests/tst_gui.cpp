@@ -697,6 +697,12 @@ private slots:
     void commonShortcutSchemeRenamesThePanelsKeys();
     void buildAndSearchMenusCarryTheirActions();
     void problemsDockListsABuildWarning();
+    /// Find in Files: the project-wide search dock, its results, and the tour
+    /// that opens a hit's file at the hit's own span.
+    void findInFilesSearchesTheProjectAndNavigates();
+    /// A second query replaces the first's results wholesale: a row left over
+    /// from the replaced walk is exactly what a cancel race would look like.
+    void findInFilesShowsOnlyTheCurrentQuery();
     void themeSheetFramesItsDocks();
     void settingsDialogAndEditorChromeExposeTheirControls();
     void hardwareAndDisassemblyViewsNameWhatTheyShow();
@@ -8594,6 +8600,134 @@ void TstGui::buildAndSearchMenusCarryTheirActions()
                 QVERIFY(!action->text().contains(QStringLiteral("Diagnostic")));
         }
     }
+}
+
+// Find in Files reads the project as text and lists what it found, grouped by
+// file, with each hit's own span — and the tour takes you to that span.
+void TstGui::findInFilesSearchesTheProjectAndNavigates()
+{
+    const QString root = m_work->path() + QStringLiteral("/fif");
+    QVERIFY(QDir().mkpath(root + QStringLiteral("/sub")));
+    const auto writeFixture = [](const QString &path, const QByteArray &bytes) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+            return false;
+        return file.write(bytes) == bytes.size();
+    };
+    QVERIFY(writeFixture(root + QStringLiteral("/alpha.s"),
+                         "start:\tmoveq\t#0,d0\n\trts\n"));
+    QVERIFY(writeFixture(root + QStringLiteral("/sub/beta.s"), "\tmoveq\t#1,d1\n"));
+
+    MainWindow window;
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
+    QVERIFY2(dock, "Find in Files is a dock beside Problems");
+    auto *results = dock->findChild<QTreeWidget *>(QStringLiteral("findInFilesResults"));
+    auto *query = dock->findChild<QLineEdit *>(QStringLiteral("findInFilesQuery"));
+    auto *status = dock->findChild<QLabel *>(QStringLiteral("findInFilesStatus"));
+    auto *scopeLabel = dock->findChild<QLabel *>(QStringLiteral("findInFilesScope"));
+    QVERIFY(results && query && status && scopeLabel);
+    const auto currentEditor = [&window]() -> CodeEditor * {
+        auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+        return tabs ? qobject_cast<CodeEditor *>(tabs->currentWidget()) : nullptr;
+    };
+
+    // The doorway: the Search menu's entry carries the dock's shortcut, and
+    // invoking it brings the dock forward with the query focused — the gesture a
+    // user without the shortcut's muscle memory will actually use.
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    auto *action = window.findChild<QAction *>(QStringLiteral("findInFilesAction"));
+    QVERIFY2(action, "Search ▸ Find in Files…");
+    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+    action->trigger();
+    QVERIFY2(QTest::qWaitFor([query] { return query->hasFocus(); }, 2000),
+             "the doorway focuses the query");
+    QVERIFY(dock->isVisible());
+
+    // Opening a document is what gives the dock a project directory to search.
+    window.openPath(root + QStringLiteral("/alpha.s"));
+    QVERIFY2(scopeLabel->text().contains(QStringLiteral("fif")), qPrintable(scopeLabel->text()));
+
+    query->setText(QStringLiteral("moveq"));
+    QTRY_COMPARE_WITH_TIMEOUT(results->topLevelItemCount(), 2, 15000);
+    QCOMPARE(results->topLevelItem(0)->childCount(), 1);
+    QCOMPARE(results->topLevelItem(0)->text(1), QStringLiteral("1 hit(s)"));
+    QCOMPARE(results->topLevelItem(0)->child(0)->text(0), QStringLiteral("1"));
+    QVERIFY2(status->text().contains(QStringLiteral("2 hit(s) in 2 file(s) searched")),
+             qPrintable(status->text()));
+
+    // The tour is keyboard-driven, so the dock has to be the visible tab and the
+    // window active — a shortcut scoped to a hidden widget fires for nobody.
+    dock->raise();
+    results->setFocus();
+    QTest::keyClick(results, Qt::Key_F4);
+    CodeEditor *editor = currentEditor();
+    QVERIFY(editor);
+    QVERIFY2(editor->filePath().endsWith(QStringLiteral("alpha.s")), qPrintable(editor->filePath()));
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 1);
+    QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("moveq"));
+
+    // The next hit is in the other file: the tour opens it rather than selecting
+    // a line of the one already on screen.
+    QTest::keyClick(results, Qt::Key_F4);
+    editor = currentEditor();
+    QVERIFY(editor);
+    QVERIFY2(editor->filePath().endsWith(QStringLiteral("sub/beta.s")),
+             qPrintable(editor->filePath()));
+    QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("moveq"));
+
+    // ...and Shift+F4 walks back, the shape the diagnostics tour uses.
+    QTest::keyClick(results, Qt::Key_F4, Qt::ShiftModifier);
+    editor = currentEditor();
+    QVERIFY(editor && editor->filePath().endsWith(QStringLiteral("alpha.s")));
+
+    // The tour belongs to the dock: with the editor focused, F4 is the
+    // diagnostics tour's, and it leaves these results where they were.
+    QTreeWidgetItem *const current = results->currentItem();
+    QVERIFY(current);
+    editor->setFocus();
+    QTest::keyClick(editor, Qt::Key_F4);
+    QCOMPARE(results->currentItem(), current);
+}
+
+// A replaced walk must leave nothing behind: results that belong to the previous
+// query are what a cancel race would look like to the person typing.
+void TstGui::findInFilesShowsOnlyTheCurrentQuery()
+{
+    const QString root = m_work->path() + QStringLiteral("/fif-race");
+    QVERIFY(QDir().mkpath(root));
+    // Enough files that the first walk is still running when the query changes.
+    for (int i = 0; i < 400; ++i) {
+        QFile file(root + QStringLiteral("/file%1.s").arg(i, 3, 10, QLatin1Char('0')));
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("needle\n\trts\n");
+        file.close();
+    }
+    QFile other(root + QStringLiteral("/other.s"));
+    QVERIFY(other.open(QIODevice::WriteOnly | QIODevice::Text));
+    other.write("\tmoveq\t#2,d2\n");
+    other.close();
+
+    MainWindow window;
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
+    auto *results = dock->findChild<QTreeWidget *>(QStringLiteral("findInFilesResults"));
+    auto *query = dock->findChild<QLineEdit *>(QStringLiteral("findInFilesQuery"));
+    auto *status = dock->findChild<QLabel *>(QStringLiteral("findInFilesStatus"));
+    QVERIFY(results && query && status);
+    window.openPath(root + QStringLiteral("/other.s"));
+
+    query->setText(QStringLiteral("needle"));
+    QTRY_VERIFY_WITH_TIMEOUT(results->topLevelItemCount() > 0, 15000);
+    query->setText(QStringLiteral("d2"));
+
+    // Whatever the first walk managed, what is on screen is the second query's
+    // answer and nothing else — the status line and the rows agree.
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("1 hit(s)")), 15000);
+    QVERIFY2(status->text().contains(QStringLiteral("401 file(s) searched")),
+             qPrintable(status->text()));
+    QCOMPARE(results->topLevelItemCount(), 1);
+    QVERIFY2(results->topLevelItem(0)->text(0).endsWith(QStringLiteral("other.s")),
+             qPrintable(results->topLevelItem(0)->text(0)));
 }
 
 // A build that warns must land in Problems with the colour the theme gives a

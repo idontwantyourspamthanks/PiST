@@ -54,6 +54,7 @@ class RemoteControl;
 class DisassemblyView;
 class ProfilerView;
 class FileBrowser;
+class FindInFilesView;
 class GitPanel;
 class IDebugBackend;
 class ImageEditor;
@@ -642,6 +643,9 @@ private:
     void showReplaceBar();
     void findNextInEditor();
     void findPreviousInEditor();
+    /// Bring the Find in Files dock forward with its query focused (Ctrl+Shift+F),
+    /// re-reading the scope first: the project may have moved since the last search.
+    void showFindInFiles();
 
     void openRecentSource();
 
@@ -685,6 +689,16 @@ private:
     /// created before the section, and the walk at the end of createDocks
     /// lists it.
     void addDockToViewMenu(QDockWidget *dock);
+
+    /// The directory a project-wide question is asked about: what the file
+    /// browser was pointed at when the user chose it, else the focused document's
+    /// own directory, else nothing — never the process's working directory,
+    /// which is nobody's project (MIN-81). Git's panel and Find in Files both
+    /// ask it here, so the two cannot disagree about what "the project" is.
+    QString projectScopeDirectory() const;
+    /// Point Find in Files at the project directory. Re-runs its query, because
+    /// the results of the old scope are not answers about this one.
+    void syncFindInFilesScope();
 
     /// Point the Git panel at the project directory, and show or hide the
     /// blame lane on every open editor. Blame stays off for a document with no
@@ -862,6 +876,9 @@ private:
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QDockWidget *m_problemsDock = nullptr;
+    /// Project-wide search: the dock itself, and the walk it drives.
+    FindInFilesView *m_findInFiles = nullptr;
+    QDockWidget *m_findInFilesDock = nullptr;
 
     /// Text documents currently edited out of a floppy image, keyed by the
     /// extracted session file the editor tab holds open.
@@ -934,6 +951,7 @@ private:
     QAction *m_actFindNext = nullptr;
     QAction *m_actFindPrevious = nullptr;
     QAction *m_actReplace = nullptr;
+    QAction *m_actFindInFiles = nullptr;
     QAction *m_actOpenProject = nullptr;
     QAction *m_actProfileStart = nullptr;
     QAction *m_actProfileStop = nullptr;

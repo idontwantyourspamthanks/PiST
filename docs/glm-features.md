@@ -178,10 +178,9 @@ layer one system.
 
 ## 3. Find in Files
 
-**Status:** agreed; does not exist. Verified 2026-10-16: search today is
-per-document only — the editor's find bar with Ctrl+F / Ctrl+H, F3 and
-Shift+F3, match-case and whole-word options, and a hit counter that admits its
-cap (past 2000 it reads "N of more than 2000" rather than counting on).
+**Status:** delivered 2026-10-17 on `feature/find-in-files`. The verification
+below is what the tree looked like before it: search *was* per-document only,
+which is the state this feature changed.
 
 ### The design
 
@@ -198,14 +197,57 @@ and generated inventory (`.pim`, `.prg`, disk images, ROMs) by extension, and
 say in the results header what was skipped and how many files were searched —
 the same honestly-capped style the counter above uses.
 
-### How to start
+### What was built, and the decisions it took
 
-A `FindInFiles` model + a worker that walks the project directory on a thread,
-one file at a time, cancellable (a re-run while typing a new query must cancel
-the previous one). Anchor the dock beside Problems (`src/ui/`), reuse the
-editor's highlight and the F4-tour pattern from `BuildService`. Test with
-`tst_gui` (offscreen): results appear for a fixture tree, the tour opens the
-right file and line, cancel races are not visible to the user.
+- **The scan is shared, not copied.** `editor/FindScan.{h,cpp}` holds
+  `FindOptions`, `kMaxMatches` (2000) and `findScan()`; the editor's find bar
+  (`CodeEditor::collectMatches`) and the dock both call it now, so "the same
+  semantics" is a property of the code rather than a promise. The whole-word
+  rule moved there too — it was always a filter on Qt's match
+  (`QTextDocument::FindCaseSensitively` is the only flag Qt is given), and it
+  now filters for both callers.
+- **The walk is chunked on this thread, not threaded** — a departure from the
+  sketch above. No dock in the tree walks a directory off the GUI thread (the
+  one `QThread` is a modal setup dialog that cannot be cancelled), and
+  `Qt6::Concurrent` is not linked; a 10 ms tick budget keeps the window
+  responsive, and cancelling then becomes a state change rather than a race —
+  which is what makes "a re-run while typing a new query" obviously correct
+  rather than merely tested. The hit cap stops the walk and the summary admits
+  it, the same way the editor's counter does.
+- **What it will not read, it counts.** `isSearchableFile()` is this feature's
+  own question — "would a user search inside this?" — and deliberately *not*
+  MainWindow's `suffixIsKnownBinary`, which answers a different one (is this a
+  text document to open out of a disk image?, where `.s` and `.asm` are
+  refusals, since assembly builds from the hard drive). Executables, objects,
+  disk and still-image formats, ROM images and vasm listings are skipped by
+  suffix; a NUL byte settles anything whose name says nothing; hidden
+  directories are not walked; a file too large to be source is left alone. The
+  header states hits, files *searched* and files skipped — "1 hit(s) in 401
+  file(s) searched" is the honest sentence, and the first wording ("in 401
+  files") read as though every one of them had a hit.
+- **F4 is claimed, not bound twice.** F4/Shift+F4 already tour the Problems
+  pane, and a second shortcut on one key makes Qt report "ambiguous shortcut
+  overload" and fire *neither* — measured in a throwaway program, with the dock
+  bound that way doing nothing when F4 was pressed in it. The dock instead
+  claims the key (`ShortcutOverride`, then `KeyPress`, in an event filter on
+  its list — the idiom `CodeEditor` uses for Esc and Enter) while it has focus;
+  everywhere else F4 remains the diagnostics tour.
+- **Navigation marks the match, not just the line.** `CodeEditor::selectSpan()`
+  is the one new editor entry point: a row carries the match's column and
+  length, and activating it opens the file, goes to the line and selects
+  exactly that span.
+
+### Tested
+
+`tst_find` (new, no window and no emulator) pins the shared scan's counting
+rules, its cap, and the walk's skip list, cap, summaries and cancellation
+contract. `tst_gui` pins the dock against a fixture tree: rows grouped by file
+with their line numbers, the status line's counts, F4 crossing into the other
+file and selecting the match, F4 belonging to the diagnostics tour when the
+editor has the focus, and a second query leaving nothing of the first behind.
+Two bugs came out of writing them, both fixed rather than accommodated: a
+negative `from` to `QString::lastIndexOf` means "from the end", which made the
+first line of every file read as its last, and the status wording above.
 
 ---
 

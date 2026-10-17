@@ -1783,6 +1783,11 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- When rewriting a section of a document that repeats a heading, anchor the edit *inside* that
+  section. Every feature in `docs/glm-features.md` has its own "How to start", "What exists" and
+  "Tested"; a rewrite that searches for the first occurrence takes §1's and silently drops every
+  section after it. That is exactly how sections 2–6 were lost in one edit, and the loss is only
+  visible by counting the headings afterwards.
 - The CI's pinned Qt is the floor, not the local one. Build locally against something newer and
   the compiler happily accepts APIs the pinned version lacks — a two-argument
   `QString::arg(QString, QChar)` is the case that cost a CI round (chain the calls instead). When

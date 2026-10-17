@@ -47,16 +47,16 @@ There is exactly one production consumer: `MainWindow`'s handler
 and calls `DebugSessionController::onDebuggerStopped()`.
 
 **The detailed stop.** The `stopped` event a watcher sees is published from
-`MainWindow::onStateUpdated()` (`src/ui/MainWindow.cpp:4834-4844`) *once `state.regs.valid`*, with
+`MainWindow::onStateUpdated()` (`src/ui/MainWindow.cpp:4939-4949`) *once `state.regs.valid`*, with
 `pc=0x…`, because the entry attach's standalone `info basepage` answer carries `pc = 0` and
 publishing that told watchers the machine had stopped at address 0. It is the same code path that
 installs the live bases and calls `armBreakpoints()`. The sink is `RemoteControl::publishEvent`
 (wired in `src/main.cpp:200-201`), and the MCP shim relays it as a log notification.
 
-**Writes while stopped.** `MainWindow::setMemoryByte` (`:4585`) and `setRegister` (`:4602`) gate on
+**Writes while stopped.** `MainWindow::setMemoryByte` (`:4690`) and `setRegister` (`:4707`) gate on
 `isStopped()`, log a refusal when not stopped, and go through the typed intents
 `IDebugBackend::writeMemoryByte` / `writeRegister` (`src/emu/DebugBackend.h`) — never debugger text.
-`MainWindow::debugCommand` (`:4545`) is free text and is *not* stop-gated.
+`MainWindow::debugCommand` (`:4650`) is free text and is *not* stop-gated.
 
 **Reads.** Typed intents only: `requestMemoryDump()` → `memoryDumpReady(address, rows, tag)` (parsed
 once, `src/emu/MemoryDump.h`), `dumpRegisters()` → `stateUpdated`, `readBasepage()`. There is **no
@@ -110,7 +110,7 @@ by `packaging/collect-notices.py` (`KNOWN_LIBS` at `:50`, `linked_libraries()` a
 deployed by `qt_generate_deploy_app_script` into `lib/`.
 
 **Tests.** Unit suites are declared in the root `CMakeLists.txt` through `pist_add_test()`
-(`:647-650`); offscreen integration suites skip themselves unless the emulator, assembler and a ROM
+(`:649-652`); offscreen integration suites skip themselves unless the emulator, assembler and a ROM
 are present (`tests/tst_emulatorhost.cpp:494-550`), and `PIST_REQUIRE_EMULATOR=1` turns a skip into a
 failure. `tests/tst_emulatorhost.cpp:987-1094`
 (`sourceLineBreakpointFiresAndResolvesBack`) is the model for a real-session assertion: assemble,
@@ -158,7 +158,7 @@ is still printing its dump (`m_awaitingEntryPrompt`). A script fired there would
 stop's registers and write into a stop whose dump has not finished — exactly the class of mistake
 MAJ-14 already cost the transport. The hook therefore fires where the detailed stop is published:
 `MainWindow::onStateUpdated()`, once `state.regs.valid`, beside the watcher event
-(`src/ui/MainWindow.cpp:4834-4844`).
+(`src/ui/MainWindow.cpp:4939-4949`).
 
 **D2 — The runner executes from a queued invocation, outside the transport's emit stack.**
 Scripted reads need to wait for a response, which means a nested event loop — the same shape

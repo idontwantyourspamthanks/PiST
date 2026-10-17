@@ -74,6 +74,9 @@ code. Use this table for a quick lookup:
 | The app shell, menus, docks, panels, layout | `src/ui/MainWindow.{h,cpp}` |
 | A debug panel (registers, memory, stack, …) | the matching `src/ui/<Name>View.{h,cpp}` |
 | The text editor or gutter/breakpoints | `src/editor/CodeEditor.{h,cpp}` |
+| Completion, the candidate list, the assembler's own vocabulary | `src/editor/{CompletionModel,Vocabulary}.{h,cpp}`, the popup in `src/editor/CodeEditor.cpp` |
+| The Go to Symbol palette | `src/ui/SymbolPaletteDialog.{h,cpp}` |
+| What a cursor position means (the reference dock and the hover card) | `src/editor/CursorReference.{h,cpp}`, `MainWindow::referenceCardAt` |
 | Find in Files, or the scan the editor's find bar shares with it | `src/ui/FindInFiles{,View}.{h,cpp}`, `src/editor/FindScan.{h,cpp}` |
 | The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
 | `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats,Transform}.*` |
@@ -99,7 +102,7 @@ code. Use this table for a quick lookup:
 | The MCP shim (`pist-mcp`, a shipped binary) | `src/control/mcp/` |
 | The name, author and licence a software centre reports | `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, `packaging/copyright`, and the CPack block in `CMakeLists.txt` |
 | What the Linux installers put where (private prefix, what is pruned and why) | `.github/workflows/release.yml`, the deb/rpm step; `docs/PLAN.md` Phase 4 records the evidence |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_stophooks`/`tst_find`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_stophooks`/`tst_find`/`tst_completion`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

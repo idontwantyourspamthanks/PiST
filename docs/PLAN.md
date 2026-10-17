@@ -1044,6 +1044,13 @@ code linked into the binary (the numbers are in §9) — and L2 landed with it: 
 bases, the stop's cause, and a script attached to a breakpoint. L3 is the agent surface: the `hook`
 verb, its `pist_hook` MCP tool, and the `hook` event a watcher gets when a script runs.
 
+**Editor completion, the symbol palette and the hover card** (sheet §4) are delivered on
+`feature/completion`: one candidate list (`editor/CompletionModel`) and one vocabulary shared with the
+highlighter (`editor/Vocabulary` — which also retires the highlighter's private directive regex), three
+surfaces over them (the editor's popup, `ui/SymbolPaletteDialog`, the window's hover card), and the dock's
+dispatch extracted into `editor/CursorReference` so the dock and the hover cannot disagree. The traps behind
+the decisions are in §9.
+
 **Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock beside Problems backed
 by `ui/FindInFiles` (a chunked, cancellable walk of the project directory) and `ui/FindInFilesView`,
 with the scan itself shared with the editor's find bar through the new `editor/FindScan` — which
@@ -1360,6 +1367,18 @@ load-bearing dependency — which the detection order above already guarantees.
   the rule is now in §11); and **two shortcuts on one key are ambiguous** — Qt logs "ambiguous
   shortcut overload" and fires *neither*, measured in a throwaway program, which is why the dock
   claims F4 with a `ShortcutOverride` instead of binding a second F4 shortcut.
+
+- **Completion's two Qt traps were found by running, and the vocabulary was one regex until now**
+  (2026-10-17, `feature/completion`). A `QCompleter` attached with `setWidget()` to a widget that is
+  not a `QLineEdit` **hides its own popup as soon as the next key arrives** — its `QCompleter::eventFilter`
+  cannot read the word being typed, concludes the prefix is empty, and calls `popup()->hide()` — measured
+  in the editor's popup test, which saw the first keystroke's popup and no second one; the editor
+  therefore removes the completer's widget filter and drives the prefix and the popup keys itself (the
+  rule is in §11). The same completer's popup is placed at the **widget's** bottom edge, not the caret's,
+  so it is re-moved on every show. Separately, the directive list existed only as a regex inside
+  `AsmHighlighter`, and the first draft of a second copy omitted nineteen of its entries — which is why
+  `editor/Vocabulary.h` is now the single list the highlighter's two patterns and completion's candidates
+  are both built from, asserted by `tst_completion` against the reference the app itself reads.
 
 ### Verified by CI (executed on real runners)
 
@@ -1711,6 +1730,11 @@ requirements:
 - Never hand Qt's `indexOf`/`lastIndexOf` family a `from` that can be negative: a negative `from`
   means "search from the end", so asking for the line containing position 0 of a file returns the
   *last* line instead. Guard with `position > 0` before subtracting.
+- A `QCompleter` attached with `setWidget()` to anything that is not a `QLineEdit` hides its own
+  popup on the next keystroke (its filter reads the widget as a line edit, fails, and treats the
+  prefix as empty). Remove the completer's widget filter and drive the prefix and the popup keys
+  yourself, as `CodeEditor` and `ConsoleInput` both do; its generic popup geometry is the widget's
+  bottom edge, so move the popup to the caret on every show.
 - A test must be portable in what it *asserts*, not only in what it builds. A case whose expectations
   came from a literal `/p/demo/hello.s` passed on Linux and macOS and failed on Windows MSVC, where
   that is not an absolute path at all; `QTemporaryDir` is where an absolute path comes from.

@@ -5,11 +5,14 @@
 #include "editor/CodeEditor.h"
 
 #include "editor/AsmHighlighter.h"
+#include "editor/AsmLex.h"
 #include "editor/EditorTheme.h"
 #include "editor/FindScan.h"
 #include "editor/LuaHighlighter.h"
 #include "support/FileWrite.h"
 
+#include <QAbstractItemView>
+#include <QCompleter>
 #include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
@@ -23,7 +26,9 @@
 #include <QPainter>
 #include <QPolygonF>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollBar>
+#include <QStringListModel>
 #include <QShortcut>
 #include <QStringConverter>
 #include <QTextBlock>
@@ -131,6 +136,14 @@ private:
     CodeEditor *m_editor;
 };
 
+/// How many candidates the completion popup keeps: enough to choose from, small
+/// enough that the list is read rather than scrolled. The model ranks them, so
+/// these are the best matches, not the first ones.
+constexpr int kCompletionLimit = 20;
+/// The popup's width: the editor can be a thousand pixels wide, and a completion
+/// list that wide is a wall of text.
+constexpr int kCompletionWidth = 360;
+
 /// The gutter column to the right of the line numbers that the program
 /// counter's ▶ occupies, and nothing else.
 ///
@@ -206,6 +219,7 @@ CodeEditor::CodeEditor(const EditorTheme &theme, QWidget *parent)
 
     buildFindBar();
     buildGotoBar();
+    buildCompletions();
 
     updateLineNumberAreaWidth(0);
 }
@@ -1128,8 +1142,208 @@ void CodeEditor::replaceAll()
     m_findEdit->setFocus();
 }
 
+void CodeEditor::buildCompletions()
+{
+    // The completer is built before the model it filters: QObject destroys
+    // children in the order they were added, and the completer holds a bare
+    // pointer to that model (ConsoleInput documents the same ordering).
+    m_completer = new QCompleter(this);
+    m_completionWords = new QStringListModel(this);
+    m_completer->setModel(m_completionWords);
+    m_completer->setCaseSensitivity(Qt::CaseInsensitive);
+    m_completer->setCompletionMode(QCompleter::PopupCompletion);
+    // setWidget(), not a QLineEdit-style setCompleter: there is no such thing on a
+    // plain-text editor, and the completion prefix is the word *at the caret*
+    // rather than the whole document, so it is set by hand before every popup.
+    m_completer->setWidget(this);
+    // QCompleter installs itself as an event filter on the widget it completes,
+    // and for a widget that is not a QLineEdit it cannot read the word being typed:
+    // it decided the prefix was empty and hid the popup on the very next keystroke
+    // (measured). This editor sets the prefix and handles the popup's keys itself,
+    // so the filter is removed rather than worked around.
+    removeEventFilter(m_completer);
+    connect(m_completer, qOverload<const QString &>(&QCompleter::activated),
+            this, &CodeEditor::insertCompletion);
+    // Created here so its identity is settled: it is a top-level window the
+    // completer owns and deletes with itself, and asking for it while listing is
+    // already under way would leave the wrong view under this pointer.
+    m_completionPopup = m_completer->popup();
+    // Installed after the completer's own filter, which makes this one run first:
+    // Tab and Return mean "take the candidate" here, and the completer's own idea
+    // of the keys would walk the focus chain instead.
+    m_completionPopup->installEventFilter(this);
+}
+
+void CodeEditor::setCompletions(const QList<CompletionItem> &items)
+{
+    m_completions.setItems(items);
+}
+
+bool CodeEditor::completionVisible() const
+{
+    return m_completionPopup && m_completionPopup->isVisible();
+}
+
+QStringList CodeEditor::completionCandidates() const
+{
+    return m_completionWords ? m_completionWords->stringList() : QStringList();
+}
+
+QString CodeEditor::completionPrefix() const
+{
+    const QTextCursor cursor = textCursor();
+    const QString line = cursor.block().text();
+    const int column = cursor.positionInBlock();
+    // A comment is prose: completing inside one would offer words that belong to
+    // the code, not to what is being written.
+    const int comment = asmlex::commentStart(line);
+    if (comment >= 0 && column > comment)
+        return {};
+
+    int start = column;
+    while (start > 0 && asmlex::isWordChar(line.at(start - 1)))
+        --start;
+    return line.mid(start, column - start);
+}
+
+void CodeEditor::showCompletions(bool explicitRequest)
+{
+    const QString prefix = completionPrefix();
+    if (prefix.isEmpty() && !explicitRequest) {
+        hideCompletions();
+        return;
+    }
+
+    const QList<CompletionItem> candidates = m_completions.matches(prefix, kCompletionLimit);
+    // A word already typed in full is not a candidate: there is nothing to offer
+    // when the only match is what is already on screen.
+    if (candidates.isEmpty()
+        || (candidates.size() == 1 && candidates.first().text == prefix)) {
+        hideCompletions();
+        return;
+    }
+
+    QStringList words;
+    words.reserve(candidates.size());
+    for (const CompletionItem &item : candidates)
+        words.append(item.text);
+    m_completionWords->setStringList(words);
+    m_completer->setCompletionPrefix(prefix);
+    m_completer->complete();
+    placeCompletionPopup();
+}
+
+void CodeEditor::hideCompletions()
+{
+    if (m_completionPopup)
+        m_completionPopup->hide();
+}
+
+void CodeEditor::placeCompletionPopup()
+{
+    if (!m_completionPopup)
+        return;
+
+    // QCompleter places a popup for a line edit, which puts this one at the
+    // editor's bottom edge; a code editor wants it under the caret being
+    // completed. The move survives prefix changes (measured), so it only has to
+    // happen when the popup is (re)shown.
+    const QRect caret = cursorRect();
+    const int width = qMin(rect().width(), kCompletionWidth);
+    const int height = m_completionPopup->sizeHint().height();
+    QPoint topLeft = mapToGlobal(caret.bottomLeft()) + QPoint(0, 2);
+    if (const QScreen *current = screen()) {
+        const QRect available = current->availableGeometry();
+        topLeft.setX(qBound(available.left(), topLeft.x(), available.right() - width));
+        // Below the caret unless that runs off the screen, in which case above it
+        // — the rule a tooltip uses.
+        if (topLeft.y() + height > available.bottom())
+            topLeft.setY(mapToGlobal(caret.topLeft()).y() - height - 2);
+    }
+    m_completionPopup->setFixedWidth(width);
+    m_completionPopup->move(topLeft);
+}
+
+bool CodeEditor::completionKey(QKeyEvent *key)
+{
+    if (!m_completionPopup)
+        return false;
+
+    switch (key->key()) {
+    case Qt::Key_Tab:
+    case Qt::Key_Return:
+    case Qt::Key_Enter: {
+        // The highlighted candidate, or the first when nothing is highlighted yet:
+        // a list the user asked for is a list they meant to take one from.
+        QModelIndex index = m_completionPopup->currentIndex();
+        if (!index.isValid() && m_completionPopup->model())
+            index = m_completionPopup->model()->index(0, 0);
+        if (index.isValid())
+            insertCompletion(index.data(Qt::DisplayRole).toString());
+        else {
+            hideCompletions();
+        }
+        return true;
+    }
+    case Qt::Key_Up:
+    case Qt::Key_Down: {
+        if (!m_completionPopup->model())
+            return false;
+        const int count = m_completionPopup->model()->rowCount();
+        if (count <= 0)
+            return false;
+        int row = m_completionPopup->currentIndex().isValid()
+                      ? m_completionPopup->currentIndex().row()
+                      : -1;
+        row += key->key() == Qt::Key_Down ? 1 : -1;
+        row = ((row % count) + count) % count; // wraps, like the find bar's Next
+        m_completionPopup->setCurrentIndex(m_completionPopup->model()->index(row, 0));
+        return true;
+    }
+    case Qt::Key_Escape:
+        // Dismisses the list, not the line: the user is choosing among candidates,
+        // not abandoning what they are typing.
+        hideCompletions();
+        return true;
+    default:
+        return false;
+    }
+}
+
+void CodeEditor::insertCompletion(const QString &word)
+{
+    if (!word.isEmpty()) {
+        QTextCursor cursor = textCursor();
+        // Replace the word the popup was completing — the token at the caret, not
+        // the line, which is why the completer is attached with setWidget().
+        const int typed = completionPrefix().size();
+        if (typed > 0)
+            cursor.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, typed);
+        cursor.insertText(word);
+        setTextCursor(cursor);
+    }
+    hideCompletions();
+}
+
+bool CodeEditor::event(QEvent *event)
+{
+    // The keys that choose from the popup: handled here as well as in the popup's
+    // own filter, because a popup that could not take the keyboard (a headless
+    // platform, a test) would otherwise leave Tab indenting under a visible list.
+    if (event->type() == QEvent::KeyPress && completionVisible()
+        && completionKey(static_cast<QKeyEvent *>(event))) {
+        return true;
+    }
+    return QPlainTextEdit::event(event);
+}
+
 void CodeEditor::keyPressEvent(QKeyEvent *event)
 {
+    // Ctrl+Space asks for completion explicitly, with or without a typed word.
+    if (event->key() == Qt::Key_Space && (event->modifiers() & Qt::ControlModifier)) {
+        showCompletions(true);
+        return;
+    }
     if (event->key() == Qt::Key_Escape && findBarVisible()) {
         hideFindBar();
         return;
@@ -1155,10 +1369,30 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
     QPlainTextEdit::keyPressEvent(event);
+
+    // Completion follows the word being typed; any other key ends the word. The
+    // keys that *choose* from the list are claimed earlier (event(), and the
+    // popup's own filter).
+    if (completionVisible()) {
+        if (event->key() == Qt::Key_Backspace
+            || (!event->text().isEmpty() && asmlex::isWordChar(event->text().at(0)))) {
+            showCompletions(false);
+        } else {
+            hideCompletions();
+        }
+    } else if (!event->text().isEmpty() && asmlex::isWordChar(event->text().at(0))) {
+        showCompletions(false);
+    }
 }
 
 bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
 {
+    // A popup takes the keyboard for itself, in which case these keys arrive here
+    // rather than at keyPressEvent().
+    if (watched == m_completionPopup && event->type() == QEvent::KeyPress
+        && completionKey(static_cast<QKeyEvent *>(event))) {
+        return true;
+    }
     if (event->type() == QEvent::KeyPress
         && (watched == m_findEdit || watched == m_replaceEdit || watched == m_gotoEdit)) {
         auto *key = static_cast<QKeyEvent *>(event);

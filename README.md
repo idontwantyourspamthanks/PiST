@@ -87,7 +87,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   (Ctrl+C/X/V) and delete; pasting keeps transparent pixels see-through.
 - **Project files** — the left pane groups the host project (the GEMDOS hard drive) with Disk A
   and Disk B. Change or eject a floppy there (the same paths as in project settings); export
-  selected hard-drive files to a new `.st` or `.msa` image
+  selected hard-drive files to a new `.st` or `.msa` image; and edit a disk's own contents —
+  Copy / Cut / Paste between panes, and **Delete…**, **Rename…** and **New Folder…** inside an
+  image, each rewriting the image through the same confirm-and-rebuild gate the transfers use
 - **Project settings** — include paths, defines, target CPU, the assembler's own command-line
   arguments per build mode (**Debug** and **Release**, each editable one-argument-per-line with a
   **Reset** to defaults), and the emulator's machine, ROM, monitor, RAM, hard disk and floppy

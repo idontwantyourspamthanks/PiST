@@ -1058,6 +1058,12 @@ afresh on every arm, because GEMDOS picks the load address again each run. The s
 keeps the name and never the address, so the stale-address failure has nowhere to live; the remote
 verbs are the set/clear pair `watchpoint <a|l>` / `clearwatchpoint [a|l]`, and the MCP tools follow.
 
+**Floppy-image pane residue** (sheet §6) is delivered on `feature/floppy-residue`: the pane can
+now Delete…, Rename… and create a New Folder… inside a mounted image, as three more operations on
+`floppy::Transfer` (`removeEntries`/`renameEntry`/`makeDirectory`) behind the transfers' own
+confirm/resync preamble, with a name the disk already shows refused rather than numbered. The
+add/edit/remove core the sheet verified as already delivered is unchanged.
+
 **Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock beside Problems backed
 by `ui/FindInFiles` (a chunked, cancellable walk of the project directory) and `ui/FindInFilesView`,
 with the scan itself shared with the editor's find bar through the new `editor/FindScan` — which
@@ -1374,6 +1380,17 @@ load-bearing dependency — which the detection order above already guarantees.
   the rule is now in §11); and **two shortcuts on one key are ambiguous** — Qt logs "ambiguous
   shortcut overload" and fires *neither*, measured in a throwaway program, which is why the dock
   claims F4 with a `ShortcutOverride` instead of binding a second F4 shortcut.
+
+- **A name the disk already shows must be refused, not numbered** (2026-10-17, `feature/floppy-residue`).
+  `updateImage`'s documented rule for an addition whose 8.3 name is taken is to *number* it, which is
+  what makes a paste never overwrite — and it is exactly wrong for a rename, which would silently
+  become `NAME(2)` while the pane showed the name that was asked for. The controller therefore
+  checks the destination directory itself before writing and returns a `NameTaken` outcome the
+  browser phrases. The comparison is the display spelling the pane shows (the 8.3 conversion is
+  internal to the writer), so an entry whose stored name field differs from its display name can
+  still collide and be numbered — documented at the function rather than left to be discovered.
+  The second, quieter rule: the directory listing is taken *after* the confirm question, never
+  before, because `confirmTargets` re-reads the drives once every question is answered.
 
 - **A greedy regex tail ate a width suffix, and only a probe found it** (2026-10-17,
   `feature/watchpoint-symbols`). The text form parses `[label][.b|.w|.l]`, and the label

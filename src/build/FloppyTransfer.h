@@ -66,6 +66,7 @@ public:
         SourceRemovalFailed,     ///< `subject` kept entries the copy took off it
         DestinationInsideSource, ///< `subject` cannot be put inside itself
         NothingToCopy,           ///< the chosen entries matched nothing on the disk
+        NameTaken,               ///< the disk already shows an entry called `subject`
     };
 
     /// Why an entry of a copied set could not be written to the host. The
@@ -137,6 +138,39 @@ public:
     /// so a paste never silently overwrites; shared with the hard-drive
     /// transfer, which parses the same host-side collisions.
     static QString uniqueHostDestination(const QString &dir, const QString &name);
+
+    // --- editing the disk itself ------------------------------------------
+    //
+    // The three operations the pane's own menu offers, which are `updateImage`
+    // calls in different hats: drop an entry, rename one, and make an empty
+    // folder. They run the same confirm/resync preamble as the transfers above,
+    // so a rebuild of somebody else's disk is asked about before it happens and
+    // a drive that moved on while the question was up is noticed.
+
+    /// Remove `entryPaths` — image-relative, as `listRaw` reports them — from
+    /// `drive`. A chosen folder takes its whole subtree, because that is the
+    /// writer's own removal rule; nothing else on the disk is touched.
+    Result removeEntries(int drive, const QStringList &entryPaths);
+
+    /// Rename `entryPath` (image-relative) to `newName` within its own
+    /// directory. A file is read out and re-added under the new name; a folder
+    /// is re-added with its contents inside it, so its shape survives. A name
+    /// the directory already shows is refused rather than numbered: the writer's
+    /// rule for an addition whose 8.3 name is taken is to number it, which is
+    /// right for a copy and wrong for a rename.
+    ///
+    /// The comparison is the spelling the pane shows. An entry whose *stored*
+    /// name field differs from its displayed one — a real disk's lower-case or
+    /// accented field — can therefore still collide, and the writer numbers the
+    /// addition rather than failing the write.
+    Result renameEntry(int drive, const QString &entryPath, const QString &newName);
+
+    /// Create the empty folder `name` inside the image directory `dirInImage`
+    /// (empty for the image root) of `drive`. An empty folder is a first-class
+    /// entry on a disk (`listRaw` lists directories in addition to the files
+    /// they hold). A name the directory already shows is refused, exactly as in
+    /// `renameEntry`.
+    Result makeDirectory(int drive, const QString &dirInImage, const QString &name);
 
 private:
     /// One disk a transfer is about to rebuild, and the drive it sits in.

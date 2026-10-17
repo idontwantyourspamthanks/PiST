@@ -77,6 +77,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QTabBar>
@@ -534,6 +535,10 @@ private slots:
     /// it was filled: ejecting that disk, or putting another one in the drive,
     /// must take the clipboard — and Paste — with it.
     void fileBrowserClipboardDiesWithItsDisk();
+    /// The pane's own menu edits the image in place: Delete drops an entry,
+    /// Rename re-adds it under a new name, New Folder makes an empty one, and a
+    /// refused name leaves the image alone. The image is asserted, not the row.
+    void floppyPaneEditsItsDisk();
     /// A move across volumes materialises a nested symlink rather than handing
     /// it to whatever QFile::rename does internally. A guard, not a red: see
     /// the test's comment for what was measured.
@@ -6058,6 +6063,163 @@ void TstGui::fileBrowserClipboardDiesWithItsDisk()
     QVERIFY2(pasteEnabledInMenu(), "a fresh copy must offer Paste again");
     browser->setFloppyImages({imageA, imageB});
     QVERIFY2(!pasteEnabledInMenu(), "a different disk in the drive must take Paste with it");
+}
+
+// The pane's own menu edits the image itself: Delete, Rename and New Folder are
+// updateImage calls under a dialog, so what the pane shows and what the disk
+// holds must move together. The image is the truth here — the assertions read it
+// back with listRaw / readFileRaw rather than trusting the rows — and a refused
+// edit must leave it byte-identical, since nothing was written.
+void TstGui::floppyPaneEditsItsDisk()
+{
+    const QString dir = m_work->path() + QStringLiteral("/paneedit");
+    QVERIFY(QDir().mkpath(dir));
+
+    QVector<floppy::Item> items;
+    floppy::Item one;
+    one.destPath = QStringLiteral("ONE.TXT");
+    one.data = QByteArrayLiteral("one");
+    items.append(one);
+    floppy::Item two;
+    two.destPath = QStringLiteral("TWO.TXT");
+    two.data = QByteArrayLiteral("two payload");
+    items.append(two);
+    const QString image = dir + QStringLiteral("/edit.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    MainWindow window;
+    // The constructor queues "reopen where the user left off" on a zero-delay
+    // timer, which re-syncs the disk slots from the (empty) project settings.
+    // Flush it before mounting the image: otherwise the next event loop a modal
+    // dialog runs lands it after the mount and wipes it.
+    QCoreApplication::processEvents();
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->setFloppyImages({image, QString()});
+    auto *view = browser->findChild<QTreeView *>(QStringLiteral("diskAView"));
+    QVERIFY(view);
+
+    // The pane's rows as image-relative paths, however deep a folder nests
+    // (the model touches only its own rows; walk it from the view's model).
+    const QAbstractItemModel *paneModel = view->model();
+    const auto paneEntries = [paneModel]() {
+        QStringList found;
+        std::function<void(const QModelIndex &)> walk = [&](const QModelIndex &parent) {
+            for (int row = 0; row < paneModel->rowCount(parent); ++row) {
+                const QModelIndex index = paneModel->index(row, 0, parent);
+                const QString path = index.data(Qt::UserRole).toString();
+                if (!path.isEmpty())
+                    found.append(path);
+                walk(index);
+            }
+        };
+        walk(QModelIndex());
+        return found;
+    };
+    // What the disk itself holds, read straight from the image bytes.
+    const auto listOnDisk = [&image](QString *err) {
+        QByteArray raw;
+        if (!floppy::loadRaw(image, &raw, err))
+            return QStringList{};
+        QStringList paths;
+        for (const floppy::Entry &e : floppy::listRaw(raw, err))
+            paths.append(e.path);
+        return paths;
+    };
+
+    QStringList paneStart = paneEntries();
+    paneStart.sort();
+    QStringList diskStart = listOnDisk(&error);
+    diskStart.sort();
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(paneStart, QStringList({QStringLiteral("ONE.TXT"), QStringLiteral("TWO.TXT")}));
+    QCOMPARE(diskStart, QStringList({QStringLiteral("ONE.TXT"), QStringLiteral("TWO.TXT")}));
+
+    // Delete: the pane loses the row and the image loses the entry.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->button(QMessageBox::Yes)->click();
+    });
+    browser->deleteFloppyEntries(0, {QStringLiteral("ONE.TXT")});
+    QStringList paneAfterDelete = paneEntries();
+    paneAfterDelete.sort();
+    QCOMPARE(paneAfterDelete, QStringList({QStringLiteral("TWO.TXT")}));
+    QVERIFY2(!listOnDisk(&error).contains(QStringLiteral("ONE.TXT")), qPrintable(error));
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+
+    // Rename: both the row and the image follow the new name, the old spelling
+    // is gone, and the bytes are the ones the entry was written with.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("THREE.TXT"));
+            dialog->accept();
+        }
+    });
+    browser->renameFloppyEntry(0, QStringLiteral("TWO.TXT"));
+    QCOMPARE(paneEntries(), QStringList({QStringLiteral("THREE.TXT")}));
+    QVERIFY2(listOnDisk(&error).contains(QStringLiteral("THREE.TXT")), qPrintable(error));
+    QVERIFY2(!listOnDisk(&error).contains(QStringLiteral("TWO.TXT")), qPrintable(error));
+    {
+        QByteArray raw;
+        QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+        QByteArray bytes;
+        QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("THREE.TXT"), &bytes, &error),
+                 qPrintable(error));
+        QCOMPARE(bytes, QByteArrayLiteral("two payload"));
+    }
+
+    // New Folder: an empty folder is an entry of its own — it shows in the pane
+    // and the disk lists it with its directory bit set.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("NEWDIR"));
+            dialog->accept();
+        }
+    });
+    browser->makeFloppyDirectory(0, QString());
+    QVERIFY(paneEntries().contains(QStringLiteral("NEWDIR")));
+    {
+        QByteArray raw;
+        QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+        bool isDir = false;
+        for (const floppy::Entry &e : floppy::listRaw(raw, &error)) {
+            if (e.path == QStringLiteral("NEWDIR"))
+                isDir = e.isDirectory;
+        }
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY2(isDir, "a folder the pane made must be a directory on the disk");
+    }
+
+    // The refusals. The poller answers whatever modal comes up: a name the
+    // directory already shows is the controller's NameTaken (its warning is
+    // closed), and a name the dialog itself rejects never reaches the disk.
+    // Either way nothing is written, so the image stays byte-identical.
+    QByteArray before;
+    QVERIFY2(floppy::loadRaw(image, &before, &error), qPrintable(error));
+    const QStringList rowsBefore = paneEntries();
+    QString submitted = QStringLiteral("NEWDIR");   // already there: NameTaken
+    QTimer poller;
+    poller.setInterval(10);
+    QObject::connect(&poller, &QTimer::timeout, [&submitted] {
+        QWidget *modal = QApplication::activeModalWidget();
+        if (auto *dialog = qobject_cast<QInputDialog *>(modal)) {
+            dialog->setTextValue(submitted);
+            dialog->accept();
+        } else if (auto *box = qobject_cast<QMessageBox *>(modal)) {
+            box->close();
+        }
+    });
+    poller.start();
+    browser->makeFloppyDirectory(0, QString());
+    submitted = QStringLiteral("BAD/NAME");         // the dialog refuses it
+    browser->makeFloppyDirectory(0, QString());
+    poller.stop();
+
+    QCOMPARE(paneEntries(), rowsBefore);
+    QByteArray after;
+    QVERIFY2(floppy::loadRaw(image, &after, &error), qPrintable(error));
+    QCOMPARE(after, before);
 }
 
 // A move across volumes must materialise a symbolic link inside the moved tree

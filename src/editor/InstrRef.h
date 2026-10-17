@@ -19,6 +19,20 @@ struct InstructionInfo
     QString mnemonic;
     QString summary;
     QString flags;
+
+    /// A minimal fragment showing the instruction in use: its lines separated by
+    /// `\n`, each indented as it would be in a source file. It may assume the
+    /// context every example shares — the label `start`, and `msg` / `buffer` as
+    /// data — and nothing else.
+    ///
+    /// `tst_reference` assembles every non-empty one through vasm under
+    /// `-m68060`, so an example that stops assembling fails the suite instead of
+    /// shipping as prose. Empty when the instruction is not worth one (`nop`).
+    QString example{};
+
+    /// One sentence of when to reach for it, or empty. The same rule `flags`
+    /// keeps: an honest nothing beats a wrong or padded something.
+    QString typicalUse{};
 };
 
 /// The whole reference, in the order it should be listed: grouped by what the

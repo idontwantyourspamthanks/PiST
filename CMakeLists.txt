@@ -740,6 +740,15 @@ qt_add_executable(tst_completion
 target_link_libraries(tst_completion PRIVATE pist_editor Qt6::Test)
 pist_add_test(completion)
 
+# The reference's authoring rules: every entry of both tables carries an example
+# and a typical use, every example assembles under vasm (the case skips without
+# it), and an example belongs to the entry it is attached to.
+qt_add_executable(tst_reference
+    tests/tst_reference.cpp
+)
+target_link_libraries(tst_reference PRIVATE pist_editor Qt6::Test)
+pist_add_test(reference)
+
 # Multi-module source mapping through a linker's map file. The end-to-end case
 # runs a real vasm+vlink when both are available and skips otherwise, so CI
 # without vlink still exercises the parsing and the address arithmetic.

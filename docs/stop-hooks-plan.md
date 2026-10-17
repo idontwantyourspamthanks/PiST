@@ -363,11 +363,11 @@ The README's API list is the contract; if a capability is not in it, the docs do
   assert the value.
 - **`tst_hrdb`** (L2) — one stop-hook case against the fork, skipping without `$PIST_HRDB_HATARI`.
 
-Not covered, and said so rather than implied: the **dialog's own behaviour**. `accept()` validates
-the path through a modal warning, which an offscreen test cannot answer without hanging — the same
-hazard that keeps modal dialogs out of this suite. The dialog's values are read back in the window,
-not in a test, and a later suite can drive it through `QApplication::notify` if that becomes worth
-proving.
+Not covered, and said so rather than implied: the dialog's **validation**. `accept()` refuses an
+unreadable path through a modal warning, which an offscreen test cannot answer without hanging — the
+same hazard that keeps modal dialogs out of this suite. What the dialog *decides* is covered:
+`tst_gui`'s `stopHooksDialogGatesItsFieldsOnWhetherItRuns` pins that the path and auto-continue
+fields are inert while the hook is off, and that the last-run line is never blank.
 
 None of the rest asserts wiring, forwarding or "it did not throw": each fails on a plausible bug —
 stale state, silent drop, wedged session, wrong stop.

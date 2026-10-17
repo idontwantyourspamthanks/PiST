@@ -23,8 +23,13 @@ class StopHooksDialog : public QDialog
     Q_OBJECT
 
 public:
+    /// `scriptPath`, `enabled` and `autoContinue` are the project's current
+    /// answers. `lastRun` is how the hook ended the last time it ran in this
+    /// session (`StopHookRunner::lastRunSummary()`), or empty when it has not —
+    /// shown read-only, because "did my script fire?" is otherwise unanswerable
+    /// until it does something noisy.
     StopHooksDialog(const QString &scriptPath, bool enabled, bool autoContinue,
-                    QWidget *parent = nullptr);
+                    const QString &lastRun, QWidget *parent = nullptr);
 
     /// The script path, as typed (or empty).
     QString scriptPath() const;

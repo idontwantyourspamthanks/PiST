@@ -19,7 +19,7 @@
 namespace pist {
 
 StopHooksDialog::StopHooksDialog(const QString &scriptPath, bool enabled, bool autoContinue,
-                                 QWidget *parent)
+                                 const QString &lastRun, QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(tr("Stop hooks"));
@@ -63,6 +63,13 @@ StopHooksDialog::StopHooksDialog(const QString &scriptPath, bool enabled, bool a
     api->setObjectName(QStringLiteral("stopHooksApi"));
     api->setWordWrap(true);
 
+    auto *last = new QLabel(
+        lastRun.isEmpty() ? tr("Last run: none yet this session.")
+                          : tr("Last run: %1").arg(lastRun),
+        this);
+    last->setObjectName(QStringLiteral("stopHooksLastRun"));
+    last->setWordWrap(true);
+
     auto *form = new QFormLayout;
     form->addRow(tr("Script:"), pathRow);
 
@@ -76,6 +83,7 @@ StopHooksDialog::StopHooksDialog(const QString &scriptPath, bool enabled, bool a
     layout->addLayout(form);
     layout->addWidget(m_autoContinue);
     layout->addWidget(api);
+    layout->addWidget(last);
     layout->addStretch(1);
     layout->addWidget(buttons);
 

@@ -4514,7 +4514,8 @@ void MainWindow::addWatchpoint()
 void MainWindow::editStopHooks()
 {
     StopHooksDialog dialog(m_settings.stopHookPath, m_settings.stopHookEnabled,
-                           m_settings.stopHookAutoContinue, this);
+                           m_settings.stopHookAutoContinue,
+                           m_hooks ? m_hooks->lastRunSummary() : QString(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
 

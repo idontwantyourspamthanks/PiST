@@ -33,6 +33,7 @@
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
 #include "ui/MainWindow.h"
+#include "ui/StopHooksDialog.h"
 #include "build/BuildService.h"
 #include "build/FloppyImage.h"
 #include "ui/DisassemblyView.h"
@@ -739,6 +740,9 @@ private slots:
     // Run ▸ Stop hooks… is the feature's only doorway: an action that exists but
     // was never added to a menu would leave it unreachable.
     void runMenuOffersStopHooks();
+    /// The stop-hook dialog's own logic: fields that mean nothing while the hook
+    /// is off, and a last-run line that is never blank.
+    void stopHooksDialogGatesItsFieldsOnWhetherItRuns();
 
 private:
     QString m_vasm;
@@ -9144,6 +9148,39 @@ void TstGui::settingsDialogFitsAShortScreenWithReachableButtons()
 
     dialog.removeEventFilter(&counter);
     QCOMPARE(counter.resizes, 0);
+}
+
+// The dialog's one piece of logic: with the hook switched off, the script path
+// and the auto-continue answer mean nothing and must not invite typing — a user
+// who fills them in while the hook is off has configured nothing.
+void TstGui::stopHooksDialogGatesItsFieldsOnWhetherItRuns()
+{
+    StopHooksDialog off(QStringLiteral("trainer.lua"), false, true, QString());
+    auto *offPath = off.findChild<QLineEdit *>(QStringLiteral("stopHooksPath"));
+    auto *offAuto = off.findChild<QCheckBox *>(QStringLiteral("stopHooksAutoContinue"));
+    QVERIFY2(offPath && offAuto, "both fields must exist to be gated");
+    QVERIFY(!offPath->isEnabled());
+    QVERIFY(!offAuto->isEnabled());
+
+    StopHooksDialog on(QStringLiteral("trainer.lua"), true, true,
+                       QStringLiteral("ran at pc $001234"));
+    auto *onPath = on.findChild<QLineEdit *>(QStringLiteral("stopHooksPath"));
+    auto *onAuto = on.findChild<QCheckBox *>(QStringLiteral("stopHooksAutoContinue"));
+    QVERIFY(onPath && onAuto);
+    QVERIFY(onPath->isEnabled());
+    QVERIFY(onAuto->isEnabled());
+
+    // The last run is reported even when there has not been one: a blank line
+    // would read as "it ran and said nothing".
+    auto *last = on.findChild<QLabel *>(QStringLiteral("stopHooksLastRun"));
+    QVERIFY(last);
+    QVERIFY(!last->text().isEmpty());
+
+    StopHooksDialog never(QString(), false, false, QString());
+    auto *neverLast = never.findChild<QLabel *>(QStringLiteral("stopHooksLastRun"));
+    QVERIFY(neverLast);
+    QVERIFY2(neverLast->text().contains(QStringLiteral("none yet")),
+             qPrintable(neverLast->text()));
 }
 
 // Run ▸ Stop hooks… is the stop hook's only doorway. An action that exists but

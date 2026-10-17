@@ -1387,6 +1387,13 @@ load-bearing dependency — which the detection order above already guarantees.
   `ok` exactly — a reminder that a single-line reply's *text* is an interface, and that the
   document of record for the verbs is `ControlProtocol.h`'s table, not the tests.
 
+- **Qt's `arg` overload set grows between minor versions** (2026-10-17, `feature/watchpoint-symbols`).
+  `QStringLiteral("%1.%2").arg(symbol, QLatin1Char(width))` compiles against the development
+  machine's Qt 6.10.2 and has **no overload** in the 6.8.1 the CI pins — it failed on gcc, clang and
+  MSVC at once, at the same line. The chained form (`.arg(symbol).arg(QLatin1Char(width))`) is the
+  one that exists in both, and the local build is not evidence about the floor the project ships
+  against.
+
 - **A watchpoint can be named, and the name is resolved by the rule that already existed**
   (2026-10-17, `feature/watchpoint-symbols`). `labelAddress()` (`build/SymbolTable.h`) was written
   for a hook script's `sym()` and the remote `breakpoint <label>` verb, and it documents that *the
@@ -1759,6 +1766,10 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- The CI's pinned Qt is the floor, not the local one. Build locally against something newer and
+  the compiler happily accepts APIs the pinned version lacks — a two-argument
+  `QString::arg(QString, QChar)` is the case that cost a CI round (chain the calls instead). When
+  an overload's existence is in doubt, prefer the spelling that has existed longest.
 - Never store an address a relocated program gave you. GEMDOS picks the load address afresh on
   every run, so anything derived from one — a breakpoint, a watchpoint resolved from a label, a live
   base — is resolved at arm time and never written back into a model. `planBreakpoints()` and

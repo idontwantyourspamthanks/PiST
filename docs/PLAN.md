@@ -1044,6 +1044,14 @@ code linked into the binary (the numbers are in §9) — and L2 landed with it: 
 bases, the stop's cause, and a script attached to a breakpoint. L3 is the agent surface: the `hook`
 verb, its `pist_hook` MCP tool, and the `hook` event a watcher gets when a script runs.
 
+**Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock beside Problems backed
+by `ui/FindInFiles` (a chunked, cancellable walk of the project directory) and `ui/FindInFilesView`,
+with the scan itself shared with the editor's find bar through the new `editor/FindScan` — which
+makes the sheet's "count the same way in both places" a property of the code rather than a promise.
+The walk is chunked rather than threaded and F4 is *claimed* while the dock has focus rather than
+bound a second time; both are argued in glm-features §3, and the two traps behind those decisions
+are in §9.
+
 ---
 
 ## 7. Legal constraints
@@ -1341,6 +1349,17 @@ load-bearing dependency — which the detection order above already guarantees.
   itself in its own `hook` event, emitted before the `continue()` policy so the wire order is
   `stopped` → `hook` → `running`. The reasoning lives in `docs/stop-hooks-plan.md` §10 rather than
   being absorbed silently.
+
+- **The editor's find bar and Find in Files count through one scan** (2026-10-17,
+  `feature/find-in-files`): `editor/FindScan.h` holds the options, the whole-word filter (a filter on
+  Qt's match, not one of `QTextDocument::FindFlags`) and the 2000-hit cap, and
+  `CodeEditor::collectMatches` calls it — evidenced by the five existing `tst_gui` find tests passing
+  unchanged, with the rules newly pinned directly by `tst_find`. Two traps were found by running
+  rather than reading: a **negative `from` to `QString::lastIndexOf` means "search from the end"**, so
+  the line containing position 0 of a file read as its *last* (caught by the walk's first unit test;
+  the rule is now in §11); and **two shortcuts on one key are ambiguous** — Qt logs "ambiguous
+  shortcut overload" and fires *neither*, measured in a throwaway program, which is why the dock
+  claims F4 with a `ShortcutOverride` instead of binding a second F4 shortcut.
 
 ### Verified by CI (executed on real runners)
 
@@ -1689,6 +1708,9 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- Never hand Qt's `indexOf`/`lastIndexOf` family a `from` that can be negative: a negative `from`
+  means "search from the end", so asking for the line containing position 0 of a file returns the
+  *last* line instead. Guard with `position > 0` before subtracting.
 - A test must be portable in what it *asserts*, not only in what it builds. A case whose expectations
   came from a literal `/p/demo/hello.s` passed on Linux and macOS and failed on Windows MSVC, where
   that is not an absolute path at all; `QTemporaryDir` is where an absolute path comes from.

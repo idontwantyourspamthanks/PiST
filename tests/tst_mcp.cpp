@@ -282,7 +282,7 @@ private slots:
         QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
                                      "pist_build_release", "pist_cmd", "pist_console",
                                      "pist_continue",
-                                     "pist_disasm", "pist_open", "pist_problems",
+                                     "pist_disasm", "pist_hook", "pist_open", "pist_problems",
                                      "pist_profile_results", "pist_profile_start",
                                      "pist_profile_stop", "pist_read", "pist_readmem",
                                      "pist_run", "pist_save", "pist_screenshot",
@@ -460,6 +460,40 @@ private slots:
         QVERIFY(resultText(reply).contains(QLatin1String("error build failed")));
     }
 
+
+    /// The stop hook an agent never sees for itself: `pist_hook` reports the
+    /// script and what its last run did as fields, because parsing a translated
+    /// sentence for a line number is not a contract anyone should rely on.
+    void hookReportsTheScriptAndItsLastRun()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_hook")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("hook"));
+        ide.send("ok\n{\"enabled\":true,\"path\":\"/p/demo/hello.hooks.lua\","
+                 "\"autoContinue\":false,\"last\":{\"ran\":true,\"ok\":false,"
+                 "\"timedOut\":false,\"pc\":\"0x00012596\",\"file\":\"hello.hooks.lua\","
+                 "\"line\":4,\"logs\":0,\"writes\":2,"
+                 "\"message\":\"attempt to index a nil value\"}}\n.\n");
+
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+        const QJsonObject hook = reply.value(QStringLiteral("result")).toObject()
+                                     .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(hook.value(QStringLiteral("enabled")).toBool(), true);
+        QCOMPARE(hook.value(QStringLiteral("path")).toString(),
+                 QStringLiteral("/p/demo/hello.hooks.lua"));
+        const QJsonObject last = hook.value(QStringLiteral("last")).toObject();
+        QCOMPARE(last.value(QStringLiteral("ran")).toBool(), true);
+        QCOMPARE(last.value(QStringLiteral("ok")).toBool(), false);
+        QCOMPARE(last.value(QStringLiteral("line")).toInt(), 4);
+        QCOMPARE(last.value(QStringLiteral("writes")).toInt(), 2);
+        QCOMPARE(last.value(QStringLiteral("message")).toString(),
+                 QStringLiteral("attempt to index a nil value"));
+    }
 
     void newToolMappingsAndStructuredReplies()
     {

@@ -82,6 +82,31 @@ public:
 
     explicit StopHookRunner(Host host, QObject *parent = nullptr);
 
+    /// What a run did, in fields rather than in a sentence: the `hook` verb, its
+    /// MCP tool and the event stream must not parse translated prose.
+    /// `lastRunSummary()` renders this, so the two cannot disagree.
+    struct LastRun
+    {
+        /// True once a script has actually been executed. A skip — no script
+        /// configured, the hook off, the session gone — is not a run.
+        bool ran = false;
+        bool ok = false;
+        /// The budget cut the script off. It did whatever it did up to there.
+        bool timedOut = false;
+        /// The stop the script ran at.
+        quint32 pc = 0;
+        /// The script's own base name (it is what the console and a breakpoint
+        /// label call it), and the line an error came from, -1 when the engine
+        /// reported none.
+        QString file;
+        int line = -1;
+        /// The script's own words when it failed; empty when it worked.
+        QString message;
+        /// What it did: console lines logged and bytes written.
+        int logs = 0;
+        int writes = 0;
+    };
+
     /// A stop was published with a validated state (from `MainWindow`'s stop
     /// publication): run the hook, if the project — or the breakpoint that fired
     /// — has one.
@@ -94,7 +119,15 @@ public:
 
     /// How the last run ended, for the dialog's "last run" line. Empty before the
     /// first run.
-    QString lastRunSummary() const { return m_lastSummary; }
+    QString lastRunSummary() const;
+    /// The same run, as fields. `ran` is false before the first run.
+    const LastRun &lastRun() const { return m_lastRun; }
+
+signals:
+    /// A script ran, and this is what it did — emitted before the `continue()`
+    /// policy runs, so a watcher's `stopped` → `hook` → `running` order holds.
+    /// Not emitted for a skip: there was no run to report.
+    void runFinished(const pist::StopHookRunner::LastRun &last);
 
 private:
     /// The script's view of the debugger: `hooks::HookApi` implemented over the
@@ -146,7 +179,19 @@ private:
     int m_loggedLines = 0;
     bool m_queued = false;
     bool m_running = false;
-    QString m_lastSummary;
+    LastRun m_lastRun;
 };
+
+/// A run as the single line the `hook` event carries to a watcher, and the one
+/// rendering of a run that is not prose: `lastRunSummary()` is written for a
+/// person and is translated, and an agent must not parse a sentence for a line
+/// number.
+///
+/// The shape is `<status> file=<name> line=<n> writes=<n> logs=<n> pc=0x<n>
+/// [message=<the script's own words>]`, with `status` one of `ok`, `timeout`
+/// (the budget cut the script off), `error`, or `norun` (the file could not be
+/// read). `message` is last because it is the only free-text field: everything
+/// after `message=` belongs to it.
+QString hookEventDetail(const StopHookRunner::LastRun &run);
 
 } // namespace pist

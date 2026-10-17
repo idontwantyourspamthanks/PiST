@@ -528,6 +528,16 @@ MainWindow::MainWindow(QWidget *parent)
     };
     m_hooks = new StopHookRunner(hookHost, this);
 
+    // What the hook did reaches a watcher here rather than as part of `stopped`:
+    // that event is published *before* the script runs, because the run needs the
+    // stop's state to be real first (D1). Emitted before the continue policy, so
+    // the wire order is stopped → hook → running.
+    connect(m_hooks, &StopHookRunner::runFinished, this,
+            [this](const StopHookRunner::LastRun &run) {
+                if (m_eventSink)
+                    m_eventSink->publishEvent(QStringLiteral("hook"), hookEventDetail(run));
+            });
+
     RemoteStateAdapter::Host stateHost;
     stateHost.editor = [this]() -> const CodeEditor * { return m_editor; };
     stateHost.backend = [this]() -> const IDebugBackend * { return m_host; };
@@ -539,6 +549,12 @@ MainWindow::MainWindow(QWidget *parent)
     stateHost.symbols = symbolsNow;
     stateHost.programMap = programMapNow;
     stateHost.profile = [this]() -> const AttributedProfile & { return m_profiling->results(); };
+    stateHost.hookEnabled = [this] { return m_settings.stopHookEnabled; };
+    stateHost.hookPath = [this] { return m_settings.stopHookPath; };
+    stateHost.hookAutoContinue = [this] { return m_settings.stopHookAutoContinue; };
+    stateHost.hookLastRun = [this]() -> const StopHookRunner::LastRun & {
+        return m_hooks->lastRun();
+    };
     m_remoteState = new RemoteStateAdapter(stateHost, this);
 
     // Documents live in tabs. openPath() dispatches `.pim` / ST still-images
@@ -4773,6 +4789,11 @@ bool MainWindow::toggleBreakpointAtLabel(const QString &name, QString *detail)
 QJsonArray MainWindow::symbolsJson(const QString &filter) const
 {
     return m_remoteState->symbolsJson(filter);
+}
+
+QJsonObject MainWindow::hookJson() const
+{
+    return m_remoteState->hookJson();
 }
 
 QJsonObject MainWindow::documentJson() const

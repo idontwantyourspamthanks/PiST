@@ -61,6 +61,8 @@ inline constexpr Verb kVerbs[] = {
     {"breakpoint", "breakpoint <n|label>   toggle a breakpoint at a source line (code\n"
                    "                 lines only) or at a symbol's definition", false},
     {"symbols", "symbols [filter] the build's symbols as a JSON array", true},
+    {"hook", "hook             the stop-hook script and what its last run did, as a JSON object",
+     true},
     {"readmem", "readmem <a> <n>  read <n> bytes at <a> as JSON rows (when stopped)", true},
     {"disasm", "disasm [a]       disassembly as JSON rows (when stopped)", true},
     {"setreg", "setreg <n> <v>   write register <n> to <v> (when stopped)", false},

@@ -186,12 +186,25 @@ void StopHookRunner::doRun()
     if (m_writes > 0 && m_host.refresh)
         m_host.refresh();
 
+    // One record of the run, field for field from the engine's result — which is
+    // also why `line` is -1 and `message` empty when nothing went wrong. The
+    // branches below differ only in what they log: a field filled in one of them
+    // and forgotten in another is exactly how a report comes to lie.
+    LastRun run;
+    run.ran = result.ran;
+    run.ok = result.ok;
+    run.timedOut = result.timedOut;
+    run.pc = m_pc;
+    run.file = QFileInfo(result.file).fileName();
+    run.line = result.line;
+    run.message = result.error;
+    run.logs = m_loggedLines;
+    run.writes = m_writes;
+    m_lastRun = run;
+
     if (!result.ran) {
-        m_lastSummary = result.error;
         scriptLog(result.error);
     } else if (!result.ok) {
-        m_lastSummary = result.line >= 0 ? tr("line %1: %2").arg(result.line).arg(result.error)
-                                        : result.error;
         if (result.timedOut)
             scriptLog(tr("%1: stopped after %2 ms — the script did not finish")
                           .arg(result.file)
@@ -201,15 +214,12 @@ void StopHookRunner::doRun()
                           .arg(result.file)
                           .arg(result.line)
                           .arg(result.error));
-    } else {
-        m_lastSummary = tr("%1 ran at pc $%2 — %3 line(s), %4 write(s)")
-                            .arg(QFileInfo(path).fileName(),
-                                 hex::hex32(m_pc, hex::Case::Lower))
-                            .arg(m_loggedLines)
-                            .arg(m_writes);
     }
 
     m_running = false;
+
+    // Before the continue policy, so a watcher sees stopped → hook → running.
+    emit runFinished(m_lastRun);
 
     if (m_continueRequested) {
         if (m_host.autoContinue && m_host.autoContinue()) {
@@ -505,6 +515,47 @@ quint32 StopHookRunner::registerValue(const QString &name) const
     if (name == QLatin1String("usp"))
         return m_regs.usp;
     return m_regs.isp;
+}
+
+QString StopHookRunner::lastRunSummary() const
+{
+    // The one rendering of `m_lastRun`: the dialog's sentence and the `hook`
+    // verb's fields come from the same record, so they cannot come to disagree.
+    // The phrasing itself is for a person, and translated; an agent reads the
+    // fields (`lastRun()`) rather than this.
+    if (!m_lastRun.ran)
+        return m_lastRun.message;
+    if (!m_lastRun.ok) {
+        return m_lastRun.line >= 0
+                   ? tr("line %1: %2").arg(m_lastRun.line).arg(m_lastRun.message)
+                   : m_lastRun.message;
+    }
+
+    return tr("%1 ran at pc $%2 — %3 line(s), %4 write(s)")
+        .arg(m_lastRun.file, hex::hex32(m_lastRun.pc, hex::Case::Lower))
+        .arg(m_lastRun.logs)
+        .arg(m_lastRun.writes);
+}
+
+QString hookEventDetail(const StopHookRunner::LastRun &run)
+{
+    QString status = QStringLiteral("norun");
+    if (run.ran) {
+        if (run.ok)
+            status = QStringLiteral("ok");
+        else
+            status = run.timedOut ? QStringLiteral("timeout") : QStringLiteral("error");
+    }
+
+    QStringList parts{status,
+                      QStringLiteral("file=%1").arg(run.file),
+                      QStringLiteral("line=%1").arg(run.line),
+                      QStringLiteral("writes=%1").arg(run.writes),
+                      QStringLiteral("logs=%1").arg(run.logs),
+                      QStringLiteral("pc=0x%1").arg(hex::hex32(run.pc, hex::Case::Lower))};
+    if (!run.message.isEmpty())
+        parts << QStringLiteral("message=%1").arg(run.message);
+    return parts.join(QLatin1Char(' '));
 }
 
 } // namespace pist

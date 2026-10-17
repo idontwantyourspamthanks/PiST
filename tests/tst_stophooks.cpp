@@ -261,6 +261,12 @@ private slots:
     /// `sym()`, and the two values that describe a stop.
     void symResolvesThroughTheHost();
     void theStopReportsItsCauseToScripts();
+    /// What a run reports to a caller that is a program: the fields the `hook`
+    /// verb, its MCP tool and the `hook` event are built from.
+    void theRunIsReportedInFieldsAndToWatchers();
+    /// ...including the difference between a script that raised and one that
+    /// could not be read at all.
+    void aFailedRunAndAnUnreadableScriptAreToldApart();
     /// A script attached to a breakpoint wins over the project's, and is enabled
     /// by being attached rather than by the project's switch.
     void aBreakpointScriptOverridesTheProjectHook();
@@ -759,6 +765,134 @@ void TstStopHooks::theStopReportsItsCauseToScripts()
     QTest::qWait(150);
     QVERIFY2(console.contains(QStringLiteral("[hook] step at nil")),
              qPrintable(console.join(QLatin1Char('|'))));
+}
+
+/// What a run reports: the fields an agent reads (`hook` verb, `pist_hook` tool,
+/// the `hook` event) and the sentence the dialog shows, rendered from the same
+/// record. A field that drifts from the others is a wrong answer given
+/// confidently, so the numbers here are the script's own effects.
+void TstStopHooks::theRunIsReportedInFieldsAndToWatchers()
+{
+    QTemporaryDir dir;
+    FakeBackend backend;
+    QStringList console;
+    const QString path = writeScript(dir, QStringLiteral("log(\"poking\")\n"
+                                                        "writemem(0x100, 1)\n"
+                                                        "writemem(0x101, 2)"));
+
+    StopHookRunner::Host host;
+    host.backend = [&backend] { return &backend; };
+    host.log = [&console](const QString &line) { console << line; };
+    host.scriptPath = [&path] { return path; };
+    host.enabled = [] { return true; };
+    host.autoContinue = [] { return false; };
+    host.resume = [] {};
+    host.refresh = [] {};
+    host.holdConsole = [](bool) {};
+    StopHookRunner runner(host);
+
+    QList<StopHookRunner::LastRun> runs;
+    connect(&runner, &StopHookRunner::runFinished, this,
+            [&runs](const StopHookRunner::LastRun &run) { runs << run; });
+
+    MachineState state;
+    state.regs.valid = true;
+    state.pc = 0x12596;
+    runner.onStopPublished(state);
+    QTest::qWait(150);
+
+    QCOMPARE(runs.size(), 1);
+    const StopHookRunner::LastRun run = runs.first();
+    QVERIFY(run.ran);
+    QVERIFY(run.ok);
+    QVERIFY(!run.timedOut);
+    QCOMPARE(run.pc, 0x12596u);
+    QCOMPARE(run.file, QStringLiteral("hook.lua"));
+    QCOMPARE(run.logs, 1);
+    QCOMPARE(run.writes, 2);
+    QVERIFY2(run.message.isEmpty(), qPrintable(run.message));
+
+    QCOMPARE(runner.lastRun().ran, true);
+    QCOMPARE(runner.lastRun().writes, 2);
+    QVERIFY2(runner.lastRunSummary().contains(QStringLiteral("2 write(s)")),
+             qPrintable(runner.lastRunSummary()));
+
+    // The event's line, pinned whole: this is what an agent parses, and a field
+    // that quietly changes shape here breaks it without breaking anything that
+    // compiles.
+    QCOMPARE(hookEventDetail(run),
+             QStringLiteral("ok file=hook.lua line=-1 writes=2 logs=1 pc=0x00012596"));
+}
+
+/// A script that raises carries the line and its own words; a script that could
+/// not be read ran *nothing*, which `ran` distinguishes from a failed run. An
+/// agent that could not tell those apart would report "your script raised" for a
+/// typo in a path.
+void TstStopHooks::aFailedRunAndAnUnreadableScriptAreToldApart()
+{
+    QTemporaryDir dir;
+    FakeBackend backend;
+    QStringList console;
+    const QString broken =
+        writeScript(dir, QStringLiteral("local x = nil\nlog(x.field)"),
+                    QStringLiteral("broken.lua"));
+    const QString absent = dir.filePath(QStringLiteral("absent.lua"));
+
+    QString path = broken;
+    StopHookRunner::Host host;
+    host.backend = [&backend] { return &backend; };
+    host.log = [&console](const QString &line) { console << line; };
+    host.scriptPath = [&path] { return path; };
+    host.enabled = [] { return true; };
+    host.autoContinue = [] { return false; };
+    host.resume = [] {};
+    host.refresh = [] {};
+    host.holdConsole = [](bool) {};
+    StopHookRunner runner(host);
+
+    QList<StopHookRunner::LastRun> runs;
+    connect(&runner, &StopHookRunner::runFinished, this,
+            [&runs](const StopHookRunner::LastRun &run) { runs << run; });
+
+    MachineState state;
+    state.regs.valid = true;
+
+    runner.onStopPublished(state);
+    QTest::qWait(150);
+    QCOMPARE(runs.size(), 1);
+    StopHookRunner::LastRun run = runs.first();
+    QVERIFY(run.ran);
+    QVERIFY(!run.ok);
+    QCOMPARE(run.line, 2);
+    QCOMPARE(run.file, QStringLiteral("broken.lua"));
+    QVERIFY2(!run.message.isEmpty(), "the script's own words");
+    QVERIFY2(runner.lastRunSummary().contains(QStringLiteral("line 2")),
+             qPrintable(runner.lastRunSummary()));
+
+    // The script's own words are the engine's, so this pins the shape and the
+    // field that answers "where" rather than the message Lua happens to print.
+    const QString detail = hookEventDetail(run);
+    QVERIFY2(detail.startsWith(QStringLiteral("error file=broken.lua line=2 ")),
+             qPrintable(detail));
+    QVERIFY2(detail.contains(QStringLiteral(" message=")), qPrintable(detail));
+
+    path = absent;
+    runs.clear();
+    runner.onStopPublished(state);
+    QTest::qWait(150);
+    QCOMPARE(runs.size(), 1);
+    run = runs.first();
+    QVERIFY(!run.ran);
+    QVERIFY(!run.ok);
+    QCOMPARE(run.file, QStringLiteral("absent.lua"));
+    QVERIFY2(!run.message.isEmpty(), "why it could not run");
+
+    // `norun` is what keeps an unreadable file from looking like a raising
+    // script: the status token says nothing ran.
+    const QString missingDetail = hookEventDetail(run);
+    QVERIFY2(missingDetail.startsWith(QStringLiteral("norun file=absent.lua ")),
+             qPrintable(missingDetail));
+    QVERIFY2(missingDetail.contains(QStringLiteral(" message=")), qPrintable(missingDetail));
 }
 
 void TstStopHooks::aBreakpointScriptOverridesTheProjectHook()

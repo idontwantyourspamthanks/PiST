@@ -411,6 +411,12 @@ public:
     /// remote `symbols` verb.
     QJsonArray symbolsJson(const QString &filter) const override;
 
+    /// The stop hook as JSON {enabled, path, autoContinue, last {ran, ok,
+    /// timedOut, pc, file, line, logs, writes, message?}} — the project's script
+    /// and what its last run did. For the remote `hook` verb, which the MCP shim
+    /// serves as structured content.
+    QJsonObject hookJson() const override;
+
     /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
     /// Separated from the dialog so the remote-control interface and tests can use
     /// it without a prompt. Returns false and sets error on a bad address.

@@ -603,6 +603,13 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             QJsonDocument(m_host->symbolsJson(arg)).toJson(QJsonDocument::Compact)));
 
 
+    } else if (cmd == QLatin1String("hook")) {
+        // hook: the project's script and what its last run did. The fields, not
+        // the dialog's sentence — an agent reads this, and a sentence is for a
+        // person (and translated).
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_host->hookJson()).toJson(QJsonDocument::Compact)));
+
     } else if (cmd == QLatin1String("step")) {
         m_host->step();
         reply(guarded, QStringLiteral("ok"));

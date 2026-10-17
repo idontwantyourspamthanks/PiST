@@ -1014,8 +1014,8 @@ Six features were agreed for development and one roadmap item binned; the sheet
 of record, with the verified current state of each, is
 [docs/glm-features.md](glm-features.md):
 
-- scripted stop hooks (absorbing FUTURE §10), L4 reference authoring (the
-  remainder of FUTURE §14), find in files, editor completion / symbol palette /
+- scripted stop hooks (absorbing FUTURE §10), reference authoring (`Example:` /
+  `Typical use:` — the remainder of FUTURE §14), find in files, editor completion / symbol palette /
   hover card, watchpoint symbols, and the floppy-image pane residue (Delete /
   Rename / New Folder inside a disk — the add/edit/remove core was verified as
   already delivered during the sheet's writing);
@@ -1029,9 +1029,9 @@ layer** (`docs/tutorial-plan.md`, `lessons/*/lesson.pil`, `src/lessons/`, the
 `Lesson` dock) is **not here yet** — it is `docs/tutorial-plan` (PR #14), held
 back deliberately for a later review pass, which is also why `docs/FUTURE.md`
 has no §14 on this branch and why sheet §2's pointer to it is forward-looking.
-Sheet §2's L4 authoring *depends* on it (`Used in:` names lessons, and the
-examples are assembled against `lessons/`), so L4 starts after that PR lands
-here. The other five features do not touch it and start immediately.
+Sheet §2 was re-scoped on 2026-10-17 to `Example:` / `Typical use:` alone — the
+`Used in:` cross-link to the lessons was dropped — so it no longer depends on that
+PR and can start whenever the reference authoring does.
 
 **Scripted stop hooks** (sheet §1) got its own plan of record on this branch,
 [docs/stop-hooks-plan.md](stop-hooks-plan.md): the trigger is the published stop

@@ -9,14 +9,15 @@ today (verified against the source, with paths), the design, and how to start.
 
 One idea was examined and **binned** rather than agreed; it is recorded here so
 the reasoning survives the conversation that binned it. Pointers in
-`docs/FUTURE.md` direct its §9, §10 and the L4 remainder of §14 to this file.
+`docs/FUTURE.md` direct its §9, §10 and the reference-authoring remainder of §14 to
+this file.
 
 The six agreed features, in the order they are spec'd below:
 
 | # | Feature | Prepares for |
 |---|---|---|
 | 1 | Scripted stop hooks (runs at every debugger stop) | harnesses, trainers, dynamic analysis, agents |
-| 2 | L4 reference authoring (`Example:` / `Used in:` / `Typical use`) | lessons, the reference dock, agents |
+| 2 | Reference authoring (`Example:` / `Typical use:`) | the reference dock, agents |
 | 3 | Find in Files | multi-file projects, day-one expectations |
 | 4 | Editor completion, symbol palette, hover card | editing speed, beginners |
 | 5 | Watchpoint symbols | watchpoints that survive GEMDOS relocation |
@@ -124,12 +125,15 @@ exception is written down.
 
 ---
 
-## 2. L4 reference authoring
+## 2. Reference authoring
 
-**Status:** agreed; the L0–L3 teaching layer is in the tree (see
-`docs/tutorial-plan.md`, `lessons/*/lesson.pil`, `src/lessons/`). This is the
-remainder FUTURE §14 left unstarted: `Example:` / `Used in:` / `Typical use`
-across the whole reference.
+**Status:** agreed; **re-scoped 2026-10-17** to `Example:` / `Typical use:`. The
+`Used in:` cross-link was dropped when the teaching layer went back for a rethink,
+and with it this feature's dependency on `lessons/` — a field that only means
+something with lessons is not agreed work while the lessons themselves are open.
+This is the remainder FUTURE §14 left unstarted, and it stands on its own: the
+reference should say what an instruction is *for* and show it, whether or not
+anything teaches it.
 
 ### What exists
 
@@ -139,7 +143,7 @@ across the whole reference.
   follows the cursor and names the call a `trap #1` is making and with what.
 - The entry types are deliberately terse: `InstructionInfo` carries `mnemonic`,
   `summary`, `flags` — and "the reference would rather say nothing than state a
-  flag effect that is wrong" (`src/editor/InstrRef.h`). The L4 fields must keep
+  flag effect that is wrong" (`src/editor/InstrRef.h`). The new fields must keep
   that discipline.
 - The lessons' own design rule applies here and is the reason to author
   carefully: **a claim that stops being true must fail a test rather than teach
@@ -147,11 +151,10 @@ across the whole reference.
 
 ### The design
 
-Extend the entry types with three fields — `Example` (a minimal fragment,
-labelled with the context it assumes), `Used in` (which lessons use it, linking
-the reference to the teaching layer they live in), and `Typical use` (one
-sentence of when). No LLM text, no markdown, done deliberately so it also serves
-the remote/MCP surface.
+Extend the entry types with two fields — `Example` (a minimal fragment,
+labelled with the context it assumes) and `Typical use` (one sentence of when).
+No LLM text, no markdown, done deliberately so it also serves the remote/MCP
+surface.
 
 Two disciplines make this trustworthy:
 
@@ -162,17 +165,19 @@ Two disciplines make this trustworthy:
    assembles with vasm in CI. That last check is the lesson principle applied to
    the reference: an example that stops being assemblable fails the suite rather
    than shipping as prose.
-2. **Never state a wrong thing to be complete.** If a field's honest answer is
-   "none of the lessons", the test says so — an empty `Used in` on an entry no
-   lesson touches is a fact, not a gap.
+2. **Never state a wrong thing to be complete.** The `flags` field's rule — say
+   nothing rather than something wrong — governs the new fields too: not every
+   mnemonic has a one-sentence "when", and an empty `Typical use` is a fact the
+   test records, not a gap to be filled with filler. An `Example` is either
+   assemblable under the reference's own lookup rules or absent.
 
 ### How to start
 
 On `InstrRef.cpp` first (the 233 mnemonics), then `OsCallRef.cpp`; the detail
 pane in `src/ui/InstructionRefView.cpp` renders the new fields. FUTURE §14's
-"more `.pil` lessons" remains open and unblocked: lessons may now lean on
-`Used in`, which is the cross-link that makes the reference and the teaching
-layer one system.
+"more `.pil` lessons" item is not part of this feature: the two fields stand on
+their own, and the dock should be worth reading before any teaching layer is
+settled.
 
 ---
 

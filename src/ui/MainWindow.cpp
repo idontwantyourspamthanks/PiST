@@ -4,6 +4,7 @@
 
 #include "ui/MainWindow.h"
 #include "emu/HexFormat.h"
+#include "support/CrashReport.h"
 #include "support/DocumentWatcher.h"
 #include "support/FileWrite.h"
 
@@ -4321,6 +4322,7 @@ void MainWindow::buildReleaseInteractive()
 
 void MainWindow::buildImpl(bool quiet, bool release)
 {
+    crash::note("build");
     // A remote-initiated build has nobody to dismiss a modal, and the dialog's
     // own event loop would hold its reply until the operation timeout, so its
     // refusals are reported on the console and the status bar instead (the
@@ -4560,6 +4562,7 @@ void MainWindow::runInteractive()
 
 void MainWindow::runImpl(bool quiet)
 {
+    crash::note("run");
     // Always rebuild before running: this keeps the listing in step with the
     // binary, which is what the line map depends on.
     //

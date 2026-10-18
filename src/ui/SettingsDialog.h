@@ -8,6 +8,7 @@
 
 #include <QDialog>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -78,6 +79,7 @@ private:
     QSpinBox *m_fontSize = nullptr;
     QComboBox *m_shortcutScheme = nullptr;
     QComboBox *m_audioOutput = nullptr;
+    QCheckBox *m_crashReports = nullptr;
     QLineEdit *m_hardDisk = nullptr;
     QLineEdit *m_floppyA = nullptr;
     QLineEdit *m_floppyB = nullptr;

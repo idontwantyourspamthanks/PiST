@@ -28,5 +28,10 @@
         "monitor": "vga",
         "tosPath": ""
     },
+    "hooks": {
+        "autoContinue": false,
+        "enabled": true,
+        "scriptPath": "hello.hooks.lua"
+    },
     "version": 1
 }

@@ -38,6 +38,56 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
 ---
 
+## 0. The demo project
+
+The fastest way to see all of this at once: `demo/hello.s` is a complete little GEMDOS program
+written so that each feature has something to bite on.
+
+### Activate
+
+- The toolbar's **Demo** button (the Atari mark), or **File ▸ Open Demo Project**.
+- Or do nothing: a session with nothing to reopen — a first run, or one whose last file is gone —
+  opens the demo for you. Closing it and quitting means the next launch reopens what you were
+  last in; the welcome view's *Start with a demo project* rows still list all three demos.
+
+### Look for
+
+- A tab titled **hello.s** showing a program, not a project file: the demo's settings arrive with
+  its source (`hello.pistproject` sits beside it, and carries the hook script, the CPU and the
+  emulator settings). If a doorway ever opens `hello.pistproject` as JSON text, that is a bug —
+  the project is not a document.
+- `F7` builds it, `F5` runs it, and the screen flashes red, counts `...`, prints `!` and waits for
+  a key.
+
+### Expect
+
+- **Completion and the palette**: type `cou` in the editor — `counter` is offered from this
+  project; `Ctrl+Shift+O` lists `counter`, `hook_calls`, `count`, `_start` with their lines, and
+  `rounds` too, which is an equate and so has no address for a hook script.
+- **Hover**: put the pointer on any `trap #1`/`#13`/`#14` line — or on a push feeding one — and
+  the card names the call (Cconws, Bconout, Setcolor, Cconout, Crawcin, Pterm0) with its prototype
+  and the arguments the line pushes.
+- **Watchpoint symbols**: Run ▸ Add watchpoint…, type `counter.w`. Before the run it is listed as
+  `pending (run to resolve)`; at the entry stop it arms at the address this run gave the label, and
+  it fires on each round the program counts — and once more when the hook script pokes it.
+- **Scripted stop hooks**: the project already points at `demo/hello.hooks.lua`. Run ▸ Stop hooks…
+  shows the script, whether it is on, and how the last run went; the console gets a `[hook]` line
+  per stop naming the reason and the breakpoint, the second stop reads `counter` by name and pokes
+  its low byte, and the script asks to continue once the program has counted its last round.
+- **Find in Files**: `Ctrl+Shift+F`, search `count`, and the dock lists the hits in this file with
+  their spans; `F4` tours them while the dock has focus.
+
+### Not yet / by design
+
+- The demos are not a source feature: the **floppy-pane edits** (Delete…, Rename…, New Folder…)
+  live in the file browser's Disk A / Disk B panes and need a mounted image.
+- The script's `continue()` is a request: with `hooks.autoContinue` off, the IDE logs it and stays
+  stopped. That is why the script states its condition and the demo does not rely on resuming.
+- A stop hook runs in a fresh interpreter each stop, so nothing carries between stops in Lua — the
+  script counts stops in the guest's own memory (`hook_calls`) for exactly that reason.
+
+---
+
 ## 1. Scripted stop hooks
 
 A Lua script runs at every debugger stop, with the machine held stopped: it can read and write memory

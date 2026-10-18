@@ -319,6 +319,25 @@ const QString &layoutPreviousKey()
 
 } // namespace
 
+namespace {
+
+/// The source a project file implies: `<project>.pistproject` sits beside
+/// `<project>.s`. The source path is deliberately not stored in the file — it
+/// would go stale the moment either moved — so the derivation lives here once, and
+/// the doorways that can be handed a project (the welcome rows, the Demo button)
+/// all ask for it rather than opening the JSON as a document.
+QString sourceForProject(const QString &projectPath)
+{
+    const QString suffix = QLatin1String(settings::kProjectSuffix);
+    if (!projectPath.endsWith(suffix, Qt::CaseInsensitive))
+        return {};
+    const QString source =
+        projectPath.left(projectPath.size() - suffix.size()) + QStringLiteral(".s");
+    return QFileInfo::exists(source) ? source : QString();
+}
+
+} // namespace
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -621,7 +640,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The welcome view's doors.
     connect(m_welcome, &WelcomeView::openRequested, this,
-            [this](const QString &path) { openPath(path); });
+            [this](const QString &path) {
+                // A doorway may name a project rather than a source — the demo rows
+                // do — and opening the project file itself would show its JSON as a
+                // document. The source beside it is what the demo is.
+                const QString source = sourceForProject(path);
+                openPath(source.isEmpty() ? path : source);
+            });
     connect(m_welcome, &WelcomeView::browseRequested, this, &MainWindow::openFile);
     connect(m_welcome, &WelcomeView::newFileRequested, this, &MainWindow::newFile);
     connect(m_welcome, &WelcomeView::newImageRequested, this, &MainWindow::newImage);
@@ -1503,6 +1528,15 @@ void MainWindow::createActions()
     m_actOpenProject = new QAction(tr("Open &Project…"), this);
     connect(m_actOpenProject, &QAction::triggered, this, &MainWindow::openProject);
 
+    // The demo is the tour: it is a program that uses the features it shows off,
+    // so the button opens a source and its project settings come with it. Disabled
+    // when there is no demo to open (a packaged tree that does not carry one).
+    m_actOpenDemo = new QAction(tr("Open &Demo Project"), this);
+    m_actOpenDemo->setObjectName(QStringLiteral("demoAction"));
+    m_actOpenDemo->setStatusTip(tr("Open the demo project: a tour of the IDE written in assembly"));
+    m_actOpenDemo->setEnabled(!WelcomeView::demoProjects().isEmpty());
+    connect(m_actOpenDemo, &QAction::triggered, this, &MainWindow::openDemoProject);
+
     m_actSaveProject = new QAction(tr("&Save Project"), this);
     connect(m_actSaveProject, &QAction::triggered, this, &MainWindow::saveProject);
 
@@ -1918,6 +1952,7 @@ void MainWindow::createMenus()
     exportMenu->addAction(m_actReExportBitplanes);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
+    fileMenu->addAction(m_actOpenDemo);
     fileMenu->addAction(m_actSaveProject);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actSettings);
@@ -2820,6 +2855,7 @@ void MainWindow::createToolBar()
     bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     bar->setFloatable(false);
     bar->addAction(m_actOpen);
+    bar->addAction(m_actOpenDemo);
     bar->addAction(m_actSave);
     bar->addAction(m_actSettings);
     bar->addSeparator();
@@ -2922,6 +2958,10 @@ void MainWindow::applyIcons()
 {
     using appearance::Icon;
     m_actOpen->setIcon(appearance::icon(Icon::Open));
+    // The Atari logo, the same mark the Desk menu uses: the demo is the project's
+    // own sample, and a second folder glyph beside Open… would read as the same
+    // button twice.
+    m_actOpenDemo->setIcon(appearance::atariLogoIcon());
     m_actSave->setIcon(appearance::icon(Icon::Save));
     m_actSettings->setIcon(appearance::icon(Icon::Settings));
     m_actBuild->setIcon(appearance::icon(Icon::Build));
@@ -3600,6 +3640,47 @@ void MainWindow::writeBackFloppyDoc(const QString &path)
     statusBar()->showMessage(tr("Saved %1 into %2")
                                  .arg(it->entryPath, QFileInfo(it->imagePath).fileName()),
                              4000);
+}
+
+void MainWindow::openDemoIfIdle()
+{
+    // Nothing is open: no file was given on the command line and the last document
+    // is gone (or there never was one). The demo is what a first run should land
+    // on — and only a first run does: the next launch reopens whatever was last
+    // opened. Never insisted on, and inert when no demo is reachable.
+    if (m_tabs->count() > 0 || !m_actOpenDemo || !m_actOpenDemo->isEnabled())
+        return;
+    openDemoProject();
+}
+
+void MainWindow::openDemoProject()
+{
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+    if (demos.isEmpty()) {
+        // The action is disabled when the demos are absent, so reaching here means
+        // the tree moved under a running window: say so rather than open nothing.
+        statusBar()->showMessage(
+            tr("No demo project was found — the demos travel with the source tree."), 8000);
+        return;
+    }
+
+    // The entries are project files; what a demo *is* is the source beside them.
+    // `hello` is the tour, so it wins over whatever order the list comes in.
+    QString project = demos.first().path;
+    for (const WelcomeView::Entry &demo : demos) {
+        if (QFileInfo(demo.path).completeBaseName() == QLatin1String("hello")) {
+            project = demo.path;
+            break;
+        }
+    }
+
+    const QString source = sourceForProject(project);
+    if (source.isEmpty()) {
+        statusBar()->showMessage(tr("%1 has no source beside it — the demo may have moved.")
+                                     .arg(QFileInfo(project).fileName()), 8000);
+        return;
+    }
+    openPath(source);
 }
 
 void MainWindow::openProject()

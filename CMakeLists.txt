@@ -504,6 +504,37 @@ install(TARGETS pist-mcp
 install(FILES LICENSE NOTICE README.md packaging/copyright
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
+# The demo projects, so an installed PiST can offer them: WelcomeView's
+# demoProjects() looks for this directory relative to the executable, the same
+# walk bundledDataSearchPaths() makes for the ROM — `bin/pist` reaches
+# `../share`, the AppImage's `usr/bin` reaches `usr/share`, a macOS bundle's
+# `Contents/MacOS` reaches `Contents/share`. It goes in PiST's own datadir
+# subdirectory rather than in `share/` itself, which is where the FHS puts a
+# package's own files; the ROM's `share/emutos` beside it belongs to EmuTOS.
+#
+# Only the authored files travel. The patterns name the kinds that are content
+# rather than the kinds to leave out, so a new sort of build output cannot ride
+# into a package by being new: `demo/*.lst` and `demo/*.prg` are what assembling
+# the demos writes, never content. The sample sprite set is named instead of
+# matched as `*.pim`, because a working tree accumulates scratch image files of
+# those extensions (`demo/eyeball.pim`, `demo/EYEBALL.PI1`, `demo/test.pi1`)
+# that are not demo content.
+#
+# The `demo` component is how the release workflow takes this directory for the
+# archives it assembles by hand — macOS and Windows never run a plain
+# `cmake --install` — so `--component demo` installs this rule alone and those
+# bundles carry exactly what an installed PiST carries, rather than a second
+# list of files to drift from this one.
+install(DIRECTORY demo/
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/${PROJECT_NAME}/demo
+    COMPONENT demo
+    FILES_MATCHING
+        PATTERN "*.s"
+        PATTERN "*.pistproject"
+        PATTERN "*.dat"
+        PATTERN "demo.pim"
+        PATTERN "*.lua")
+
 if(UNIX AND NOT APPLE)
     # Desktop entry and icon, so the IDE appears in application menus rather than
     # only being launchable from a terminal.

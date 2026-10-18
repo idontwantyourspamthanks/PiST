@@ -112,6 +112,8 @@ code. Use this table for a quick lookup:
   the hard-won launcher rules, the verified-vs-unverified ledger, and licensing analysis.
 - **[docs/glm-features.md](docs/glm-features.md)** — the agreed next feature sheet (what to build
   next, with each feature's verified current state) and one binned idea with its reasoning.
+- **[docs/qa-0.10.0.md](docs/qa-0.10.0.md)** — how to verify the 0.10.0 features by hand: what to
+  switch on, what to look at and what to expect, feature by feature.
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and a starting point for
   each item. Check here before starting something ambitious; it may already be analysed.
 - **[README.md](README.md)** — user-facing features, install, platform support, remote control.

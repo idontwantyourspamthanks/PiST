@@ -29,6 +29,8 @@
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
 #include "ui/FileTemplates.h"
+#include "ui/GalleryCard.h"
+#include "ui/NewFileDialog.h"
 #include "ui/NewFileSpec.h"
 #include "ui/WelcomeView.h"
 #include "ui/RegistersView.h"
@@ -82,6 +84,7 @@
 #include <QLabel>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTimer>
@@ -325,6 +328,69 @@ public:
 private:
     MainWindow &m_window;
 };
+
+/// The caption a gallery card shows, or empty when it has none. Settings' theme
+/// and shortcut cards carry no object name and no property, so the caption is
+/// the only thing naming the choice — and it is what the user reads before
+/// clicking. No translator is installed in this suite, so a caption is its
+/// source text.
+QString galleryCardCaption(GalleryCard *card)
+{
+    const auto *label = card->findChild<QLabel *>(QStringLiteral("galleryCardTitle"));
+    return label ? label->text() : QString();
+}
+
+/// The card under `root` carrying `value` under `property`. New File and New
+/// Image give each card the choice it stands for (`templateKind`, `preset`,
+/// `paletteKind`) rather than an object name, so the property is how the test
+/// addresses one without depending on the caption's wording.
+GalleryCard *galleryCardWithProperty(QWidget *root, const char *property, const QVariant &value)
+{
+    for (GalleryCard *card : root->findChildren<GalleryCard *>()) {
+        if (card->property(property) == value)
+            return card;
+    }
+    return nullptr;
+}
+
+/// The card whose caption reads `caption`: the card a user picks out by reading
+/// it, for the dialog whose cards the test cannot address any other way.
+GalleryCard *galleryCardWithCaption(QWidget *root, const QString &caption)
+{
+    for (GalleryCard *card : root->findChildren<GalleryCard *>()) {
+        if (galleryCardCaption(card) == caption)
+            return card;
+    }
+    return nullptr;
+}
+
+/// Click `card` in the middle, the way a user would. QTest delivers the click to
+/// the widget itself instead of hit-testing a window, so a card that is off
+/// screen still receives it — the card's own mouseReleaseEvent turns it into
+/// `activated`, and that locates the click inside rect(). False when there is no
+/// such place, which is what a card the layout has never run on looks like.
+bool clickGalleryCard(GalleryCard *card)
+{
+    if (!card || card->rect().isEmpty())
+        return false;
+    QTest::mouseClick(card, Qt::LeftButton, Qt::NoModifier, card->rect().center());
+    return true;
+}
+
+/// Bring the tab page holding `widget` forward and let it lay out. A QTabWidget
+/// shows one page at a time and hands geometry only to that one, so a card on a
+/// page that is not current has nowhere for a click to land until it is.
+bool showTabHolding(QTabWidget *tabs, QWidget *widget)
+{
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->widget(i)->isAncestorOf(widget)) {
+            tabs->setCurrentIndex(i);
+            QCoreApplication::processEvents();
+            return widget->isVisibleTo(tabs);
+        }
+    }
+    return false;
+}
 
 } // namespace
 
@@ -650,6 +716,11 @@ private slots:
     /// File ▸ New File is a create-file transaction: a file on disk with the
     /// template's bytes, opened, remembered and revealed in the sidebar.
     void newFileCreatesOpensAndRevealsTheFile();
+    /// The gallery's template cards are how a person chooses (the combo they
+    /// drive is hidden): clicking one must select that template, so the spec the
+    /// dialog produces — created into a temporary directory — is the clicked
+    /// card's bytes, at the name and directory the fields hold.
+    void newFileCardsChooseTheTemplate();
     /// Every shipped template is a real starting point, not a stub: the
     /// picker's bytes are what the file gets and the assembler accepts them.
     void shippedTemplatesAssemble();
@@ -671,6 +742,10 @@ private slots:
     /// New Image… requires a file name and writes the blank `.pim` before
     /// the editor opens, rather than defaulting every sprite to sprite.pim.
     void newImageDialogResolvesFileName();
+    /// New Image's size and palette cards drive the values the dialog hands to
+    /// the caller — both spin boxes and the palette kind — so a click must
+    /// produce the card's numbers and palette, not just mark the card.
+    void newImageCardsChooseSizeAndPalette();
     /// The bitplane export dialog's boxes and pre-shift picker are what the
     /// encoder is handed, and its map is the file's block table.
     void bitplaneExportDialogMapsChoices();
@@ -785,6 +860,10 @@ private slots:
     /// the window at that minimum, and nothing about the content resizes the
     /// dialog once it is shown.
     void settingsDialogFitsAShortScreenWithReachableButtons();
+    /// The theme and shortcut cards sit over hidden combos and OK persists what
+    /// the combo holds (MIN-53), so clicking a card must be the entry the dialog
+    /// saves — the card's own caption, not merely a neighbouring one.
+    void settingsCardsSaveTheChosenThemeAndShortcuts();
     // Run ▸ Stop hooks… is the feature's only doorway: an action that exists but
     // was never added to a menu would leave it unreachable.
     void runMenuOffersStopHooks();
@@ -7231,6 +7310,61 @@ void TstGui::newFileCreatesOpensAndRevealsTheFile()
     QTRY_VERIFY_WITH_TIMEOUT(browser->selectedHardDrivePaths().contains(created), 5000);
 }
 
+// The template gallery is how a person chooses — the combo the cards drive is
+// hidden, and the test above drives that combo head on, so it pins NewFileSpec
+// and says nothing about the card a user clicks. A card whose
+// findData/setCurrentIndex mapping went missing or was swapped would leave it
+// green and the gallery dead.
+void TstGui::newFileCardsChooseTheTemplate()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    NewFileDialog dialog(nullptr, dir.path());
+    dialog.show();
+    QCoreApplication::processEvents();
+    auto *name = dialog.findChild<QLineEdit *>(QStringLiteral("newFileName"));
+    QVERIFY2(name, "the spec is built from this field, so the card must reach it");
+
+    // Two different non-empty templates: the second click then has to *replace*
+    // the first selection, which is what makes a swapped pair visible in the
+    // bytes below — one click would also pass against a combo that opened on the
+    // right entry anyway.
+    QVERIFY2(templateBytes(SourceTemplate::GemdosHello)
+                 != templateBytes(SourceTemplate::KeyboardInput),
+             "the two cards this clicks must not carry the same starting point");
+    const struct {
+        SourceTemplate kind;
+        const char *name;
+    } picks[] = {
+        { SourceTemplate::GemdosHello, "hello" },
+        { SourceTemplate::KeyboardInput, "keys" },
+    };
+    for (const auto &pick : picks) {
+        auto *card = galleryCardWithProperty(&dialog, "templateKind", int(pick.kind));
+        QVERIFY2(card, qPrintable(QStringLiteral("no gallery card for %1")
+                                      .arg(templateLabel(pick.kind))));
+        // The card carrying that choice must be the one captioned for the same
+        // template: a card wearing another's caption is caught here, and a card
+        // wired to another's entry is caught by the bytes below.
+        QCOMPARE(galleryCardCaption(card), templateLabel(pick.kind));
+        QVERIFY2(clickGalleryCard(card), "a card must be laid out before it can be clicked");
+
+        const QString typed = QString::fromLatin1(pick.name);
+        name->setText(typed);
+
+        // What newFileIn() creates from, and where: the name and directory from
+        // the fields, the contents from the card.
+        const NewFileSpec spec = dialog.spec();
+        QCOMPARE(spec.kind(), pick.kind);
+        QCOMPARE(spec.name(), typed);
+        QCOMPARE(spec.targetPath(), dir.filePath(typed + QStringLiteral(".s")));
+        QString error;
+        QVERIFY2(spec.create(&error), qPrintable(error));
+        QCOMPARE(fileBytes(spec.targetPath()), templateBytes(pick.kind));
+    }
+}
+
 // The picker's entries are the shipped starting points, and a shipped starting
 // point that does not assemble is worse than none (docs/untitled-plan.md §9).
 // Create each through NewFileSpec and hand the non-empty ones to vasm.
@@ -7537,6 +7671,60 @@ void TstGui::newImageDialogResolvesFileName()
     const QString path = dialog.filePath();
     QCOMPARE(QFileInfo(path).fileName(), QStringLiteral("hero.pim"));
     QCOMPARE(QFileInfo(path).absolutePath(), QFileInfo(tmp.path()).absoluteFilePath());
+}
+
+// New Image's size and palette cards are the chooser; imageWidth(), imageHeight()
+// and paletteKind() are what the caller is handed. A card that only marked
+// itself selected — or that was wired to its neighbour's numbers — is what this
+// looks for: the click has to move the values.
+void TstGui::newImageCardsChooseSizeAndPalette()
+{
+    NewImageDialog dialog;
+    dialog.show();
+    QCoreApplication::processEvents();
+
+    // Every size card, because a swapped pair (32 × 32 writing 16 × 16) is
+    // invisible to a single click. Each card is found by the preset it carries,
+    // and the caption must name that same size: the two drifting apart is the
+    // half a values-only check would miss.
+    for (QSize size : { QSize(16, 16), QSize(32, 32), QSize(64, 64), QSize(320, 200) }) {
+        auto *card = galleryCardWithProperty(&dialog, "preset", size);
+        QVERIFY2(card, qPrintable(QStringLiteral("no size card for %1 × %2")
+                                      .arg(size.width()).arg(size.height())));
+        const QString caption = galleryCardCaption(card);
+        QVERIFY2(caption.contains(QString::number(size.width()))
+                     && caption.contains(QString::number(size.height())),
+                 qPrintable(QStringLiteral("card '%1' does not name its own %2 × %3")
+                                .arg(caption)
+                                .arg(size.width())
+                                .arg(size.height())));
+        QVERIFY2(clickGalleryCard(card), "a card must be laid out before it can be clicked");
+        QCOMPARE(dialog.imageWidth(), size.width());
+        QCOMPARE(dialog.imageHeight(), size.height());
+    }
+
+    // Palettes: the default is STe, so the STfm card has to move the kind and
+    // the STe card has to move it back — a card wired to the wrong kind, or to
+    // nothing at all, fails the second click whichever way round the two are.
+    QCOMPARE(dialog.paletteKind(), PaletteKind::Ste);
+    const struct {
+        PaletteKind kind;
+        const char *caption;
+    } palettes[] = {
+        { PaletteKind::Stfm, "STfm" },
+        { PaletteKind::Ste, "STe" },
+    };
+    for (const auto &palette : palettes) {
+        auto *card = galleryCardWithProperty(&dialog, "paletteKind", int(palette.kind));
+        QVERIFY2(card, qPrintable(QStringLiteral("no %1 palette card")
+                                      .arg(QLatin1String(palette.caption))));
+        const QString caption = galleryCardCaption(card);
+        QVERIFY2(caption.startsWith(QLatin1String(palette.caption)),
+                 qPrintable(QStringLiteral("card '%1' is not the %2 palette")
+                                .arg(caption, QLatin1String(palette.caption))));
+        QVERIFY2(clickGalleryCard(card), "a card must be laid out before it can be clicked");
+        QCOMPARE(dialog.paletteKind(), palette.kind);
+    }
 }
 
 void TstGui::bitplaneExportDialogMapsChoices()
@@ -10034,6 +10222,55 @@ void TstGui::settingsDialogFitsAShortScreenWithReachableButtons()
 
     dialog.removeEventFilter(&counter);
     QCOMPARE(counter.resizes, 0);
+}
+
+// The Settings dialog's theme and shortcut choices are cards over hidden combos,
+// and OK persists the combo's data (MIN-53). Clicking a card therefore has to
+// land on the entry that card is captioned for: a card wired to a neighbouring
+// index saves the wrong preference, and nothing else in the suite notices —
+// appearancePreferencesApply writes those keys by hand.
+void TstGui::settingsCardsSaveTheChosenThemeAndShortcuts()
+{
+    // The cards live on the Appearance tab, and a QTabWidget lays out only the
+    // page it shows; the cards carry no object name, so the caption is both what
+    // the user reads and how the test addresses one.
+    SettingsDialog dialog{ProjectSettings()};
+    dialog.show();
+    QCoreApplication::processEvents();
+    auto *tabs = dialog.findChild<QTabWidget *>();
+    QVERIFY2(tabs, "the settings dialog must have its tabs");
+
+    auto *light = galleryCardWithCaption(&dialog, QStringLiteral("Light"));
+    QVERIFY2(light, "the Appearance tab must offer a Light theme card");
+    QVERIFY2(showTabHolding(tabs, light), "the theme cards must be on a tab");
+    QVERIFY2(clickGalleryCard(light), "a card must be shown before it can be clicked");
+
+    dialog.accept();
+    // The key the dialog wrote, and its reader: Light is the entry whose data is
+    // "light" (System is "system", Dark "dark"), so a card wired to either of
+    // the other two saves the wrong theme here.
+    QCOMPARE(QSettings().value(appearance::themeKey()).toString(), QStringLiteral("light"));
+    QCOMPARE(appearance::theme(), QStringLiteral("light"));
+
+    // A second dialog for the shortcuts, so what it saves cannot have been left
+    // behind by the theme click that ran through the same accept().
+    SettingsDialog keys{ProjectSettings()};
+    keys.show();
+    QCoreApplication::processEvents();
+    auto *keysTabs = keys.findChild<QTabWidget *>();
+    QVERIFY(keysTabs);
+    auto *common = galleryCardWithCaption(&keys, QStringLiteral("Common"));
+    QVERIFY2(common, "the Appearance tab must offer a Common shortcut card");
+    QVERIFY2(showTabHolding(keysTabs, common), "the shortcut cards must be on a tab");
+    QVERIFY2(clickGalleryCard(common), "a card must be shown before it can be clicked");
+
+    keys.accept();
+    // PiST is the default ("pist"), so "common" can only have come from the
+    // click: a card wired to index 0 would save "pist" again and pass if the
+    // assertion were only that something was written.
+    QCOMPARE(QSettings().value(appearance::shortcutSchemeKey()).toString(),
+             QStringLiteral("common"));
+    QCOMPARE(appearance::shortcutScheme(), QStringLiteral("common"));
 }
 
 // The dialog's one piece of logic: with the hook switched off, the script path

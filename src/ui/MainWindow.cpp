@@ -12,6 +12,9 @@
 #include "ui/ProfilerController.h"
 #include "ui/RemoteStateAdapter.h"
 #include "ui/SessionLauncher.h"
+#include "hooks/StopHookRunner.h"
+#include "ui/StopHooksDialog.h"
+#include "ui/SymbolPaletteDialog.h"
 #include "ui/UiText.h"
 
 #include "build/BuildService.h"
@@ -22,6 +25,7 @@
 #include "ui/Appearance.h"
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
+#include "editor/CursorReference.h"
 #include "editor/IncludeNav.h"
 #include "editor/InstrRef.h"
 #include "editor/OsCallBinding.h"
@@ -49,6 +53,7 @@
 #include <QAudioDevice>
 #include <QMediaDevices>
 #include "ui/FileBrowser.h"
+#include "ui/FindInFilesView.h"
 #include "ui/GitPanel.h"
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
@@ -99,6 +104,7 @@
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QToolTip>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -313,9 +319,36 @@ const QString &layoutPreviousKey()
 
 } // namespace
 
+namespace {
+
+/// The source a project file implies: `<project>.pistproject` sits beside
+/// `<project>.s`. The source path is deliberately not stored in the file — it
+/// would go stale the moment either moved — so the derivation lives here once, and
+/// the doorways that can be handed a project (the welcome rows, the Demo button)
+/// all ask for it rather than opening the JSON as a document.
+QString sourceForProject(const QString &projectPath)
+{
+    const QString suffix = QLatin1String(settings::kProjectSuffix);
+    if (!projectPath.endsWith(suffix, Qt::CaseInsensitive))
+        return {};
+    const QString source =
+        projectPath.left(projectPath.size() - suffix.size()) + QStringLiteral(".s");
+    return QFileInfo::exists(source) ? source : QString();
+}
+
+} // namespace
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    // The assembler's own vocabulary is available before anything is assembled: an
+    // editor opened in a project that has never been built still completes
+    // mnemonics and directives, and a build only *adds* label and equate
+    // candidates on top (rebuildProgramMap). Seeding it here rather than at the
+    // first build is what makes completion work in a fresh session — before this
+    // line existed, so did nothing.
+    m_completionItems = CompletionModel::vocabulary();
+
     // The MAJ-41 seams, before anything they own: the session controller holds
     // the lifecycle flags, the launcher the run path, the models the
     // breakpoint/watchpoint lists, the profiler its collecting mode and the
@@ -382,6 +415,7 @@ MainWindow::MainWindow(QWidget *parent)
     sessionHost.profiler = [this] { return m_profiling; };
     sessionHost.breakpoints = [this] { return m_bpModel; };
     sessionHost.programMap = programMapNow;
+    sessionHost.symbols = symbolsNow;
     sessionHost.bases = [this]() -> const LineMap::SectionBases & { return m_bases; };
     // The session boots with fast-forward on either way (a real-speed TOS
     // boot is ~30 s); the project's preference is applied at the entry stop.
@@ -497,6 +531,45 @@ MainWindow::MainWindow(QWidget *parent)
     };
     m_profiling = new ProfilerController(profilerHost, this);
 
+    // The stop hook (docs/stop-hooks-plan.md). A seam like the others: it owns
+    // the script's run and what the script may reach, and gets the window's
+    // operations as callbacks. `resume` is the window's own slot, deliberately,
+    // so a script's continue is the Continue action — arms queued at the entry
+    // stop survive it (invariant 5).
+    StopHookRunner::Host hookHost;
+    hookHost.backend = backendNow;
+    hookHost.log = logLine;
+    hookHost.scriptPath = [this] { return m_settings.stopHookPath; };
+    // `sym()` in a script: the same rule the remote `breakpoint <label>` verb
+    // uses, through the model that owns the symbols and the program map.
+    hookHost.symbol = [this](const QString &name, quint32 *address, QString *error) {
+        return m_bpModel->resolveLabel(name, address, error);
+    };
+    hookHost.enabled = [this] { return m_settings.stopHookEnabled; };
+    hookHost.autoContinue = [this] { return m_settings.stopHookAutoContinue; };
+    hookHost.resume = [this] { resume(); };
+    hookHost.refresh = [this] { m_host->refresh(); };
+    // Held for the duration of a run: with no command of the user's in flight,
+    // the completion that arrives is the one the hook issued — so a script's
+    // write cannot be pruned by the resume it asks for (R5). The console's
+    // enabled state is otherwise the session's (MainWindow's stoppedChanged
+    // handler), hence the same expression when releasing it.
+    hookHost.holdConsole = [this](bool hold) {
+        if (m_consoleInput)
+            m_consoleInput->setEnabled(hold ? false : m_host->isRunning());
+    };
+    m_hooks = new StopHookRunner(hookHost, this);
+
+    // What the hook did reaches a watcher here rather than as part of `stopped`:
+    // that event is published *before* the script runs, because the run needs the
+    // stop's state to be real first (D1). Emitted before the continue policy, so
+    // the wire order is stopped → hook → running.
+    connect(m_hooks, &StopHookRunner::runFinished, this,
+            [this](const StopHookRunner::LastRun &run) {
+                if (m_eventSink)
+                    m_eventSink->publishEvent(QStringLiteral("hook"), hookEventDetail(run));
+            });
+
     RemoteStateAdapter::Host stateHost;
     stateHost.editor = [this]() -> const CodeEditor * { return m_editor; };
     stateHost.backend = [this]() -> const IDebugBackend * { return m_host; };
@@ -508,6 +581,12 @@ MainWindow::MainWindow(QWidget *parent)
     stateHost.symbols = symbolsNow;
     stateHost.programMap = programMapNow;
     stateHost.profile = [this]() -> const AttributedProfile & { return m_profiling->results(); };
+    stateHost.hookEnabled = [this] { return m_settings.stopHookEnabled; };
+    stateHost.hookPath = [this] { return m_settings.stopHookPath; };
+    stateHost.hookAutoContinue = [this] { return m_settings.stopHookAutoContinue; };
+    stateHost.hookLastRun = [this]() -> const StopHookRunner::LastRun & {
+        return m_hooks->lastRun();
+    };
     m_remoteState = new RemoteStateAdapter(stateHost, this);
 
     // Documents live in tabs. openPath() dispatches `.pim` / ST still-images
@@ -561,7 +640,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The welcome view's doors.
     connect(m_welcome, &WelcomeView::openRequested, this,
-            [this](const QString &path) { openPath(path); });
+            [this](const QString &path) {
+                // A doorway may name a project rather than a source — the demo rows
+                // do — and opening the project file itself would show its JSON as a
+                // document. The source beside it is what the demo is.
+                const QString source = sourceForProject(path);
+                openPath(source.isEmpty() ? path : source);
+            });
     connect(m_welcome, &WelcomeView::browseRequested, this, &MainWindow::openFile);
     connect(m_welcome, &WelcomeView::newFileRequested, this, &MainWindow::newFile);
     connect(m_welcome, &WelcomeView::newImageRequested, this, &MainWindow::newImage);
@@ -638,6 +723,9 @@ CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
 
     auto *editor = new CodeEditor(appearance::editorTheme(), this);
     wireEditor(editor);
+    // Completion: the vocabulary and the last build's symbols. A tab opened after
+    // a build gets them at once; a build pushes a fresh list into every editor.
+    editor->setCompletions(m_completionItems);
     if (!editor->loadFile(path)) {
         if (!quiet)
             QMessageBox::warning(this, tr("Open"), tr("Could not open %1").arg(path));
@@ -735,11 +823,14 @@ void MainWindow::wireEditor(CodeEditor *editor)
                 QAction *toggle = menu.addAction(hasBreakpoint ? tr("Remove breakpoint")
                                                                : tr("Add breakpoint"));
                 QAction *condition = menu.addAction(tr("Edit condition…"));
+                QAction *script = menu.addAction(tr("Stop-hook script…"));
                 QAction *chosen = menu.exec(pos);
                 if (chosen == toggle)
                     toggleBreakpointAtLine(line);
                 else if (chosen == condition)
                     editBreakpointCondition(line);
+                else if (chosen == script)
+                    editBreakpointScript(line);
             });
 }
 
@@ -892,6 +983,7 @@ void MainWindow::onTabChanged(int index)
     if (m_editor)
         followCursorReference(m_editor);
     syncGitDirectory();
+    syncFindInFilesScope();
     applyGitBlame();
     // Zero tabs is reachable — by the × button, by Close File, by Closing All —
     // and it means the welcome view, not a stranded empty editor.
@@ -1335,6 +1427,13 @@ void MainWindow::createActions()
             m_editor->showGotoBar();
     });
 
+    // The symbol palette: the same candidates completion offers, presented for
+    // navigation rather than for typing.
+    m_actSymbolPalette = new QAction(tr("Go to &Symbol…"), this);
+    m_actSymbolPalette->setObjectName(QStringLiteral("symbolPaletteAction"));
+    m_actSymbolPalette->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    connect(m_actSymbolPalette, &QAction::triggered, this, &MainWindow::showSymbolPalette);
+
     m_actFind->setShortcut(QKeySequence::Find);
     m_actFind->setEnabled(false);
 
@@ -1393,6 +1492,14 @@ void MainWindow::createActions()
     m_actReplace->setEnabled(false);
     connect(m_actReplace, &QAction::triggered, this, &MainWindow::showReplaceBar);
 
+    // Project-wide search: always available, because its scope is a directory
+    // rather than the focused document — and the dock says so when there is not
+    // one yet.
+    m_actFindInFiles = new QAction(tr("Find in &Files…"), this);
+    m_actFindInFiles->setObjectName(QStringLiteral("findInFilesAction"));
+    m_actFindInFiles->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+    connect(m_actFindInFiles, &QAction::triggered, this, &MainWindow::showFindInFiles);
+
     m_actExportBitplanes = new QAction(tr("Export Bitplane &Data…"), this);
     m_actExportBitplanes->setEnabled(false);
     m_actExportBitplanes->setToolTip(
@@ -1420,6 +1527,15 @@ void MainWindow::createActions()
 
     m_actOpenProject = new QAction(tr("Open &Project…"), this);
     connect(m_actOpenProject, &QAction::triggered, this, &MainWindow::openProject);
+
+    // The demo is the tour: it is a program that uses the features it shows off,
+    // so the button opens a source and its project settings come with it. Disabled
+    // when there is no demo to open (a packaged tree that does not carry one).
+    m_actOpenDemo = new QAction(tr("Open &Demo Project"), this);
+    m_actOpenDemo->setObjectName(QStringLiteral("demoAction"));
+    m_actOpenDemo->setStatusTip(tr("Open the demo project: a tour of the IDE written in assembly"));
+    m_actOpenDemo->setEnabled(!WelcomeView::demoProjects().isEmpty());
+    connect(m_actOpenDemo, &QAction::triggered, this, &MainWindow::openDemoProject);
 
     m_actSaveProject = new QAction(tr("&Save Project"), this);
     connect(m_actSaveProject, &QAction::triggered, this, &MainWindow::saveProject);
@@ -1518,6 +1634,13 @@ void MainWindow::createActions()
 
     m_actAddWatchpoint = new QAction(tr("Add &watchpoint…"), this);
     connect(m_actAddWatchpoint, &QAction::triggered, this, &MainWindow::addWatchpoint);
+
+    m_actStopHooks = new QAction(tr("Stop &hooks…"), this);
+    m_actStopHooks->setObjectName(QStringLiteral("stopHooksAction"));
+    m_actStopHooks->setToolTip(
+        tr("Run a script at every debugger stop: read and change memory and registers, log, "
+           "and decide to continue."));
+    connect(m_actStopHooks, &QAction::triggered, this, &MainWindow::editStopHooks);
 
     m_actResume = new QAction(tr("&Continue"), this);
     m_actResume->setObjectName(QStringLiteral("continueAction"));
@@ -1829,6 +1952,7 @@ void MainWindow::createMenus()
     exportMenu->addAction(m_actReExportBitplanes);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actOpenProject);
+    fileMenu->addAction(m_actOpenDemo);
     fileMenu->addAction(m_actSaveProject);
     fileMenu->addSeparator();
     fileMenu->addAction(m_actSettings);
@@ -1846,10 +1970,13 @@ void MainWindow::createMenus()
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
     searchMenu->addAction(m_actFind);
     searchMenu->addAction(m_actGotoLine);
+    searchMenu->addAction(m_actSymbolPalette);
     searchMenu->addAction(m_actFindNext);
     searchMenu->addAction(m_actFindPrevious);
     searchMenu->addSeparator();
     searchMenu->addAction(m_actReplace);
+    searchMenu->addSeparator();
+    searchMenu->addAction(m_actFindInFiles);
 
     auto *buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->setObjectName(QStringLiteral("buildMenu"));
@@ -1881,6 +2008,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actToggleBreakpoint);
     runMenu->addAction(m_actClearBreakpoints);
     runMenu->addAction(m_actAddWatchpoint);
+    runMenu->addAction(m_actStopHooks);
 }
 
 void MainWindow::showAbout()
@@ -1993,8 +2121,17 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         if (auto *tabBar = qobject_cast<QTabBar *>(watched);
             tabBar
             && QLatin1String(tabBar->metaObject()->className())
-                   == QLatin1String("QMainWindowTabBar"))
+                   == QLatin1String("QMainWindowTabBar")) {
             tabBar->setCursor(Qt::OpenHandCursor);
+            // The panel name is a dock title whether it is painted as a title
+            // bar or as one of these tabs. Document tabs stay at the regular
+            // weight; these are the names of the panels.
+            QFont font = tabBar->font();
+            if (!font.bold()) {
+                font.setBold(true);
+                tabBar->setFont(font);
+            }
+        }
         return QMainWindow::eventFilter(watched, event);
     }
 
@@ -2006,6 +2143,26 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             header->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         return QMainWindow::eventFilter(watched, event);
     }
+    // The hover card: a short reference for what the pointer is over, resolved the
+    // same way the dock resolves the caret. Resolving nothing shows nothing and
+    // does *not* swallow the event, so a widget's own tooltip still gets its turn.
+    if (type == QEvent::ToolTip) {
+        auto *help = static_cast<QHelpEvent *>(event);
+        auto *hovered = qobject_cast<QWidget *>(watched);
+        CodeEditor *editor = qobject_cast<CodeEditor *>(hovered);
+        if (!editor && hovered)
+            editor = qobject_cast<CodeEditor *>(hovered->parentWidget());
+        if (editor) {
+            const QPoint pos = editor->viewport()->mapFromGlobal(help->globalPos());
+            const QString card = referenceCardAt(editor, pos);
+            if (!card.isEmpty()) {
+                QToolTip::showText(help->globalPos(), card, editor);
+                return true;
+            }
+        }
+        return QMainWindow::eventFilter(watched, event);
+    }
+
     if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease)
         return QMainWindow::eventFilter(watched, event);
 
@@ -2128,21 +2285,34 @@ void MainWindow::buildPanels()
     QList<QDockWidget *> debugTabs;
 
     // --- left: project navigation --------------------------------------------
+    // One group, in this order: Project files, Find in Files, Git. Project
+    // files stays on top. Find in Files is present on a first run (Search ▸
+    // Find in Files raises it); it is not a debug dock, so the factory hide
+    // loop leaves the group here. Sprite hides the whole group.
     m_fileBrowser = new FileBrowser(this);
-    addDockWidget(Qt::LeftDockWidgetArea,
-                  makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
+    auto *projectDock =
+        makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser);
+    addDockWidget(Qt::LeftDockWidgetArea, projectDock);
 
-    // Tabbed with Project files, and not raised: tabify would put Git on top,
-    // and a first run is the project-files picture. Not a debug dock, so the
-    // factory hide loop leaves it here. Sprite hides it with the project pane.
+    m_findInFiles = new FindInFilesView(this);
+    m_findInFiles->navigate = [this](const QString &path, int line, int column, int length) {
+        if (!navigateToSourceLine(path, line))
+            return;
+        // The caret is on the line now, and marking the match itself is the
+        // rest of what "take me to that hit" means.
+        if (m_editor)
+            m_editor->selectSpan(line, column, length);
+    };
+    m_findInFilesDock =
+        makeDock(tr("Find in Files"), QStringLiteral("findInFilesDock"), m_findInFiles);
+    addDockWidget(Qt::LeftDockWidgetArea, m_findInFilesDock);
+    tabifyDockWidget(projectDock, m_findInFilesDock);
+
     m_gitPanel = new GitPanel(this);
-    auto *projectDock = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
     m_gitDock = makeDock(tr("Git"), QStringLiteral("gitDock"), m_gitPanel);
     addDockWidget(Qt::LeftDockWidgetArea, m_gitDock);
-    if (projectDock) {
-        tabifyDockWidget(projectDock, m_gitDock);
-        projectDock->raise();
-    }
+    tabifyDockWidget(projectDock, m_gitDock);
+    projectDock->raise();
 
     // --- right, top: the emulator display, which wants to be prominent --------
     // Hidden until a media session engages it (docs/PLAN.md §12): with no
@@ -2461,6 +2631,7 @@ void MainWindow::buildViewMenu()
         // by being left out of the list.
         const QStringList preferred = {
             QStringLiteral("projectFilesDock"),
+            QStringLiteral("findInFilesDock"),
             QStringLiteral("gitDock"),
             QStringLiteral("emulatorDisplayDock"),
             QStringLiteral("registersDock"),
@@ -2557,13 +2728,14 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
 
 void MainWindow::applyFactoryDockSizes()
 {
-    // 1280-wide window: left ~200, right ~280, so the editor keeps about 60%
-    // once the splitter handles are counted. The bottom group is a strip, not
-    // a second editor.
+    // 1280-wide window: left ~268 (Project files shares it with Find in Files,
+    // which needs a query and a path), right ~280, so the editor keeps about
+    // half once the splitter handles are counted. The bottom group is a strip,
+    // not a second editor.
     auto *files = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
     auto *registers = findChild<QDockWidget *>(QStringLiteral("registersDock"));
     if (files && registers)
-        resizeDocks({files, registers}, {200, 280}, Qt::Horizontal);
+        resizeDocks({files, registers}, {268, 280}, Qt::Horizontal);
     // The bottom group keeps its size hint, which is already a short strip.
     // Pinning it taller is recorded by saveState, and restoring that pin
     // crashes, so Reset layout could not survive the force.
@@ -2620,25 +2792,39 @@ void MainWindow::applyLayoutPreset(const QString &preset)
         return findChild<QDockWidget *>(name);
     };
 
-    // Git stays in the project-files tab. Sprite puts both away; Editing and
-    // Debugging bring them back with Project files on top, so the Git tab
-    // does not become the left pane just because it was shown last.
+    // Project files, Find in Files and Git share one tab. Sprite puts the
+    // group away; Editing and Debugging bring it back with Project files on
+    // top, so neither of the other two becomes the left pane just because it
+    // was shown last.
     QDockWidget *project = dockNamed(QStringLiteral("projectFilesDock"));
+    QDockWidget *find = dockNamed(QStringLiteral("findInFilesDock"));
     QDockWidget *git = dockNamed(QStringLiteral("gitDock"));
+    QList<QDockWidget *> projectGroup;
+    if (find)
+        projectGroup << find;
+    if (git)
+        projectGroup << git;
+    if (project)
+        projectGroup << project;
     if (sprite) {
-        // Git first. It is the background tab; hiding the current tab last is
-        // what drops the group's tab bar, the same way Project files alone did.
-        if (git)
-            git->hide();
-        if (project)
-            project->hide();
+        // Hiding every tab of the group drops its tab bar. The whole set is hidden
+        // here, and the current tab goes last because `projectGroup` ends with the
+        // dock that was raised — hiding the current tab first lets the group pick
+        // another one, and the bar survives.
+        for (QDockWidget *dock : projectGroup)
+            if (dock->isVisible())
+                dock->hide();
     } else if (project) {
         project->show();
+        if (find) {
+            find->show();
+            tabifyDockWidget(project, find);
+        }
         if (git) {
             git->show();
             tabifyDockWidget(project, git);
-            project->raise();
         }
+        project->raise();
     }
     if (QDockWidget *problems = dockNamed(QStringLiteral("problemsDock")))
         problems->setVisible(!sprite);
@@ -2685,10 +2871,11 @@ void MainWindow::createToolBar()
 {
     auto *bar = addToolBar(tr("Main"));
     bar->setObjectName(QStringLiteral("mainToolBar"));
-    bar->setIconSize(QSize(20, 20));
+    bar->setIconSize(QSize(22, 22));
     bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     bar->setFloatable(false);
     bar->addAction(m_actOpen);
+    bar->addAction(m_actOpenDemo);
     bar->addAction(m_actSave);
     bar->addAction(m_actSettings);
     bar->addSeparator();
@@ -2697,6 +2884,8 @@ void MainWindow::createToolBar()
     // arguments (F7), and its arrow offers the Release build too — one icon, no
     // second near-identical one to tell apart.
     if (auto *buildButton = qobject_cast<QToolButton *>(bar->widgetForAction(m_actBuild))) {
+        buildButton->setObjectName(QStringLiteral("buildToolButton"));
+        buildButton->setMinimumWidth(46);
         auto *buildChoices = new QMenu(buildButton);
         buildChoices->addAction(m_actBuild);
         buildChoices->addAction(m_actBuildRelease);
@@ -2791,6 +2980,10 @@ void MainWindow::applyIcons()
 {
     using appearance::Icon;
     m_actOpen->setIcon(appearance::icon(Icon::Open));
+    // The Atari logo, the same mark the Desk menu uses: the demo is the project's
+    // own sample, and a second folder glyph beside Open… would read as the same
+    // button twice.
+    m_actOpenDemo->setIcon(appearance::atariLogoIcon());
     m_actSave->setIcon(appearance::icon(Icon::Save));
     m_actSettings->setIcon(appearance::icon(Icon::Settings));
     m_actBuild->setIcon(appearance::icon(Icon::Build));
@@ -2974,24 +3167,96 @@ void MainWindow::updateRegisterStrip()
     m_registerStrip->setToolTip(text);
 }
 
-void MainWindow::followCursorReference(CodeEditor *editor)
+QString MainWindow::referenceCardAt(CodeEditor *editor, const QPoint &viewportPos) const
 {
-    if (!editor || editor != m_editor)
-        return;
+    if (!editor)
+        return {};
 
-    const QTextCursor cursor = editor->textCursor();
-    const int blockNumber = cursor.blockNumber();
+    // The *pointer*, not the caret: the dock follows the caret, and hovering
+    // something else should describe that thing.
+    const QTextCursor under = editor->cursorForPosition(viewportPos);
+    const CursorReference reference =
+        referenceAroundCursor(editor, under.blockNumber(), under.positionInBlock());
 
-    // The scanner only needs a small window around the cursor: OS calls
-    // are a local idiom (OsCallScan bounds its scans to a few lines).
+    if (reference.call) {
+        QStringList lines;
+        lines << QStringLiteral("%1 — %2").arg(reference.call->name, reference.call->summary);
+        lines << reference.call->prototype;
+        if (!reference.args.isEmpty())
+            lines << tr("Calling with: %1.").arg(reference.args.join(QStringLiteral(", ")));
+        return lines.join(QLatin1Char('\n'));
+    }
+    if (reference.trapContext) {
+        if (const InstructionInfo *info = instructionRef(QStringLiteral("trap")))
+            return QStringLiteral("%1 — %2").arg(info->mnemonic, info->summary);
+        return {};
+    }
+    if (reference.word.isEmpty())
+        return {};
+
+    // What the word *is* comes from the same candidate list completion offers: a
+    // mnemonic gets the reference's summary and flags, a symbol where it is
+    // defined, a directive nothing (there is no honest summary for one yet) and a
+    // word nobody knows nothing at all.
+    const CompletionItem *known = nullptr;
+    for (const CompletionItem &candidate : m_completionItems) {
+        if (candidate.text.compare(reference.word, Qt::CaseInsensitive) == 0) {
+            known = &candidate;
+            break;
+        }
+    }
+    if (!known)
+        return {};
+
+    switch (known->kind) {
+    case CompletionKind::Mnemonic: {
+        const InstructionInfo *info = instructionRef(known->text);
+        if (!info)
+            return {}; // an extra (bkpt, an FPU name): the reference has no entry
+        QString text = QStringLiteral("%1 — %2").arg(info->mnemonic, info->summary);
+        if (!info->flags.isEmpty())
+            text += QLatin1Char('\n') + tr("Flags: %1.").arg(info->flags);
+        return text;
+    }
+    case CompletionKind::Label:
+    case CompletionKind::Equate:
+        if (known->file.isEmpty() || known->line <= 0)
+            return tr("%1 — the build gives it no source position.").arg(known->text);
+        return tr("%1 — defined at %2:%3").arg(known->text, known->file).arg(known->line);
+    case CompletionKind::Directive:
+        return {};
+    }
+    return {};
+}
+
+CursorReference MainWindow::referenceAroundCursor(CodeEditor *editor, int blockNumber,
+                                                  int column) const
+{
+    if (!editor || !editor->document())
+        return {};
     const QTextDocument *doc = editor->document();
+    if (blockNumber < 0 || blockNumber >= doc->blockCount())
+        return {};
+
+    // The scanner only needs a small window around the position: OS calls are a
+    // local idiom (OsCallScan bounds its scans to a few lines).
     const int base = qMax(0, blockNumber - 10);
     const int last = qMin(doc->blockCount() - 1, blockNumber + 10);
     QStringList window;
     window.reserve(last - base + 1);
     for (int i = base; i <= last; ++i)
         window.append(doc->findBlockByNumber(i).text());
-    const OsCallMatch match = osCallAt(window, blockNumber - base);
+    return referenceAt(window, blockNumber - base, column);
+}
+
+void MainWindow::followCursorReference(CodeEditor *editor)
+{
+    if (!editor || editor != m_editor)
+        return;
+
+    const QTextCursor cursor = editor->textCursor();
+    const CursorReference reference =
+        referenceAroundCursor(editor, cursor.blockNumber(), cursor.positionInBlock());
 
     auto showStrip = [this](const QString &text) {
         if (!m_instrStrip)
@@ -3000,26 +3265,26 @@ void MainWindow::followCursorReference(CodeEditor *editor)
         m_instrStrip->setToolTip(text.isEmpty() ? tr("Open the instruction reference") : text);
     };
 
-    if (match.call) {
+    if (reference.call) {
         if (m_instrRef)
-            m_instrRef->showOsCall(match.call->trap, match.call->opcode, match.args);
+            m_instrRef->showOsCall(reference.call->trap, reference.call->opcode, reference.args);
         QString stack;
-        if (!match.args.isEmpty())
-            stack = match.args.join(QStringLiteral(", "));
-        if (match.call->stackBytes > 0) {
+        if (!reference.args.isEmpty())
+            stack = reference.args.join(QStringLiteral(", "));
+        if (reference.call->stackBytes > 0) {
             if (!stack.isEmpty())
                 stack += QStringLiteral(" · ");
-            stack += tr("%1 bytes").arg(match.call->stackBytes);
+            stack += tr("%1 bytes").arg(reference.call->stackBytes);
         }
-        QString line = QStringLiteral("%1 — %2").arg(match.call->name, match.call->summary);
+        QString line = QStringLiteral("%1 — %2").arg(reference.call->name, reference.call->summary);
         if (!stack.isEmpty())
             line += tr("  Stack: %1").arg(stack);
         showStrip(line);
         return;
     }
-    if (match.trapContext) {
-        // A trap whose function number is not statically known: the
-        // generic TRAP entry still says what the instruction does.
+    if (reference.trapContext) {
+        // A trap whose function number is not statically known: the generic TRAP
+        // entry still says what the instruction does.
         if (m_instrRef)
             m_instrRef->showInstruction(QStringLiteral("trap"));
         if (const InstructionInfo *info = instructionRef(QStringLiteral("trap")))
@@ -3029,20 +3294,9 @@ void MainWindow::followCursorReference(CodeEditor *editor)
         return;
     }
 
-    const QString line = cursor.block().text();
-    const int col = cursor.positionInBlock();
-    int start = col;
-    while (start > 0
-           && (line.at(start - 1).isLetterOrNumber() || line.at(start - 1) == QLatin1Char('.')))
-        --start;
-    int end = col;
-    while (end < line.size()
-           && (line.at(end).isLetterOrNumber() || line.at(end) == QLatin1Char('.')))
-        ++end;
-    const QString word = line.mid(start, end - start);
     if (m_instrRef)
-        m_instrRef->showInstruction(word);
-    if (const InstructionInfo *info = instructionRef(word))
+        m_instrRef->showInstruction(reference.word);
+    if (const InstructionInfo *info = instructionRef(reference.word))
         showStrip(QStringLiteral("%1 — %2").arg(info->mnemonic, info->summary));
     else
         showStrip(QString());
@@ -3267,6 +3521,7 @@ bool MainWindow::openPathImpl(const QString &path, bool quiet)
     // per-tab pass in onTabChanged cannot be relied on here. Both calls are
     // idempotent (MIN-81).
     syncGitDirectory();
+    syncFindInFilesScope();
     applyGitBlame();
     return true;
 }
@@ -3407,6 +3662,47 @@ void MainWindow::writeBackFloppyDoc(const QString &path)
     statusBar()->showMessage(tr("Saved %1 into %2")
                                  .arg(it->entryPath, QFileInfo(it->imagePath).fileName()),
                              4000);
+}
+
+void MainWindow::openDemoIfIdle()
+{
+    // Nothing is open: no file was given on the command line and the last document
+    // is gone (or there never was one). The demo is what a first run should land
+    // on — and only a first run does: the next launch reopens whatever was last
+    // opened. Never insisted on, and inert when no demo is reachable.
+    if (m_tabs->count() > 0 || !m_actOpenDemo || !m_actOpenDemo->isEnabled())
+        return;
+    openDemoProject();
+}
+
+void MainWindow::openDemoProject()
+{
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+    if (demos.isEmpty()) {
+        // The action is disabled when the demos are absent, so reaching here means
+        // the tree moved under a running window: say so rather than open nothing.
+        statusBar()->showMessage(
+            tr("No demo project was found — the demos travel with the source tree."), 8000);
+        return;
+    }
+
+    // The entries are project files; what a demo *is* is the source beside them.
+    // `hello` is the tour, so it wins over whatever order the list comes in.
+    QString project = demos.first().path;
+    for (const WelcomeView::Entry &demo : demos) {
+        if (QFileInfo(demo.path).completeBaseName() == QLatin1String("hello")) {
+            project = demo.path;
+            break;
+        }
+    }
+
+    const QString source = sourceForProject(project);
+    if (source.isEmpty()) {
+        statusBar()->showMessage(tr("%1 has no source beside it — the demo may have moved.")
+                                     .arg(QFileInfo(project).fileName()), 8000);
+        return;
+    }
+    openPath(source);
 }
 
 void MainWindow::openProject()
@@ -3596,26 +3892,41 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
         6000);
 }
 
+QString MainWindow::projectScopeDirectory() const
+{
+    // Only a directory the user actually opened counts as the project. The
+    // browser's model root is the process working directory until something is
+    // opened, and an unsaved document has no directory at all, so an unguarded
+    // answer here points project-wide work at whatever happens to contain the
+    // launch directory (MIN-81) — which is why nothing is answered rather than
+    // guessed when there is nothing open.
+    if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
+        return m_fileBrowser->directory();
+    if (m_editor && !m_editor->filePath().isEmpty())
+        return QFileInfo(m_editor->filePath()).absolutePath();
+    if (m_image && !m_image->filePath().isEmpty())
+        return QFileInfo(m_image->filePath()).absolutePath();
+    return {};
+}
+
 void MainWindow::syncGitDirectory()
 {
     if (!m_gitPanel)
         return;
-    // Only a directory the user actually opened counts as the project. The
-    // browser's model root is the process working directory until something is
-    // opened — so aiming git at it made a window with no project run `git
-    // status` in whichever repository happened to contain the launch directory.
-    // PiST's own suite, run from a build tree inside its checkout, did exactly
-    // that ~90 times per run; an abandoned status child at teardown leaves
-    // `.git/index.lock` in the developer's repository (MIN-81). With nothing
-    // open the panel is told so, and it says as much instead of guessing.
-    QString dir;
-    if (m_fileBrowser && m_fileBrowser->hasProjectDirectory())
-        dir = m_fileBrowser->directory();
-    else if (m_editor)
-        dir = QFileInfo(m_editor->filePath()).absolutePath();
-    else if (m_image && !m_image->filePath().isEmpty())
-        dir = QFileInfo(m_image->filePath()).absolutePath();
-    m_gitPanel->setDirectory(dir);
+    // With nothing open the panel is told so, and it says as much instead of
+    // guessing: aiming git at the browser's unguarded root made a window with no
+    // project run `git status` in whichever repository happened to contain the
+    // launch directory. PiST's own suite, run from a build tree inside its
+    // checkout, did exactly that ~90 times per run, and an abandoned status
+    // child at teardown leaves `.git/index.lock` in the developer's repository
+    // (MIN-81).
+    m_gitPanel->setDirectory(projectScopeDirectory());
+}
+
+void MainWindow::syncFindInFilesScope()
+{
+    if (m_findInFiles)
+        m_findInFiles->setScope(projectScopeDirectory());
 }
 
 void MainWindow::applyGitBlame()
@@ -4325,13 +4636,17 @@ void MainWindow::step()
     // A plain step is not a running->stopped transition, so stoppedChanged does
     // not fire and onDebuggerStopped is never called — the refresh has to be
     // explicit or nothing updates (registers, disassembly, the editor, and the
-    // step-back snapshot all depend on it).
+    // step-back snapshot all depend on it). The same fact is why the stop hook
+    // needs the step flag: the state batch that follows is the only report of
+    // the movement (docs/stop-hooks-plan.md §6).
+    m_session->setStepEventPending(true);
     m_host->step();
     m_host->refresh();
 }
 
 void MainWindow::stepOver()
 {
+    m_session->setStepEventPending(true);
     m_host->stepOver();
     m_host->refresh();
 }
@@ -4452,6 +4767,23 @@ void MainWindow::rebuildProgramMap()
                 all << s.name;
             m_consoleInput->setCompletions(all);
         }
+
+        // One candidate list, three surfaces (docs/glm-features.md §4): the
+        // editor's completion popup filters this, the palette lists its symbols,
+        // and the hover uses its kinds to decide what a word means. A symbol with
+        // no source position (a command-line define) is still offered by name; its
+        // file and line stay empty, so nothing claims a location it does not have.
+        m_completionItems = CompletionModel::vocabulary();
+        for (const SymbolEntry &symbol : m_symbols) {
+            CompletionItem item;
+            item.text = symbol.name;
+            item.kind = symbol.equate ? CompletionKind::Equate : CompletionKind::Label;
+            item.file = symbol.file;
+            item.line = symbol.line;
+            m_completionItems.append(item);
+        }
+        for (CodeEditor *editor : openEditors())
+            editor->setCompletions(m_completionItems);
     }
     // Only a linked build can lose a module: a single-module `-Ftos` build has no
     // linker and no map, and its one module owns the whole program, so it is
@@ -4471,6 +4803,154 @@ void MainWindow::rebuildProgramMap()
 void MainWindow::addWatchpoint()
 {
     m_bpModel->addWatchpoint();
+}
+
+namespace {
+
+/// The suffix that marks a file as a hook script, so the naming rule can tell one
+/// from the source a script would be named after.
+constexpr const char *kStopHookScriptSuffix = ".hooks.lua";
+
+/// Where the project's stop-hook script lives when PiST makes one: beside the
+/// source it hooks, named after it (`hello.s` → `hello.hooks.lua`).
+///
+/// Named after the source rather than a bare `hooks.lua` so that a directory
+/// holding two projects cannot have them fight over one file, and so a project's
+/// hook is findable without anyone being told where it is — which is what lets
+/// the dialog offer it.
+QString stopHookScriptPathFor(const QString &sourcePath)
+{
+    if (sourcePath.isEmpty())
+        return QString();
+    // Already a hook script — which it is whenever the script is the focused
+    // tab, since the "source" is whatever is in front of you. Naming a script
+    // after a script would give `hello.hooks.hooks.lua`: the second ask would
+    // grow the name every time instead of adopting what is there.
+    if (sourcePath.endsWith(QLatin1String(kStopHookScriptSuffix), Qt::CaseInsensitive))
+        return QFileInfo(sourcePath).absoluteFilePath();
+    const QFileInfo info(sourcePath);
+    if (info.fileName().isEmpty())
+        return QString();
+    return info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+         + QLatin1String(kStopHookScriptSuffix);
+}
+
+/// The starter script: a working example with the API written where the person
+/// editing it will read it. A file PiST makes should be documentation as well as
+/// a starting point — the alternative is sending someone to the manual before
+/// their first line.
+QByteArray stopHookStarterScript()
+{
+    return QByteArrayLiteral(R"lua(-- Stop hook: runs at every debugger stop, with the machine held still.
+--
+-- Available here, and nothing else (no io, os, require or debug):
+--
+--   readmem(addr, len)      a string of len bytes at addr; string.byte(s, 1)
+--                           reads one byte, string.byte(s, 1, 4) reads four
+--   writemem(addr, value)   write one byte
+--   readreg(name)           d0-d7, a0-a7, pc, sr, usp, isp
+--   writereg(name, value)   d0-d7, a0-a7, pc, sr  (Hatari cannot set usp/isp)
+--   sym(name)               a label's address in this run; addresses move
+--                           between runs, which is why this exists
+--   log(text) / print(...)  one line in the Build & debug console, as [hook]
+--   continue() / resume()   let the program run on; without "continue without
+--                           asking" switched on, the stop holds instead
+--
+-- Two values describe the stop itself:
+--
+--   reason                  "breakpoint", "step", or "unknown" (a pause, an
+--                           exception or a watchpoint — the emulator does not
+--                           say which)
+--   at                      the breakpoint that fired, "file:line"; only set
+--                           when reason is "breakpoint"
+--
+--
+-- Two things worth knowing before you rely on it:
+--
+--   * Addresses move. GEMDOS relocates the program on every run, so a data
+--     address that worked last run is wrong this run. Breakpoints dodge this by
+--     being file:line, and sym() resolves a name through this run's bases; an
+--     address written into the script by hand cannot dodge it.
+--   * Every stop gets a fresh interpreter: nothing carries over, so state that
+--     must survive a stop belongs in the guest's own memory.
+--
+-- The line below is a starting point. Edit it, press Continue, and watch the
+-- console.
+
+log(string.format("stop at $%06x  d0=$%08x", readreg("pc"), readreg("d0")))
+)lua");
+}
+
+} // namespace
+
+QString MainWindow::createStopHookScript()
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
+        m_log->appendPlainText(
+            tr("[hook] open a source first: the script is named after it"));
+        return QString();
+    }
+
+    const QString path = stopHookScriptPathFor(source);
+    if (QFileInfo::exists(path)) {
+        // Never overwritten. A script someone has edited is the whole point of
+        // the file, and this gesture is as likely to mean "take me to it".
+        m_log->appendPlainText(
+            tr("[hook] using the script already beside the source: %1").arg(path));
+    } else {
+        QString error;
+        if (!files::write(path, stopHookStarterScript(), &error)) {
+            QMessageBox::critical(this, tr("Stop hooks"), error);
+            return QString();
+        }
+        m_log->appendPlainText(tr("[hook] wrote %1 — edit it, then press Continue").arg(path));
+    }
+
+    openPath(path);
+    return path;
+}
+
+void MainWindow::editStopHooks()
+{
+    // An empty setting offers the conventional script when one already sits
+    // beside the source — the naming rule exists precisely so nobody has to be
+    // told where a project's hook is.
+    QString path = m_settings.stopHookPath;
+    if (path.isEmpty()) {
+        const QString beside = stopHookScriptPathFor(buildSourcePath());
+        if (!beside.isEmpty() && QFileInfo::exists(beside))
+            path = beside;
+    }
+
+    StopHooksDialog dialog(path, m_settings.stopHookEnabled, m_settings.stopHookAutoContinue,
+                           m_hooks ? m_hooks->lastRunSummary() : QString(), this);
+    dialog.setCreateScriptHandler([this] { return createStopHookScript(); });
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_settings.stopHookPath = dialog.scriptPath();
+    m_settings.stopHookEnabled = dialog.enabled();
+    m_settings.stopHookAutoContinue = dialog.autoContinue();
+
+    // The hook lives in the project file, and a project file is named after a
+    // source: with none open there is nowhere to keep it, and saying so beats a
+    // setting that quietly disappears.
+    if (buildSourcePath().isEmpty()) {
+        m_log->appendPlainText(tr("[hook] set for this session; open a source (and save the "
+                                  "project) to keep it"));
+        return;
+    }
+    persistSettings();
+
+    if (m_settings.stopHookEnabled)
+        m_log->appendPlainText(
+            tr("[hook] %1 runs at every stop%2")
+                .arg(m_settings.stopHookPath,
+                     m_settings.stopHookAutoContinue ? tr(", and may continue on its own")
+                                                     : QString()));
+    else
+        m_log->appendPlainText(tr("[hook] off"));
 }
 
 void MainWindow::debugCommand(const QString &command)
@@ -4543,9 +5023,14 @@ bool MainWindow::setRegister(const QString &regName, quint32 value)
     return true;
 }
 
-bool MainWindow::addWatchpointAddress(const QString &text, QString *error)
+bool MainWindow::addWatchpointAddress(const QString &text, Watchpoint *added, QString *error)
 {
-    return m_bpModel->addWatchpointAddress(text, error);
+    return m_bpModel->addWatchpointAddress(text, added, error);
+}
+
+bool MainWindow::clearWatchpoints(const QString &text, int *removed, QString *error)
+{
+    return m_bpModel->clearWatchpoints(text, removed, error);
 }
 
 void MainWindow::removeWatchpoint(int index)
@@ -4579,6 +5064,11 @@ bool MainWindow::toggleBreakpointAtLabel(const QString &name, QString *detail)
 QJsonArray MainWindow::symbolsJson(const QString &filter) const
 {
     return m_remoteState->symbolsJson(filter);
+}
+
+QJsonObject MainWindow::hookJson() const
+{
+    return m_remoteState->hookJson();
 }
 
 QJsonObject MainWindow::documentJson() const
@@ -4705,6 +5195,34 @@ void MainWindow::goToBreakpoint(const QString &file, int line)
     navigateToSourceLine(file, line);
 }
 
+void MainWindow::showFindInFiles()
+{
+    if (!m_findInFilesDock)
+        return;
+    // The scope can have moved since it was last searched (another file opened,
+    // another directory chosen), and the dock re-runs its query when it has.
+    syncFindInFilesScope();
+    m_findInFilesDock->show();
+    m_findInFilesDock->raise();
+    m_findInFiles->focusQuery();
+}
+
+void MainWindow::showSymbolPalette()
+{
+    if (!m_symbolPalette) {
+        m_symbolPalette = new SymbolPaletteDialog(this);
+        connect(m_symbolPalette, &SymbolPaletteDialog::symbolActivated, this,
+                [this](const QString &file, int line) { navigateToSourceLine(file, line); });
+    }
+    // The symbols belong to the build, and a build may have run since the palette
+    // was last shown: hand it the current candidates every time.
+    m_symbolPalette->setSymbols(m_completionItems);
+    m_symbolPalette->show();
+    m_symbolPalette->raise();
+    m_symbolPalette->activateWindow();
+    m_symbolPalette->focusFilter();
+}
+
 void MainWindow::stepDiagnostic(int direction)
 {
     const int count = m_problems ? m_problems->topLevelItemCount() : 0;
@@ -4743,6 +5261,11 @@ void MainWindow::editBreakpointCondition(int line)
     m_bpModel->editCondition(line);
 }
 
+void MainWindow::editBreakpointScript(int line)
+{
+    m_bpModel->editScript(line);
+}
+
 void MainWindow::clearAllBreakpoints()
 {
     m_bpModel->clear();
@@ -4767,6 +5290,33 @@ void MainWindow::onStateUpdated(const MachineState &state)
         if (m_eventSink)
             m_eventSink->publishEvent(QStringLiteral("stopped"),
                                       QStringLiteral("pc=0x%1").arg(hex::hex32(state.pc, hex::Case::Lower)));
+        // The stop hook runs from here, and nowhere earlier: this is the moment
+        // the stop is real enough to report — the register batch has landed, so
+        // readreg() has the machine's actual truth, and the attach's own
+        // commands have completed (docs/stop-hooks-plan.md D1).
+        if (m_hooks) {
+            // The cause, as far as the transport can tell us: a breakpoint whose
+            // armed address is this PC. A pause, an exception and a watchpoint
+            // are indistinguishable from here, so they stay "unknown" rather
+            // than being guessed at.
+            StopTrigger how;
+            if (const Breakpoint *hit = breakpointAt(m_bpModel->breakpoints(), state.pc)) {
+                how.reason = StopReason::Breakpoint;
+                how.at = hit->label();
+                how.script = hit->scriptPath;
+            }
+            m_hooks->onStopPublished(state, how);
+        }
+    } else if (m_session->stepEventPending() && state.regs.valid) {
+        // A step never reaches the branch above: `s`/`n` are not running→stopped
+        // transitions, so stoppedChanged does not fire for them (see step()).
+        // The flag makes "every stop" include them.
+        m_session->setStepEventPending(false);
+        if (m_hooks) {
+            StopTrigger how;
+            how.reason = StopReason::Step;
+            m_hooks->onStopPublished(state, how);
+        }
     }
     m_disassembly->setState(state);
 

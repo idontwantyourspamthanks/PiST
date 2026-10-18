@@ -75,6 +75,12 @@ public:
     /// breakable line starts here, not at the definition line.
     int nextCodeLine(const QString &file, int line) const;
 
+    /// First line at or after `line` in `file` with an entry in *any* section —
+    /// where a label written on its own line takes its address from. Unlike
+    /// nextCodeLine this is about data as much as code: `buffer:` above
+    /// `ds.b 256` lives in bss, and a script asking for its address means it.
+    int nextAddressLine(const QString &file, int line) const;
+
     /// Nearest source line at or before `address`. Ignored if the address falls
     /// outside every known section.
     bool lineFor(quint32 address, const SectionBases &bases, Address *result) const;

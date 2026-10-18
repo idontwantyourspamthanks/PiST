@@ -5,9 +5,14 @@
 #include "editor/CodeEditor.h"
 
 #include "editor/AsmHighlighter.h"
+#include "editor/AsmLex.h"
 #include "editor/EditorTheme.h"
+#include "editor/FindScan.h"
+#include "editor/LuaHighlighter.h"
 #include "support/FileWrite.h"
 
+#include <QAbstractItemView>
+#include <QListView>
 #include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
@@ -21,7 +26,9 @@
 #include <QPainter>
 #include <QPolygonF>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollBar>
+#include <QStringListModel>
 #include <QShortcut>
 #include <QStringConverter>
 #include <QTextBlock>
@@ -44,6 +51,14 @@ bool fitsLatin1(const QString &text)
             return false;
     }
     return true;
+}
+
+/// Whether `path` names a Lua script — the language the editor paints it with.
+/// Case-insensitive so `HOOK.LUA` written on a case-insensitive filesystem is
+/// still Lua.
+bool isLuaPath(const QString &path)
+{
+    return path.endsWith(QLatin1String(".lua"), Qt::CaseInsensitive);
 }
 
 class LineNumberArea : public QWidget
@@ -121,17 +136,13 @@ private:
     CodeEditor *m_editor;
 };
 
-bool isWordCharacter(const QChar &character)
-{
-    return character.isLetterOrNumber() || character == QLatin1Char('_');
-}
-
-/// How many hits a keystroke's search keeps. A common token in a large file has
-/// thousands of them, and the search re-runs on every keystroke and every cursor
-/// move; the label admits the cap ("more than N hits") rather than report a
-/// total the walk never reached, and the replace actions re-scan without it, so
-/// nothing but the label and the reach of Next/Previous depends on it.
-constexpr int kMaxMatches = 2000;
+/// How many candidates the completion popup keeps: enough to choose from, small
+/// enough that the list is read rather than scrolled. The model ranks them, so
+/// these are the best matches, not the first ones.
+constexpr int kCompletionLimit = 20;
+/// The popup's width: the editor can be a thousand pixels wide, and a completion
+/// list that wide is a wall of text.
+constexpr int kCompletionWidth = 360;
 
 /// The gutter column to the right of the line numbers that the program
 /// counter's ▶ occupies, and nothing else.
@@ -176,7 +187,9 @@ CodeEditor::CodeEditor(const EditorTheme &theme, QWidget *parent)
 {
     setLineWrapMode(QPlainTextEdit::NoWrap);
 
-    m_highlighter = new AsmHighlighter(document(), m_theme);
+    // The path is empty here, so this starts on the assembly highlighter; a
+    // later loadFile() or setFilePath() swaps in the Lua one for a `.lua` file.
+    installHighlighter();
 
     // After the highlighter exists: it also applies the theme's font and colours.
     setTheme(theme);
@@ -206,8 +219,30 @@ CodeEditor::CodeEditor(const EditorTheme &theme, QWidget *parent)
 
     buildFindBar();
     buildGotoBar();
+    buildCompletions();
 
     updateLineNumberAreaWidth(0);
+}
+
+void CodeEditor::installHighlighter()
+{
+    // The two highlighters are QSyntaxHighlighters owned by the document (no
+    // widget parent), but a language change has to delete the one in place:
+    // otherwise it stays attached and keeps painting alongside the new one.
+    // Nothing to do while the path still names the installed language.
+    const bool lua = isLuaPath(m_filePath);
+    if ((lua && m_luaHighlighter) || (!lua && m_asmHighlighter))
+        return;
+
+    delete m_asmHighlighter;
+    m_asmHighlighter = nullptr;
+    delete m_luaHighlighter;
+    m_luaHighlighter = nullptr;
+
+    if (lua)
+        m_luaHighlighter = new LuaHighlighter(document(), m_theme);
+    else
+        m_asmHighlighter = new AsmHighlighter(document(), m_theme);
 }
 
 void CodeEditor::buildFindBar()
@@ -357,7 +392,10 @@ void CodeEditor::setTheme(const EditorTheme &theme)
     setFont(m_theme.font);
     setTabStopDistance(8 * QFontMetricsF(m_theme.font).horizontalAdvance(QLatin1Char(' ')));
 
-    m_highlighter->setTheme(m_theme);
+    if (m_asmHighlighter)
+        m_asmHighlighter->setTheme(m_theme);
+    if (m_luaHighlighter)
+        m_luaHighlighter->setTheme(m_theme);
     refreshExtraSelections();
     if (m_lineNumberArea)
         updateLineNumberAreaWidth(0);
@@ -675,6 +713,24 @@ void CodeEditor::gotoLine(int line)
     setFocus();
 }
 
+void CodeEditor::selectSpan(int line, int column, int length)
+{
+    if (line <= 0 || line > blockCount() || column < 0 || length <= 0)
+        return;
+    const QTextBlock block = document()->findBlockByNumber(line - 1);
+    // A block's length counts its paragraph separator, so the line's own text
+    // ends one character before it.
+    if (!block.isValid() || column + length > block.length() - 1)
+        return;
+
+    QTextCursor cursor(block);
+    cursor.setPosition(block.position() + column);
+    cursor.setPosition(block.position() + column + length, QTextCursor::KeepAnchor);
+    setTextCursor(cursor);
+    centerCursor();
+    setFocus();
+}
+
 bool CodeEditor::isLineFullyVisible(int line) const
 {
     if (line <= 0 || line > blockCount())
@@ -928,46 +984,16 @@ void CodeEditor::findOptionsChanged()
     refreshMatches(m_findAnchor, true);
 }
 
-bool CodeEditor::isWholeWord(const QTextCursor &hit) const
-{
-    const int start = hit.selectionStart();
-    const int end = hit.selectionEnd();
-    if (start > 0 && isWordCharacter(document()->characterAt(start - 1)))
-        return false;
-    return !isWordCharacter(document()->characterAt(end));
-}
-
 QList<QTextCursor> CodeEditor::collectMatches(int limit, bool *capped) const
 {
-    QList<QTextCursor> hits;
-    if (capped)
-        *capped = false;
-    const QString needle = findNeedle();
-    if (needle.isEmpty())
-        return hits;
+    // The scan itself is editor/FindScan.h's: Find in Files counts with the same
+    // function, so the two cannot come to disagree about what a hit is.
+    return findScan(document(), findNeedle(), findOptions(), limit, capped);
+}
 
-    QTextDocument::FindFlags flags;
-    if (m_findCase && m_findCase->isChecked())
-        flags |= QTextDocument::FindCaseSensitively;
-    const bool wholeWord = m_findWord && m_findWord->isChecked();
-    QTextCursor at(document());
-    while (true) {
-        const QTextCursor hit = document()->find(needle, at, flags);
-        if (hit.isNull())
-            break;
-        at = hit;
-        if (wholeWord && !isWholeWord(hit))
-            continue;
-        // One hit past the limit is what proves the label's "more than": the
-        // limit alone only says the walk stopped.
-        if (limit > 0 && hits.size() >= limit) {
-            if (capped)
-                *capped = true;
-            break;
-        }
-        hits.append(hit);
-    }
-    return hits;
+FindOptions CodeEditor::findOptions() const
+{
+    return {m_findCase && m_findCase->isChecked(), m_findWord && m_findWord->isChecked()};
 }
 
 QList<QTextCursor> CodeEditor::replacementHits() const
@@ -1116,8 +1142,205 @@ void CodeEditor::replaceAll()
     m_findEdit->setFocus();
 }
 
+void CodeEditor::buildCompletions()
+{
+    // The list is a child of the viewport, not a popup window. A Qt::Popup is a
+    // surface of its own: the window system places it, and under Wayland (where a
+    // popup is positioned relative to its parent) a global move is not something
+    // it honours — the list can be "visible" in a test and invisible in use.
+    // A child widget is drawn inside the editor wherever the editor is.
+    m_completionList = new QListView(viewport());
+    m_completionList->setObjectName(QStringLiteral("completionList"));
+    // The text keeps the keyboard: completion never steals a keystroke, and the
+    // keys that choose from the list arrive through keyPressEvent() instead.
+    m_completionList->setFocusPolicy(Qt::NoFocus);
+    m_completionList->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_completionList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_completionList->setUniformItemSizes(true);
+    m_completionList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_completionList->setFrameShape(QFrame::Box);
+    m_completionList->hide();
+
+    m_completionRows = new QStringListModel(this);
+    m_completionList->setModel(m_completionRows);
+}
+
+void CodeEditor::setCompletions(const QList<CompletionItem> &items)
+{
+    m_completions.setItems(items);
+}
+
+bool CodeEditor::completionVisible() const
+{
+    return m_completionList && m_completionList->isVisible();
+}
+
+QStringList CodeEditor::completionCandidates() const
+{
+    return m_completionRows ? m_completionRows->stringList() : QStringList();
+}
+
+QString CodeEditor::completionPrefix() const
+{
+    const QTextCursor cursor = textCursor();
+    const QString line = cursor.block().text();
+    const int column = cursor.positionInBlock();
+    // A comment is prose: completing inside one would offer words that belong to
+    // the code, not to what is being written.
+    const int comment = asmlex::commentStart(line);
+    if (comment >= 0 && column > comment)
+        return {};
+
+    int start = column;
+    while (start > 0 && asmlex::isWordChar(line.at(start - 1)))
+        --start;
+    return line.mid(start, column - start);
+}
+
+void CodeEditor::showCompletions(bool explicitRequest)
+{
+    const QString prefix = completionPrefix();
+    if (prefix.isEmpty() && !explicitRequest) {
+        hideCompletions();
+        return;
+    }
+
+    const QList<CompletionItem> candidates = m_completions.matches(prefix, kCompletionLimit);
+    // A word already typed in full is not a candidate: there is nothing to offer
+    // when the only match is what is already on screen.
+    if (candidates.isEmpty()
+        || (candidates.size() == 1 && candidates.first().text == prefix)) {
+        hideCompletions();
+        return;
+    }
+
+    QStringList words;
+    words.reserve(candidates.size());
+    for (const CompletionItem &item : candidates)
+        words.append(item.text);
+    m_completionRows->setStringList(words);
+    // The best match is preselected: a list the user asked for is one they meant
+    // to take something from, so Tab takes the top candidate immediately.
+    m_completionList->setCurrentIndex(m_completionRows->index(0, 0));
+    m_completionList->show();
+    m_completionList->raise();
+    placeCompletionList();
+}
+
+void CodeEditor::hideCompletions()
+{
+    if (m_completionList)
+        m_completionList->hide();
+}
+
+void CodeEditor::placeCompletionList()
+{
+    if (!m_completionList || !m_completionList->model())
+        return;
+    const int rows = m_completionList->model()->rowCount();
+    if (rows <= 0)
+        return;
+
+    // Viewport coordinates, because the list is a child of the viewport. It is
+    // clipped by the editor rather than by the screen, so it goes below the caret
+    // when it fits there, above it when it does not, and is never taller than what
+    // is left of the viewport.
+    const QRect caret = cursorRect();
+    const int rowHeight = qMax(m_completionList->sizeHintForRow(0), fontMetrics().height());
+    const int frame = 2 * m_completionList->frameWidth();
+    const int width = qMin(viewport()->width(), kCompletionWidth);
+    int height = rows * rowHeight + frame;
+    int top = caret.bottom() + 2;
+    if (top + height > viewport()->height())
+        top = qMax(0, caret.top() - 2 - height);
+    height = qMax(rowHeight + frame, qMin(height, viewport()->height() - top));
+    m_completionList->setGeometry(QRect(caret.left(), top, width, height));
+}
+
+bool CodeEditor::completionKey(QKeyEvent *key)
+{
+    if (!m_completionList)
+        return false;
+
+    switch (key->key()) {
+    case Qt::Key_Tab:
+    case Qt::Key_Return:
+    case Qt::Key_Enter: {
+        // The highlighted candidate, or the first when nothing is highlighted yet:
+        // a list the user asked for is a list they meant to take one from.
+        QModelIndex index = m_completionList->currentIndex();
+        if (!index.isValid() && m_completionList->model())
+            index = m_completionList->model()->index(0, 0);
+        if (index.isValid())
+            insertCompletion(index.data(Qt::DisplayRole).toString());
+        else
+            hideCompletions();
+        return true;
+    }
+    case Qt::Key_Up:
+    case Qt::Key_Down: {
+        if (!m_completionList->model())
+            return false;
+        const int count = m_completionList->model()->rowCount();
+        if (count <= 0)
+            return false;
+        int row = m_completionList->currentIndex().isValid()
+                      ? m_completionList->currentIndex().row()
+                      : -1;
+        row += key->key() == Qt::Key_Down ? 1 : -1;
+        row = ((row % count) + count) % count; // wraps, like the find bar's Next
+        m_completionList->setCurrentIndex(m_completionList->model()->index(row, 0));
+        return true;
+    }
+    case Qt::Key_Escape:
+        // Dismisses the list, not the line: the user is choosing among candidates,
+        // not abandoning what they are typing.
+        hideCompletions();
+        return true;
+    default:
+        return false;
+    }
+}
+
+void CodeEditor::insertCompletion(const QString &word)
+{
+    if (!word.isEmpty()) {
+        QTextCursor cursor = textCursor();
+        // Replace the word the popup was completing — the token at the caret, not
+        // the line, which is why the completer is attached with setWidget().
+        const int typed = completionPrefix().size();
+        if (typed > 0)
+            cursor.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, typed);
+        cursor.insertText(word);
+        setTextCursor(cursor);
+    }
+    hideCompletions();
+}
+
 void CodeEditor::keyPressEvent(QKeyEvent *event)
 {
+    // The list's own keys come first. The list never takes the keyboard, so they
+    // arrive here — and Tab must not indent while a list is up.
+    if (completionVisible() && completionKey(event))
+        return;
+
+    // Tab asks for completion when the caret is in a word that has candidates, and
+    // indents (the base class) everywhere else: at the start of a line, inside a
+    // comment, or on a word nothing knows.
+    if (event->key() == Qt::Key_Tab && event->modifiers() == Qt::NoModifier
+        && !completionVisible()) {
+        const QString prefix = completionPrefix();
+        if (!prefix.isEmpty() && !m_completions.matches(prefix, 1).isEmpty()) {
+            showCompletions(true);
+            return;
+        }
+    }
+
+    // Ctrl+Space asks for completion explicitly, with or without a typed word.
+    if (event->key() == Qt::Key_Space && (event->modifiers() & Qt::ControlModifier)) {
+        showCompletions(true);
+        return;
+    }
     if (event->key() == Qt::Key_Escape && findBarVisible()) {
         hideFindBar();
         return;
@@ -1143,6 +1366,28 @@ void CodeEditor::keyPressEvent(QKeyEvent *event)
         return;
     }
     QPlainTextEdit::keyPressEvent(event);
+
+    // Completion follows the word being typed; any other key ends the word. The
+    // keys that *choose* from the list are claimed earlier (event(), and the
+    // popup's own filter).
+    if (completionVisible()) {
+        if (event->key() == Qt::Key_Backspace
+            || (!event->text().isEmpty() && asmlex::isWordChar(event->text().at(0)))) {
+            showCompletions(false);
+        } else {
+            hideCompletions();
+        }
+    } else if (!event->text().isEmpty() && asmlex::isWordChar(event->text().at(0))) {
+        showCompletions(false);
+    }
+}
+
+void CodeEditor::mousePressEvent(QMouseEvent *event)
+{
+    // A click moves the caret, so the word being completed is no longer the one the
+    // list is offering: it goes away rather than taking the next Tab.
+    hideCompletions();
+    QPlainTextEdit::mousePressEvent(event);
 }
 
 bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
@@ -1165,6 +1410,13 @@ bool CodeEditor::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QPlainTextEdit::eventFilter(watched, event);
+}
+
+void CodeEditor::setFilePath(const QString &path)
+{
+    m_filePath = path;
+    // A rename can change the extension, and with it the language.
+    installHighlighter();
 }
 
 bool CodeEditor::loadFile(const QString &path)
@@ -1199,6 +1451,8 @@ bool CodeEditor::loadFile(const QString &path)
 
     setPlainText(text);
     m_filePath = path;
+    // The path's language decides the highlighter, now that there is a path.
+    installHighlighter();
     document()->setModified(false);
     return true;
 }
@@ -1248,6 +1502,8 @@ bool CodeEditor::saveFile(const QString &path)
     }
 
     m_filePath = path;
+    // The path's language decides the highlighter, now that there is a path.
+    installHighlighter();
     document()->setModified(false);
     return true;
 }

@@ -115,6 +115,22 @@ struct ProjectSettings
     /// setup, e.g. a stock Hatari when a project must be shared with one.
     QString debugBackend = QStringLiteral("auto");
 
+    // --- stop hooks ------------------------------------------------------
+
+    /// The script run at every debugger stop (docs/stop-hooks-plan.md). Empty
+    /// means there is none. A relative path is resolved against the project
+    /// directory on load, exactly as `includePaths` is.
+    QString stopHookPath;
+
+    /// Whether the hook runs at all. Off by default: a script that changes the
+    /// machine should be switched on deliberately.
+    bool stopHookEnabled = false;
+
+    /// Whether the script's `resume()` is honoured without asking. Off by
+    /// default, because a stray `resume()` at every stop is the one gesture of
+    /// this feature that can surprise the person sitting at the keyboard
+    /// (glm-features.md §1).
+    bool stopHookAutoContinue = false;
 };
 
 /// Persist and restore a project's settings.

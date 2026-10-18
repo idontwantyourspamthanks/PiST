@@ -172,7 +172,14 @@ void InstructionRefView::updateDetail(QListWidgetItem *item)
         flags = tr("Flags: not known."); // unknown, not "none": say so
     else
         flags = tr("Flags: %1").arg(flags);
-    m_detail->setText(flags);
+    QStringList lines;
+    lines << flags;
+    if (!info->typicalUse.isEmpty())
+        lines << info->typicalUse;
+    // Authored with the indentation it should have, so it is shown as written.
+    if (!info->example.isEmpty())
+        lines << info->example.split(QLatin1Char('\n'));
+    m_detail->setText(lines.join(QLatin1Char('\n')));
 }
 
 void InstructionRefView::updateOsDetail(QListWidgetItem *item)
@@ -192,6 +199,11 @@ void InstructionRefView::updateOsDetail(QListWidgetItem *item)
     if (!info->availability.isEmpty())
         stack += tr(" Available: %1.").arg(info->availability);
     lines << stack;
+    if (!info->typicalUse.isEmpty())
+        lines << info->typicalUse;
+    // Authored with its own indentation, so it is shown as written.
+    if (!info->example.isEmpty())
+        lines << info->example.split(QLatin1Char('\n'));
     // The actual arguments the cursor's call is being made with, shown only
     // while the row they were resolved for is the selected one.
     if (!m_callArgs.isEmpty() && item->data(Qt::UserRole).toString() == m_callArgsKey)

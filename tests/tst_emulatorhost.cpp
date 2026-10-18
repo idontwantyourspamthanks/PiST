@@ -14,10 +14,12 @@
 // runnable on a bare machine.
 
 #include "build/LineMap.h"
+#include "build/SymbolTable.h"
 #include "debug/Breakpoint.h"
 #include "debug/Watchpoint.h"
 #include "emu/EmulatorHost.h"
 #include "emu/EmbedSocket.h"
+#include "emu/HexFormat.h"
 #include "emu/HrdbBackend.h"
 #include "emu/HatariProbe.h"
 #include "emu/HatariTextParse.h"
@@ -26,6 +28,7 @@
 #include "emu/SessionConfig.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "hooks/StopHookRunner.h"
 #include "toolchain/Toolchain.h"
 
 #include <QDir>
@@ -377,6 +380,9 @@ private slots:
     void breaksInOnIllegalInstruction();
     void doesNotBreakInOnNormalRun();
     void sourceLineBreakpointFiresAndResolvesBack();
+    /// The stop hook end to end: the shipped runner, a real Lua script, a real
+    /// session — the scripted write read back from the debugger itself.
+    void stopHookScriptWritesThroughTheDebugger();
     /// Continue at the entry stop used to discard unsent `b pc=` commands.
     void resumeFlushesPendingBreakpointCommands();
     /// A command whose stderr output pauses longer than the settle period must
@@ -537,9 +543,12 @@ void TstEmulatorHost::initTestCase()
     src.close();
 
     m_program = m_sourceDir + QStringLiteral("/hello.prg");
+    // With a listing: the hook test resolves labels through it, exactly as the
+    // application does with the listing its own build writes.
     QProcess vasm;
-    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"), QStringLiteral("-o"),
-                        m_program, source});
+    vasm.start(m_vasm, {QStringLiteral("-quiet"), QStringLiteral("-Ftos"),
+                        QStringLiteral("-L"), m_sourceDir + QStringLiteral("/hello.lst"),
+                        QStringLiteral("-o"), m_program, source});
     QVERIFY(vasm.waitForFinished(20000));
     QCOMPARE(vasm.exitCode(), 0);
     QVERIFY(QFileInfo::exists(m_program));
@@ -1085,6 +1094,142 @@ void TstEmulatorHost::sourceLineBreakpointFiresAndResolvesBack()
     QCOMPARE(back.line, 5);
     QVERIFY2(LineMap::sameSource(back.file, QFileInfo(source).fileName()),
              qPrintable("highlight would not match the open file: " + back.file));
+
+    host.stop();
+}
+
+/// The stop hook against a real session (docs/stop-hooks-plan.md §12): the
+/// shipped runner is driven at the entry stop with a Lua script that writes a
+/// byte and a register, reads the byte back, and logs what it read; the debugger
+/// is then asked to read both back itself. The engine, the runner's round-trips
+/// and the typed intents are exercised end to end — everything but MainWindow's
+/// trigger wiring, which is UI.
+///
+/// Nothing is resumed: the point is the round trip, not a second stop.
+void TstEmulatorHost::stopHookScriptWritesThroughTheDebugger()
+{
+    HatariCapabilities caps = probeHatari(m_hatari);
+    SessionConfig config;
+    config.hatariPath = m_hatari;
+    config.programPath = m_program;
+    config.tosPath = m_tos;
+    config.sessionDir = m_work->path() + QStringLiteral("/hook");
+    config.gemdosDir = m_sourceDir;
+    config.bootstrapScriptPath =
+        EmulatorHost::writeBootstrapScript(config.sessionDir, caps, nullptr);
+
+    EmulatorHost host;
+    connect(&host, &EmulatorHost::logLine, this,
+            [this](const QString &line) { m_log.append(line); });
+    QSignalSpy stoppedSpy(&host, &EmulatorHost::stoppedChanged);
+    QSignalSpy finished(&host, &EmulatorHost::commandFinished);
+    MachineState last;
+    connect(&host, &EmulatorHost::stateUpdated, this,
+            [&last](const MachineState &state) { last = state; });
+
+    QVERIFY(host.start(config, nullptr));
+    QVERIFY2(stoppedSpy.wait(20000), "no entry stop");
+
+    host.loadSymbols();
+    QVERIFY(finished.wait(15000));
+    finished.clear();
+    host.readBasepage();
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.hasBases(), 5000);
+
+    // The PC and the map, so `sym()` can be checked against where the machine
+    // actually is: the entry stop is the program's first instruction, which is
+    // what `start` names.
+    host.dumpRegisters();
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+
+    const QString source = m_sourceDir + QStringLiteral("/hello.s");
+    const QString listing = m_sourceDir + QStringLiteral("/hello.lst");
+    ProgramLineMap map;
+    QString mapError;
+    QVERIFY2(map.addModule(source, m_program, listing, &mapError), qPrintable(mapError));
+    LineMap::SectionBases bases;
+    bases.text = last.textBase;
+    bases.data = last.dataBase;
+    bases.bss = last.bssBase;
+    map.setLiveBases(bases);
+    const QVector<SymbolEntry> symbols = symbolsFromListing(listing, source);
+    QVERIFY2(!symbols.isEmpty(), "no symbols from the listing");
+
+    // A byte inside the program's own data area; nothing resumes, so no layout
+    // assumption can do harm beyond the value being read back.
+    const quint32 target = (last.dataBase ? last.dataBase : last.textBase) + 0x100;
+
+    const QString script = m_work->path() + QStringLiteral("/hook.lua");
+    QFile file(script);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write(QStringLiteral("writemem(0x%1, 0x5a)\n"
+                              "writereg(\"d0\", 0x1234)\n"
+                              "local back = string.byte(readmem(0x%1, 1))\n"
+                              "log(\"read back \" .. back)\n"
+                              "log(string.format(\"start=$%08x pc=$%08x\", sym(\"start\"), "
+                              "readreg(\"pc\")))\n"
+                              "log(\"msg=\" .. readmem(sym(\"msg\"), 2))\n")
+                   .arg(target, 8, 16, QLatin1Char('0'))
+                   .toUtf8());
+    file.close();
+
+    QStringList console;
+    StopHookRunner::Host hookHost;
+    hookHost.backend = [&host] { return &host; };
+    hookHost.log = [&console](const QString &line) { console << line; };
+    hookHost.scriptPath = [&script] { return script; };
+    hookHost.enabled = [] { return true; };
+    hookHost.autoContinue = [] { return false; };
+    hookHost.resume = [] {};
+    hookHost.refresh = [] {};
+    hookHost.holdConsole = [](bool) {};
+    // The same rule MainWindow's Host uses (`BreakpointWatchpointModel::resolveLabel`
+    // calls `labelAddress`); the model adds the sentence, not the answer.
+    hookHost.symbol = [&symbols, &map](const QString &name, quint32 *address, QString *error) {
+        LabelAddress where;
+        LabelAddressProblem problem = LabelAddressProblem::None;
+        if (!labelAddress(symbols, map, name, &where, &problem)) {
+            *error = QStringLiteral("sym: refused '%1'").arg(name);
+            return false;
+        }
+        *address = where.address;
+        return true;
+    };
+    StopHookRunner runner(hookHost);
+
+    runner.onStopPublished(last);
+    QTRY_VERIFY_WITH_TIMEOUT(!runner.lastRunSummary().isEmpty(), 30000);
+
+    // The script read its own write back through the transport, byte-exact.
+    QVERIFY2(console.contains(QStringLiteral("[hook] read back 90")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // `sym()` resolved the entry label to where the machine actually is, and a
+    // data label to its bytes — through the listing and the live bases.
+    QVERIFY2(console.contains(QStringLiteral("[hook] start=$%1 pc=$%1")
+                                  .arg(hex::hex32(last.pc, hex::Case::Lower))),
+             qPrintable(console.join(QLatin1Char('|'))));
+    QVERIFY2(console.contains(QStringLiteral("[hook] msg=HI")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // Now the debugger itself: the byte is where the script put it.
+    QList<MemoryRow> rows;
+    connect(&host, &EmulatorHost::memoryDumpReady, this,
+            [&rows](quint32, const QList<MemoryRow> &dump, int) { rows = dump; });
+    finished.clear();
+    host.requestMemoryDump(target, 1, -1);
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(!rows.isEmpty(), 5000);
+    QCOMPARE(rows.first().address, target);
+    QCOMPARE(rows.first().bytes.value(0), quint8(0x5a));
+
+    // ...and so is the register.
+    host.dumpRegisters();
+    QVERIFY(finished.wait(15000));
+    QTRY_VERIFY_WITH_TIMEOUT(last.regs.valid, 5000);
+    QCOMPARE(last.regs.d[0], quint32(0x1234));
 
     host.stop();
 }
@@ -2085,9 +2230,26 @@ void TstEmulatorHost::watchpointFiresOnChangeAndNotOnSameValue()
     // A second watch, on the word the program changes next. It exists so the
     // same-value case is bounded by a real stop rather than a timeout: the
     // second run must reach it.
+    //
+    // This one is asked for by *label* and armed through the plan — the whole
+    // path the IDE takes for a named watchpoint (docs/glm-features.md §5). The
+    // name resolves through the build's symbols and the session's live bases,
+    // which is why it can only arm here, after `info basepage`, and why nothing
+    // about it is remembered: the next run's address is a different one. It must
+    // land on exactly the address the map gives `val2`, and its change must be
+    // what stops the run below — so the label path is proven against the machine,
+    // not against its own output.
     Watchpoint val2Watch;
-    val2Watch.address = val2Addr;
-    host.armBreakpoint(val2Watch.command());
+    val2Watch.symbol = QStringLiteral("val2");
+    const WatchpointPlan namedPlan =
+        planWatchpoints(QList<Watchpoint>{val2Watch}, symbolsFromListing(listing, source), map);
+    QVERIFY2(namedPlan.unresolved.isEmpty(), qPrintable(namedPlan.unresolvedReasons.value(0)));
+    QCOMPARE(namedPlan.armed.size(), 1);
+    QVERIFY(namedPlan.armed.first().resolved);
+    QCOMPARE(namedPlan.armed.first().symbol, QStringLiteral("val2"));
+    QCOMPARE(namedPlan.armed.first().address, val2Addr);
+    QCOMPARE(namedPlan.commands.size(), 1);
+    host.armBreakpoint(namedPlan.commands.first());
     QVERIFY2(finished.wait(15000), "no response to the val2 watchpoint");
     const QString val2Arm = finished.takeFirst().at(1).toString();
     QVERIFY2(val2Arm.contains(QLatin1String("breakpoint"), Qt::CaseInsensitive),

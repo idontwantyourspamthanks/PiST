@@ -8,6 +8,7 @@
 #include "emu/TosRom.h"
 #include "toolchain/ToolFetch.h"
 #include "toolchain/Toolchain.h"
+#include "ui/Appearance.h"
 
 #include <QDialogButtonBox>
 #include <QCoreApplication>
@@ -15,12 +16,14 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <QGroupBox>
 #include <QLabel>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSettings>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProgressBar>
@@ -55,13 +58,32 @@ SetupDialog::SetupDialog(QWidget *parent)
     setObjectName(QStringLiteral("setupDialog"));
 
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(28, 24, 28, 20);
+    layout->setSpacing(16);
+
+    auto *heading = new QLabel(tr("Set up tools and ROMs"), this);
+    QFont headingFont = heading->font();
+    headingFont.setPointSizeF(headingFont.pointSizeF() * 1.6);
+    headingFont.setBold(true);
+    heading->setFont(headingFont);
+    layout->addWidget(heading);
 
     auto *intro = makeDetail(this);
     intro->setText(tr("PiST drives external programs and never patches or links them, so a "
                       "few pieces have to come from their authors. Each fetch below names "
                       "exactly what is downloaded, from where, and the checksum it is "
                       "verified against before anything is built or installed."));
+    {
+        QPalette ink = intro->palette();
+        ink.setColor(QPalette::WindowText, appearance::colors().muted);
+        intro->setPalette(ink);
+    }
     layout->addWidget(intro);
+
+    auto tune = [](QGroupBox *box) {
+        box->layout()->setContentsMargins(16, 16, 16, 14);
+        box->layout()->setSpacing(10);
+    };
 
     // ------------------------------------------------------- assembler (vasm)
     auto *vasmBox = new QGroupBox(tr("Assembler — vasmm68k_mot"), this);
@@ -71,12 +93,14 @@ SetupDialog::SetupDialog(QWidget *parent)
     m_vasmDetail = makeDetail(vasmBox);
     m_vasmButton = new QPushButton(vasmBox);
     m_vasmButton->setObjectName(QStringLiteral("vasmFetchButton"));
+    m_vasmButton->setMinimumHeight(34);
     m_vasmProgress = new QProgressBar(vasmBox);
     m_vasmProgress->setVisible(false);
     vasmLayout->addWidget(m_vasmStatus);
     vasmLayout->addWidget(m_vasmDetail);
-    vasmLayout->addWidget(m_vasmButton);
+    vasmLayout->addWidget(m_vasmButton, 0, Qt::AlignLeft);
     vasmLayout->addWidget(m_vasmProgress);
+    tune(vasmBox);
     layout->addWidget(vasmBox);
     connect(m_vasmButton, &QPushButton::clicked, this, &SetupDialog::fetchVasm);
 
@@ -88,6 +112,7 @@ SetupDialog::SetupDialog(QWidget *parent)
     m_emulatorDetail = makeDetail(emuBox);
     emuLayout->addWidget(m_emulatorStatus);
     emuLayout->addWidget(m_emulatorDetail);
+    tune(emuBox);
     layout->addWidget(emuBox);
 
     // ------------------------------------------------------------- TOS ROM
@@ -98,12 +123,14 @@ SetupDialog::SetupDialog(QWidget *parent)
     m_romDetail = makeDetail(romBox);
     m_romButton = new QPushButton(romBox);
     m_romButton->setObjectName(QStringLiteral("romFetchButton"));
+    m_romButton->setMinimumHeight(34);
     m_romProgress = new QProgressBar(romBox);
     m_romProgress->setVisible(false);
     romLayout->addWidget(m_romStatus);
     romLayout->addWidget(m_romDetail);
-    romLayout->addWidget(m_romButton);
+    romLayout->addWidget(m_romButton, 0, Qt::AlignLeft);
     romLayout->addWidget(m_romProgress);
+    tune(romBox);
     layout->addWidget(romBox);
     connect(m_romButton, &QPushButton::clicked, this, &SetupDialog::fetchEmuTos);
 
@@ -111,14 +138,25 @@ SetupDialog::SetupDialog(QWidget *parent)
     m_log = new QPlainTextEdit(this);
     m_log->setReadOnly(true);
     m_log->setMaximumBlockCount(1000);
-    layout->addWidget(m_log);
+    m_log->setMinimumHeight(120);
+    layout->addWidget(m_log, 1);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     m_closeButton = buttons->button(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
-    resize(640, 640);
+    // A fixed request on a 768 px screen at 125–150% scaling asks for more height
+    // than the work area holds, so the window manager clamps the frame while the
+    // layout keeps demanding its minimum — the trap SettingsDialog records. Ask for
+    // 760×720, but never more than nine tenths of the screen.
+    QSize wanted(760, 720);
+    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QSize available = screen->availableGeometry().size();
+        wanted = wanted.boundedTo(
+            QSize(available.width() * 9 / 10, available.height() * 9 / 10));
+    }
+    resize(wanted);
     refresh();
 }
 

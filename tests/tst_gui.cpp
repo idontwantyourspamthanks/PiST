@@ -12,6 +12,7 @@
 
 #include "editor/CodeEditor.h"
 #include "editor/AsmHighlighter.h"
+#include "editor/LuaHighlighter.h"
 #include "editor/InstrRef.h"
 #include "image/ImageDocument.h"
 #include "image/StFormats.h"
@@ -28,13 +29,18 @@
 #include "emu/TosRom.h"
 #include "ui/FileBrowser.h"
 #include "ui/FileTemplates.h"
+#include "ui/GalleryCard.h"
+#include "ui/NewFileDialog.h"
 #include "ui/NewFileSpec.h"
 #include "ui/WelcomeView.h"
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
 #include "ui/MainWindow.h"
+#include "ui/SymbolPaletteDialog.h"
+#include "ui/StopHooksDialog.h"
 #include "build/BuildService.h"
 #include "build/FloppyImage.h"
+#include "debug/Watchpoint.h"
 #include "ui/DisassemblyView.h"
 #include "ui/HardwareView.h"
 #include "ui/MemoryView.h"
@@ -73,10 +79,13 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QTabWidget>
+#include <QToolTip>
 #include <QTreeWidget>
 #include <QTimer>
 #include <QSpinBox>
@@ -320,6 +329,69 @@ private:
     MainWindow &m_window;
 };
 
+/// The caption a gallery card shows, or empty when it has none. Settings' theme
+/// and shortcut cards carry no object name and no property, so the caption is
+/// the only thing naming the choice — and it is what the user reads before
+/// clicking. No translator is installed in this suite, so a caption is its
+/// source text.
+QString galleryCardCaption(GalleryCard *card)
+{
+    const auto *label = card->findChild<QLabel *>(QStringLiteral("galleryCardTitle"));
+    return label ? label->text() : QString();
+}
+
+/// The card under `root` carrying `value` under `property`. New File and New
+/// Image give each card the choice it stands for (`templateKind`, `preset`,
+/// `paletteKind`) rather than an object name, so the property is how the test
+/// addresses one without depending on the caption's wording.
+GalleryCard *galleryCardWithProperty(QWidget *root, const char *property, const QVariant &value)
+{
+    for (GalleryCard *card : root->findChildren<GalleryCard *>()) {
+        if (card->property(property) == value)
+            return card;
+    }
+    return nullptr;
+}
+
+/// The card whose caption reads `caption`: the card a user picks out by reading
+/// it, for the dialog whose cards the test cannot address any other way.
+GalleryCard *galleryCardWithCaption(QWidget *root, const QString &caption)
+{
+    for (GalleryCard *card : root->findChildren<GalleryCard *>()) {
+        if (galleryCardCaption(card) == caption)
+            return card;
+    }
+    return nullptr;
+}
+
+/// Click `card` in the middle, the way a user would. QTest delivers the click to
+/// the widget itself instead of hit-testing a window, so a card that is off
+/// screen still receives it — the card's own mouseReleaseEvent turns it into
+/// `activated`, and that locates the click inside rect(). False when there is no
+/// such place, which is what a card the layout has never run on looks like.
+bool clickGalleryCard(GalleryCard *card)
+{
+    if (!card || card->rect().isEmpty())
+        return false;
+    QTest::mouseClick(card, Qt::LeftButton, Qt::NoModifier, card->rect().center());
+    return true;
+}
+
+/// Bring the tab page holding `widget` forward and let it lay out. A QTabWidget
+/// shows one page at a time and hands geometry only to that one, so a card on a
+/// page that is not current has nowhere for a click to land until it is.
+bool showTabHolding(QTabWidget *tabs, QWidget *widget)
+{
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->widget(i)->isAncestorOf(widget)) {
+            tabs->setCurrentIndex(i);
+            QCoreApplication::processEvents();
+            return widget->isVisibleTo(tabs);
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 /// Skip the calling test — or fail it under PIST_REQUIRE_EMULATOR — when the
@@ -359,6 +431,12 @@ private slots:
     void strokeDedupMakesUndoRestoreOriginal();
     void sheetCanvasBlitsPhaseComposite();
     void removeWatchpointWithoutSessionDoesNotError();
+
+    /// A watchpoint named for a label the build knows but no stop has placed is
+    /// accepted and shown pending, the panel lists it by its name, a name that
+    /// cannot be watched is refused with a message naming it, and clearing by
+    /// that name removes it — all without an emulator.
+    void namedWatchpointIsPendingUntilArmTime();
 
     /// Run must eventually start an emulator session — and must do so *after* the
     /// asynchronous build finishes, not alongside it.
@@ -523,6 +601,10 @@ private slots:
     /// it was filled: ejecting that disk, or putting another one in the drive,
     /// must take the clipboard — and Paste — with it.
     void fileBrowserClipboardDiesWithItsDisk();
+    /// The pane's own menu edits the image in place: Delete drops an entry,
+    /// Rename re-adds it under a new name, New Folder makes an empty one, and a
+    /// refused name leaves the image alone. The image is asserted, not the row.
+    void floppyPaneEditsItsDisk();
     /// A move across volumes materialises a nested symlink rather than handing
     /// it to whatever QFile::rename does internally. A guard, not a red: see
     /// the test's comment for what was measured.
@@ -634,6 +716,11 @@ private slots:
     /// File ▸ New File is a create-file transaction: a file on disk with the
     /// template's bytes, opened, remembered and revealed in the sidebar.
     void newFileCreatesOpensAndRevealsTheFile();
+    /// The gallery's template cards are how a person chooses (the combo they
+    /// drive is hidden): clicking one must select that template, so the spec the
+    /// dialog produces — created into a temporary directory — is the clicked
+    /// card's bytes, at the name and directory the fields hold.
+    void newFileCardsChooseTheTemplate();
     /// Every shipped template is a real starting point, not a stub: the
     /// picker's bytes are what the file gets and the assembler accepts them.
     void shippedTemplatesAssemble();
@@ -655,6 +742,10 @@ private slots:
     /// New Image… requires a file name and writes the blank `.pim` before
     /// the editor opens, rather than defaulting every sprite to sprite.pim.
     void newImageDialogResolvesFileName();
+    /// New Image's size and palette cards drive the values the dialog hands to
+    /// the caller — both spin boxes and the palette kind — so a click must
+    /// produce the card's numbers and palette, not just mark the card.
+    void newImageCardsChooseSizeAndPalette();
     /// The bitplane export dialog's boxes and pre-shift picker are what the
     /// encoder is handed, and its map is the file's block table.
     void bitplaneExportDialogMapsChoices();
@@ -695,6 +786,29 @@ private slots:
     void commonShortcutSchemeRenamesThePanelsKeys();
     void buildAndSearchMenusCarryTheirActions();
     void problemsDockListsABuildWarning();
+    /// Find in Files: the project-wide search dock, its results, and the tour
+    /// that opens a hit's file at the hit's own span.
+    void findInFilesSearchesTheProjectAndNavigates();
+    /// A second query replaces the first's results wholesale: a row left over
+    /// from the replaced walk is exactly what a cancel race would look like.
+    void findInFilesShowsOnlyTheCurrentQuery();
+    /// Tab completion in the editor: the vocabulary the window pushes in, the word
+    /// at the caret as the prefix, and the keys that take a candidate.
+    void editorCompletionOffersTheVocabularyAndTakesACandidate();
+    /// Completion in a project that has never been built: the vocabulary is static,
+    /// so an editor must offer mnemonics and directives before the first assembly —
+    /// what a build adds (labels, equates) are extra candidates, not the only ones.
+    void windowCompletesBeforeAnyBuild();
+    /// The toolbar's Demo button: present, enabled exactly when there is a demo to
+    /// open, and opening the demo's source (whose sibling `.pistproject` carries
+    /// the hook script and the emulator settings with it).
+    void theToolbarOpensTheDemo();
+    /// The symbol palette: the same candidates completion filters, presented as a
+    /// jump list — filter, pick, and the file opens at the definition.
+    void symbolPaletteJumpsToADefinition();
+    /// The hover card: the dock's facts as a tooltip at the pointer, and nothing at
+    /// all where nothing resolves.
+    void hoverShowsTheReferenceAndRefusesToGuess();
     void themeSheetFramesItsDocks();
     void settingsDialogAndEditorChromeExposeTheirControls();
     void hardwareAndDisassemblyViewsNameWhatTheyShow();
@@ -721,6 +835,16 @@ private slots:
     /// vasm reads the first field as a label wherever it starts, so an indented
     /// label definition is a label.
     void anIndentedLabelIsALabel();
+    /// A `.lua` stop-hook script is painted as Lua, not as 68000 assembly: its
+    /// `--` line comment, `--[[ … ]]` block comment, quoted and long strings,
+    /// numbers and keywords all come out in the theme's colours.
+    void luaHighlighterColoursItsTokens();
+    /// A long comment or long string that does not close on its line keeps its
+    /// colour into the lines below, and the code after `]]` is code again.
+    void luaLongCommentsAndStringsSpanLines();
+    /// The editor chooses the language from the path: a `.lua` file — where a
+    /// stop hook lives — gets the Lua highlighter, a `.s` file the 68000 one.
+    void editorPicksHighlighterByPath();
     /// REGRESSION GUARD, not a RED test: the gutter repaints when the error
     /// lines are set, the mark is visible in it, and clearing restores the plain
     /// rendering. Qt's updateRequest chain already reached the gutter on HEAD;
@@ -736,6 +860,19 @@ private slots:
     /// the window at that minimum, and nothing about the content resizes the
     /// dialog once it is shown.
     void settingsDialogFitsAShortScreenWithReachableButtons();
+    /// The theme and shortcut cards sit over hidden combos and OK persists what
+    /// the combo holds (MIN-53), so clicking a card must be the entry the dialog
+    /// saves — the card's own caption, not merely a neighbouring one.
+    void settingsCardsSaveTheChosenThemeAndShortcuts();
+    // Run ▸ Stop hooks… is the feature's only doorway: an action that exists but
+    // was never added to a menu would leave it unreachable.
+    void runMenuOffersStopHooks();
+    /// The stop-hook dialog's own logic: fields that mean nothing while the hook
+    /// is off, and a last-run line that is never blank.
+    void stopHooksDialogGatesItsFieldsOnWhetherItRuns();
+    /// The dialog's offer to make the script, and the window operation behind it.
+    void stopHooksDialogOffersToMakeAScript();
+    void createStopHookScriptWritesItBesideTheSource();
 
 private:
     QString m_vasm;
@@ -1731,7 +1868,8 @@ void TstGui::clearAllRemovesWatchpoints()
     // (its enable test is "any breakpoint OR any watchpoint"), so it must clear
     // the watchpoint too — the shared clearAllBreakpoints handler used to leave
     // it, so the button stayed enabled.
-    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error), qPrintable(error));
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), nullptr, &error),
+             qPrintable(error));
 
     QPushButton *clear = nullptr;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
@@ -1935,7 +2073,7 @@ void TstGui::removeWatchpointWithoutSessionDoesNotError()
     auto *host = window.findChild<IDebugBackend *>();
     QVERIFY(host);
     QString error;
-    QVERIFY(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error));
+    QVERIFY(window.addWatchpointAddress(QStringLiteral("$1234.w"), nullptr, &error));
 
     QSignalSpy errors(host, &IDebugBackend::errorOccurred);
     // No session running: removing a watchpoint must not push debugger commands
@@ -1943,6 +2081,81 @@ void TstGui::removeWatchpointWithoutSessionDoesNotError()
     // emulator session is running." — a false error on a plain edit).
     QMetaObject::invokeMethod(&window, "removeWatchpoint", Qt::DirectConnection, Q_ARG(int, 0));
     QCOMPARE(errors.count(), 0);
+}
+
+// Watchpoint symbols, without an emulator: after a build the symbol table knows
+// the label but no stop has reported this run's live bases, so a named watchpoint
+// is accepted and listed as pending rather than armed at an address it does not
+// have yet. The refusals name what they refuse, and the dock's panel — not just
+// the model — is where the pending row is checked (docs/glm-features.md §5).
+void TstGui::namedWatchpointIsPendingUntilArmTime()
+{
+    const QString source = m_work->path() + QStringLiteral("/watchsym.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\n"               // 1
+               "start:\tmoveq\t#1,d0\n" // 2
+               "\trts\n"                // 3
+               "\teven\n"               // 4
+               "\tdata\n"               // 5
+               "counter:\tds.w\t1\n"    // 6  a label with an address, no code
+               "LIMIT\tequ\t4\n"        // 7  a value, not a place
+               "\tend\n");              // 8
+    file.close();
+
+    MainWindow window;
+    window.openPath(source);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QVERIFY2(built.count() >= 1 || built.wait(30000), "the build did not finish");
+    QVERIFY2(built.last().at(0).toBool(), "the fixture must build");
+
+    // The label is known to the build, but no stop has reported the program's
+    // bases, so it cannot be placed yet: accepted, stored under its name (the
+    // width is the asked-for part, not the name), and marked unresolved so the
+    // arm plan places it at the next stop rather than now, at $0.
+    QString error;
+    Watchpoint added;
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("counter.l"), &added, &error),
+             qPrintable(error));
+    QCOMPARE(added.symbol, QStringLiteral("counter"));
+    QCOMPARE(added.width, 'l');
+    QVERIFY(!added.resolved);
+
+    // A reflex refusal: nothing knows the name, so the message names it.
+    error.clear();
+    QVERIFY(!window.addWatchpointAddress(QStringLiteral("nosuchsymbol"), nullptr, &error));
+    QVERIFY2(error.contains(QStringLiteral("nosuchsymbol")), qPrintable(error));
+
+    // An equate has a value, not a place: refused the same way. The builder
+    // reports the body's `LIMIT equ 4` as an equate in the symbol table
+    // (SymbolEntry.equate), which is exactly what the model refuses, so the
+    // message says so.
+    error.clear();
+    QVERIFY(!window.addWatchpointAddress(QStringLiteral("LIMIT"), nullptr, &error));
+    QVERIFY2(error.contains(QStringLiteral("LIMIT")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("equate")), qPrintable(error));
+
+    // The dock's panel is where the user sees it: the pending watchpoint in the
+    // state column, named by what was asked for in the location column.
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("breakpointsDock"));
+    QVERIFY(dock);
+    auto *table = dock->findChild<QTableWidget *>();
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), 1);
+    QCOMPARE(table->item(0, 0)->text(), QStringLiteral("watch counter.l"));
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("pending (run to resolve)"));
+
+    // Clearing by the name it was added by removes it; a second clear has nothing
+    // left to match and says so, naming what it looked for.
+    int removed = 0;
+    error.clear();
+    QVERIFY2(window.clearWatchpoints(QStringLiteral("counter.l"), &removed, &error),
+             qPrintable(error));
+    QCOMPARE(removed, 1);
+    error.clear();
+    QVERIFY(!window.clearWatchpoints(QStringLiteral("counter.l"), nullptr, &error));
+    QVERIFY2(error.contains(QStringLiteral("counter.l")), qPrintable(error));
 }
 
 void TstGui::stateSummaryClearsAfterSessionEnds()
@@ -2681,7 +2894,8 @@ void TstGui::preBaseWatchpointEditStillArmsBreakpoints()
 
     // The edit that used to poison the session: a watchpoint added while the
     // debugger is still on its way to the entry breakpoint.
-    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), &error), qPrintable(error));
+    QVERIFY2(window.addWatchpointAddress(QStringLiteral("$1234.w"), nullptr, &error),
+             qPrintable(error));
 
     // The entry stop still completes, and the source breakpoint armed with it:
     // resuming must stop on line 3 rather than run the loop forever.
@@ -3857,13 +4071,15 @@ void TstGui::dockTitleBarMoveMenuMovesDock()
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
-    // Factory layout tabs Git with Project files, and a tabbed dock has no
-    // painted title bar. Split Git off so this test still presses that bar.
+    // The factory layout tabs Git and Find in Files with Project files, and a
+    // tabbed dock has no painted title bar. Split everything tabbed with it off,
+    // rather than naming today's companions, so a layout change does not bring
+    // this precondition down again.
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
-    auto *git = window.findChild<QDockWidget *>(QStringLiteral("gitDock"));
     QVERIFY(dock);
-    if (git)
-        window.addDockWidget(Qt::RightDockWidgetArea, git);
+    const QList<QDockWidget *> tabbed = window.tabifiedDockWidgets(dock);
+    for (QDockWidget *other : tabbed)
+        window.addDockWidget(Qt::RightDockWidgetArea, other);
     QVERIFY(window.tabifiedDockWidgets(dock).isEmpty());
     QVERIFY(window.dockWidgetArea(dock) != Qt::BottomDockWidgetArea);
 
@@ -4574,12 +4790,13 @@ void TstGui::layoutPresetsHideDocksAndRestore()
     for (QToolButton *button : swatches->findChildren<QToolButton *>()) {
         const int cube = button->property("cube").toInt();
         if (cube == kTransparent) {
-            QCOMPARE(button->text(), QStringLiteral("0"));
+            QVERIFY(button->text().isEmpty());
             QCOMPARE(button->toolTip(), QStringLiteral("Erase"));
             sawErase = true;
-        } else if (!button->text().isEmpty()) {
-            QCOMPARE(button->text(), QString::number(cube));
+        } else {
+            QVERIFY(button->text().isEmpty());
             QVERIFY(button->toolTip().startsWith(QStringLiteral("Colour ")));
+            QVERIFY(button->toolTip().contains(QString::number(cube)));
             QVERIFY(button->toolTip().contains(QStringLiteral("—")));
             sawNumber = true;
         }
@@ -5082,9 +5299,11 @@ void TstGui::gitDockStaysUnderProjectFiles()
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
     auto *git = window.findChild<QDockWidget *>(QStringLiteral("gitDock"));
+    auto *find = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
     auto *project = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
-    QVERIFY(git && project);
+    QVERIFY(git && find && project);
     QCOMPARE(window.dockWidgetArea(git), window.dockWidgetArea(project));
+    QCOMPARE(window.dockWidgetArea(find), window.dockWidgetArea(project));
 
     auto *blame = window.findChild<QAction *>(QStringLiteral("gitBlameAction"));
     QVERIFY(blame && blame->isCheckable());
@@ -5097,16 +5316,20 @@ void TstGui::gitDockStaysUnderProjectFiles()
             bool sawProject = false;
             bool sawGit = false;
             int projectAt = -1;
+            int findAt = -1;
             int current = bar->currentIndex();
             for (int i = 0; i < bar->count(); ++i) {
                 if (bar->tabText(i) == QLatin1String("Project files") && bar->isTabVisible(i)) {
                     sawProject = true;
                     projectAt = i;
                 }
+                if (bar->tabText(i) == QLatin1String("Find in Files") && bar->isTabVisible(i))
+                    findAt = i;
                 if (bar->tabText(i) == QLatin1String("Git") && bar->isTabVisible(i))
                     sawGit = true;
             }
-            if (sawProject && sawGit)
+            // Project files, then Find in Files, with Project files showing.
+            if (sawProject && sawGit && findAt == projectAt + 1)
                 return projectAt == current;
         }
         return false;
@@ -5124,6 +5347,7 @@ void TstGui::gitDockStaysUnderProjectFiles()
     sprite->trigger();
     QVERIFY(project->isHidden());
     QVERIFY(git->isHidden());
+    QVERIFY(find->isHidden());
     // The tab bar drops a removed dock on the next layout pass.
     QTest::qWait(0);
     QStringList gitTabs;
@@ -5131,8 +5355,10 @@ void TstGui::gitDockStaysUnderProjectFiles()
         if (!bar->isVisible())
             continue;
         for (int i = 0; i < bar->count(); ++i) {
-            if (bar->tabText(i) == QLatin1String("Git") && bar->isTabVisible(i))
-                gitTabs << QStringLiteral("%1 (bar %2)").arg(bar->tabText(i)).arg(bar->isVisible());
+            const QString tab = bar->tabText(i);
+            if ((tab == QLatin1String("Git") || tab == QLatin1String("Find in Files"))
+                && bar->isTabVisible(i))
+                gitTabs << QStringLiteral("%1 (bar %2)").arg(tab).arg(bar->isVisible());
         }
     }
     QVERIFY2(gitTabs.isEmpty(), qPrintable(gitTabs.join(QStringLiteral(", "))));
@@ -5936,6 +6162,163 @@ void TstGui::fileBrowserClipboardDiesWithItsDisk()
     QVERIFY2(pasteEnabledInMenu(), "a fresh copy must offer Paste again");
     browser->setFloppyImages({imageA, imageB});
     QVERIFY2(!pasteEnabledInMenu(), "a different disk in the drive must take Paste with it");
+}
+
+// The pane's own menu edits the image itself: Delete, Rename and New Folder are
+// updateImage calls under a dialog, so what the pane shows and what the disk
+// holds must move together. The image is the truth here — the assertions read it
+// back with listRaw / readFileRaw rather than trusting the rows — and a refused
+// edit must leave it byte-identical, since nothing was written.
+void TstGui::floppyPaneEditsItsDisk()
+{
+    const QString dir = m_work->path() + QStringLiteral("/paneedit");
+    QVERIFY(QDir().mkpath(dir));
+
+    QVector<floppy::Item> items;
+    floppy::Item one;
+    one.destPath = QStringLiteral("ONE.TXT");
+    one.data = QByteArrayLiteral("one");
+    items.append(one);
+    floppy::Item two;
+    two.destPath = QStringLiteral("TWO.TXT");
+    two.data = QByteArrayLiteral("two payload");
+    items.append(two);
+    const QString image = dir + QStringLiteral("/edit.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    MainWindow window;
+    // The constructor queues "reopen where the user left off" on a zero-delay
+    // timer, which re-syncs the disk slots from the (empty) project settings.
+    // Flush it before mounting the image: otherwise the next event loop a modal
+    // dialog runs lands it after the mount and wipes it.
+    QCoreApplication::processEvents();
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->setFloppyImages({image, QString()});
+    auto *view = browser->findChild<QTreeView *>(QStringLiteral("diskAView"));
+    QVERIFY(view);
+
+    // The pane's rows as image-relative paths, however deep a folder nests
+    // (the model touches only its own rows; walk it from the view's model).
+    const QAbstractItemModel *paneModel = view->model();
+    const auto paneEntries = [paneModel]() {
+        QStringList found;
+        std::function<void(const QModelIndex &)> walk = [&](const QModelIndex &parent) {
+            for (int row = 0; row < paneModel->rowCount(parent); ++row) {
+                const QModelIndex index = paneModel->index(row, 0, parent);
+                const QString path = index.data(Qt::UserRole).toString();
+                if (!path.isEmpty())
+                    found.append(path);
+                walk(index);
+            }
+        };
+        walk(QModelIndex());
+        return found;
+    };
+    // What the disk itself holds, read straight from the image bytes.
+    const auto listOnDisk = [&image](QString *err) {
+        QByteArray raw;
+        if (!floppy::loadRaw(image, &raw, err))
+            return QStringList{};
+        QStringList paths;
+        for (const floppy::Entry &e : floppy::listRaw(raw, err))
+            paths.append(e.path);
+        return paths;
+    };
+
+    QStringList paneStart = paneEntries();
+    paneStart.sort();
+    QStringList diskStart = listOnDisk(&error);
+    diskStart.sort();
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(paneStart, QStringList({QStringLiteral("ONE.TXT"), QStringLiteral("TWO.TXT")}));
+    QCOMPARE(diskStart, QStringList({QStringLiteral("ONE.TXT"), QStringLiteral("TWO.TXT")}));
+
+    // Delete: the pane loses the row and the image loses the entry.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            box->button(QMessageBox::Yes)->click();
+    });
+    browser->deleteFloppyEntries(0, {QStringLiteral("ONE.TXT")});
+    QStringList paneAfterDelete = paneEntries();
+    paneAfterDelete.sort();
+    QCOMPARE(paneAfterDelete, QStringList({QStringLiteral("TWO.TXT")}));
+    QVERIFY2(!listOnDisk(&error).contains(QStringLiteral("ONE.TXT")), qPrintable(error));
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+
+    // Rename: both the row and the image follow the new name, the old spelling
+    // is gone, and the bytes are the ones the entry was written with.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("THREE.TXT"));
+            dialog->accept();
+        }
+    });
+    browser->renameFloppyEntry(0, QStringLiteral("TWO.TXT"));
+    QCOMPARE(paneEntries(), QStringList({QStringLiteral("THREE.TXT")}));
+    QVERIFY2(listOnDisk(&error).contains(QStringLiteral("THREE.TXT")), qPrintable(error));
+    QVERIFY2(!listOnDisk(&error).contains(QStringLiteral("TWO.TXT")), qPrintable(error));
+    {
+        QByteArray raw;
+        QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+        QByteArray bytes;
+        QVERIFY2(floppy::readFileRaw(raw, QStringLiteral("THREE.TXT"), &bytes, &error),
+                 qPrintable(error));
+        QCOMPARE(bytes, QByteArrayLiteral("two payload"));
+    }
+
+    // New Folder: an empty folder is an entry of its own — it shows in the pane
+    // and the disk lists it with its directory bit set.
+    QTimer::singleShot(0, browser, [] {
+        if (auto *dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("NEWDIR"));
+            dialog->accept();
+        }
+    });
+    browser->makeFloppyDirectory(0, QString());
+    QVERIFY(paneEntries().contains(QStringLiteral("NEWDIR")));
+    {
+        QByteArray raw;
+        QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+        bool isDir = false;
+        for (const floppy::Entry &e : floppy::listRaw(raw, &error)) {
+            if (e.path == QStringLiteral("NEWDIR"))
+                isDir = e.isDirectory;
+        }
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY2(isDir, "a folder the pane made must be a directory on the disk");
+    }
+
+    // The refusals. The poller answers whatever modal comes up: a name the
+    // directory already shows is the controller's NameTaken (its warning is
+    // closed), and a name the dialog itself rejects never reaches the disk.
+    // Either way nothing is written, so the image stays byte-identical.
+    QByteArray before;
+    QVERIFY2(floppy::loadRaw(image, &before, &error), qPrintable(error));
+    const QStringList rowsBefore = paneEntries();
+    QString submitted = QStringLiteral("NEWDIR");   // already there: NameTaken
+    QTimer poller;
+    poller.setInterval(10);
+    QObject::connect(&poller, &QTimer::timeout, [&submitted] {
+        QWidget *modal = QApplication::activeModalWidget();
+        if (auto *dialog = qobject_cast<QInputDialog *>(modal)) {
+            dialog->setTextValue(submitted);
+            dialog->accept();
+        } else if (auto *box = qobject_cast<QMessageBox *>(modal)) {
+            box->close();
+        }
+    });
+    poller.start();
+    browser->makeFloppyDirectory(0, QString());
+    submitted = QStringLiteral("BAD/NAME");         // the dialog refuses it
+    browser->makeFloppyDirectory(0, QString());
+    poller.stop();
+
+    QCOMPARE(paneEntries(), rowsBefore);
+    QByteArray after;
+    QVERIFY2(floppy::loadRaw(image, &after, &error), qPrintable(error));
+    QCOMPARE(after, before);
 }
 
 // A move across volumes must materialise a symbolic link inside the moved tree
@@ -6927,6 +7310,61 @@ void TstGui::newFileCreatesOpensAndRevealsTheFile()
     QTRY_VERIFY_WITH_TIMEOUT(browser->selectedHardDrivePaths().contains(created), 5000);
 }
 
+// The template gallery is how a person chooses — the combo the cards drive is
+// hidden, and the test above drives that combo head on, so it pins NewFileSpec
+// and says nothing about the card a user clicks. A card whose
+// findData/setCurrentIndex mapping went missing or was swapped would leave it
+// green and the gallery dead.
+void TstGui::newFileCardsChooseTheTemplate()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    NewFileDialog dialog(nullptr, dir.path());
+    dialog.show();
+    QCoreApplication::processEvents();
+    auto *name = dialog.findChild<QLineEdit *>(QStringLiteral("newFileName"));
+    QVERIFY2(name, "the spec is built from this field, so the card must reach it");
+
+    // Two different non-empty templates: the second click then has to *replace*
+    // the first selection, which is what makes a swapped pair visible in the
+    // bytes below — one click would also pass against a combo that opened on the
+    // right entry anyway.
+    QVERIFY2(templateBytes(SourceTemplate::GemdosHello)
+                 != templateBytes(SourceTemplate::KeyboardInput),
+             "the two cards this clicks must not carry the same starting point");
+    const struct {
+        SourceTemplate kind;
+        const char *name;
+    } picks[] = {
+        { SourceTemplate::GemdosHello, "hello" },
+        { SourceTemplate::KeyboardInput, "keys" },
+    };
+    for (const auto &pick : picks) {
+        auto *card = galleryCardWithProperty(&dialog, "templateKind", int(pick.kind));
+        QVERIFY2(card, qPrintable(QStringLiteral("no gallery card for %1")
+                                      .arg(templateLabel(pick.kind))));
+        // The card carrying that choice must be the one captioned for the same
+        // template: a card wearing another's caption is caught here, and a card
+        // wired to another's entry is caught by the bytes below.
+        QCOMPARE(galleryCardCaption(card), templateLabel(pick.kind));
+        QVERIFY2(clickGalleryCard(card), "a card must be laid out before it can be clicked");
+
+        const QString typed = QString::fromLatin1(pick.name);
+        name->setText(typed);
+
+        // What newFileIn() creates from, and where: the name and directory from
+        // the fields, the contents from the card.
+        const NewFileSpec spec = dialog.spec();
+        QCOMPARE(spec.kind(), pick.kind);
+        QCOMPARE(spec.name(), typed);
+        QCOMPARE(spec.targetPath(), dir.filePath(typed + QStringLiteral(".s")));
+        QString error;
+        QVERIFY2(spec.create(&error), qPrintable(error));
+        QCOMPARE(fileBytes(spec.targetPath()), templateBytes(pick.kind));
+    }
+}
+
 // The picker's entries are the shipped starting points, and a shipped starting
 // point that does not assemble is worse than none (docs/untitled-plan.md §9).
 // Create each through NewFileSpec and hand the non-empty ones to vasm.
@@ -7233,6 +7671,60 @@ void TstGui::newImageDialogResolvesFileName()
     const QString path = dialog.filePath();
     QCOMPARE(QFileInfo(path).fileName(), QStringLiteral("hero.pim"));
     QCOMPARE(QFileInfo(path).absolutePath(), QFileInfo(tmp.path()).absoluteFilePath());
+}
+
+// New Image's size and palette cards are the chooser; imageWidth(), imageHeight()
+// and paletteKind() are what the caller is handed. A card that only marked
+// itself selected — or that was wired to its neighbour's numbers — is what this
+// looks for: the click has to move the values.
+void TstGui::newImageCardsChooseSizeAndPalette()
+{
+    NewImageDialog dialog;
+    dialog.show();
+    QCoreApplication::processEvents();
+
+    // Every size card, because a swapped pair (32 × 32 writing 16 × 16) is
+    // invisible to a single click. Each card is found by the preset it carries,
+    // and the caption must name that same size: the two drifting apart is the
+    // half a values-only check would miss.
+    for (QSize size : { QSize(16, 16), QSize(32, 32), QSize(64, 64), QSize(320, 200) }) {
+        auto *card = galleryCardWithProperty(&dialog, "preset", size);
+        QVERIFY2(card, qPrintable(QStringLiteral("no size card for %1 × %2")
+                                      .arg(size.width()).arg(size.height())));
+        const QString caption = galleryCardCaption(card);
+        QVERIFY2(caption.contains(QString::number(size.width()))
+                     && caption.contains(QString::number(size.height())),
+                 qPrintable(QStringLiteral("card '%1' does not name its own %2 × %3")
+                                .arg(caption)
+                                .arg(size.width())
+                                .arg(size.height())));
+        QVERIFY2(clickGalleryCard(card), "a card must be laid out before it can be clicked");
+        QCOMPARE(dialog.imageWidth(), size.width());
+        QCOMPARE(dialog.imageHeight(), size.height());
+    }
+
+    // Palettes: the default is STe, so the STfm card has to move the kind and
+    // the STe card has to move it back — a card wired to the wrong kind, or to
+    // nothing at all, fails the second click whichever way round the two are.
+    QCOMPARE(dialog.paletteKind(), PaletteKind::Ste);
+    const struct {
+        PaletteKind kind;
+        const char *caption;
+    } palettes[] = {
+        { PaletteKind::Stfm, "STfm" },
+        { PaletteKind::Ste, "STe" },
+    };
+    for (const auto &palette : palettes) {
+        auto *card = galleryCardWithProperty(&dialog, "paletteKind", int(palette.kind));
+        QVERIFY2(card, qPrintable(QStringLiteral("no %1 palette card")
+                                      .arg(QLatin1String(palette.caption))));
+        const QString caption = galleryCardCaption(card);
+        QVERIFY2(caption.startsWith(QLatin1String(palette.caption)),
+                 qPrintable(QStringLiteral("card '%1' is not the %2 palette")
+                                .arg(caption, QLatin1String(palette.caption))));
+        QVERIFY2(clickGalleryCard(card), "a card must be laid out before it can be clicked");
+        QCOMPARE(dialog.paletteKind(), palette.kind);
+    }
 }
 
 void TstGui::bitplaneExportDialogMapsChoices()
@@ -8575,6 +9067,461 @@ void TstGui::buildAndSearchMenusCarryTheirActions()
     }
 }
 
+// The symbol palette: one candidate list with completion's, presented as a jump
+// list — filter it, take a row, and the window opens the file at the definition.
+void TstGui::symbolPaletteJumpsToADefinition()
+{
+    const QString source = m_work->path() + QStringLiteral("/palette.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\n"
+               "start:\tmoveq\t#1,d0\n"
+               "counter\tequ\t$1234\n"
+               "\trts\n"
+               "\tend\n");
+    file.close();
+
+    MainWindow window;
+    window.openPath(source);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QVERIFY2(built.count() >= 1 || built.wait(30000), "the build did not finish");
+    QVERIFY2(built.last().at(0).toBool(), "the fixture must build");
+
+    // The doorway: Search -> Go to Symbol... carries Ctrl+Shift+O and brings the
+    // palette up with the build's symbols.
+    auto *action = window.findChild<QAction *>(QStringLiteral("symbolPaletteAction"));
+    QVERIFY2(action, "Search ▸ Go to Symbol…");
+    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    action->trigger();
+    auto *palette = window.findChild<SymbolPaletteDialog *>();
+    QVERIFY2(palette, "the palette");
+    QVERIFY(palette->isVisible());
+    auto *filter = palette->findChild<QLineEdit *>(QStringLiteral("symbolPaletteFilter"));
+    auto *list = palette->findChild<QTreeWidget *>(QStringLiteral("symbolPaletteList"));
+    QVERIFY(filter && list);
+
+    // The build's symbols, with where they are defined; an equate says what it is.
+    QTreeWidgetItem *counter = nullptr;
+    for (int i = 0; i < list->topLevelItemCount(); ++i) {
+        if (list->topLevelItem(i)->text(0) == QLatin1String("counter"))
+            counter = list->topLevelItem(i);
+    }
+    QVERIFY2(counter, "the equate is listed");
+    QCOMPARE(counter->text(1), QStringLiteral("equate"));
+    QVERIFY2(counter->text(2).endsWith(QStringLiteral("palette.s:3")),
+             qPrintable(counter->text(2)));
+
+    // Filtering narrows as it is typed; Return takes the row and closes the
+    // palette, and the editor is on the definition's line.
+    filter->setText(QStringLiteral("coun"));
+    QCOMPARE(list->topLevelItemCount(), 1);
+    QCOMPARE(list->topLevelItem(0)->text(0), QStringLiteral("counter"));
+    QTest::keyClick(filter, Qt::Key_Return);
+    QVERIFY(!palette->isVisible());
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 3);
+}
+
+// Hovering: the reference dock's facts as a tooltip at the pointer, and nothing at
+// all where nothing resolves — never a card built from a partial match.
+void TstGui::hoverShowsTheReferenceAndRefusesToGuess()
+{
+    const QString source = m_work->path() + QStringLiteral("/hover.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\n"                        // 1
+               "start:\tmoveq\t#1,d0\n"          // 2
+               "\tmove.w\t#9,-(a7)\n"            // 3  the function push
+               "\ttrap\t#1\n"                    // 4  Cconws
+               "\taddq.l\t#6,a7\n"               // 5
+               "\tdc.b\t'hi',0\n"                // 6  a directive
+               "\t; frobnicate the input\n"       // 7  a word nothing knows
+               "\tend\n");                        // 8
+    file.close();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.openPath(source);
+    QSignalSpy built(&window, &MainWindow::buildCompleted);
+    QVERIFY(QMetaObject::invokeMethod(&window, "build", Qt::DirectConnection));
+    QVERIFY2(built.count() >= 1 || built.wait(30000), "the build did not finish");
+    QVERIFY2(built.last().at(0).toBool(), "the fixture must build");
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    const auto positionOf = [editor](int line, int column) {
+        QTextCursor cursor = editor->textCursor();
+        cursor.setPosition(editor->document()->findBlockByNumber(line - 1).position() + column);
+        return editor->cursorRect(cursor).center();
+    };
+
+    // The tooltip path itself: a hover event shows the card. (This is the one
+    // assertion that goes through Qt's tooltip widget; the rest read the card
+    // directly, because what a tip widget does with its text is Qt's business.)
+    const QPoint atMoveq = positionOf(2, 9);
+    QHelpEvent tip(QEvent::ToolTip, atMoveq, editor->viewport()->mapToGlobal(atMoveq));
+    QApplication::sendEvent(editor->viewport(), &tip);
+    QVERIFY2(QToolTip::isVisible() && QToolTip::text().contains(QStringLiteral("MOVEQ")),
+             qPrintable(QToolTip::text()));
+    QToolTip::hideText();
+
+    // The facts, through the same function the handler uses. A mnemonic is the
+    // reference's own entry, an OS call wins on its line (because the line *is* the
+    // call), and a label says where the build put it.
+    QVERIFY2(window.referenceCardAt(editor, positionOf(2, 9)).contains(QStringLiteral("MOVEQ")),
+             "the mnemonic's reference entry");
+    QVERIFY2(window.referenceCardAt(editor, positionOf(4, 2)).contains(QStringLiteral("Cconws")),
+             "the OS call on its line");
+    QVERIFY2(window.referenceCardAt(editor, positionOf(2, 1)).contains(QStringLiteral("hover.s:2")),
+             "the label's definition");
+
+    // A directive and a word nothing knows resolve to nothing at all: no card is the
+    // honest answer, and the reference table refuses directives the same way.
+    QVERIFY2(window.referenceCardAt(editor, positionOf(6, 2)).isEmpty(),
+             "a directive gets no card");
+    QVERIFY2(window.referenceCardAt(editor, positionOf(7, 4)).isEmpty(),
+             "a word nothing knows gets no card");
+}
+
+// Completion in the editor: one candidate list (the assembler's vocabulary plus
+// whatever symbols the window pushed in), the word at the caret as the prefix, and
+// Tab/Return taking a candidate without disturbing the rest of the line.
+void TstGui::editorCompletionOffersTheVocabularyAndTakesACandidate()
+{
+    CodeEditor editor(appearance::editorTheme());
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowActive(&editor));
+    editor.setCompletions(CompletionModel::vocabulary());
+    editor.setPlainText(QStringLiteral("\tmo"));
+    QTextCursor cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+
+    // Typing a word character lists what the word so far could become.
+    QTest::keyClick(&editor, Qt::Key_V);
+    // The completer shows its popup on the next event-loop turn, not inside the
+    // key press.
+    QTRY_VERIFY2_WITH_TIMEOUT(editor.completionVisible(), "a word character opens the list", 2000);
+    const QStringList candidates = editor.completionCandidates();
+    QVERIFY2(!candidates.isEmpty(), "the vocabulary is offered");
+    QVERIFY2(candidates.first().startsWith(QStringLiteral("mov")),
+             qPrintable(candidates.first()));
+
+    // ...and it stays open while the word grows. A completer attached with
+    // setWidget() to a widget that is not a QLineEdit hides its own popup on the
+    // next keystroke unless its widget filter is removed; the popup is therefore
+    // re-checked after each character, not only after the first.
+    QTest::keyClicks(&editor, QStringLiteral("e"));
+    QTest::qWait(50);
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove"));
+    QVERIFY2(editor.completionVisible(), "a second word character keeps the list open");
+
+    // The list is a child of the editor, not a window of its own: a `Qt::Popup` is
+    // a surface the window system places, and under Wayland one positioned by a
+    // global move can be dismissed instead — visible in a test, invisible in use.
+    auto *list = editor.findChild<QListView *>(QStringLiteral("completionList"));
+    QVERIFY(list);
+    QVERIFY2(!list->isWindow(), "the completion list must be a child widget, not a popup");
+
+    // Tab takes one: the word at the caret is replaced, not the line.
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QVERIFY(!editor.completionVisible());
+    const QString completed = editor.toPlainText();
+    QVERIFY2(completed.startsWith(QStringLiteral("\t")), qPrintable(completed));
+    QVERIFY2(candidates.contains(completed.mid(1)), qPrintable(completed));
+
+    // A word character keeps the list following the word; Escape dismisses it
+    // without touching the text.
+    editor.setPlainText(QStringLiteral("\tad"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("d"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.completionVisible(), 2000);
+    QVERIFY2(editor.completionCandidates().contains(QStringLiteral("addq")),
+             qPrintable(editor.completionCandidates().join(QLatin1Char(','))));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QVERIFY(!editor.completionVisible());
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tadd"));
+
+    // A word already typed in full is not offered back: the only match is what is
+    // on screen, so the list stays shut.
+    QTest::keyClicks(&editor, QStringLiteral("q"));
+    QTest::qWait(50);
+    QVERIFY2(!editor.completionVisible(), "nothing to offer for the exact word");
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\taddq"));
+
+    // A comment is prose: nothing is offered inside one.
+    editor.setPlainText(QStringLiteral("; add"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("q"));
+    QVERIFY2(!editor.completionVisible(), "no completion in a comment");
+
+    // Symbols are candidates too, with the definition the window gave them.
+    QList<CompletionItem> items = CompletionModel::vocabulary();
+    CompletionItem label;
+    label.text = QStringLiteral("counter");
+    label.kind = CompletionKind::Label;
+    label.file = QStringLiteral("main.s");
+    label.line = 12;
+    items.append(label);
+    editor.setCompletions(items);
+    editor.setPlainText(QStringLiteral("\tmove.w\tcou"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("n"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.completionVisible(), 2000);
+    QCOMPARE(editor.completionCandidates().first(), QStringLiteral("counter"));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove.w\tcounter"));
+
+    // Tab asks for the list when it is not showing: mid-word on a word with
+    // candidates it opens the list, and the next Tab takes the match. (The list
+    // above carried `counter`, which is the only candidate for `cou`.)
+    editor.setPlainText(QStringLiteral("\tmove.w\tcou"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QVERIFY2(!editor.completionVisible(), "nothing is offering until Tab asks");
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QTRY_VERIFY2_WITH_TIMEOUT(editor.completionVisible(), "Tab opens the list mid-word", 2000);
+    QCOMPARE(editor.completionCandidates().first(), QStringLiteral("counter"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove.w\tcounter"));
+    QVERIFY(!editor.completionVisible());
+
+    // ...and everywhere else Tab still indents: the start of a line has no word to
+    // complete...
+    editor.setPlainText(QString());
+    cursor = editor.textCursor();
+    editor.setTextCursor(cursor);
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QVERIFY2(!editor.completionVisible(), "nothing to complete at the start of a line");
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\t"));
+
+    // ...and neither does a comment, which is prose.
+    editor.setPlainText(QStringLiteral("; cou"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QVERIFY2(!editor.completionVisible(), "no completion inside a comment");
+    QCOMPARE(editor.toPlainText(), QStringLiteral("; cou\t"));
+}
+
+// The case the first version of this feature got wrong: completion in a project
+// that has never been assembled. `mov` must offer `move` — the vocabulary is
+// static, and the labels and equates a build contributes are added on top of it
+// rather than being the only candidates there are.
+void TstGui::windowCompletesBeforeAnyBuild()
+{
+    const QString source = m_work->path() + QStringLiteral("/fresh.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\nstart:\n\tmov\n\tend\n");
+    file.close();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.openPath(source);
+
+    // The window may have opened the demo on start-up — that is what a session with
+    // nothing to reopen does — so the editor under test is the one this file opened,
+    // which is the last one created.
+    const QList<CodeEditor *> editors = window.findChildren<CodeEditor *>();
+    QVERIFY(!editors.isEmpty());
+    auto *editor = editors.last();
+    QVERIFY(editor);
+    editor->setFocus();
+    // The caret goes after `mov` on the third line — the only source in this
+    // window — and nothing has been built, so the vocabulary is all there is.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(2).position() + 4);
+    editor->setTextCursor(cursor);
+
+    QTest::keyClicks(editor, QStringLiteral("e"));
+    QTRY_VERIFY2_WITH_TIMEOUT(editor->completionVisible(),
+                              "the vocabulary does not wait for a build", 2000);
+    QVERIFY2(editor->completionCandidates().contains(QStringLiteral("move")),
+             qPrintable(editor->completionCandidates().mid(0, 5).join(QLatin1Char(','))));
+}
+
+// The Demo button is how a person finds the tour. It exists on the toolbar, it is
+// enabled exactly when there is a demo to open — a packaged tree without one says so
+// by being disabled rather than by opening nothing — and opening it lands on the
+// demo's source, whose sibling `.pistproject` brings the hook script and the session
+// settings with it.
+void TstGui::theToolbarOpensTheDemo()
+{
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+
+    auto *action = window.findChild<QAction *>(QStringLiteral("demoAction"));
+    QVERIFY2(action, "the toolbar has a Demo action");
+    QCOMPARE(action->isEnabled(), !demos.isEmpty());
+    auto *bar = window.findChild<QToolBar *>(QStringLiteral("mainToolBar"));
+    QVERIFY(bar);
+    QVERIFY2(bar->actions().contains(action), "the Demo action is on the main toolbar");
+
+    if (demos.isEmpty())
+        QSKIP("no demo project is reachable from here (a packaged tree without one)");
+
+    action->trigger();
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 1);
+    // The tour, not the project file: opening `hello.pistproject` as a document is
+    // what the doorway used to do, and it showed JSON.
+    QCOMPARE(tabs->tabText(0), QStringLiteral("hello.s"));
+    const auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    QVERIFY2(editor->toPlainText().startsWith(QStringLiteral("* hello.s")),
+             qPrintable(editor->toPlainText().left(40)));
+}
+
+// Find in Files reads the project as text and lists what it found, grouped by
+// file, with each hit's own span — and the tour takes you to that span.
+void TstGui::findInFilesSearchesTheProjectAndNavigates()
+{
+    const QString root = m_work->path() + QStringLiteral("/fif");
+    QVERIFY(QDir().mkpath(root + QStringLiteral("/sub")));
+    const auto writeFixture = [](const QString &path, const QByteArray &bytes) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+            return false;
+        return file.write(bytes) == bytes.size();
+    };
+    QVERIFY(writeFixture(root + QStringLiteral("/alpha.s"),
+                         "start:\tmoveq\t#0,d0\n\trts\n"));
+    QVERIFY(writeFixture(root + QStringLiteral("/sub/beta.s"), "\tmoveq\t#1,d1\n"));
+
+    MainWindow window;
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
+    QVERIFY2(dock, "Find in Files is a dock in the project-files group");
+    QCOMPARE(window.dockWidgetArea(dock), Qt::LeftDockWidgetArea);
+    auto *projectDock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    QVERIFY(projectDock);
+    QVERIFY(window.tabifiedDockWidgets(projectDock).contains(dock));
+    auto *results = dock->findChild<QTreeWidget *>(QStringLiteral("findInFilesResults"));
+    auto *query = dock->findChild<QLineEdit *>(QStringLiteral("findInFilesQuery"));
+    auto *status = dock->findChild<QLabel *>(QStringLiteral("findInFilesStatus"));
+    auto *scopeLabel = dock->findChild<QLabel *>(QStringLiteral("findInFilesScope"));
+    QVERIFY(results && query && status && scopeLabel);
+    const auto currentEditor = [&window]() -> CodeEditor * {
+        auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+        return tabs ? qobject_cast<CodeEditor *>(tabs->currentWidget()) : nullptr;
+    };
+
+    // The doorway: the Search menu's entry carries the dock's shortcut, and
+    // invoking it brings the dock forward with the query focused — the gesture a
+    // user without the shortcut's muscle memory will actually use.
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    auto *action = window.findChild<QAction *>(QStringLiteral("findInFilesAction"));
+    QVERIFY2(action, "Search ▸ Find in Files…");
+    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+    action->trigger();
+    QVERIFY2(QTest::qWaitFor([query] { return query->hasFocus(); }, 2000),
+             "the doorway focuses the query");
+    QVERIFY(dock->isVisible());
+
+    // Opening a document is what gives the dock a project directory to search.
+    window.openPath(root + QStringLiteral("/alpha.s"));
+    QVERIFY2(scopeLabel->text().contains(QStringLiteral("fif")), qPrintable(scopeLabel->text()));
+
+    query->setText(QStringLiteral("moveq"));
+    QTRY_COMPARE_WITH_TIMEOUT(results->topLevelItemCount(), 2, 15000);
+    QCOMPARE(results->topLevelItem(0)->childCount(), 1);
+    QCOMPARE(results->topLevelItem(0)->text(1), QStringLiteral("1 hit(s)"));
+    QCOMPARE(results->topLevelItem(0)->child(0)->text(0), QStringLiteral("1"));
+    QVERIFY2(status->text().contains(QStringLiteral("2 hit(s) in 2 file(s) searched")),
+             qPrintable(status->text()));
+
+    // The tour is keyboard-driven, so the dock has to be the visible tab and the
+    // window active — a shortcut scoped to a hidden widget fires for nobody.
+    dock->raise();
+    results->setFocus();
+    QTest::keyClick(results, Qt::Key_F4);
+    CodeEditor *editor = currentEditor();
+    QVERIFY(editor);
+    QVERIFY2(editor->filePath().endsWith(QStringLiteral("alpha.s")), qPrintable(editor->filePath()));
+    QCOMPARE(editor->textCursor().blockNumber() + 1, 1);
+    QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("moveq"));
+
+    // The next hit is in the other file: the tour opens it rather than selecting
+    // a line of the one already on screen.
+    QTest::keyClick(results, Qt::Key_F4);
+    editor = currentEditor();
+    QVERIFY(editor);
+    QVERIFY2(editor->filePath().endsWith(QStringLiteral("sub/beta.s")),
+             qPrintable(editor->filePath()));
+    QCOMPARE(editor->textCursor().selectedText(), QStringLiteral("moveq"));
+
+    // ...and Shift+F4 walks back, the shape the diagnostics tour uses.
+    QTest::keyClick(results, Qt::Key_F4, Qt::ShiftModifier);
+    editor = currentEditor();
+    QVERIFY(editor && editor->filePath().endsWith(QStringLiteral("alpha.s")));
+
+    // The tour belongs to the dock: with the editor focused, F4 is the
+    // diagnostics tour's, and it leaves these results where they were.
+    QTreeWidgetItem *const current = results->currentItem();
+    QVERIFY(current);
+    editor->setFocus();
+    QTest::keyClick(editor, Qt::Key_F4);
+    QCOMPARE(results->currentItem(), current);
+}
+
+// A replaced walk must leave nothing behind: results that belong to the previous
+// query are what a cancel race would look like to the person typing.
+void TstGui::findInFilesShowsOnlyTheCurrentQuery()
+{
+    const QString root = m_work->path() + QStringLiteral("/fif-race");
+    QVERIFY(QDir().mkpath(root));
+    // Enough files that the first walk is still running when the query changes.
+    for (int i = 0; i < 400; ++i) {
+        QFile file(root + QStringLiteral("/file%1.s").arg(i, 3, 10, QLatin1Char('0')));
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("needle\n\trts\n");
+        file.close();
+    }
+    QFile other(root + QStringLiteral("/other.s"));
+    QVERIFY(other.open(QIODevice::WriteOnly | QIODevice::Text));
+    other.write("\tmoveq\t#2,d2\n");
+    other.close();
+
+    MainWindow window;
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
+    auto *results = dock->findChild<QTreeWidget *>(QStringLiteral("findInFilesResults"));
+    auto *query = dock->findChild<QLineEdit *>(QStringLiteral("findInFilesQuery"));
+    auto *status = dock->findChild<QLabel *>(QStringLiteral("findInFilesStatus"));
+    QVERIFY(results && query && status);
+    window.openPath(root + QStringLiteral("/other.s"));
+
+    query->setText(QStringLiteral("needle"));
+    QTRY_VERIFY_WITH_TIMEOUT(results->topLevelItemCount() > 0, 15000);
+    query->setText(QStringLiteral("d2"));
+
+    // Whatever the first walk managed, what is on screen is the second query's
+    // answer and nothing else — the status line and the rows agree.
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("1 hit(s)")), 15000);
+    QVERIFY2(status->text().contains(QStringLiteral("401 file(s) searched")),
+             qPrintable(status->text()));
+    QCOMPARE(results->topLevelItemCount(), 1);
+    QVERIFY2(results->topLevelItem(0)->text(0).endsWith(QStringLiteral("other.s")),
+             qPrintable(results->topLevelItem(0)->text(0)));
+}
+
 // A build that warns must land in Problems with the colour the theme gives a
 // warning, not merely a row.
 void TstGui::problemsDockListsABuildWarning()
@@ -8823,6 +9770,19 @@ void highlight(QPlainTextEdit *edit, const QString &source)
              "the highlighter's formats never reached the layout");
 }
 
+/// The Lua counterpart of highlight(): the same fresh-widget-and-layout dance,
+/// but with LuaHighlighter so the `--` of a stop-hook script is a comment.
+void highlightLua(QPlainTextEdit *edit, const QString &source)
+{
+    new LuaHighlighter(edit->document(), appearance::editorTheme()); // owned by the document
+    edit->setPlainText(source);
+    edit->resize(600, 120);
+    edit->show();
+    QCoreApplication::processEvents();
+    QVERIFY2(!edit->document()->firstBlock().layout()->formats().isEmpty(),
+             "the highlighter's formats never reached the layout");
+}
+
 /// Counts the paint events a widget receives. The gutter is a plain QWidget, so
 /// its repaints are observable only through an event filter.
 class PaintCounter : public QObject
@@ -8927,6 +9887,127 @@ void TstGui::anIndentedLabelIsALabel()
     QVERIFY(moveq > 0);
     QCOMPARE(highlightColourAt(edit, 1), appearance::colors().label);
     QCOMPARE(highlightColourAt(edit, moveq), appearance::colors().keyword);
+}
+
+void TstGui::luaHighlighterColoursItsTokens()
+{
+    // `--` runs to the end of the line; the keyword before it keeps its colour.
+    QPlainTextEdit lineComment;
+    const QString lineSource = QStringLiteral("local x = 1 -- a note");
+    highlightLua(&lineComment, lineSource);
+    QCOMPARE(highlightColourAt(lineComment, 0), appearance::colors().keyword);
+    const int note = lineSource.indexOf(QLatin1String("note"));
+    QVERIFY(note > 0);
+    QCOMPARE(highlightColourAt(lineComment, note), appearance::colors().comment);
+
+    // `--[[ … ]]` closed on one line; the code after the `]]` is code again.
+    QPlainTextEdit blockComment;
+    const QString blockSource = QStringLiteral("--[[ a block ]] local y");
+    highlightLua(&blockComment, blockSource);
+    const int block = blockSource.indexOf(QLatin1String("block"));
+    const int afterBlock = blockSource.indexOf(QLatin1String("local"));
+    QVERIFY(block > 0 && afterBlock > block);
+    QCOMPARE(highlightColourAt(blockComment, block), appearance::colors().comment);
+    QCOMPARE(highlightColourAt(blockComment, afterBlock), appearance::colors().keyword);
+
+    // A quoted string, including the escaped quote inside it.
+    QPlainTextEdit quoted;
+    const QString quotedSource = QStringLiteral("local s = 'a \\'quoted\\' word'");
+    highlightLua(&quoted, quotedSource);
+    const int innerQuote = quotedSource.indexOf(QLatin1String("quoted"));
+    QVERIFY(innerQuote > 0);
+    QCOMPARE(highlightColourAt(quoted, innerQuote), appearance::colors().string);
+
+    // A long string: the `--` inside it is text, not the start of a comment.
+    QPlainTextEdit longString;
+    const QString longSource = QStringLiteral("local s = [[ raw -- text ]]");
+    highlightLua(&longString, longSource);
+    const int dashes = longSource.indexOf(QLatin1String("--"));
+    QVERIFY(dashes > 0);
+    QCOMPARE(highlightColourAt(longString, dashes), appearance::colors().string);
+
+    // A hex literal and a decimal one.
+    QPlainTextEdit numbers;
+    const QString numberSource = QStringLiteral("local n = 0xFF + 12");
+    highlightLua(&numbers, numberSource);
+    const int hex = numberSource.indexOf(QLatin1Char('F'));
+    const int decimal = numberSource.indexOf(QLatin1String("12"));
+    QVERIFY(hex > 0 && decimal > hex);
+    QCOMPARE(highlightColourAt(numbers, hex), appearance::colors().number);
+    QCOMPARE(highlightColourAt(numbers, decimal), appearance::colors().number);
+
+    // `self` is painted as a keyword, and a hook API call in its own colour.
+    QPlainTextEdit api;
+    const QString apiSource = QStringLiteral("function f(self) return readmem(0x100) end");
+    highlightLua(&api, apiSource);
+    const int self = apiSource.indexOf(QLatin1String("self"));
+    const int readmem = apiSource.indexOf(QLatin1String("readmem"));
+    QVERIFY(self > 0 && readmem > self);
+    QCOMPARE(highlightColourAt(api, self), appearance::colors().keyword);
+    QCOMPARE(highlightColourAt(api, readmem), appearance::colors().directive);
+}
+
+void TstGui::luaLongCommentsAndStringsSpanLines()
+{
+    // A block comment opened on one line paints the lines below it until `]]`.
+    QPlainTextEdit comment;
+    highlightLua(&comment, QStringLiteral("local a = 1\n"
+                                          "--[[ note\n"
+                                          "spans lines ]] print(a)\n"));
+    QCOMPARE(highlightColourAt(comment, 0, 2), appearance::colors().comment);
+    // The code after the `]]` on that same line is code again.
+    const int print = comment.document()->findBlockByNumber(2).text().indexOf(
+        QLatin1String("print"));
+    QVERIFY(print > 0);
+    QCOMPARE(highlightColourAt(comment, print, 2), appearance::colors().directive);
+
+    // A long string behaves the same way, and a `--` inside it is no comment.
+    QPlainTextEdit string;
+    highlightLua(&string, QStringLiteral("local s = [[\n"
+                                         "raw -- text\n"
+                                         "]] local t = 1\n"));
+    QCOMPARE(highlightColourAt(string, 0, 1), appearance::colors().string);
+}
+
+void TstGui::editorPicksHighlighterByPath()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString asmPath = dir.filePath(QStringLiteral("hook.s"));
+    const QString luaPath = dir.filePath(QStringLiteral("hook.lua"));
+    {
+        QFile file(asmPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("\tmoveq\t#1,d0\n") > 0);
+    }
+    {
+        QFile file(luaPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("local x = 1\n") > 0);
+    }
+
+    // A `.s` path keeps the 68000 highlighter: `moveq` is a mnemonic.
+    CodeEditor asmEditor(appearance::editorTheme());
+    QVERIFY(asmEditor.loadFile(asmPath));
+    asmEditor.resize(600, 120);
+    asmEditor.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(highlightColourAt(asmEditor, 1), appearance::colors().keyword);
+
+    // Re-pointing the same editor at a `.lua` path swaps in the Lua rules:
+    // `local` is a Lua keyword and no mnemonic at all.
+    asmEditor.setFilePath(luaPath);
+    asmEditor.setPlainText(QStringLiteral("local x = 1\n"));
+    QCoreApplication::processEvents();
+    QCOMPARE(highlightColourAt(asmEditor, 0), appearance::colors().keyword);
+
+    // A fresh `.lua` path — where a stop hook lives — is painted as Lua.
+    CodeEditor luaEditor(appearance::editorTheme());
+    QVERIFY(luaEditor.loadFile(luaPath));
+    luaEditor.resize(600, 120);
+    luaEditor.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(highlightColourAt(luaEditor, 0), appearance::colors().keyword);
 }
 
 void TstGui::settingErrorLinesRepaintsTheGutter()
@@ -9141,6 +10222,192 @@ void TstGui::settingsDialogFitsAShortScreenWithReachableButtons()
 
     dialog.removeEventFilter(&counter);
     QCOMPARE(counter.resizes, 0);
+}
+
+// The Settings dialog's theme and shortcut choices are cards over hidden combos,
+// and OK persists the combo's data (MIN-53). Clicking a card therefore has to
+// land on the entry that card is captioned for: a card wired to a neighbouring
+// index saves the wrong preference, and nothing else in the suite notices —
+// appearancePreferencesApply writes those keys by hand.
+void TstGui::settingsCardsSaveTheChosenThemeAndShortcuts()
+{
+    // The cards live on the Appearance tab, and a QTabWidget lays out only the
+    // page it shows; the cards carry no object name, so the caption is both what
+    // the user reads and how the test addresses one.
+    SettingsDialog dialog{ProjectSettings()};
+    dialog.show();
+    QCoreApplication::processEvents();
+    auto *tabs = dialog.findChild<QTabWidget *>();
+    QVERIFY2(tabs, "the settings dialog must have its tabs");
+
+    auto *light = galleryCardWithCaption(&dialog, QStringLiteral("Light"));
+    QVERIFY2(light, "the Appearance tab must offer a Light theme card");
+    QVERIFY2(showTabHolding(tabs, light), "the theme cards must be on a tab");
+    QVERIFY2(clickGalleryCard(light), "a card must be shown before it can be clicked");
+
+    dialog.accept();
+    // The key the dialog wrote, and its reader: Light is the entry whose data is
+    // "light" (System is "system", Dark "dark"), so a card wired to either of
+    // the other two saves the wrong theme here.
+    QCOMPARE(QSettings().value(appearance::themeKey()).toString(), QStringLiteral("light"));
+    QCOMPARE(appearance::theme(), QStringLiteral("light"));
+
+    // A second dialog for the shortcuts, so what it saves cannot have been left
+    // behind by the theme click that ran through the same accept().
+    SettingsDialog keys{ProjectSettings()};
+    keys.show();
+    QCoreApplication::processEvents();
+    auto *keysTabs = keys.findChild<QTabWidget *>();
+    QVERIFY(keysTabs);
+    auto *common = galleryCardWithCaption(&keys, QStringLiteral("Common"));
+    QVERIFY2(common, "the Appearance tab must offer a Common shortcut card");
+    QVERIFY2(showTabHolding(keysTabs, common), "the shortcut cards must be on a tab");
+    QVERIFY2(clickGalleryCard(common), "a card must be shown before it can be clicked");
+
+    keys.accept();
+    // PiST is the default ("pist"), so "common" can only have come from the
+    // click: a card wired to index 0 would save "pist" again and pass if the
+    // assertion were only that something was written.
+    QCOMPARE(QSettings().value(appearance::shortcutSchemeKey()).toString(),
+             QStringLiteral("common"));
+    QCOMPARE(appearance::shortcutScheme(), QStringLiteral("common"));
+}
+
+// The dialog's one piece of logic: with the hook switched off, the script path
+// and the auto-continue answer mean nothing and must not invite typing — a user
+// who fills them in while the hook is off has configured nothing.
+void TstGui::stopHooksDialogGatesItsFieldsOnWhetherItRuns()
+{
+    StopHooksDialog off(QStringLiteral("trainer.lua"), false, true, QString());
+    auto *offPath = off.findChild<QLineEdit *>(QStringLiteral("stopHooksPath"));
+    auto *offAuto = off.findChild<QCheckBox *>(QStringLiteral("stopHooksAutoContinue"));
+    QVERIFY2(offPath && offAuto, "both fields must exist to be gated");
+    QVERIFY(!offPath->isEnabled());
+    QVERIFY(!offAuto->isEnabled());
+
+    StopHooksDialog on(QStringLiteral("trainer.lua"), true, true,
+                       QStringLiteral("ran at pc $001234"));
+    auto *onPath = on.findChild<QLineEdit *>(QStringLiteral("stopHooksPath"));
+    auto *onAuto = on.findChild<QCheckBox *>(QStringLiteral("stopHooksAutoContinue"));
+    QVERIFY(onPath && onAuto);
+    QVERIFY(onPath->isEnabled());
+    QVERIFY(onAuto->isEnabled());
+
+    // The last run is reported even when there has not been one: a blank line
+    // would read as "it ran and said nothing".
+    auto *last = on.findChild<QLabel *>(QStringLiteral("stopHooksLastRun"));
+    QVERIFY(last);
+    QVERIFY(!last->text().isEmpty());
+
+    StopHooksDialog never(QString(), false, false, QString());
+    auto *neverLast = never.findChild<QLabel *>(QStringLiteral("stopHooksLastRun"));
+    QVERIFY(neverLast);
+    QVERIFY2(neverLast->text().contains(QStringLiteral("none yet")),
+             qPrintable(neverLast->text()));
+}
+
+// The dialog's offer to make the script: no handler, no button (it stays a
+// value dialog); with one, the button takes what it hands back and switches the
+// hook on, and a handler that could not make anything leaves the field alone.
+void TstGui::stopHooksDialogOffersToMakeAScript()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    StopHooksDialog dialog(QString(), false, false, QString());
+    auto *button = dialog.findChild<QPushButton *>(QStringLiteral("stopHooksNewScript"));
+    auto *path = dialog.findChild<QLineEdit *>(QStringLiteral("stopHooksPath"));
+    QVERIFY2(button && path, "the button and the field must exist");
+    QVERIFY2(button->isHidden(), "no handler means the button is not offered");
+
+    const QString made = dir.filePath(QStringLiteral("hello.hooks.lua"));
+    dialog.setCreateScriptHandler([&made] { return made; });
+    QVERIFY2(!button->isHidden(), "a handler means the button is offered");
+
+    button->click();
+    QCOMPARE(dialog.scriptPath(), made);
+    QVERIFY2(dialog.enabled(),
+             "making a script is asking to use it, so the hook switches on");
+
+    // A handler that cannot make one says nothing and changes nothing.
+    StopHooksDialog failing(QStringLiteral("kept.lua"), false, false, QString());
+    failing.setCreateScriptHandler([] { return QString(); });
+    auto *failingButton =
+        failing.findChild<QPushButton *>(QStringLiteral("stopHooksNewScript"));
+    QVERIFY(failingButton);
+    failingButton->click();
+    QCOMPARE(failing.scriptPath(), QStringLiteral("kept.lua"));
+    QVERIFY(!failing.enabled());
+}
+
+// Making the script in the IDE, end to end: the file lands beside the source it
+// hooks, carries the API as its documentation, opens ready to edit, and is never
+// overwritten — a script someone has edited is the whole point of the file.
+void TstGui::createStopHookScriptWritesItBesideTheSource()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("hello.s"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("\ttext\nstart:\tnop\n\tbra.s\tstart\n\tend\n");
+    file.close();
+
+    MainWindow window;
+    window.openPath(source);
+
+    const QString made = window.createStopHookScript();
+    QCOMPARE(made, dir.filePath(QStringLiteral("hello.hooks.lua")));
+
+    QFile script(made);
+    QVERIFY2(script.open(QIODevice::ReadOnly), "the script should have been written");
+    const QByteArray starter = script.readAll();
+    script.close();
+    QVERIFY2(starter.contains("readmem(addr, len)"), "the starter must name the API");
+    QVERIFY2(starter.contains("log(string.format"), "the starter must be runnable as written");
+
+    // It is open in a tab, ready for the edit that is the point of the gesture.
+    bool opened = false;
+    for (CodeEditor *editor : window.findChildren<CodeEditor *>())
+        opened = opened || editor->filePath() == made;
+    QVERIFY2(opened, "the script should be open in an editor tab");
+
+    // Asking again adopts the file rather than replacing it.
+    QFile edited(made);
+    QVERIFY(edited.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    edited.write("-- mine now\n");
+    edited.close();
+    QCOMPARE(window.createStopHookScript(), made);
+
+    QFile again(made);
+    QVERIFY(again.open(QIODevice::ReadOnly));
+    QCOMPARE(again.readAll(), QByteArray("-- mine now\n"));
+}
+
+// Run ▸ Stop hooks… is the stop hook's only doorway. An action that exists but
+// was never added to the menu would leave the whole feature unreachable, and
+// nothing else in the suite would notice — tst_stophooks drives the runner
+// directly, and tst_settings only persists the keys the dialog writes.
+void TstGui::runMenuOffersStopHooks()
+{
+    MainWindow window;
+
+    auto *action = window.findChild<QAction *>(QStringLiteral("stopHooksAction"));
+    QVERIFY2(action, "the Stop hooks action must exist (objectName stopHooksAction)");
+    QVERIFY(action->isEnabled());
+    QVERIFY(!action->text().isEmpty());
+
+    // ...and it is in a menu, not merely a child of the window.
+    QMenu *menu = nullptr;
+    for (QMenu *candidate : window.findChildren<QMenu *>()) {
+        if (candidate->actions().contains(action)) {
+            menu = candidate;
+            break;
+        }
+    }
+    QVERIFY2(menu, "the Stop hooks action belongs to no menu");
+    QVERIFY2(menu->title().contains(QStringLiteral("Run")),
+             qPrintable(QStringLiteral("found it in '%1'").arg(menu->title())));
 }
 
 // Settings are redirected to a throwaway directory for the whole run, so the

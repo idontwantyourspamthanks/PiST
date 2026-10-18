@@ -38,6 +38,7 @@ private slots:
     void partialLineIsBuffered();
     void screenshotWithoutDisplayFailsGracefully();
     void watchpointCommandValidatesAddress();
+    void watchpointByLabelAndClearNeedTheBuild();
     void buildRespondsWhenFinished();
     void buildReleaseUsesTheReleaseArguments();
     void cmdDisconnectDuringWaitSurvives();
@@ -51,6 +52,7 @@ private slots:
     void saveWritesOrRefuses();
     void statejsonIsAJsonObject();
     void problemsIsAJsonArray();
+    void hookIsAJsonObject();
     void symbolsAfterBuildListTheLabels();
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
@@ -295,14 +297,77 @@ void TstRemoteControl::watchpointCommandValidatesAddress()
     QString error;
     QVERIFY2(s.start(&error), qPrintable(error));
 
-    // A valid address is accepted; the arming itself is best-effort with no
-    // session, so this pins the validation, not the emulator.
-    QCOMPARE(roundTrip(s.client, "watchpoint $12345"), QStringLiteral("ok"));
-    QCOMPARE(roundTrip(s.client, "watchpoint 4ba.l"), QStringLiteral("ok"));
+    // A raw address needs no bases to resolve — it is resolved by the parse —
+    // so the reply names the watchpoint and where it landed. The arming itself
+    // is best-effort with no session, so this pins the word, not the emulator.
+    QCOMPARE(roundTrip(s.client, "watchpoint $1234.w"),
+             QStringLiteral("ok; watch $1234.w at $1234"));
+    QCOMPARE(roundTrip(s.client, "watchpoint 4ba.l"),
+             QStringLiteral("ok; watch $4ba.l at $4ba"));
+
+    // A name nothing knows is refused naming it, not mistaken for an address
+    // that merely looks like one.
+    const QString unknown = roundTrip(s.client, "watchpoint nope");
+    QVERIFY2(unknown.startsWith(QStringLiteral("error ")), qPrintable(unknown));
+    QVERIFY2(unknown.contains(QStringLiteral("nope")), qPrintable(unknown));
 
     // Bad input is an error, not a silent no-op.
     QVERIFY(roundTrip(s.client, "watchpoint notanaddress").startsWith(QStringLiteral("error")));
     QVERIFY(roundTrip(s.client, "watchpoint 0").startsWith(QStringLiteral("error")));
+}
+
+void TstRemoteControl::watchpointByLabelAndClearNeedTheBuild()
+{
+    // The name is only knowable from the build's symbol table, so this is the
+    // suite's usual build-gated case.
+    if (QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot")).isEmpty())
+        QSKIP("needs vasmm68k_mot");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.path() + QStringLiteral("/prog.s");
+    {
+        QFile f(source);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("_start:\n\trts\ncount:\n\tmoveq #1,d0\n");
+    }
+
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QCOMPARE(roundTrip(s.client, "open " + source.toUtf8()), QStringLiteral("ok"));
+    QCOMPARE(roundTrip(s.client, "build"), QStringLiteral("ok"));
+
+    // The build knows the name, but nothing has reported the bases GEMDOS will
+    // load the program at, so the watchpoint is stored as pending and the reply
+    // says when it will be resolved rather than naming an address it cannot know.
+    // The width suffix is the sheet's spelling: `count.w` is the label `count`
+    // asked for at word width.
+    QCOMPARE(roundTrip(s.client, "watchpoint count.w"),
+             QStringLiteral("ok; watch count.w — resolved at the next stop"));
+
+    // Clearing by symbol and width names the same thing and reports how many
+    // went...
+    QCOMPARE(roundTrip(s.client, "clearwatchpoint count.w"), QStringLiteral("ok; cleared 1"));
+    // ...and a second clear matches nothing: an error naming it, never a quiet
+    // ok that would hide "it was never there".
+    const QString again = roundTrip(s.client, "clearwatchpoint count.w");
+    QVERIFY2(again.startsWith(QStringLiteral("error ")), qPrintable(again));
+    QVERIFY2(again.contains(QStringLiteral("count")), qPrintable(again));
+
+    // The bare label is the same watchpoint at the default width, and clearing by
+    // name alone matches by symbol rather than symbol+width.
+    QCOMPARE(roundTrip(s.client, "watchpoint count"),
+             QStringLiteral("ok; watch count.w — resolved at the next stop"));
+    QCOMPARE(roundTrip(s.client, "clearwatchpoint count"), QStringLiteral("ok; cleared 1"));
+
+    // The bare verb clears every watchpoint and reports the count, so a caller
+    // can tell how much it removed.
+    QCOMPARE(roundTrip(s.client, "watchpoint $1234.w"),
+             QStringLiteral("ok; watch $1234.w at $1234"));
+    QCOMPARE(roundTrip(s.client, "watchpoint count.w"),
+             QStringLiteral("ok; watch count.w — resolved at the next stop"));
+    QCOMPARE(roundTrip(s.client, "clearwatchpoint"), QStringLiteral("ok; cleared 2"));
 }
 
 void TstRemoteControl::buildRespondsWhenFinished()
@@ -483,6 +548,33 @@ void TstRemoteControl::statejsonIsAJsonObject()
     const QJsonObject object = doc.object();
     QCOMPARE(object.value(QStringLiteral("running")).toBool(), false);
     QCOMPARE(object.value(QStringLiteral("stopped")).toBool(), false);
+}
+
+void TstRemoteControl::hookIsAJsonObject()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // No project and no script: every field an agent could ask about is answered,
+    // including the ones with nothing in them yet — "there has been no run" is an
+    // answer, not a missing key.
+    QString reply = blockBody(roundTripBlock(s.client, "hook"));
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(reply.toUtf8(), &parseError);
+    QVERIFY2(parseError.error == QJsonParseError::NoError, qPrintable(reply));
+    const QJsonObject object = doc.object();
+    QCOMPARE(object.value(QStringLiteral("enabled")).toBool(), false);
+    QCOMPARE(object.value(QStringLiteral("path")).toString(), QString());
+    QCOMPARE(object.value(QStringLiteral("autoContinue")).toBool(), false);
+
+    const QJsonObject last = object.value(QStringLiteral("last")).toObject();
+    QVERIFY2(!last.isEmpty(), "the run is reported even before there has been one");
+    QCOMPARE(last.value(QStringLiteral("ran")).toBool(), false);
+    QCOMPARE(last.value(QStringLiteral("ok")).toBool(), false);
+    QCOMPARE(last.value(QStringLiteral("logs")).toInt(), 0);
+    QCOMPARE(last.value(QStringLiteral("writes")).toInt(), 0);
+    QVERIFY(!last.contains(QStringLiteral("message")));
 }
 
 void TstRemoteControl::problemsIsAJsonArray()
@@ -797,7 +889,8 @@ void TstRemoteControl::unframedFloodIsDroppedAndTheServerKeepsServing()
 
     // The drop is per-connection: the server is unharmed and still serves its
     // authenticated client.
-    QCOMPARE(roundTrip(s.client, "watchpoint $12345"), QStringLiteral("ok"));
+    QCOMPARE(roundTrip(s.client, "watchpoint $12345"),
+             QStringLiteral("ok; watch $12345.w at $12345"));
 
     // And the cap constrains unterminated data, not command size: a long but
     // properly terminated line still frames and is answered.

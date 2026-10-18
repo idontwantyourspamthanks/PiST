@@ -142,6 +142,17 @@ Comment:
  /usr/share/doc/<package>/, where dpkg knows them to belong to another package
  and refuses to let this one take them.
 
+Files: */licenses/MIT-Lua.txt
+Copyright: 1994-2025 Lua.org, PUC-Rio
+License: Expat-Lua
+Comment:
+ Lua 5.4.8 is the stop-hook scripting engine, and it is linked *statically*
+ into the pist binary. It therefore has no library file of its own for a
+ pattern to match, and packaging/collect-notices.py — which derives the shipped
+ set from what the artifact loads — cannot discover it; that script lists it
+ explicitly in STATIC_LIBS instead. This stanza covers the licence text the
+ package carries for it.
+
 Files: */licenses/* packaging/notices/*
 Copyright: the respective projects named in each text
 License: verbatim
@@ -180,6 +191,11 @@ License: Expat
  Permission is granted to anyone to use this software for any purpose, including
  commercial application, and to alter it and redistribute it freely, subject to
  the restrictions in share/doc/pist/licenses/SDL2-LICENSE.txt.
+
+License: Expat-Lua
+ Lua is free software distributed under the terms of the MIT licence; the
+ complete text travels in share/doc/pist/licenses/MIT-Lua.txt, with the
+ copyright held by Lua.org, PUC-Rio.
 
 License: libpng
  The PNG Reference Library is supplied "AS IS", and is free for any purpose,

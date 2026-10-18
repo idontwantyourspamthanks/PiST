@@ -280,9 +280,9 @@ private slots:
         // Pin the whole set: a renamed or dropped tool is how an agent's
         // workflow breaks without anything here noticing.
         QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
-                                     "pist_build_release", "pist_cmd", "pist_console",
-                                     "pist_continue",
-                                     "pist_disasm", "pist_open", "pist_problems",
+                                     "pist_build_release", "pist_clearwatchpoint", "pist_cmd",
+                                     "pist_console", "pist_continue",
+                                     "pist_disasm", "pist_hook", "pist_open", "pist_problems",
                                      "pist_profile_results", "pist_profile_start",
                                      "pist_profile_stop", "pist_read", "pist_readmem",
                                      "pist_run", "pist_save", "pist_screenshot",
@@ -361,6 +361,10 @@ private slots:
                 if (name == QLatin1String("pist_state"))
                     QCOMPARE(annotations.value(QStringLiteral("readOnlyHint")).toBool(), true);
                 if (name == QLatin1String("pist_setmem"))
+                    QCOMPARE(annotations.value(QStringLiteral("destructiveHint")).toBool(), true);
+                // Clearing watchpoints rewrites live debugger state, so it
+                // carries the same warning as the other mutations.
+                if (name == QLatin1String("pist_clearwatchpoint"))
                     QCOMPARE(annotations.value(QStringLiteral("destructiveHint")).toBool(), true);
             }
         }
@@ -461,6 +465,40 @@ private slots:
     }
 
 
+    /// The stop hook an agent never sees for itself: `pist_hook` reports the
+    /// script and what its last run did as fields, because parsing a translated
+    /// sentence for a line number is not a contract anyone should rely on.
+    void hookReportsTheScriptAndItsLastRun()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_hook")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("hook"));
+        ide.send("ok\n{\"enabled\":true,\"path\":\"/p/demo/hello.hooks.lua\","
+                 "\"autoContinue\":false,\"last\":{\"ran\":true,\"ok\":false,"
+                 "\"timedOut\":false,\"pc\":\"0x00012596\",\"file\":\"hello.hooks.lua\","
+                 "\"line\":4,\"logs\":0,\"writes\":2,"
+                 "\"message\":\"attempt to index a nil value\"}}\n.\n");
+
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+        const QJsonObject hook = reply.value(QStringLiteral("result")).toObject()
+                                     .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(hook.value(QStringLiteral("enabled")).toBool(), true);
+        QCOMPARE(hook.value(QStringLiteral("path")).toString(),
+                 QStringLiteral("/p/demo/hello.hooks.lua"));
+        const QJsonObject last = hook.value(QStringLiteral("last")).toObject();
+        QCOMPARE(last.value(QStringLiteral("ran")).toBool(), true);
+        QCOMPARE(last.value(QStringLiteral("ok")).toBool(), false);
+        QCOMPARE(last.value(QStringLiteral("line")).toInt(), 4);
+        QCOMPARE(last.value(QStringLiteral("writes")).toInt(), 2);
+        QCOMPARE(last.value(QStringLiteral("message")).toString(),
+                 QStringLiteral("attempt to index a nil value"));
+    }
+
     void newToolMappingsAndStructuredReplies()
     {
         FakeIde ide;
@@ -531,6 +569,71 @@ private slots:
         QCOMPARE(ide.nextLine(), QStringLiteral("stop"));
         ide.send("ok\n");
         reply = waitReply(7);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    /// The watchpoint pair, which is where a label survives GEMDOS relocating
+    /// the program: `pist_watchpoint` takes a `label` as well as an `address`
+    /// and sends whichever it was given, and `pist_clearwatchpoint` sends the
+    /// bare verb when it was given neither.
+    void watchpointToolsMapTheirArguments()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        // A label goes to the verb as a label — never as an address it resolved
+        // itself, because only the IDE knows the live bases.
+        QJsonObject args;
+        args.insert(QStringLiteral("label"), QStringLiteral("counter.l"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_watchpoint"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("watchpoint counter.l"));
+        ide.send("ok; watch counter.l at $12596\n");
+        QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+
+        // An address still works and is what is sent when only it was given.
+        args = {};
+        args.insert(QStringLiteral("address"), QStringLiteral("$1234.w"));
+        send(server.get(), 2, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_watchpoint"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("watchpoint $1234.w"));
+        ide.send("ok; watch $1234.w at $1234\n");
+        reply = waitReply(2);
+        QVERIFY(!resultIsError(reply));
+
+        // Neither argument is refused before anything reaches the wire: the
+        // bare verb would be sent with an empty argument, which the IDE answers
+        // by refusing to name an address from nothing.
+        send(server.get(), 3, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_watchpoint")));
+        QVERIFY2(ide.nextLine(1000).isEmpty(),
+                 qPrintable(QStringLiteral("a call with no argument reached the wire: %1")
+                                .arg(QString::fromUtf8(ide.wire()))));
+        reply = waitReply(3);
+        QCOMPARE(reply.value(QStringLiteral("error")).toObject()
+                     .value(QStringLiteral("code")).toInt(),
+                 -32602);
+        QVERIFY(resultText(reply).isEmpty());
+
+        // Clearing with no argument clears every watchpoint: the verb goes out
+        // with nothing after it.
+        send(server.get(), 4, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_clearwatchpoint")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("clearwatchpoint"));
+        ide.send("ok; cleared 2\n");
+        reply = waitReply(4);
+        QVERIFY(!resultIsError(reply));
+
+        // Clearing one names it, the same way the add call did.
+        args = {};
+        args.insert(QStringLiteral("label"), QStringLiteral("counter.l"));
+        send(server.get(), 5, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_clearwatchpoint"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("clearwatchpoint counter.l"));
+        ide.send("ok; cleared 1\n");
+        reply = waitReply(5);
         QVERIFY(!resultIsError(reply));
     }
 

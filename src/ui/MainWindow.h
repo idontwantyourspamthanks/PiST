@@ -8,12 +8,15 @@
 #include "build/LineMap.h"
 #include "build/ProgramLineMap.h"
 #include "control/ControlHost.h"
+#include "editor/CompletionModel.h"
+#include "editor/CursorReference.h"
 #include "emu/HatariProbe.h"
 #include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
 #include "ui/RemoteStateAdapter.h"
+#include "ui/SymbolPaletteDialog.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -47,12 +50,14 @@ class DebugSessionController;
 class DocumentWatcher;
 class ProfilerController;
 class SessionLauncher;
+class StopHookRunner;
 class InstructionRefView;
 class SymbolsView;
 class RemoteControl;
 class DisassemblyView;
 class ProfilerView;
 class FileBrowser;
+class FindInFilesView;
 class GitPanel;
 class IDebugBackend;
 class ImageEditor;
@@ -102,6 +107,20 @@ public slots:
     /// because a modal offscreen (or against an agent with nobody to dismiss
     /// it) blocks the reply forever. Failure is reported by the return value.
     bool openPathQuiet(const QString &path) override;
+
+    /// Open the bundled demo project — the tour of what the IDE does, written as a
+    /// program that uses it (labels to complete and jump to, TOS calls to hover, a
+    /// word to watch by name, a stop hook that logs every stop). The action is
+    /// disabled, and this does nothing, when no demo is reachable: an installed tree
+    /// without one, or a checkout with `demo/` moved.
+    void openDemoProject();
+
+    /// The first-run doorway: open the demo when the window is still empty — the
+    /// app was started with no file and there was nothing to reopen. Called once by
+    /// `main()`, queued after the window's own start-up step, which is what reopens
+    /// the last document. A window built by a test never calls it, which is why the
+    /// policy lives here rather than in the window's constructor.
+    void openDemoIfIdle();
 
     /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
     void addMemoryPane(quint32 initialAddress = 0);
@@ -315,6 +334,9 @@ private slots:
     bool toggleBreakpointAtLine(int line) override;
 
     void editBreakpointCondition(int line);
+    /// Gutter menu: the Lua script this breakpoint runs when it fires, instead of
+    /// the project's hook (empty clears it back).
+    void editBreakpointScript(int line);
     void clearAllBreakpoints();
     /// The breakpoints dock's "Clear all": removes breakpoints AND watchpoints
     /// (its button enables when only watchpoints are present), unlike the Run-menu
@@ -322,8 +344,21 @@ private slots:
     void clearAllDebugTargets();
     void addWatchpoint();
     void removeWatchpoint(int index);
+    /// Run ▸ Stop hooks…: choose the script, switch it on, decide whether it may
+    /// continue. Persisted in the project file (docs/stop-hooks-plan.md §9).
+    void editStopHooks();
 
 public:
+    /// Write the project's stop-hook script beside the source (or adopt one that
+    /// is already there) and open it in the editor, returning its path — empty
+    /// when there is no source to name it after or the write failed.
+    ///
+    /// Public because the stop-hooks dialog calls it and `tst_gui` drives it
+    /// directly: the naming rule, the starter bytes and the no-overwrite rule
+    /// are this operation's whole contract, and none of them need a modal to be
+    /// worth testing.
+    QString createStopHookScript();
+
     /// Write a memory byte through the debugger (the `writeMemoryByte` intent:
     /// `w b $<addr> $<val>` on the native transport, the fork's `memset`
     /// otherwise), when stopped. The memory views' editing path; the remote
@@ -388,16 +423,34 @@ public:
     /// has been collected.
     QJsonArray profilerResultsJson() const override;
 
+    /// The hover's card for a position in an editor: the same facts the reference
+    /// dock shows, in fewer words, and **empty when nothing resolves** — the rule
+    /// both surfaces keep. The tooltip handler is its one caller in the window; the
+    /// tests read it directly, because a tooltip widget's text is not ours to drive.
+    QString referenceCardAt(CodeEditor *editor, const QPoint &viewportPos) const;
+
     /// The build's symbols as JSON objects {name, file?, line?, address?},
     /// optionally name-filtered (case-insensitive). Addresses appear only once
     /// the program map has live bases — SymbolsView's honesty rule. For the
     /// remote `symbols` verb.
     QJsonArray symbolsJson(const QString &filter) const override;
 
-    /// Parse and add a watchpoint by address text (e.g. "$12345" or "$12345.l").
+    /// The stop hook as JSON {enabled, path, autoContinue, last {ran, ok,
+    /// timedOut, pc, file, line, logs, writes, message?}} — the project's script
+    /// and what its last run did. For the remote `hook` verb, which the MCP shim
+    /// serves as structured content.
+    QJsonObject hookJson() const override;
+
+    /// Parse and add a watchpoint by text: an address ("$12345", "$12345.l") or a
+    /// label ("counter.l"), which the arm plan resolves again on every run.
     /// Separated from the dialog so the remote-control interface and tests can use
-    /// it without a prompt. Returns false and sets error on a bad address.
-    bool addWatchpointAddress(const QString &text, QString *error) override;
+    /// it without a prompt. `added` receives what was stored, with the address
+    /// filled in when it is known now. Returns false and sets error otherwise.
+    bool addWatchpointAddress(const QString &text, Watchpoint *added, QString *error) override;
+
+    /// Remove watchpoints: every one when `text` is empty, otherwise those it
+    /// names. False and a reason when the text matches nothing.
+    bool clearWatchpoints(const QString &text, int *removed, QString *error) override;
 
     /// Compose the current phase's sheet and write it to `path`, writing
     /// back into a mounted floppy when the sheet came from one.
@@ -438,6 +491,10 @@ private:
     /// editor, at the word under the caret. Runs whether or not the
     /// Instructions dock is the tab on top.
     void followCursorReference(CodeEditor *editor);
+    /// The text window the OS-call scanner needs around `blockNumber`, resolved
+    /// for `column`: the one way the reference dock and the hover card ask what a
+    /// position in the source *is* (docs/glm-features.md §4).
+    CursorReference referenceAroundCursor(CodeEditor *editor, int blockNumber, int column) const;
 
     /// Bring the Instructions dock forward. The strip under the editor does this.
     void raiseInstructionRef();
@@ -619,6 +676,12 @@ private:
     void showReplaceBar();
     void findNextInEditor();
     void findPreviousInEditor();
+    /// Bring the Find in Files dock forward with its query focused (Ctrl+Shift+F),
+    /// re-reading the scope first: the project may have moved since the last search.
+    void showFindInFiles();
+    /// Bring the symbol palette up (Ctrl+Shift+O) with the build's symbols: a
+    /// filter-as-you-type jump list over the labels and equates.
+    void showSymbolPalette();
 
     void openRecentSource();
 
@@ -662,6 +725,16 @@ private:
     /// created before the section, and the walk at the end of createDocks
     /// lists it.
     void addDockToViewMenu(QDockWidget *dock);
+
+    /// The directory a project-wide question is asked about: what the file
+    /// browser was pointed at when the user chose it, else the focused document's
+    /// own directory, else nothing — never the process's working directory,
+    /// which is nobody's project (MIN-81). Git's panel and Find in Files both
+    /// ask it here, so the two cannot disagree about what "the project" is.
+    QString projectScopeDirectory() const;
+    /// Point Find in Files at the project directory. Re-runs its query, because
+    /// the results of the old scope are not answers about this one.
+    void syncFindInFilesScope();
 
     /// Point the Git panel at the project directory, and show or hide the
     /// blame lane on every open editor. Blame stays off for a document with no
@@ -730,6 +803,10 @@ private:
     BreakpointWatchpointModel *m_bpModel = nullptr;
     ProfilerController *m_profiling = nullptr;
     RemoteStateAdapter *m_remoteState = nullptr;
+    /// The stop hook (docs/stop-hooks-plan.md): runs the project's script at
+    /// every published stop, from a queued turn so its read-backs are outside
+    /// the transport's emit stack.
+    StopHookRunner *m_hooks = nullptr;
 
     DebugSessionController *sessionController() const { return m_session; }
     BreakpointWatchpointModel *breakpointsModel() const { return m_bpModel; }
@@ -826,6 +903,12 @@ private:
     QDockWidget *m_gitDock = nullptr;
     QAction *m_actGitBlame = nullptr;
     QVector<struct SymbolEntry> m_symbols;
+    /// The candidates completion and the palette work from: the assembler's
+    /// vocabulary plus the build's symbols, rebuilt whenever the listings are.
+    QList<CompletionItem> m_completionItems;
+    /// The palette, created on first use and kept: reopening it should not lose
+    /// anything (it re-reads the candidates on every show).
+    SymbolPaletteDialog *m_symbolPalette = nullptr;
     QStringList m_consoleVerbs;
     /// Where session events are published for remote-control watchers
     /// (control/RemoteControl); null when no one wired one up (tests).
@@ -835,6 +918,9 @@ private:
     QPlainTextEdit *m_log = nullptr;
     QTreeWidget *m_problems = nullptr;
     QDockWidget *m_problemsDock = nullptr;
+    /// Project-wide search: the dock itself, and the walk it drives.
+    FindInFilesView *m_findInFiles = nullptr;
+    QDockWidget *m_findInFilesDock = nullptr;
 
     /// Text documents currently edited out of a floppy image, keyed by the
     /// extracted session file the editor tab holds open.
@@ -907,7 +993,9 @@ private:
     QAction *m_actFindNext = nullptr;
     QAction *m_actFindPrevious = nullptr;
     QAction *m_actReplace = nullptr;
+    QAction *m_actFindInFiles = nullptr;
     QAction *m_actOpenProject = nullptr;
+    QAction *m_actOpenDemo = nullptr;
     QAction *m_actProfileStart = nullptr;
     QAction *m_actProfileStop = nullptr;
     QAction *m_actProfileToCursor = nullptr;
@@ -934,9 +1022,11 @@ private:
     QAction *m_actClearBreakpoints = nullptr;
     QAction *m_actToggleBreakpoint = nullptr;
     QAction *m_actGotoLine = nullptr;
+    QAction *m_actSymbolPalette = nullptr;
     QAction *m_actPause = nullptr;
     QAction *m_actReleaseInput = nullptr;
     QAction *m_actAddWatchpoint = nullptr;
+    QAction *m_actStopHooks = nullptr;
 };
 
 } // namespace pist

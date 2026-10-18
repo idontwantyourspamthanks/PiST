@@ -342,6 +342,22 @@ jobs:
           print("ROM:", dest / "etos1024k.img")
           PY
 
+      # Lua, the stop-hook scripting engine, pinned in CMakeLists.txt
+      # (PIST_LUA_VERSION 5.4.8, PIST_LUA_SHA256) and fetched here for the same
+      # reason as vasm and EmuTOS above: the configure must not reach the
+      # network, and the checksum is what makes the input reproducible. The
+      # absolute path is what the configure below names, so it does not depend
+      # on the working directory either.
+      - name: Fetch and verify Lua
+        shell: bash
+        run: |
+          set -euo pipefail
+          LUA_URL=https://www.lua.org/ftp/lua-5.4.8.tar.gz
+          LUA_SHA256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
+          curl -fsSL -o "${{ github.workspace }}/lua-5.4.8.tar.gz" "$LUA_URL"
+          echo "$LUA_SHA256  ${{ github.workspace }}/lua-5.4.8.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$LUA_SHA256  ${{ github.workspace }}/lua-5.4.8.tar.gz" | sha256sum -c -
+
       - name: Configure
         shell: bash
         run: |
@@ -350,7 +366,8 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ] && command -v ninja >/dev/null 2>&1; then
             gen=(-G Ninja)
           fi
-          cmake -S . -B build "${gen[@]}" -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build "${gen[@]}" -DCMAKE_BUILD_TYPE=Release \
+            -DPIST_LUA_TARBALL="${{ github.workspace }}/lua-5.4.8.tar.gz"
 
       - name: Build
         shell: bash
@@ -801,6 +818,21 @@ jobs:
               exit 1
             fi
           done
+
+          # And the demo projects, which the AppImage takes from the install
+          # tree it is staged from rather than from a list kept here — including
+          # the rule that they are content: nothing assembling them wrote may
+          # ride along, which is why the install patterns are a whitelist.
+          DEMO=verify-appimage/squashfs-root/usr/share/pist/demo
+          if [ ! -f "$DEMO/hello.pistproject" ]; then
+            echo "ERROR: the AppImage lacks $DEMO/hello.pistproject"
+            exit 1
+          fi
+          if find "$DEMO" \( -name '*.lst' -o -name '*.prg' \) | grep -q .; then
+            echo "ERROR: build output shipped as demo content:"
+            find "$DEMO" \( -name '*.lst' -o -name '*.prg' \)
+            exit 1
+          fi
           echo "OK: emulator starts and its non-universal libraries are bundled"
 
           echo "--- $APPIMAGE --diagnose ---"
@@ -920,6 +952,11 @@ jobs:
             fi
           done
           cp -a AppDir/usr/share/emutos PkgDir/usr/lib/pist/share/emutos
+          # The demo projects travel the same way, and for the same reason as
+          # the ROM: the private prefix is what the executable's own walk
+          # reaches (`lib/pist/bin` -> `lib/pist/share`), and nothing of PiST's
+          # is left in a public /usr/share/<name> a user's own files share.
+          cp -a AppDir/usr/share/pist PkgDir/usr/lib/pist/share/pist
           ln -s ../lib/pist/bin/pist PkgDir/usr/bin/pist
           ln -s ../lib/pist/bin/pist-mcp PkgDir/usr/bin/pist-mcp
 
@@ -990,7 +1027,8 @@ jobs:
           # be used for anything here.
           for f in usr/lib/pist/bin/pist usr/share/applications/pist.desktop \
                    usr/share/metainfo/io.github.idontwantyourspamthanks.pist.metainfo.xml \
-                   usr/share/doc/pist/copyright; do
+                   usr/share/doc/pist/copyright \
+                   usr/lib/pist/share/pist/demo/hello.pistproject; do
             echo "$paths" | grep -qx "./$f" || { echo "ERROR: the deb lacks $f"; exit 1; }
           done
           # The two PATH entries are symlinks, and a listing line carries the
@@ -1074,6 +1112,26 @@ jobs:
           set -euo pipefail
           mkdir -p bundle/share/doc/pist
           cp LICENSE NOTICE README.md bundle/share/doc/pist/
+
+      # The demo projects the welcome view offers. On Linux the AppImage takes
+      # them from the install tree it is staged from (`cmake --install` above);
+      # the macOS and Windows archives — and the MSI, which packs this same
+      # bundle — are assembled here by hand, so they take the directory from the
+      # install rule itself via its own component rather than from a second list
+      # of files that could drift from it. `--component demo` installs that rule
+      # alone: no binary, no Qt deployment, one copy.
+      - name: Add the demo projects
+        if: matrix.deployed
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf demo-stage
+          cmake --install build --config Release --prefix "$PWD/demo-stage" \
+            --component demo
+          mkdir -p bundle/share
+          mv demo-stage/share/pist bundle/share/pist
+          rm -rf demo-stage
+          find bundle/share/pist -type f | sort
 
       # Same derivation for the plain archives. Windows cannot inspect linked
       # libraries and bundles no emulator, so its set is the static one.
@@ -1387,6 +1445,19 @@ jobs:
               exit 1
             fi
           done
+
+          # The demo projects must be in there too — the AppImage takes them
+          # from the install tree, and these archives from the `demo` component
+          # staged above, so this is the assertion that the staging step and the
+          # archive still agree.
+          DEMO="bundle/share/pist/demo"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            DEMO="bundle/PiST.app/Contents/share/pist/demo"
+          fi
+          if [ ! -f "$DEMO/hello.pistproject" ]; then
+            echo "ERROR: the archive lacks $DEMO/hello.pistproject"
+            exit 1
+          fi
 
           V="$PIST_VERSION"
           NAME="PiST-$V-${{ matrix.name }}"

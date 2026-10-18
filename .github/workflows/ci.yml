@@ -294,6 +294,23 @@ jobs:
         run: |
           vasmm68k_mot 2>&1 | head -1
 
+      # Lua, the stop-hook scripting engine. CMakeLists.txt pins it
+      # (PIST_LUA_VERSION 5.4.8, PIST_LUA_SHA256) and would otherwise
+      # download it from lua.org during configure; fetching it here makes it
+      # the same kind of input as vasm, vlink, Hatari and EmuTOS — one
+      # download per run, verified against the pin before anything consumes
+      # it. CMake re-verifies the file it is handed, so a drifted pin fails
+      # the configure rather than the build.
+      - name: Fetch and verify Lua
+        shell: bash
+        run: |
+          set -euo pipefail
+          LUA_URL=https://www.lua.org/ftp/lua-5.4.8.tar.gz
+          LUA_SHA256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
+          curl -fsSL -o "$RUNNER_TEMP/lua-5.4.8.tar.gz" "$LUA_URL"
+          echo "$LUA_SHA256  $RUNNER_TEMP/lua-5.4.8.tar.gz" | shasum -a 256 -c - 2>/dev/null \
+            || echo "$LUA_SHA256  $RUNNER_TEMP/lua-5.4.8.tar.gz" | sha256sum -c -
+
       - name: Configure
         shell: bash
         run: |
@@ -302,7 +319,12 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ] && command -v ninja >/dev/null 2>&1; then
             gen=(-G Ninja)
           fi
-          cmake -S . -B build "${gen[@]}" -DCMAKE_BUILD_TYPE=Release
+          # Name the tarball fetched above: PIST_LUA_TARBALL is the input
+          # CMakeLists.txt uses for offline and packaging builds, and it is
+          # verified against PIST_LUA_SHA256 on that path too, so this
+          # configure never reaches lua.org.
+          cmake -S . -B build "${gen[@]}" -DCMAKE_BUILD_TYPE=Release \
+            -DPIST_LUA_TARBALL="$RUNNER_TEMP/lua-5.4.8.tar.gz"
 
       - name: Build
         shell: bash

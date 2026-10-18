@@ -223,6 +223,12 @@ int main(int argc, char *argv[])
     if (!args.isEmpty()) {
         QMetaObject::invokeMethod(&window, "openPath", Qt::QueuedConnection,
                                   Q_ARG(QString, args.first()));
+    } else {
+        // Started with nothing to open: if there is no last document either, the
+        // window lands on the demo. Queued after the window's own start-up step
+        // (which is what reopens the last document), so by the time this runs
+        // "nothing to reopen" has been decided.
+        QMetaObject::invokeMethod(&window, "openDemoIfIdle", Qt::QueuedConnection);
     }
 
     return app.exec();

@@ -10,6 +10,7 @@
 #include "debug/Watchpoint.h"
 #include "build/LineMap.h"
 #include "build/LinkMap.h"
+#include "build/SymbolTable.h"
 #include "emu/MemoryDump.h"
 #include "project/ProjectSettings.h"
 
@@ -156,6 +157,11 @@ private slots:
     void watchpointWidthsFormatCorrectly();
     void watchpointLabelShowsAddressAndWidth();
 
+    /// The arm plan: a raw address arms where it is asked for, a name resolves
+    /// through the build's symbols and this run's live bases, and a name that
+    /// cannot be placed is refused with a reason rather than armed at $0.
+    void watchpointPlanResolvesNamesNotAddresses();
+
     // paths
     void outputPathsDeriveFromSource();
 
@@ -164,6 +170,21 @@ private slots:
     /// A file renamed inside the IDE keeps its breakpoints: the store keys them
     /// by base name, so the entries for the old name have to follow the file.
     void breakpointsFollowARenamedFile();
+
+    // --- the stop hook's two pure rules --------------------------------
+
+    /// The stop's cause: only a breakpoint whose armed address is the PC can be
+    /// named, and two at one address are one stop.
+    void breakpointAtNamesTheArmedOne();
+
+    /// A breakpoint's script is found from where it was typed, not from wherever
+    /// the process was launched.
+    void breakpointScriptPathsResolveBesideTheSource();
+
+    /// `sym()`'s rule: a label sharing its line with its data, a bare label one
+    /// line above it, and an equate refused rather than answered with its
+    /// neighbour's address.
+    void labelAddressResolvesLabelsNotEquates();
 };
 
 void TstDebug::resolvesLineToAddress()
@@ -742,6 +763,229 @@ void TstDebug::watchpointLabelShowsAddressAndWidth()
     wp.width = 'b';
     QVERIFY(wp.label().contains(QStringLiteral("ff8201")));
     QVERIFY(wp.label().contains(QStringLiteral("b")));
+}
+
+// The arm plan is where a watchpoint name becomes an address, for one run at a
+// time: the symbol table carries the names, the program map carries this run's
+// live bases, and a name that cannot be placed is refused with a reason rather
+// than armed at $0 — which would watch the vector table and fire at once.
+void TstDebug::watchpointPlanResolvesNamesNotAddresses()
+{
+    QTemporaryDir withData;
+    QString error;
+
+    // The fixture's `start` is line 2 and `msg` its data label on line 8; the
+    // symbols and the 0x12596 text base are the ones
+    // labelAddressResolvesLabelsNotEquates() pins next door.
+    ProgramLineMap map;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(withData), &error));
+    const QVector<SymbolEntry> symbols{
+        {QStringLiteral("start"), QStringLiteral("prog.s"), 2},
+        {QStringLiteral("msg"), QStringLiteral("prog.s"), 8},
+    };
+
+    Watchpoint byAddress;
+    byAddress.address = 0x1234;
+    byAddress.width = 'w';
+
+    Watchpoint byName;
+    byName.symbol = QStringLiteral("start");
+    byName.width = 'w';
+
+    Watchpoint unknown;
+    unknown.symbol = QStringLiteral("nope");
+    unknown.width = 'l';
+
+    // Before the bases arrive a name has nowhere to land: each is listed
+    // unresolved with the "no address yet" reason and produces no command. The
+    // raw address arms regardless — it means the same thing before the program
+    // loads as after — and its command is the self-inequality form the change
+    // tracking depends on.
+    const WatchpointPlan before =
+        planWatchpoints(QList<Watchpoint>{byAddress, byName, unknown}, symbols, map);
+    QCOMPARE(before.armed.size(), 1);
+    QVERIFY(before.armed.first().resolved);
+    QCOMPARE(before.armed.first().address, 0x1234u);
+    QCOMPARE(before.commands.size(), 1);
+    QCOMPARE(before.commands.first(), QStringLiteral("b ($1234).w ! ($1234).w"));
+    QCOMPARE(before.unresolved,
+             (QStringList{QStringLiteral("watch start.w"), QStringLiteral("watch nope.l")}));
+    QCOMPARE(before.unresolvedReasons.size(), before.unresolved.size());
+    QVERIFY2(before.unresolvedReasons.at(0).contains(QStringLiteral("no address yet")),
+             qPrintable(before.unresolvedReasons.at(0)));
+    QVERIFY(before.unresolvedReasons.at(0).contains(QStringLiteral("start")));
+    // A name nothing knows is refused by name, not with a generic "unresolved".
+    QVERIFY2(before.unresolvedReasons.at(1).contains(QStringLiteral("nope")),
+             qPrintable(before.unresolvedReasons.at(1)));
+
+    // With the bases live, `start` resolves to the label's address and the
+    // command names that address, while the armed copy keeps the name it was
+    // asked for by — the name is what stays true across runs — and the unknown
+    // name is still refused.
+    map.setLiveBases(liveBases());
+    const WatchpointPlan after =
+        planWatchpoints(QList<Watchpoint>{byAddress, byName, unknown}, symbols, map);
+    QCOMPARE(after.commands.size(), 2);
+    QCOMPARE(after.armed.size(), 2);
+    QCOMPARE(after.armed.at(0).address, 0x1234u);
+    QCOMPARE(after.armed.at(1).symbol, QStringLiteral("start"));
+    QCOMPARE(after.armed.at(1).address, 0x12596u);
+    QVERIFY(after.armed.at(1).resolved);
+    QCOMPARE(after.commands.at(1), QStringLiteral("b ($12596).w ! ($12596).w"));
+    QCOMPARE(after.unresolved, QStringList{QStringLiteral("watch nope.l")});
+    QVERIFY2(after.unresolvedReasons.first().contains(QStringLiteral("nope")),
+             qPrintable(after.unresolvedReasons.first()));
+
+    // An equate has a value, not a place: refused the same way, naming itself,
+    // with no command — answering with the next line's address would be a lie,
+    // not an approximation. The symbol table marks it as an equate
+    // (`SymbolEntry.equate`, which `LIMIT equ 4` sets), and the resolver refuses
+    // it before it ever asks the map for an address.
+    Watchpoint equate;
+    equate.symbol = QStringLiteral("LIMIT");
+    const WatchpointPlan equates =
+        planWatchpoints(QList<Watchpoint>{equate},
+                        QVector<SymbolEntry>{
+                            {QStringLiteral("LIMIT"), QStringLiteral("prog.s"), 8, true}},
+                        map);
+    QVERIFY(equates.commands.isEmpty());
+    QVERIFY(equates.armed.isEmpty());
+    QCOMPARE(equates.unresolved, QStringList{QStringLiteral("watch LIMIT.w")});
+    QVERIFY2(equates.unresolvedReasons.first().contains(QStringLiteral("LIMIT")),
+             qPrintable(equates.unresolvedReasons.first()));
+    QVERIFY2(equates.unresolvedReasons.first().contains(QStringLiteral("equate")),
+             qPrintable(equates.unresolvedReasons.first()));
+}
+
+// The stop hook's "why did we stop": only a breakpoint we armed can be named,
+// because the transport reports a prompt rather than a cause. A watchpoint is not
+// in this set at all — it fires on a data change, and its address says nothing
+// about the program counter — so its stops stay "unknown".
+void TstDebug::breakpointAtNamesTheArmedOne()
+{
+    QList<Breakpoint> bps;
+    bps.append(Breakpoint{QStringLiteral("prog.s"), 6, QString(), true, 0x125a2, true});
+    bps.append(Breakpoint{QStringLiteral("prog.s"), 8, QString(), true, 0x125ac, true});
+    // Never armed: address 0 with `resolved` false. It must not match a stop at 0.
+    bps.append(Breakpoint{QStringLiteral("prog.s"), 10, QString(), true, 0, false});
+
+    const Breakpoint *hit = breakpointAt(bps, 0x125ac);
+    QVERIFY(hit);
+    QCOMPARE(hit->line, 8);
+    QVERIFY(!breakpointAt(bps, 0x125b0));
+    QVERIFY(!breakpointAt(bps, 0));
+
+    // Two breakpoints resolved to one address are one stop: the first is named,
+    // and the answer is stable rather than whichever happens to be found first.
+    bps.append(Breakpoint{QStringLiteral("prog.s"), 12, QString(), true, 0x125ac, true});
+    QCOMPARE(breakpointAt(bps, 0x125ac)->line, 8);
+}
+
+/// A listing whose interesting definitions are a bare label (`buffer:` above its
+/// `ds.w`) and an equate — the two cases `labelAddress` has to tell apart.
+QString writeBareListing(QTemporaryDir &dir)
+{
+    const QString path = dir.filePath(QStringLiteral("bare.lst"));
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return {};
+    QTextStream out(&f);
+    out << "Sections:\n"
+           "00: \"text\" (0-2)\n"
+           "01: \"data\" (0-2)\n"
+           "\n"
+           "Source: \"bare.s\"\n"
+           "                            \t     1: \ttext\n"
+           "                            \t     2: buffer:\n"
+           "01:00000000 0000            \t     3: \tdc.w\t0\n"
+           "                            \t     4: LIMIT\tequ\t8\n";
+    out.flush();
+    f.close();
+    return path;
+}
+
+void TstDebug::labelAddressResolvesLabelsNotEquates()
+{
+    QTemporaryDir withData;
+    QTemporaryDir withBare;
+    QString error;
+
+    // A label sharing its line with its data: the fixture's line 8 is
+    // `msg: dc.b "HI"` in the data section.
+    ProgramLineMap map;
+    QVERIFY(map.addModule(QStringLiteral("prog.s"), QStringLiteral("prog.o"),
+                          writeListing(withData), &error));
+    const QVector<SymbolEntry> symbols{
+        {QStringLiteral("start"), QStringLiteral("prog.s"), 2},
+        {QStringLiteral("msg"), QStringLiteral("prog.s"), 8},
+    };
+
+    // Before the bases arrive nothing can be placed: a refusal of its own, not a
+    // wrong address.
+    LabelAddress where;
+    LabelAddressProblem problem = LabelAddressProblem::None;
+    QVERIFY(!labelAddress(symbols, map, QStringLiteral("msg"), &where, &problem));
+    QCOMPARE(problem, LabelAddressProblem::NotLive);
+
+    map.setLiveBases(liveBases());
+    QVERIFY(labelAddress(symbols, map, QStringLiteral("start"), &where, &problem));
+    QCOMPARE(where.address, 0x12596u); // text base + 0
+    QCOMPARE(where.line, 2);
+    QVERIFY(labelAddress(symbols, map, QStringLiteral("msg"), &where, &problem));
+    QCOMPARE(where.address, 0x125acu); // data base + 0
+    QCOMPARE(where.line, 8);
+
+    QVERIFY(!labelAddress(symbols, map, QStringLiteral("nope"), &where, &problem));
+    QCOMPARE(problem, LabelAddressProblem::UnknownName);
+
+    // A bare label takes the next line that emits anything, in whichever section
+    // — a code-only rule would find nothing here, because `buffer` is data.
+    ProgramLineMap bareMap;
+    QVERIFY(bareMap.addModule(QStringLiteral("bare.s"), QStringLiteral("bare.o"),
+                              writeBareListing(withBare), &error));
+    bareMap.setLiveBases(liveBases());
+    const QVector<SymbolEntry> bare{
+        {QStringLiteral("buffer"), QStringLiteral("bare.s"), 2},
+        {QStringLiteral("LIMIT"), QStringLiteral("bare.s"), 4, true},
+    };
+    QVERIFY(labelAddress(bare, bareMap, QStringLiteral("buffer"), &where, &problem));
+    QCOMPARE(where.address, 0x125acu);
+    QCOMPARE(where.line, 3);
+
+    // An equate emits nothing: answering with the next line's address would be a
+    // lie, not an approximation.
+    QVERIFY(!labelAddress(bare, bareMap, QStringLiteral("LIMIT"), &where, &problem));
+    QCOMPARE(problem, LabelAddressProblem::Equate);
+}
+
+/// A breakpoint's script path is resolved where it was typed, not where the
+/// process happens to be running: a relative path means "beside this source",
+/// which is where *New script…* writes one. Resolving against the working
+/// directory instead would fail for the user and succeed for a same-named file
+/// somewhere unrelated — the worse of the two.
+void TstDebug::breakpointScriptPathsResolveBesideTheSource()
+{
+    // A temporary directory, not a literal `/p/...`: whether a path is absolute
+    // is the host's question, and Windows answers it differently — the first
+    // version of this case passed on Linux and macOS and failed on MSVC for
+    // exactly that reason.
+    QTemporaryDir dir;
+    const QString source = dir.path() + QStringLiteral("/demo/hello.s");
+
+    // Empty is the ordinary case: the project's hook runs.
+    QCOMPARE(resolveScriptPath(QString(), source), QString());
+    QCOMPARE(resolveScriptPath(QStringLiteral("   "), source), QString());
+
+    // An absolute path is the user's own answer and is kept verbatim (trimmed).
+    const QString absolute = dir.path() + QStringLiteral("/other/x.lua");
+    QCOMPARE(resolveScriptPath(absolute, source), absolute);
+    QCOMPARE(resolveScriptPath(QStringLiteral("  ") + absolute + QStringLiteral("  "), source),
+             absolute);
+
+    const QString beside = dir.path() + QStringLiteral("/demo/hello.hooks.lua");
+    QCOMPARE(resolveScriptPath(QStringLiteral("hello.hooks.lua"), source), beside);
+    QCOMPARE(resolveScriptPath(QStringLiteral("./sub/../hello.hooks.lua"), source), beside);
 }
 
 QTEST_MAIN(TstDebug)

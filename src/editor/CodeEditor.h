@@ -4,23 +4,29 @@
 
 #pragma once
 
+#include "editor/CompletionModel.h"
 #include "editor/EditorTheme.h"
+#include "editor/FindScan.h"
 #include "git/GitTypes.h"
 
 #include <QHash>
 #include <QList>
 #include <QPlainTextEdit>
+#include <QPointer>
 
+class QListView;
 class QFrame;
 class QLabel;
 class QLineEdit;
 class QPointF;
 class QPushButton;
+class QStringListModel;
 class QToolButton;
 
 namespace pist {
 
 class AsmHighlighter;
+class LuaHighlighter;
 
 /// A plain-text assembly editor with line numbers, current-line highlighting,
 /// an error gutter marker, and a find/replace bar over its bottom edge.
@@ -42,8 +48,9 @@ public:
     QString filePath() const { return m_filePath; }
 
     /// Re-point the editor at a different path without touching the document
-    /// or its modified state: the file was renamed on disk underneath us.
-    void setFilePath(const QString &path) { m_filePath = path; }
+    /// or its modified state: the file was renamed on disk underneath us. The
+    /// highlighter follows the path's language, since a rename can change it.
+    void setFilePath(const QString &path);
 
     /// (Re)apply a theme: the monospace font and its tab stop, the syntax
     /// colours, and the colours the extra selections and the gutter paint with.
@@ -102,6 +109,13 @@ public:
     /// counter's own move is followExecutionLine() below.
     void gotoLine(int line);
 
+    /// Move the caret to `line` and select `length` characters from `column`
+    /// (0-based within that line's text), for a caller that knows an exact span
+    /// rather than a line — Find in Files' navigation, which has the match it
+    /// came from. Does nothing when the line or the span is out of range, so a
+    /// stale result cannot put the caret somewhere unintended.
+    void selectSpan(int line, int column, int length);
+
     /// Move the caret to `line` for the program counter — the debugger's path
     /// to the caret, and the deliberate counterpart of gotoLine() above.
     ///
@@ -122,6 +136,16 @@ public:
     /// has. Exposed so a test can assert what the user sees without reaching
     /// into the bar's widgets.
     bool findBarVisible() const;
+    /// The candidates completion offers: the assembler's vocabulary plus the build's
+    /// symbols, pushed in by the window — the editor sees no symbol table
+    /// (`MainWindow::rebuildProgramMap` owns it). Replacing the list at any time is
+    /// expected: symbols only exist once a build has produced them.
+    void setCompletions(const QList<CompletionItem> &items);
+    /// Whether the completion popup is showing.
+    bool completionVisible() const;
+    /// The words the popup is offering, in rank order — the test surface for it,
+    /// as `findMatchCount()` is the find bar's.
+    QStringList completionCandidates() const;
     bool gotoBarVisible() const;
     int findMatchCount() const { return m_matches.size(); }
     /// The hit the selection is currently on, 0-based, or -1.
@@ -168,6 +192,7 @@ public slots:
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
 
@@ -182,11 +207,32 @@ private slots:
 
 private:
     void refreshExtraSelections();
+    /// (Re)install the highlighter for the current path's language, deleting the
+    /// one in place. Called wherever m_filePath is assigned.
+    void installHighlighter();
     /// Whether the whole of `line` is inside the viewport, so a follower can
     /// leave the scroll alone rather than centring on a line already in view.
     bool isLineFullyVisible(int line) const;
     void buildFindBar();
     void buildGotoBar();
+    void buildCompletions();
+    /// Refresh the list for the word at the caret. `explicitRequest` is
+    /// Ctrl+Space or Tab, which offer the list even with nothing typed yet.
+    void showCompletions(bool explicitRequest);
+    void hideCompletions();
+    /// Put the list under the caret, inside the viewport: below it when it fits,
+    /// above it when it does not. Coordinates are the viewport's, because the list
+    /// is a child of it.
+    void placeCompletionList();
+    /// Take the key the list owns (Tab/Return accept, Up/Down move, Escape
+    /// dismisses). The list never takes the keyboard, so every key arrives here
+    /// and a headless run behaves like a real one.
+    bool completionKey(QKeyEvent *key);
+    /// Replace the word the list was completing with `word`.
+    void insertCompletion(const QString &word);
+    /// The word characters immediately before the caret — what a candidate would
+    /// replace — and empty inside a comment, where completion is noise.
+    QString completionPrefix() const;
     void updateViewportMargins();
     void layoutFindBar();
     /// Recompute the hits and, when `selectHit` is set, put the selection on
@@ -204,7 +250,8 @@ private:
     /// The position of the current hit for the status label: "3 of 12", or
     /// "3 of more than 2000" when the count stopped at the cap.
     QString matchStatusText() const;
-    bool isWholeWord(const QTextCursor &hit) const;
+    /// What the two find-bar toggles currently say, for the shared scan.
+    FindOptions findOptions() const;
     QString findNeedle() const;
 
     QString m_filePath;
@@ -224,7 +271,13 @@ private:
     /// What the widget paints with: the font, and the colours behind the extra
     /// selections and the gutter. Set by setTheme().
     EditorTheme m_theme;
-    AsmHighlighter *m_highlighter = nullptr;
+    /// The document's highlighter, exactly one of the two: a `.lua` file — a
+    /// stop-hook script — is painted as Lua, anything else as 68000 assembly
+    /// (installHighlighter()). Both are QSyntaxHighlighters parented to the
+    /// document, so a language change deletes the old one rather than leaving
+    /// it painting alongside the new.
+    AsmHighlighter *m_asmHighlighter = nullptr;
+    LuaHighlighter *m_luaHighlighter = nullptr;
     QWidget *m_lineNumberArea = nullptr;
     bool m_blameShown = false;
     GitBlameMap m_blame;
@@ -240,6 +293,16 @@ private:
     /// scale against, so every heated line is drawn at full strength).
     double m_lineHeatScale = 0.0;
     QString m_lastError;
+
+    CompletionModel m_completions;
+    /// The candidate list, as a child of the viewport rather than a popup window:
+    /// a `Qt::Popup` is a surface of its own that the window system places (and,
+    /// under Wayland, positions relative to its parent or dismisses outright), so
+    /// it can be on screen in tests and invisible in use. A child widget is drawn
+    /// inside the editor wherever the editor is, and never takes the keyboard
+    /// away from the text.
+    QListView *m_completionList = nullptr;
+    QStringListModel *m_completionRows = nullptr;
 
     QFrame *m_findBar = nullptr;
     QWidget *m_replaceRow = nullptr;

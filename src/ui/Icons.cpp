@@ -123,15 +123,20 @@ void paintSettings(QPainter &p, const QRectF &r, qreal w)
 
 void paintBuild(QPainter &p, const QRectF &r, qreal w)
 {
-    p.setPen(stroke(ink(), w));
-    p.setBrush(Qt::NoBrush);
-    const QRectF brick1(r.left() + r.width() * 0.18, r.top() + r.height() * 0.52,
-                        r.width() * 0.38, r.height() * 0.22);
-    const QRectF brick2(r.left() + r.width() * 0.44, r.top() + r.height() * 0.28,
-                        r.width() * 0.38, r.height() * 0.22);
-    p.drawRoundedRect(brick1, 1, 1);
-    p.drawRoundedRect(brick2, 1, 1);
-    p.drawLine(brick2.center(), QPointF(brick2.center().x(), r.top() + r.height() * 0.16));
+    // A mallet. Two offset bricks and a loose line fell apart at toolbar size.
+    p.setPen(Qt::NoPen);
+    p.setBrush(ink());
+    const qreal headH = r.height() * 0.22;
+    const qreal headW = r.width() * 0.58;
+    const qreal top = r.top() + r.height() * 0.16;
+    const QRectF head(r.center().x() - headW / 2.0, top, headW, headH);
+    p.drawRoundedRect(head, headH * 0.28, headH * 0.28);
+    const qreal handleW = qMax(w * 1.05, r.width() * 0.13);
+    const qreal handleTop = head.center().y();
+    const qreal handleBottom = r.bottom() - r.height() * 0.10;
+    p.drawRoundedRect(QRectF(r.center().x() - handleW / 2.0, handleTop, handleW,
+                             handleBottom - handleTop),
+                      handleW / 2.0, handleW / 2.0);
 }
 
 void paintRun(QPainter &p, const QRectF &r, qreal w)

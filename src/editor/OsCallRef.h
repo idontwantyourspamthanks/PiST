@@ -58,6 +58,20 @@ struct OsCallInfo
     /// Pexec's varargs prototype does not describe its fixed argument block —
     /// env, cmdline and name, three longs — which the binding pushes first.
     bool fixedArgBlock = false;
+
+    /// A minimal fragment calling it: its lines separated by `\n`, each indented
+    /// as it would be in a source file. It may assume the shared context
+    /// (`start`, `msg`, `buffer`) and arrives with the stack corrected, so it
+    /// shows the call as a program actually makes it rather than as a push list.
+    ///
+    /// `tst_reference` assembles every non-empty one through vasm under
+    /// `-m68060`, so the fragment cannot drift out of the assembler's grammar.
+    /// Empty when the canonical binding is the whole story and a fragment would
+    /// only repeat it.
+    QString example{};
+
+    /// One sentence of when to reach for it, or empty — see `InstructionInfo`.
+    QString typicalUse{};
 };
 
 /// The whole reference, in the order it should be listed: GEMDOS grouped by

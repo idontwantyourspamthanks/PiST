@@ -603,6 +603,13 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             QJsonDocument(m_host->symbolsJson(arg)).toJson(QJsonDocument::Compact)));
 
 
+    } else if (cmd == QLatin1String("hook")) {
+        // hook: the project's script and what its last run did. The fields, not
+        // the dialog's sentence — an agent reads this, and a sentence is for a
+        // person (and translated).
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_host->hookJson()).toJson(QJsonDocument::Compact)));
+
     } else if (cmd == QLatin1String("step")) {
         m_host->step();
         reply(guarded, QStringLiteral("ok"));
@@ -670,10 +677,33 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         }
 
     } else if (cmd == QLatin1String("watchpoint")) {
-        // Watchpoint breaks when the value at an address changes.
+        // Watchpoint breaks when the value at an address changes. The argument is
+        // an address or a *label*, and the label is the form that survives: GEMDOS
+        // relocates the program on every run, so the name is resolved again at
+        // every arm (docs/glm-features.md §5). Set, never toggle — arming the same
+        // watch twice is two watchpoints, and `clearwatchpoint` is how they go.
+        Watchpoint added;
         QString error;
-        if (m_host->addWatchpointAddress(arg, &error))
-            reply(guarded, QStringLiteral("ok"));
+        if (!m_host->addWatchpointAddress(arg, &added, &error)) {
+            reply(guarded, QStringLiteral("error ") + error);
+        } else {
+            QString detail = added.label();
+            if (added.resolved)
+                detail += QStringLiteral(" at $%1").arg(added.address, 0, 16);
+            else
+                detail += QStringLiteral(" — resolved at the next stop");
+            reply(guarded, QStringLiteral("ok; ") + detail);
+        }
+
+    } else if (cmd == QLatin1String("clearwatchpoint")) {
+        // The other half of the set/clear pair: an empty argument means every
+        // watchpoint, a label or an address means the ones it names. "No
+        // watchpoint matches" is an error rather than a quiet `ok`, so a caller
+        // can tell "it is gone" from "it was never there".
+        int removed = 0;
+        QString error;
+        if (m_host->clearWatchpoints(arg, &removed, &error))
+            reply(guarded, QStringLiteral("ok; cleared %1").arg(removed));
         else
             reply(guarded, QStringLiteral("error ") + error);
 

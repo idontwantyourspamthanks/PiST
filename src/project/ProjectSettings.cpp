@@ -227,6 +227,16 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     emu[QStringLiteral("debugBackend")] = s.debugBackend;
     root[QStringLiteral("emulator")] = emu;
 
+    // The stop hook (docs/stop-hooks-plan.md). Written even when it is off, so
+    // the file records what the project decided rather than leaving a reader to
+    // guess whether the feature was ever configured. An older PiST ignores an
+    // object it does not know, so this stays version 2.
+    QJsonObject hooks;
+    hooks[QStringLiteral("scriptPath")] = s.stopHookPath;
+    hooks[QStringLiteral("enabled")] = s.stopHookEnabled;
+    hooks[QStringLiteral("autoContinue")] = s.stopHookAutoContinue;
+    root[QStringLiteral("hooks")] = hooks;
+
     // The write rule lives in support/FileWrite.h, and the guarantee cannot be
     // delegated to QSaveFile alone: on Qt 6.8.1 — the Qt every release archive
     // bundles — commit() renames a truncated temporary file over the destination
@@ -289,6 +299,12 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
         && !root.value(QStringLiteral("emulator")).isObject()) {
         if (error)
             *error = invalidEntry(path, QStringLiteral("'emulator' must be an object"));
+        return false;
+    }
+    if (root.contains(QStringLiteral("hooks"))
+        && !root.value(QStringLiteral("hooks")).isObject()) {
+        if (error)
+            *error = invalidEntry(path, QStringLiteral("'hooks' must be an object"));
         return false;
     }
 
@@ -395,6 +411,20 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
                     QStringLiteral("emulator.debugBackend"), path, QStringLiteral("auto"),
                     &s->debugBackend, error))
         return false;
+
+    // The stop hook. An absent object is not an error: it is what every project
+    // written before the feature looks like, and the defaults are simply "off".
+    const QJsonObject hooks = root.value(QStringLiteral("hooks")).toObject();
+    if (!readString(hooks.value(QStringLiteral("scriptPath")),
+                    QStringLiteral("hooks.scriptPath"), path, QString(), &s->stopHookPath, error)
+        || !readBool(hooks.value(QStringLiteral("enabled")), QStringLiteral("hooks.enabled"), path,
+                     false, &s->stopHookEnabled, error)
+        || !readBool(hooks.value(QStringLiteral("autoContinue")),
+                     QStringLiteral("hooks.autoContinue"), path, false, &s->stopHookAutoContinue,
+                     error))
+        return false;
+    if (!s->stopHookPath.isEmpty() && !QDir::isAbsolutePath(s->stopHookPath))
+        s->stopHookPath = QDir::cleanPath(projectDir + QLatin1Char('/') + s->stopHookPath);
 
     return true;
 }

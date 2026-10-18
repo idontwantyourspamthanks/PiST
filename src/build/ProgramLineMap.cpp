@@ -234,6 +234,15 @@ int ProgramLineMap::nextCodeLine(const QString &file, int line) const
     return module->lines.nextCodeLine(file, line);
 }
 
+int ProgramLineMap::nextAddressLine(const QString &file, int line) const
+{
+    const Module *module = moduleForSource(file);
+    if (!module)
+        return 0;
+
+    return module->lines.nextAddressLine(file, line);
+}
+
 bool ProgramLineMap::lineFor(quint32 address, LineMap::Address *result) const
 {
     if (!m_resolved)

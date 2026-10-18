@@ -43,10 +43,19 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
   find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
   match-case and whole-word options, and a hit counter that admits its cap — past 2000 it reads
-  "N of more than 2000" rather than counting on), **Ctrl+click** to open an `include` or jump to a label,
+  "N of more than 2000" rather than counting on), completion as you type (**Ctrl+Space**, or **Tab**
+  on a word: mnemonics, directives, and the build's labels and equates), a **Go to Symbol** palette
+  (**Ctrl+Shift+O**), a hover card for any mnemonic, TOS call or label ([below](#completion-the-symbol-palette-and-the-hover-card)),
+  **Ctrl+click** to open an `include` or jump to a label,
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
   the cursor — on a `trap #1`/`#13`/`#14` line (or a push feeding one) it names the
-  GEMDOS/BIOS/XBIOS call being made and what it is being called with
+  GEMDOS/BIOS/XBIOS call being made and what it is being called with, and every entry
+  carries a worked example and one line on when to reach for it
+- **Find in Files** — search the whole project, not just the document in front of you
+  (**Ctrl+Shift+F**, or the dock tabbed with Project files): results grouped by file with the match
+  highlighted, **double-click** or **F4** / **Shift+F4** to walk them, and a header that says how
+  many files were searched and what was skipped. It counts exactly the way the editor's find bar
+  does, because the two run the same scan ([below](#find-in-files))
 - **Documents are files** — every tab is a real file on disk; there is no scratch or untitled
   buffer. With nothing open the window shows a **welcome view**: your recent files and projects (the
   bundled demos on a first run), Open/New actions, and whether the assembler and a TOS ROM are
@@ -77,9 +86,16 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   as the active set. The select tool drags a rectangle you
   can move (drag inside it or nudge with the arrows), and copy, cut, paste
   (Ctrl+C/X/V) and delete; pasting keeps transparent pixels see-through.
+- **A demo that is the tour** — `demo/hello.s` is a small, complete GEMDOS program written to show
+  the IDE off: labels and equates to complete and jump to, TOS calls across all three traps to
+  hover, a word to watch by name, and a hook script that logs every stop. Open it with the
+  toolbar's **Demo** button or File ▸ Open Demo Project, and a session with nothing to reopen
+  opens it for you — its own comments say what to try and where.
 - **Project files** — the left pane groups the host project (the GEMDOS hard drive) with Disk A
   and Disk B. Change or eject a floppy there (the same paths as in project settings); export
-  selected hard-drive files to a new `.st` or `.msa` image
+  selected hard-drive files to a new `.st` or `.msa` image; and edit a disk's own contents —
+  Copy / Cut / Paste between panes, and **Delete…**, **Rename…** and **New Folder…** inside an
+  image, each rewriting the image through the same confirm-and-rebuild gate the transfers use
 - **Project settings** — include paths, defines, target CPU, the assembler's own command-line
   arguments per build mode (**Debug** and **Release**, each editable one-argument-per-line with a
   **Reset** to defaults), and the emulator's machine, ROM, monitor, RAM, hard disk and floppy
@@ -101,9 +117,15 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     the machine is on, and every stop brings it along until you move the caret yourself.
     Run ▸ Follow Execution, or click the session chip in the status bar, or the ▶ in the gutter
   - **edit registers and memory** while stopped — poke a value and keep debugging
+  - **Stop hooks** — a **Lua script that runs at every stop**, able to read and write memory and
+    registers, log to the console and `continue()` the program, so a harness, a trainer or a
+    logging pass needs no rebuild (Run ▸ Stop hooks…, documented below)
   - **multiple memory panes**, each watching its own region
   - **Watchpoints** break when a memory value changes (Hatari has no data watchpoints, so they are
-    armed as change-tracking breakpoints), settable from Run ▸ Add watchpoint or the remote control
+    armed as change-tracking breakpoints). Ask for one by **label** — `counter.l` — or by address,
+    from Run ▸ Add watchpoint, the remote control or its MCP tool; a label is resolved again on
+    every run, so it survives the load address GEMDOS picks afresh each time. A watchpoint fires
+    only on a *change*: writing the same value again, or reading, does not trigger it.
   - a **stack view** of the values at the stack pointer, with likely return addresses marked
   - a **hardware registers** view of the shifter, MFP, ACIA/IKBD, sound, blitter and more, from
     Hatari's `info` commands
@@ -238,12 +260,18 @@ control socket is absent.
 
 ## Building
 
-Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets and Network), a C++17 compiler.
+Requirements: **CMake ≥ 3.21**, **Qt 6.5+** (Widgets, Network and Multimedia), a C++17 compiler.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+The configure step fetches **Lua 5.4.8**, the stop-hook scripting engine, by checksum into the
+build tree (never into the repository). CI and release builds pre-seed it instead of letting the
+configure do it; a local build with no network passes the file it already has:
+`-DPIST_LUA_TARBALL=/path/to/lua-5.4.8.tar.gz` — the hash is verified either way. Nothing here is
+needed to *use* PiST: the release archives carry the engine inside the binary.
 
 To try it without installing anything, `./run.sh` builds if needed and launches
 the IDE with `demo/hello.s` open — a tiny program you can assemble, run and step
@@ -468,6 +496,53 @@ attaches. (A run started over the remote-control socket has nobody to answer tha
 takes the AUTO-folder floppy path — which works on every TOS version — and says so in the console.)
 A ROM that is *known* too old never asks: it boots via the AUTO-folder floppy, on either path.
 
+## Completion, the symbol palette and the hover card
+
+Three surfaces over one list of candidates: the assembler's own vocabulary — the
+68000 mnemonics plus the 68020+/FPU names vasm accepts, and the directives — and
+the build's labels and equates with where they are defined. Because the list is
+built once and read three ways, the popup, the palette and the hover cannot
+disagree about the assembler.
+
+- **Completion** appears as you type a word (**Ctrl+Space**, or **Tab** on a word
+  that has candidates, asks for it explicitly) and filters what the word so far
+  could become, prefixes before mere substrings. The list is drawn inside the
+  editor, under the caret — never a separate window — so it is on screen wherever
+  the editor is. **Tab** or **Return** takes the highlighted candidate and
+  replaces the word at the caret, not the line; **Up**/**Down** walk the list and
+  **Escape** dismisses it. Tab anywhere else still indents, a comment is prose and
+  offers nothing, and a word already typed in full is not offered back.
+- **Go to Symbol** (**Ctrl+Shift+O**, or Search ▸ Go to Symbol…) is the same list
+  as a jump list: type to filter, **Enter** opens the definition's file at its
+  line. It needs a build, not a run — the definitions come from the listing.
+- **Hover** a mnemonic for the reference's summary and condition-code flags, a
+  TOS call for its name, meaning, prototype and the arguments the line pushes, or
+  a label for where it is defined. A directive, an instruction the reference does
+  not carry, or a word nothing knows shows no card at all: the reference resolves
+  to nothing rather than to a guess, and so does this.
+
+## Find in files
+
+**Ctrl+Shift+F** (Search ▸ Find in Files…) brings up the dock tabbed with Project files. Type a query,
+pause, and the project directory is searched as one walk: results are grouped by file, each row
+carrying the line number and the line itself, with the match marked in the same colour the editor
+uses for its own hits. **Double-click** a row (or press Return) to open that file at that line
+with the match selected, or walk the list with **F4** / **Shift+F4** while the dock has the focus —
+elsewhere those keys stay the diagnostics tour, and the search's own F4 is claimed only where its
+list is.
+
+The two options are the find bar's, and count the same way, because both run the same scan: match
+case, and whole words only (so `move` matches `move.w` but not the `move` inside `movem`). The cap
+is admitted rather than hidden — past 2000 hits the header says so instead of pretending to a total
+the walk never reached.
+
+The header reports what was searched as well as what was found: *"12 hit(s) in 8 file(s) searched ·
+3 file(s) skipped"*. Executables, objects, disk and still-image formats, ROM images and vasm's
+listings are skipped by suffix; a NUL byte settles anything whose name says nothing; hidden
+directories (`​.git` and friends) are not walked; and a file too large to be source is left alone.
+The directory searched is the one the file browser is pointed at, or the focused document's own —
+the same "project" the Git panel uses.
+
 ## Remote control (driving the IDE from a script or an AI agent)
 
 `PiST` can be driven from another program — a build script, a test harness, or an
@@ -513,11 +588,16 @@ stop               stop the emulator session
 step / stepover / continue
 breakpoint <n|label>  toggle a breakpoint at source line n or a symbol's definition
 symbols [filter]   the build's symbols as a JSON array (block reply)
+hook               the stop-hook script and what its last run did, as a JSON
+                   object (block reply)
 tabs               the open documents as a JSON array (block reply)
 save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
 disasm [addr]      disassembly as JSON rows (block reply, when stopped)
-watchpoint <addr>  break when the value at an address changes
+watchpoint <a|l>  break when the value at <a> changes, or at whatever address the
+                  label <l> names in this run (optional .b/.w/.l)
+clearwatchpoint [a|l]
+                  remove the watchpoint the address or label names, or every one
 setreg <name> <value>   set a register (while stopped)
 setmem <addr> <value>  write a memory byte (while stopped)
 cmd <command>      run an arbitrary Hatari debugger command (block reply)
@@ -545,20 +625,101 @@ waiting to be asked:
 
 ```
 event stopped pc=0x12596
+event hook ok file=hello.hooks.lua line=-1 writes=2 logs=1 pc=0x00012596
 event running
 ```
 
+The second is the stop hook's report, and it is a separate event on purpose: the
+script runs *after* the stop is published, because it needs the stop's registers
+to be real before it reads them, so its outcome does not exist yet when `stopped`
+goes out. Its status is `ok`, `timeout` (the budget cut the script off), `error`,
+or `norun` (the script could not be read, so it never ran), followed by `file`,
+`line` (`-1` when there is none), `writes`, `logs`, `pc`, and — when there is one —
+`message`, which is the script's own words and always last: everything after
+`message=` belongs to it. Read the same thing on demand with the `hook` verb.
+
 The format is `event <name>` with optional trailing detail, always one line. The
-IDE currently publishes `stopped` (with the program counter, when known) and
-`running`; more event names may be added, so a client should ignore names it does
-not recognise rather than treat them as errors. Watching is additive: a watcher
-still gets ordinary replies to ordinary commands, and a connection that never
-sends `watch` behaves exactly as it always did. Several connections may watch at
-once. Send `unwatch` to stop the events while keeping the connection, or just
-close it. Because `watch` and its `ok` share the socket with the events, a client
-must read the `ok` before treating subsequent lines as events.
+IDE currently publishes `stopped` (with the program counter, when known),
+`hook` and `running`; more event names may be added, so a client should ignore
+names it does not recognise rather than treat them as errors. Watching is
+additive: a watcher still gets ordinary replies to ordinary commands, and a
+connection that never sends `watch` behaves exactly as it always did. Several
+connections may watch at once. Send `unwatch` to stop the events while keeping
+the connection, or just close it. Because `watch` and its `ok` share the socket
+with the events, a client must read the `ok` before treating subsequent lines as
+events.
 
 The `pist-mcp` shim (below) wraps this so an MCP client sees it as a push.
+
+## Stop hooks
+
+A stop hook is a **Lua script that runs at every debugger stop** — every breakpoint, watchpoint,
+pause, step, and the entry stop — with the machine held stopped. It can look at the machine, change
+it, print to the console and decide whether the program continues. Nothing about your program
+changes, so behaviour is extended without a rebuild: feed a harness its input, poke a value for a
+trainer, or log what a routine is working on.
+
+Set one up in **Run ▸ Stop hooks…**: press **New script…** and PiST writes a starter beside your
+source (`hello.s` → `hello.hooks.lua`), opens it in the editor and switches the hook on — or point
+the dialog at a script you already have. The starter's comments are the API reference, so the first
+thing you edit is also the documentation. The dialog shows how the last run went and whether the
+script's `continue()` may resume the program without asking, and the whole setting lives in the
+project file (a `hooks` object in `.pistproject`), so it travels with the source.
+
+One breakpoint can run a script of its own instead: right-click its line in the gutter and pick
+**Stop-hook script…** (empty goes back to the project's). The path may be absolute or relative to the
+source's directory, which is where **New script…** puts one.
+
+The whole API — flat globals, nothing imported:
+
+| Call | Meaning |
+|---|---|
+| `readmem(addr, len)` | a string of `len` bytes at `addr` (1 to 4096) |
+| `writemem(addr, value)` | write one byte |
+| `readreg(name)` | a register: `d0`–`d7`, `a0`–`a7`, `pc`, `sr`, `usp`, `isp` |
+| `sym(name)` | the address that label has **in this run** — GEMDOS moves the program, so a hard-coded address goes stale and a name does not |
+| `writereg(name, value)` | the writable ones: `d0`–`d7`, `a0`–`a7`, `pc`, `sr` |
+| `log(text)` (also `print`) | one line in the console dock, prefixed `[hook] ` |
+| `continue()` (also `resume`) | let the program run on |
+
+Two globals describe the stop itself: `reason` is `"breakpoint"`, `"step"` or `"unknown"`, and `at`
+is the breakpoint that fired, `"file:line"`, or `nil` when there is no breakpoint to name. A pause, an
+exception and a watchpoint all report `"unknown"`: the emulator says it stopped, not why, and a
+watchpoint fires on a data change rather than a program position.
+
+A trainer, in full — hold the player's lives at 9 and say so:
+
+```lua
+local lives = string.byte(readmem(0x0001a2f4, 1))
+if lives < 9 then
+  writemem(0x0001a2f4, 9)
+  log("lives were " .. lives .. ", restored")
+end
+```
+
+The limits, stated rather than discovered:
+
+- **No I/O.** A script reaches the machine, the console and `continue()` — not the filesystem, the
+  network or the environment. Only Lua's `base`, `table`, `string` and `math` libraries are open,
+  so this table is the whole surface.
+- **A 500 ms budget per stop.** A script that runs longer is interrupted and the console says so;
+  the machine is left stopped.
+- **An error leaves the machine stopped** and reports the script and the line: the program is never
+  resumed on a state a script only half-changed.
+- **Writes happen only while stopped.** A hook only ever runs at a stop, so this does not constrain
+  a script — but a debugger command that arrives while the machine is running would be deferred by
+  the emulator to the *next* stop, and nothing here relies on that.
+
+An agent sees the same thing without the dialog: the remote-control `hook` verb and its `pist_hook`
+MCP tool answer with the project's script, whether the hook is on, whether the script's `continue()`
+is honoured without asking, and what the last run did — as fields, not as the sentence the dialog
+shows. A `hook` event follows each `stopped` when a script ran, so a watcher learns what it did
+without asking; see **Remote control** above.
+
+The engine is [Lua 5.4.8](https://www.lua.org/), pinned by checksum and linked statically;
+[docs/stop-hooks-plan.md](docs/stop-hooks-plan.md) is the design and the measurement behind it. A
+`.lua` file opens in the editor with Lua highlighting — keywords, comments (including `--[[ ]]`),
+strings (including `[[ ]]`) and numbers — while assembly sources keep the m68k rules.
 
 ## MCP server (`pist-mcp`)
 
@@ -580,14 +741,15 @@ locally started IDE needs no configuration at all. The tools are
 `pist_run`, `pist_build`, `pist_build_release`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
-`pist_watchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`, `pist_read`,
+`pist_watchpoint`, `pist_clearwatchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`,
+`pist_read`, `pist_hook`,
 `pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
 `pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
 rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
 `destructiveHint`, so a client can decide what needs your confirmation.
 `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
-`pist_disasm`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
+`pist_disasm`, `pist_hook`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,
@@ -690,4 +852,7 @@ Stated plainly, because an early release should not imply more than it does:
   rationale, the launcher rules, roadmap, risk register and licensing analysis
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and the starting point for
   each item (notably: a portable emulator control channel, which is what Windows is missing)
+- **[docs/glm-features.md](docs/glm-features.md)** — the agreed next feature sheet: six features in
+  development scope (scripted stop hooks, reference authoring, find in files, editor completion,
+  watchpoint symbols, the floppy-pane menu residue) and one binned idea with its reasoning
 - **[NOTICE](NOTICE)** — third-party components and the licence obligations that follow from them

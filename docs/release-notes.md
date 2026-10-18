@@ -16,102 +16,62 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.9.1
+## What's new in 0.10.0
 
-0.9.1 is the first stable release of the emulator-panel line. It carries what
-the 0.9.0-alpha pre-release introduced — the emulator now runs inside PiST's
-own panel: Hatari runs windowless and streams its screen, sound, keyboard and
-mouse over a local channel, PiST paints the frames, plays the audio, and takes
-input with a VirtualBox-style grab (click the emulator panel to capture the
-keyboard and mouse, press F12 to release). The old embedding (X11 window
-reparenting on Linux, window adoption on Windows) is gone. All three archives
-bundle the fork that provides the channel — the macOS app carrying the fork's
-Homebrew dylib closure inside the bundle — so the panel works everywhere out
-of the box; only a *source* build supplies its own Hatari, and a stock one has
-no media channel, so there the emulator opens in its own window. On top of
-that, this release adds:
+0.10.0 is the release that makes PiST explain itself: a scriptable debugger, a reference with a
+worked example for every instruction and TOS call, a project-wide search, completion and a symbol
+palette in the editor, watchpoints that survive a rebuild, and a demo project that is the tour of
+all of it.
 
-### Changed
+### New
 
-- **A document is a file.** The untitled buffer is gone. File ▸ New File opens
-  a dialog — name, directory and one of four templates (blank, GEMDOS hello,
-  keyboard/input, image include) — validates as you type, and creates the file
-  on disk before opening it; the sidebar's New File… runs the same dialog
-  rooted where you right-clicked. With no document open, the central area is a
-  welcome view: recent files, the demo projects on a first run, Open/New, and
-  toolchain and ROM readiness with a Setup… button. File ▸ Close File (Ctrl+W)
-  and Close All reach the last tab. A file renamed on disk is followed; a file
-  deleted on disk either closes an unmodified tab or offers Close tab / Save a
-  copy… / Cancel, instead of being discovered on the next save. Build and Run
-  can no longer silently assemble a different buffer than the one you are
-  looking at.
-- **The caret is yours until you hand it over.** Run used to move the caret,
-  the view and the focus to the program's first line, and every later stop did
-  the same — including a breakpoint firing while you were typing. The session
-  now marks where the machine is and leaves the caret alone; the editor follows
-  the program counter only while you have given it the caret — via Run ▸ Follow
-  Execution, a click on the session chip, or the ▶ the gutter paints on the
-  marker line. Any other caret movement releases it.
-- **Debug and Release builds have their own assembler arguments.** Debug is
-  `-quiet -devpac -opt-x+` — Devpac compatibility (which disables
-  optimisations) plus the DRI/GST symbol table the debugger reads; Release is
-  `-quiet -devpac -nosym`, the same build with the table stripped. Both are
-  editable in Project Settings, each with a reset. The Build toolbar button is
-  a split button (Build / Build Release) and the Build menu gains Build
-  Release. A project that only carried the old single argument list migrates it
-  into the Debug list, so a source that assembled under plain Motorola syntax
-  now assembles in Devpac compatibility mode; the project file schema is
-  version 2.
-- **The remote-control protocol can produce a release build**, with the
-  `buildrelease` verb (also `pist_build_release` in the MCP shim).
+- **Scripted stop hooks.** A Lua script runs at every debugger stop with a small API —
+  `readmem`, `writemem`, `readreg`, `writereg`, `sym`, `log`, `continue` — so a harness, a trainer
+  or a logging pass needs no rebuild. Attach one to the project (Run ▸ Stop hooks…) or to a single
+  breakpoint; agents get the `hook` remote verb and `pist_hook`, and a `hook` event when a script
+  runs. `sym()` resolves a label through the run's own bases, so a script survives the relocation
+  GEMDOS performs on every launch.
+- **Reference authoring.** Every one of the 123 instructions and 111 TOS calls now carries a worked
+  `Example:` and a one-line `Typical use:`, shown in the dock that follows the cursor. The examples
+  are assembled by vasm in the test suite, so the reference cannot drift from the assembler.
+- **Find in Files.** `Ctrl+Shift+F` searches the whole project and lists hits grouped by file with
+  their spans; F4 and Shift+F4 tour them. The scan is the editor's own, so both count and match
+  identically.
+- **Completion, the symbol palette and the hover card.** The editor completes mnemonics, directives
+  and the build's labels and equates from one list shared with the highlighter; `Tab` asks for it on
+  a word, `Ctrl+Space` from anywhere. `Ctrl+Shift+O` is a Go to Symbol jump list, and hovering a
+  mnemonic, a TOS call or a label shows the reference's facts — or nothing at all where nothing
+  honest can be said.
+- **Watchpoint symbols.** A watchpoint can be named for a label (`counter.l`) and is resolved again
+  on every run, because GEMDOS picks the load address afresh each time. The remote verbs are the set
+  and clear pair `watchpoint <a|l>` and `clearwatchpoint [a|l]`, and the MCP tools follow.
+- **Editing a floppy image's own contents.** In the Disk A and Disk B panes: Delete…, Rename… and
+  New Folder…, each rewriting the image through the same confirm-and-rebuild gate the transfers use.
+  A name the disk already shows is refused rather than numbered.
+- **A welcome gallery and reworked dialogs.** The workspace opens empty with a gallery — recent files
+  and demo projects on the left, the machine drawn behind — and New File, New Image, Project
+  Settings and Setup were rebuilt around cards and a short heading.
+- **The demo is the tour.** `demo/hello.s` is a complete GEMDOS program written so each of the above
+  has something to bite on: labels and equates to complete, all three traps to hover, a word to watch
+  by name, and a hook script that logs every stop. Open it from the toolbar's Demo button or
+  File ▸ Open Demo Project — or do nothing: a first run with nothing to reopen opens it for you.
 
 ### Fixed
 
-- **The IDE no longer spins at 100% CPU before showing a window under a
-  comma-decimal locale** (is_IS, de_DE, …). The menu logo's SVG outline was
-  parsed with a locale-following number reader, so a token such as `.001`
-  consumed nothing and the parser never advanced. Numbers are now scanned by
-  hand and converted in the C locale, and a malformed path cannot loop either.
-- **A file deletion is reported once, not twice.** Qt raises the deletion
-  twice on Windows, which would have shown the rescue prompt twice for one
-  file going away.
+- The completion list is drawn inside the editor rather than in a popup window, so it appears on
+  Wayland as it does everywhere else, and `Tab` on a word opens it.
+- Completion offered nothing in a project that had never been built: the vocabulary is static and is
+  now available from startup, with the build's symbols added on top.
+- A demo doorway opened the `.pistproject` file as text instead of the program beside it.
 
 ### Worth knowing
 
-An AppImage does not add itself to your application menu, and cannot: that
-integration is done by AppImageLauncher or `appimaged`. If you want a menu
-entry, install the `.deb` or the `.rpm` — that is what they are for, and both
-carry the entry, the icons and the metadata a software centre reads.
-
-Every archive contains PiST, the `vasmm68k_mot` assembler, the `vlink` linker,
-an EmuTOS ROM and the bundled emulator, so all three run and debug with
-nothing else installed.
-
-**Assembler and linker:** vasm and vlink are not free software. They are
-redistributed unmodified and for non-commercial use, which their licences
-permit; see `share/doc/pist/NOTICE`. PiST never patches them.
-
-**ROM:** EmuTOS 1.4 (GPLv2), a free TOS replacement. Original Atari TOS images
-are copyrighted and are not included — supply your own in Project Settings if
-you need one.
-
-**Emulator:** every archive bundles the **hatari-pist** fork of Hatari
-(upstream 2.6.1 plus the HRDB remote debugger and the media channel that drives
-PiST's embedded display), built from a checksum-pinned commit tarball and run as
-a separate process. The binary is conveyed under GPL version 2: three of the
-files Hatari compiles in grant version 2 alone, so the "or later" on the rest
-cannot lift the combined work — which is also why the GPLv3 GNU Readline is not
-linked into it and travels in no archive. The Windows build is the same fork
-compiled with MSYS2 ucrt64, with its runtime DLLs beside the exe; the macOS app
-carries the fork's Homebrew dylib closure (SDL2, libpng, SDL3 and its X11
-neighbours) inside the bundle, rewired to `@rpath`. A *source* build supplies
-its own emulator: install Hatari 2.5 or later with your package manager
-(`brew install hatari` on macOS, 2.6.1 bottled), or point PiST at one in
-Project Settings — but a stock Hatari has no media channel, so the emulator
-opens in its own window rather than PiST's panel. Use 2.5 or later — 2.4.1
-returns truncated debugger responses that break source-line debugging, and
-Ubuntu 24.04 ships exactly that, so a distribution package is often not recent
-enough. See `share/doc/pist/NOTICE` for the full licence details.
+- The demo files ship with every archive (`share/pist/demo`), and the welcome gallery finds them
+  beside an installed binary as well as in a source checkout.
+- An existing profile keeps its saved layout; the new default arrangement — Find in Files tabbed
+  beside Project files — applies to a fresh profile.
+- `docs/qa-0.10.0.md` in the source repository is a by-hand checklist for everything above: what to
+  activate, what to look for, what to expect.
 
 ### Linux
 
@@ -177,7 +137,7 @@ release.
   change breakpoints while running, or swap disks at runtime, because Hatari
   compiles its control channel only on POSIX systems. The bundled fork is
   unaffected, and breakpoints and stepping work regardless.
-- The interface is functional rather than polished.
+- The interface is functional, and 0.10.0 is its first design pass rather than a finished one.
 
 Run `pist --diagnose` to see which assembler, linker, emulator and ROMs PiST
 can find, and the paths it searched.

@@ -176,4 +176,31 @@ QString RemoteStateAdapter::stateSummary() const
     return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
 }
 
+QJsonObject RemoteStateAdapter::hookJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("enabled"), m_host.hookEnabled());
+    object.insert(QStringLiteral("path"), m_host.hookPath());
+    object.insert(QStringLiteral("autoContinue"), m_host.hookAutoContinue());
+
+    // The run is always present, `ran` included: a consumer then never has to
+    // tell a missing key from a run that did nothing, and the key it tests is the
+    // one that answers the question.
+    const StopHookRunner::LastRun &run = m_host.hookLastRun();
+    QJsonObject last;
+    last.insert(QStringLiteral("ran"), run.ran);
+    last.insert(QStringLiteral("ok"), run.ok);
+    last.insert(QStringLiteral("timedOut"), run.timedOut);
+    last.insert(QStringLiteral("pc"),
+                QStringLiteral("0x%1").arg(hex::hex32(run.pc, hex::Case::Lower)));
+    last.insert(QStringLiteral("file"), run.file);
+    last.insert(QStringLiteral("line"), run.line);
+    last.insert(QStringLiteral("logs"), run.logs);
+    last.insert(QStringLiteral("writes"), run.writes);
+    if (!run.message.isEmpty())
+        last.insert(QStringLiteral("message"), run.message);
+    object.insert(QStringLiteral("last"), last);
+    return object;
+}
+
 } // namespace pist

@@ -256,7 +256,12 @@ and top-left.
 
 ## 9. LLM integration: chat sidebar, autocomplete, suggestions
 
-**Status:** roadmap, deliberately unstarted. An agent-facing assistant built into the IDE: a chat
+**Status:** binned (2026-10-16), not deferred. The MCP route — `pist-mcp`
+exposing the IDE to the terminal-side agent the user already runs — answers
+more than an embedded chat would, for either side of it. The reason is
+recorded in [glm-features.md §0](glm-features.md), which also carries the
+features agreed to grow the verbs instead. The original entry is kept below
+for the record of what the sidebar would have been. An agent-facing assistant built into the IDE: a chat
 sidebar, inline autocomplete, and edit/refactor suggestions, against a configurable **endpoint and
 API key** (so the user picks the provider/model rather than the IDE hard-coding one). Fits the
 existing remote-control surface (the assistant can drive the IDE through it) and the project's
@@ -267,7 +272,10 @@ clear line on what context is sent (open file, project, build errors) and what i
 
 ## 10. Scripted memory editing on pause (user scripts driven by the debugger)
 
-**Status:** not started. **Related:** the remote-control socket (already scripts memory edits from
+**Status:** superseded by [glm-features.md §1](glm-features.md), agreed for
+development 2026-10-16 as "scripted stop hooks" (with Lua recorded as the
+language choice). The analysis below is what that entry builds on and stays
+accurate. **Related:** the remote-control socket (already scripts memory edits from
 outside; README §Remote control) and the LLM assistant (#9), which is a different agent-facing
 surface.
 

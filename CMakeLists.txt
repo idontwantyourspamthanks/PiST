@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(pist
-    VERSION 0.9.1
+    VERSION 0.10.0
     DESCRIPTION "PiST - an IDE for Atari ST assembly development"
-    LANGUAGES CXX)
+    LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,70 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Multimedia)
 
 qt_standard_project_setup()
+
+# ---------------------------------------------------------------------------
+# Lua — the stop-hook scripting engine (docs/stop-hooks-plan.md)
+# ---------------------------------------------------------------------------
+# Pinned by checksum and fetched into the build tree, never committed: the same
+# rule the toolchain follows (PLAN §7 "Never committed"), applied to a library
+# that is *linked* rather than spawned.
+#
+# The pinned release is the official tarball, whose sources are compiled here
+# into a static library (34 files, no build system of its own, no generated
+# headers) rather than seeking whatever `lua` a distro happens to ship — a script
+# that behaves differently on 5.3 and 5.4 is exactly the drift this project
+# refuses elsewhere, and Lua 5.4's integers are part of the API a script sees.
+#
+# Offline or packaging builds skip the download by naming the file they already
+# have: -DPIST_LUA_TARBALL=/path/to/lua-5.4.8.tar.gz. The hash is verified either
+# way, so the pin is the same statement in both paths.
+set(PIST_LUA_VERSION "5.4.8")
+set(PIST_LUA_SHA256 "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae")
+set(PIST_LUA_TARBALL "${CMAKE_BINARY_DIR}/_deps/lua-${PIST_LUA_VERSION}.tar.gz"
+    CACHE FILEPATH "Lua release tarball to use; fetched when it does not exist")
+if(NOT EXISTS "${PIST_LUA_TARBALL}")
+    message(STATUS "Fetching Lua ${PIST_LUA_VERSION}")
+    file(DOWNLOAD "https://www.lua.org/ftp/lua-${PIST_LUA_VERSION}.tar.gz"
+         "${PIST_LUA_TARBALL}"
+         EXPECTED_HASH SHA256=${PIST_LUA_SHA256}
+         TLS_VERIFY ON
+         STATUS lua_download)
+    list(GET lua_download 0 lua_download_code)
+    if(NOT lua_download_code EQUAL 0)
+        list(GET lua_download 1 lua_download_message)
+        message(FATAL_ERROR
+            "Could not fetch Lua ${PIST_LUA_VERSION}: ${lua_download_message}\n"
+            "Download https://www.lua.org/ftp/lua-${PIST_LUA_VERSION}.tar.gz yourself and "
+            "configure with -DPIST_LUA_TARBALL=<path to it>.")
+    endif()
+else()
+    file(SHA256 "${PIST_LUA_TARBALL}" lua_tarball_sha256)
+    if(NOT lua_tarball_sha256 STREQUAL PIST_LUA_SHA256)
+        message(FATAL_ERROR
+            "${PIST_LUA_TARBALL} is not Lua ${PIST_LUA_VERSION}: sha256 ${lua_tarball_sha256}, "
+            "expected ${PIST_LUA_SHA256}")
+    endif()
+endif()
+
+set(PIST_LUA_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/lua-${PIST_LUA_VERSION}")
+if(NOT EXISTS "${PIST_LUA_SOURCE_DIR}/src/lua.h")
+    file(ARCHIVE_EXTRACT INPUT "${PIST_LUA_TARBALL}" DESTINATION "${CMAKE_BINARY_DIR}/_deps")
+endif()
+file(GLOB PIST_LUA_SOURCES "${PIST_LUA_SOURCE_DIR}/src/*.c")
+# lua.c and luac.c are the standalone interpreter and compiler, each with its own
+# main(); the library is the other thirty-two files.
+list(FILTER PIST_LUA_SOURCES EXCLUDE REGEX "/lu?a?c?\\.c$")
+add_library(pist_lua STATIC ${PIST_LUA_SOURCES})
+target_include_directories(pist_lua PUBLIC "${PIST_LUA_SOURCE_DIR}/src")
+# Qt's AUTOMOC is on project-wide; this target is upstream C and nothing else, so
+# it has no meta-objects to compile.
+set_target_properties(pist_lua PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+# Third-party C, at the exact revision upstream shipped: -Wextra's opinion of it
+# is not this project's to fix, and patching it is what the rules forbid.
+target_compile_options(pist_lua PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>)
+if(MSVC)
+    target_compile_options(pist_lua PRIVATE /w)
+endif()
 
 # ---------------------------------------------------------------------------
 # Module libraries
@@ -177,7 +241,15 @@ pist_module(pist_editor
     src/editor/AsmHighlighter.h
     src/editor/CodeEditor.cpp
     src/editor/CodeEditor.h
+    src/editor/CompletionModel.cpp
+    src/editor/CompletionModel.h
+    src/editor/CursorReference.cpp
+    src/editor/CursorReference.h
+    src/editor/LuaHighlighter.cpp
+    src/editor/LuaHighlighter.h
     src/editor/EditorTheme.h
+    src/editor/FindScan.cpp
+    src/editor/FindScan.h
     src/editor/InstrRef.cpp
     src/editor/InstrRef.h
     src/editor/IncludeNav.cpp
@@ -189,6 +261,8 @@ pist_module(pist_editor
     src/editor/OsCallScan.cpp
     src/editor/OsCallScan.h
     src/editor/AsmLex.h
+    src/editor/Vocabulary.cpp
+    src/editor/Vocabulary.h
 )
 
 # control/ — the remote-control TCP protocol (RemoteControl drives the IDE through ControlHost).
@@ -208,6 +282,20 @@ pist_module(pist_mcp
     src/control/mcp/McpServer.h
 )
 
+# hooks/ — the stop-hook subsystem: the contract the script is bound to, the Lua
+# engine, and the runner that drives both at a stop. Deliberately widget-free: it
+# links the pinned Lua, QtCore and emu/ (the typed debug intents), so a stray
+# QWidget include fails the build the way the map intends — and so the runner can
+# be driven against a real emulator session with no display at all
+# (docs/stop-hooks-plan.md §12).
+pist_module(pist_hooks
+    src/hooks/HookApi.h
+    src/hooks/StopHookEngine.cpp
+    src/hooks/StopHookEngine.h
+    src/hooks/StopHookRunner.cpp
+    src/hooks/StopHookRunner.h
+)
+
 # ui/ — MainWindow, every dock panel, the sprite editor, appearance and icons.
 pist_module(pist_ui
     src/ui/Appearance.cpp
@@ -224,6 +312,10 @@ pist_module(pist_ui
     src/ui/BreakpointWatchpointModel.h
     src/ui/ProfilerController.cpp
     src/ui/ProfilerController.h
+    src/ui/StopHooksDialog.cpp
+    src/ui/StopHooksDialog.h
+    src/ui/SymbolPaletteDialog.cpp
+    src/ui/SymbolPaletteDialog.h
     src/ui/RemoteStateAdapter.cpp
     src/ui/RemoteStateAdapter.h
     src/ui/RegistersView.cpp
@@ -282,14 +374,28 @@ pist_module(pist_ui
     src/ui/NewImageDialog.h
     src/ui/NewFileDialog.cpp
     src/ui/NewFileDialog.h
+    src/ui/GalleryCard.cpp
+    src/ui/GalleryCard.h
     src/ui/NewFileSpec.cpp
     src/ui/NewFileSpec.h
     src/ui/FileTemplates.cpp
     src/ui/FileTemplates.h
+    src/ui/FindInFiles.cpp
+    src/ui/FindInFiles.h
+    src/ui/FindInFilesView.cpp
+    src/ui/FindInFilesView.h
     src/ui/WelcomeView.cpp
     src/ui/WelcomeView.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
+)
+
+# The welcome plate. A static library drops an unreferenced resource object,
+# so WelcomeView calls Q_INIT_RESOURCE(welcome_plate).
+qt_add_resources(pist_ui welcome_plate
+    PREFIX "/pist"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources/welcome"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/welcome/desk.png"
 )
 
 # ---------------------------------------------------------------------------
@@ -327,9 +433,11 @@ target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network Qt6::Multimedia
     pist_git
     pist_editor
     pist_control
+    pist_hooks
     pist_support
 )
 target_link_libraries(pist_control PUBLIC Qt6::Network pist_emu)   # its verbs reuse emu/'s typed reads (MemoryDump, MachineState)
+target_link_libraries(pist_hooks PUBLIC Qt6::Core pist_lua pist_emu)  # the hook subsystem: Lua + the typed debug intents, no widgets
 target_link_libraries(pist_mcp PUBLIC Qt6::Core Qt6::Network)      # MCP stdio <-> remote-control socket, no Widgets
 
 
@@ -405,6 +513,37 @@ install(TARGETS pist-mcp
 # it the deb states its licence nowhere a package manager looks.
 install(FILES LICENSE NOTICE README.md packaging/copyright
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+# The demo projects, so an installed PiST can offer them: WelcomeView's
+# demoProjects() looks for this directory relative to the executable, the same
+# walk bundledDataSearchPaths() makes for the ROM — `bin/pist` reaches
+# `../share`, the AppImage's `usr/bin` reaches `usr/share`, a macOS bundle's
+# `Contents/MacOS` reaches `Contents/share`. It goes in PiST's own datadir
+# subdirectory rather than in `share/` itself, which is where the FHS puts a
+# package's own files; the ROM's `share/emutos` beside it belongs to EmuTOS.
+#
+# Only the authored files travel. The patterns name the kinds that are content
+# rather than the kinds to leave out, so a new sort of build output cannot ride
+# into a package by being new: `demo/*.lst` and `demo/*.prg` are what assembling
+# the demos writes, never content. The sample sprite set is named instead of
+# matched as `*.pim`, because a working tree accumulates scratch image files of
+# those extensions (`demo/eyeball.pim`, `demo/EYEBALL.PI1`, `demo/test.pi1`)
+# that are not demo content.
+#
+# The `demo` component is how the release workflow takes this directory for the
+# archives it assembles by hand — macOS and Windows never run a plain
+# `cmake --install` — so `--component demo` installs this rule alone and those
+# bundles carry exactly what an installed PiST carries, rather than a second
+# list of files to drift from this one.
+install(DIRECTORY demo/
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/${PROJECT_NAME}/demo
+    COMPONENT demo
+    FILES_MATCHING
+        PATTERN "*.s"
+        PATTERN "*.pistproject"
+        PATTERN "*.dat"
+        PATTERN "demo.pim"
+        PATTERN "*.lua")
 
 if(UNIX AND NOT APPLE)
     # Desktop entry and icon, so the IDE appears in application menus rather than
@@ -613,6 +752,44 @@ qt_add_executable(tst_debug
 target_link_libraries(tst_debug PRIVATE pist_build pist_debug pist_project pist_emu Qt6::Test)
 pist_add_test(debug)
 
+# The stop-hook engine and the runner's policy, with no emulator and no window:
+# a fake HookApi for the engine, a fake IDebugBackend for the runner — the two
+# silent bugs this feature can have (a stale register copy, a write pruned by the
+# resume) are only visible to a test (docs/stop-hooks-plan.md §12).
+qt_add_executable(tst_stophooks
+    tests/tst_stophooks.cpp
+)
+target_link_libraries(tst_stophooks PRIVATE pist_hooks pist_ui Qt6::Test)
+pist_add_test(stophooks)
+
+# Find in Files: the scan the editor's find bar shares with it (so the two cannot
+# count differently), and the walk's own rules — the skip list, the cap and the
+# honest summary. No window and no emulator, which is why it is a unit test as
+# well as the dock's tst_gui cases.
+qt_add_executable(tst_find
+    tests/tst_find.cpp
+)
+target_link_libraries(tst_find PRIVATE pist_ui Qt6::Test)
+pist_add_test(find)
+
+# The completion feature's widget-free half: the shared vocabulary, the ranking the
+# popup and the palette both use, and the cursor resolver the dock and the hover
+# both use. No window, no emulator.
+qt_add_executable(tst_completion
+    tests/tst_completion.cpp
+)
+target_link_libraries(tst_completion PRIVATE pist_editor Qt6::Test)
+pist_add_test(completion)
+
+# The reference's authoring rules: every entry of both tables carries an example
+# and a typical use, every example assembles under vasm (the case skips without
+# it), and an example belongs to the entry it is attached to.
+qt_add_executable(tst_reference
+    tests/tst_reference.cpp
+)
+target_link_libraries(tst_reference PRIVATE pist_editor Qt6::Test)
+pist_add_test(reference)
+
 # Multi-module source mapping through a linker's map file. The end-to-end case
 # runs a real vasm+vlink when both are available and skips otherwise, so CI
 # without vlink still exercises the parsing and the address arithmetic.
@@ -705,7 +882,7 @@ set_tests_properties(mcp PROPERTIES TIMEOUT 120)
 qt_add_executable(tst_emulatorhost
     tests/tst_emulatorhost.cpp
 )
-target_link_libraries(tst_emulatorhost PRIVATE pist_emu pist_build pist_debug pist_project pist_toolchain Qt6::Test Qt6::Gui)
+target_link_libraries(tst_emulatorhost PRIVATE pist_emu pist_build pist_debug pist_project pist_toolchain pist_hooks Qt6::Test Qt6::Gui)
 pist_add_test(emulatorhost)
 set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 
@@ -715,7 +892,7 @@ set_tests_properties(emulatorhost PROPERTIES TIMEOUT 300)
 qt_add_executable(tst_hrdb
     tests/tst_hrdb.cpp
 )
-target_link_libraries(tst_hrdb PRIVATE pist_emu pist_project Qt6::Test)
+target_link_libraries(tst_hrdb PRIVATE pist_emu pist_project pist_hooks Qt6::Test)
 pist_add_test(hrdb)
 set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 
@@ -726,7 +903,7 @@ set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 # every test target - it had drifted once (tst_oscall and tst_profile missing),
 # which on Windows left those two GUI-subsystem with a detached stdout: the
 # test runs, fails, and reports nothing at all (MIN-62).
-foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_link tst_settings tst_watcher tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
+foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_stophooks tst_link tst_settings tst_watcher tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

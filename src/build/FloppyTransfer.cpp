@@ -53,6 +53,23 @@ QString imageDestination(const QString &dirInImage, const QString &entryPath)
     return dirInImage + QLatin1Char('/') + entryPath;
 }
 
+/// Whether the image directory `dir` (empty for the root) already shows an
+/// entry called `name`.
+///
+/// The comparison is the spelling the pane shows, which is what a rename or a
+/// new folder is typed against. It is the precondition `updateImage` cannot
+/// express: a name it is handed that is taken is *numbered* rather than
+/// refused, which is right for a copy and wrong for a rename.
+bool directoryHas(const QVector<Entry> &entries, const QString &dir, const QString &name)
+{
+    const QString wanted = imageDestination(dir, name);
+    for (const Entry &entry : entries) {
+        if (entry.path.compare(wanted, Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 Transfer::Transfer(Host *host)
@@ -377,6 +394,178 @@ Transfer::Result Transfer::imageToImage(int sourceDrive, const QStringList &entr
     result.refresh = {targetDrive};
     if (removeSource && !sameImage)
         result.refresh.append(sourceDrive);
+    return result;
+}
+
+Transfer::Result Transfer::removeEntries(int drive, const QStringList &entryPaths)
+{
+    Result result;
+    if (drive < 0 || drive > 1 || entryPaths.isEmpty())
+        return result;
+    const QString image = m_host->mountedImage(drive);
+    if (image.isEmpty())
+        return result;
+
+    QStringList removals;
+    for (const QString &chosen : entryPaths) {
+        const QString entry = normalizeEntryPath(chosen);
+        // The root is not an entry: "remove" it and the disk is emptied, which
+        // is not what a Delete on a selected row can mean.
+        if (!entry.isEmpty())
+            removals.append(entry);
+    }
+    if (removals.isEmpty())
+        return result;
+
+    Outcome outcome = Invalid;
+    if (!confirmTargets({{drive, image}}, &outcome))
+        return refusal(outcome);
+    if (!updateImage(image, {}, removals, &result.error)) {
+        result.outcome = WriteFailed;
+        result.subject = image;
+        return result;
+    }
+    result.outcome = Completed;
+    result.refresh = {drive};
+    return result;
+}
+
+Transfer::Result Transfer::renameEntry(int drive, const QString &entryPath, const QString &newName)
+{
+    Result result;
+    if (drive < 0 || drive > 1)
+        return result;
+    const QString image = m_host->mountedImage(drive);
+    if (image.isEmpty())
+        return result;
+    const QString entry = normalizeEntryPath(entryPath);
+    const QString name = newName.trimmed();
+    // The browser validates the name before it asks; this is the backstop, and
+    // a silent refusal is the honest answer to a call that could not be meant.
+    if (entry.isEmpty() || name.isEmpty() || name.contains(QLatin1Char('/')))
+        return result;
+
+    const int slash = entry.lastIndexOf(QLatin1Char('/'));
+    const QString directory = slash < 0 ? QString() : entry.left(slash);
+    const QString destination = imageDestination(directory, name);
+    // Asking for the name it already has is nothing to do, not a collision.
+    if (destination.compare(entry, Qt::CaseInsensitive) == 0) {
+        result.outcome = Completed;
+        result.refresh = {drive};
+        return result;
+    }
+
+    // Asked before the disk is read, because the preamble re-reads the drives
+    // after every question: a listing taken afterwards describes the disk that
+    // was asked about, and one taken before it may already be stale.
+    Outcome outcome = Invalid;
+    if (!confirmTargets({{drive, image}}, &outcome))
+        return refusal(outcome);
+
+    QByteArray raw;
+    if (!loadRaw(image, &raw, &result.error)) {
+        result.outcome = Unreadable;
+        result.subject = image;
+        return result;
+    }
+    const QVector<Entry> entries = listRaw(raw, &result.error);
+    if (!result.error.isEmpty()) {
+        result.outcome = Unreadable;
+        result.subject = image;
+        return result;
+    }
+
+    const QVector<SubtreeMember> members = subtreeOf(entries, entry);
+    if (members.isEmpty()) {
+        result.outcome = NothingToCopy;
+        result.subject = entry;
+        return result;
+    }
+    if (directoryHas(entries, directory, name)) {
+        result.outcome = NameTaken;
+        result.subject = name;
+        result.entry = destination;
+        return result;
+    }
+
+    // The whole subtree, moved in one write: the old paths go as removals and
+    // the same entries arrive under the new root, so a folder keeps its shape
+    // and its contents rather than being rebuilt from a fresh walk.
+    QVector<Item> additions;
+    QStringList removals;
+    for (const SubtreeMember &member : members) {
+        const Entry &entryData = *member.entry;
+        removals.append(entryData.path);
+        Item item;
+        item.destPath = member.relativePath.isEmpty()
+                            ? destination
+                            : imageDestination(destination, member.relativePath);
+        item.isDirectory = entryData.isDirectory;
+        if (!entryData.isDirectory
+            && !readFileRaw(raw, entryData.path, &item.data, &result.error)) {
+            result.outcome = Unreadable;
+            result.subject = image;
+            return result;
+        }
+        additions.append(item);
+    }
+
+    if (!updateImage(image, additions, removals, &result.error)) {
+        result.outcome = WriteFailed;
+        result.subject = image;
+        return result;
+    }
+    result.outcome = Completed;
+    result.refresh = {drive};
+    return result;
+}
+
+Transfer::Result Transfer::makeDirectory(int drive, const QString &dirInImage, const QString &name)
+{
+    Result result;
+    if (drive < 0 || drive > 1)
+        return result;
+    const QString image = m_host->mountedImage(drive);
+    if (image.isEmpty())
+        return result;
+    const QString folder = name.trimmed();
+    if (folder.isEmpty() || folder.contains(QLatin1Char('/')))
+        return result;
+    const QString dir = normalizeEntryPath(dirInImage);
+
+    Outcome outcome = Invalid;
+    if (!confirmTargets({{drive, image}}, &outcome))
+        return refusal(outcome);
+
+    QByteArray raw;
+    if (!loadRaw(image, &raw, &result.error)) {
+        result.outcome = Unreadable;
+        result.subject = image;
+        return result;
+    }
+    const QVector<Entry> entries = listRaw(raw, &result.error);
+    if (!result.error.isEmpty()) {
+        result.outcome = Unreadable;
+        result.subject = image;
+        return result;
+    }
+    if (directoryHas(entries, dir, folder)) {
+        result.outcome = NameTaken;
+        result.subject = folder;
+        result.entry = imageDestination(dir, folder);
+        return result;
+    }
+
+    Item item;
+    item.destPath = imageDestination(dir, folder);
+    item.isDirectory = true;
+    if (!updateImage(image, {item}, {}, &result.error)) {
+        result.outcome = AddFailed;
+        result.subject = image;
+        return result;
+    }
+    result.outcome = Completed;
+    result.refresh = {drive};
     return result;
 }
 

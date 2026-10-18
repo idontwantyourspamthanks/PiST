@@ -31,13 +31,13 @@ Everything else in this document is a consequence of that rule. The debug transp
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | Entry point. Parses `--diagnose` / `--control-port` / the positional source file, creates the single `MainWindow` and the optional `RemoteControl` listener. |
-| `src/ui/` | `MainWindow` (the application shell: document tabs in a `QTabWidget` on the central `QStackedWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor) and `ConsoleInput` (the debug console's history/completion line edit) — the emulator display panel (`EmulatorDisplayWidget`, media frames and the input grab), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`), and the document model around them: `WelcomeView` (the central page shown when zero documents are open — recents, the demo projects on a first run, Open/New actions, toolchain and ROM readiness, and a usage shelf), the New File transaction (`NewFileDialog` — name, directory, template; `NewFileSpec` — the validation and the creation through `files::write()`; `FileTemplates` — `SourceTemplate` and the four shipped starting points). |
-| `src/editor/` | `CodeEditor` (the editor widget: line-number gutter with breakpoint dots and the program counter's marker — the execution-line highlight, the PC bar, and the ▶ whose click engages following (`executionMarkerClicked`), with `followExecutionLine()` as the follow path's caret move — error markers and profiler heat, an optional git blame lane to the left of that gutter, find/replace bar), `AsmHighlighter` (m68k Motorola syntax, painted with the `EditorTheme` it is handed), `EditorTheme` (the monospace font, the effective darkness and exactly the colours the editor and its highlighter read — the value `ui/` builds and hands over, so `editor/` includes nothing from `ui/`), `InstrRef` (the instruction-reference table and lookup behind the dock), `OsCallRef`/`OsCallScan` (the GEMDOS/BIOS/XBIOS table and the trap-sequence scanner behind the same dock), `OsCallBinding` (the canonical insertable call sequence — argument pushes, function number, trap, stack cleanup — and the stack byte count beside it) and `IncludeNav` (include-target/label resolution behind Ctrl+click). |
+| `src/ui/` | `MainWindow` (the application shell: document tabs in a `QTabWidget` on the central `QStackedWidget`, with `m_editor` as the current text editor and `m_image` as the current sprite editor), the five session seams (`DebugSessionController`, `BreakpointWatchpointModel`, `ProfilerController`, `SessionLauncher`, `RemoteStateAdapter` — each wired through its own `Host` collaborator struct, see the tree below), every debug panel — including `ProfilerView` (per-line hot lines, rendered from an already-*attributed* profile), `SymbolsView` (labels/equates browser), `InstructionRefView` (the 68000 reference that follows the cursor, each entry showing an example and when to use it) and `ConsoleInput` (the debug console's history/completion line edit) — the emulator display panel (`EmulatorDisplayWidget`, media frames and the input grab), `Appearance` (dark-first Fusion theme with a GEM-green accent, editor font family/size, toolbar icons, and the `EditorTheme` the editors are handed; preferences in QSettings), `Icons.cpp` (the hand-drawn themed glyphs), `SettingsDialog` (the project-settings editor, whose machine and ROM controls are linked), `SymbolPaletteDialog` (the Go to Symbol jump list), `UiText.h` (`firstLine()` — the one-line status-bar form of a multi-line refusal) and the sprite editor (`ImageEditor`, `ImageCanvas`, `SheetCanvas` — the composed sheet's view: strips, phase drag/move, the staging gutter and raw-sheet slicing — `BitplaneExportController` (the repeatable `.dat` export recipe), `SheetSlicing` (the slice-phase dialog), `AnimationPreviewWidget` (the frame player) and `BitplaneExportDialog`), and the document model around them: `WelcomeView` (the central page shown when zero documents are open — recents, the demo projects on a first run, Open/New actions, toolchain and ROM readiness, and a usage shelf), the New File transaction (`NewFileDialog` — name, directory, template; `NewFileSpec` — the validation and the creation through `files::write()`; `FileTemplates` — `SourceTemplate` and the four shipped starting points). |
+| `src/editor/` | `CodeEditor` (the editor widget: line-number gutter with breakpoint dots and the program counter's marker — the execution-line highlight, the PC bar, and the ▶ whose click engages following (`executionMarkerClicked`), with `followExecutionLine()` as the follow path's caret move — error markers and profiler heat, an optional git blame lane to the left of that gutter, find/replace bar), `AsmHighlighter` (m68k Motorola syntax, painted with the `EditorTheme` it is handed), `EditorTheme` (the monospace font, the effective darkness and exactly the colours the editor and its highlighter read — the value `ui/` builds and hands over, so `editor/` includes nothing from `ui/`), `FindScan` (the one search — `findScan()`, `FindOptions` and the 2000-hit cap — called by the find bar and by Find in Files, so the two cannot count differently), `Vocabulary` (the assembler's own words — the mnemonics, reference plus 68020+/FPU, and the directives — from which the highlighter builds its patterns and completion its candidates), `CompletionModel` (the candidates and their ranking: prefix before substring), `CursorReference` (what a position in a source is: an OS call, trap context, or the word — the dock's and the hover's one resolver), `InstrRef` (the instruction-reference table and lookup behind the dock), `OsCallRef`/`OsCallScan` (the GEMDOS/BIOS/XBIOS table and the trap-sequence scanner behind the same dock), `OsCallBinding` (the canonical insertable call sequence — argument pushes, function number, trap, stack cleanup — and the stack byte count beside it) and `IncludeNav` (include-target/label resolution behind Ctrl+click). |
 | `src/git/` | `GitService` drives `git` as a subprocess (argument lists only: status, blame, commit, pull, push, `switch` / `switch -c`, `diff`, `log`, `show`) and `GitParse` reads porcelain. The panel is `ui/GitPanel`. |
 | `src/image/` | Sprite document and ST graphics: `ImageDocument` (v2 `.pim` JSON: phases own their frames and cell size and carry sprite-sheet placement; `StFormats::composeSheet()`/`sliceSheetCells()` move between placed phases and sheet images), `Palette` (STfm 512 / STe 4096 cubes and colour words — the 4-bit-per-channel machine words, with `rgbFromStfmWord`/`stfmColourWord` for the 3-bit words the file formats actually store), `Tools` (brush/line/rect/fill), `Transform` (flip, rotate, region cut/stamp/move, onion/phase math), `StFormats` (PI1, NEO, IFF, STOS MBK, PNG, assembler include, plus `spriteSafeDocument()` — the palette shift that keeps colour 0 as background so an export re-imports losslessly — and `bitplaneLayout()`/`exportBitplaneData()` for the sprite editor's `.dat` — the selected blocks of one phase, every frame of it, laid out so a frame and a pre-shift are strides — plus `exportScrollDemo()`, which writes an `incbin`ing scroller that animates and scrolls them). |
 | `src/build/` | `BuildService` (plans and runs vasm/vlink steps), `Diagnostic` (a parsed warning/error), the line maps — `LineMap`, `LinkMap`, `ProgramLineMap` — `SymbolTable` (labels/equates from a vasm listing, feeding the Symbols dock and console completion) and `FloppyImage` (AUTO-folder FAT12 writer for pre-1.04 TOS, plus `.st` / `.msa` listing, export, and in-place edits — `readFileRaw` extracts a file's bytes and `updateImage` rewrites an existing image with entries added and removed) with `FloppyTransfer` (`floppy::Transfer` — the one implementation of the three disk/host/between-disk transfers the browser runs, widget-free behind a `Host` interface). |
 | `src/emu/` | `IDebugBackend` (`DebugBackend.h`, the transport contract) with two implementations: `EmulatorHost` (stock Hatari over stdin/prompt framing) and `HrdbBackend` (the hatari-pist fork over TCP 56001); `EmbedSocket` (the `QLocalServer` on Hatari's `--control-socket` — the `hatari-debug` channel; invariant 14), `MachineState` (the per-stop snapshot the typed reads fill and `stateUpdated` carries), `HatariTextParse` (their shared `d` parser: the `$`-optional address, a byte column that is a run of single-space-separated hex words — so a hex-only mnemonic like `dbf` is never absorbed into it, and a ten-byte instruction's `23+` cut token stays with the bytes — and the instruction text), `SessionConfig` (one session's argv), `HatariProbe` (capability detection; content-scans the binary on Windows, where Hatari's info options print to a fresh console, not the pipe), `ProfileData` (the `profile save` parser behind the Profiler dock), `AttributedProfile` (the attribution of a parsed profile to routines and source lines, with the ROM/TOS row — MAJ-44), `TosRom` (ROM discovery + version), `MemoryDump` (memdump parsing), `Paths` (ROM/session directories). |
-| `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint). |
+| `src/debug/` | `Breakpoint` (the file:line model and the pure `planBreakpoints()` that turns lines into `b pc = $addr` commands) and `Watchpoint` (a change-tracking conditional breakpoint asked for by address or by label — `planWatchpoints()` resolves the label through the same `labelAddress()` rule `sym()` and the remote `breakpoint <label>` verb use, afresh on every arm, so nothing remembers a relocated address). |
 | `src/model/` | `Machine` — the machine vocabulary shared by `emu/` and `project/`: the `Machine` enum, its display/CLI name mapping and TOS-acceptance. ROM discovery stays in `emu/`; this leaf exists so `project/` no longer includes `emu/` (MIN-56). |
 | `src/support/` | `FileWrite` — the one rule for replacing a file the user already has: a temporary in the destination's own directory, an explicit flush and a device-error check, and only then the rename. Every save path calls `files::write()` — the editor's source save, `image/` (`.pim` and the ST exports), `project/`, `build/FloppyImage::saveRaw`, and the UI's floppy extraction and bitplane export — and none of them opens a destination with `Truncate` (invariant 16). `DocumentWatcher` sits beside it: the paths of the open documents, watched for the one event that matters — the backing file going away — and re-armed after PiST's own staged write. |
 | `src/control/` | `ControlHost` (`ControlHost.h`, the interface the IDE implements for the protocol: the verbs it serves and the events its verbs wait on) and `RemoteControl` — the localhost TCP line protocol that drives the IDE from a script or an AI agent, with `watch`/`unwatch` event subscriptions — plus `mcp/`, the `pist-mcp` stdio MCP shim that bridges MCP clients to it. Nothing here includes or names a `src/ui/` type: the control layer depends on `ControlHost`, and `MainWindow` is one of its implementers (MIN-86). |
@@ -120,7 +120,15 @@ Everything else in this document is a consequence of that rule. The debug transp
   via extra selections (on-screen hits only). Its find bar (a child widget along
   the bottom edge, with the viewport margin to match) searches as you type, wraps, counts the hits
   (capped at 2000 — the label reads "N of more than 2000"), and replaces one or all — replace-all back to front inside one edit block, so it undoes in one
-  step. The window's Search menu drives it, and the shortcuts are bound there.
+  step. The scan itself is `editor/FindScan.h`'s and is shared with Find in Files: the whole-word
+  rule is a filter there rather than a `QTextDocument::FindFlags` value, and both callers count
+  through it. The window's Search menu drives it, and the shortcuts are bound there.
+  It also owns the completion popup: a `QCompleter` fed the window's candidate list, with the
+  *prefix* (the word at the caret), the keys (Tab/Return take, Up/Down walk, Escape dismisses —
+  claimed in `event()` as well as in the popup's filter) and the placement (under the caret, not
+  at the widget's bottom edge) driven by hand, because a completer attached to anything that is
+  not a `QLineEdit` hides its own popup when the next key arrives. `editor/Vocabulary.h` is where
+  the words come from, shared with the highlighter's two patterns.
   It is themed, not theme-aware: `CodeEditor(EditorTheme, QWidget*)` takes the font, the darkness and
   the colours it paints with, and `setTheme()` reapplies them when the preferences change — the
   window hands it `appearance::editorTheme()`, so the widget never includes `src/ui/` (MIN-86).
@@ -128,6 +136,29 @@ Everything else in this document is a consequence of that rule. The debug transp
   no untitled-buffer state left to name (docs/untitled-plan.md §8).
   **`editor/EditorTheme.{h}`** is that value, and **`editor/AsmHighlighter`** takes it too, via the
   same constructor/`setTheme()` pair, instead of reading the appearance itself.
+- **`editor/Vocabulary.{h,cpp}` / `editor/CompletionModel.{h,cpp}` / `editor/CursorReference.{h,cpp}`** — one
+  candidate list and one resolution, three surfaces (docs/glm-features.md §4). `Vocabulary` holds the assembler's
+  two word families (the mnemonics, which is the 68000 reference plus the 68020+/FPU names vasm accepts, and the
+  directives) so the highlighter's patterns and completion's candidates cannot disagree; `CompletionModel` ranks
+  matches (prefix before substring, case-insensitively) for the editor's popup and the symbol palette alike, and
+  the window rebuilds it per build from the vocabulary plus the listing's symbols; `CursorReference` resolves a
+  position to an OS call, trap context or the word, which the reference dock and the hover card both present.
+  All three are widget-free, and `tests/tst_completion` drives them with no window.
+- **`ui/SymbolPaletteDialog.{h,cpp}`** — the Go to Symbol palette (Ctrl+Shift+O): a non-modal, filter-as-you-type
+  jump list over the same candidates, showing only symbols that have a definition, and reporting the chosen
+  `file:line` for the window to open. The hover card is the window's (`MainWindow::referenceCardAt`, called from
+  the app-level event filter's `QEvent::ToolTip` branch), not a widget of its own.
+- **`ui/FindInFiles.{h,cpp}` / `ui/FindInFilesView.{h,cpp}`** — the project-wide search: the walk
+  (`FindInFiles`, widget-free and therefore testable without a window) and the dock that shows it
+  (`FindInFilesView`, the second tab of the project-files group: Project files, then Find in
+  Files, then Git). The walk is chunked by a 10 ms tick budget rather than
+  threaded: no dock here walks a directory off the GUI thread, `Qt6::Concurrent` is not linked, and
+  chunking makes "a new query replaces the running one" a state change rather than a race. It emits
+  one signal per file with hits and one summary — hits, files *searched*, files skipped, and whether
+  the shared 2000-hit cap stopped it. `isSearchableFile()` is this feature's own skip rule (not
+  `MainWindow`'s disk-image open rule, which answers a different question). Each row carries its
+  match's line, column and length; `CodeEditor::selectSpan()` is what turns that into a selection
+  when the window's `navigate` callback opens a row.
 - **`image/`** — palette cubes, `.pim` load/save, paint geometry, layers/phases, and ST file codecs. No widgets.
   `exportBitplaneData()` writes the sprite editor's `.dat`: a raw blob of ST screen-format blocks
   (palette, sprite, masked sprite, pre-shifted copies) for every frame of a phase, whose byte map
@@ -137,16 +168,27 @@ Everything else in this document is a consequence of that rule. The debug transp
   **`ui/ImageEditor.{h,cpp}`** is the document tab (always created with a path — `addImageTab()` asserts one — but it may become path-less *later*, when `importFile()` adopts a still image as a fresh sheet: that untitled scratch is a deliberate image workflow, not a source document, and the asymmetry is documented on `addImageTab()`); **`ui/ImageCanvas`** paints the grid with onion-skin, and owns the selection rectangle: the select tool drags a marquee, dragging inside it moves the pixels (live cut+patch preview, committed through `ImageEditor::moveSelection` as one undoable layer edit), and copy/cut/paste/delete/deselect run off an internal palette-index clipboard. **`ui/SheetCanvas`** shows the composed sheet (strips, phase dragging, the staging gutter, raw-sheet slicing), with **`ui/SheetSlicing`** the slice-phase dialog, **`ui/BitplaneExportController`** the per-document recipe a re-export repeats and **`ui/AnimationPreviewWidget`** the frame player.
 - **`build/FloppyTransfer.{h,cpp}`** — `floppy::Transfer`: the three disk transfers the file browser
   offers (host files onto a disk, entries off a disk, entries between disks) written **once** over a
-  source/destination pair instead of three times. It is widget-free: the two questions it cannot
-  answer itself — which image a drive holds, and whether rebuilding one is acceptable — come in
-  through its `Host` interface (finding MAJ-43).
+  source/destination pair instead of three times, plus the three edits of the disk's own contents —
+  `removeEntries()`, `renameEntry()` (the entry's bytes are re-added under the new root in the same
+  `updateImage` call that drops the old paths, so a folder and its contents move in one rebuild) and
+  `makeDirectory()`. All six run the same confirm/resync preamble; the listing is taken *after* the
+  question, because a dialog runs an event loop and a directory listed before it can be stale. A
+  name the disk already shows is refused (`NameTaken`) rather than numbered, which is what
+  `updateImage` does for an addition and the wrong answer for a rename. It is widget-free: the two
+  questions it cannot answer itself — which image a drive holds, and whether rebuilding one is
+  acceptable — come in through its `Host` interface (finding MAJ-43).
 - **`build/BuildService.{h,cpp}`** — `planSteps()` chooses a single-file `-Ftos` build or a
   per-module `-Fvobj` build plus a `vlink -b ataritos` link; `runNextStep()` streams output and
   parses vasm/linker diagnostics. Emits `finished(success, diagnostics)`.
 - **`build/LineMap.{h,cpp}`** — parses one vasm `-L` listing into section:offset ↔ source-line
   entries and the section extents. **`LinkMap.{h,cpp}`** parses a vlink `-M` map.
   **`ProgramLineMap.{h,cpp}`** aggregates one `LineMap` per module plus the `LinkMap`, and resolves
-  line ↔ address once `setLiveBases()` supplies the runtime section addresses.
+  line ↔ address once `setLiveBases()` supplies the runtime section addresses. Two resolvers sit on
+  top of that in `SymbolTable`: `labelSite()` answers *where do I break* (the first **code** line at
+  or after the definition) and `labelAddress()` answers *what address does this name have* (the
+  definition's own line, else `LineMap::nextAddressLine()` — the first line that emits anything in
+  **any** section, because `buffer:` above `ds.b 256` is bss). They differ deliberately; both refuse
+  an `equ`, which has a value rather than a place.
 - **`emu/EmulatorHost.{h,cpp}`** — the heart of the debug side: owns the Hatari `QProcess`, both
   debug channels, the command queue, the prompt/settle framing, the stderr/stdout parsers, and
   `writeBootstrapScript()` (the entry-stop generator). See the transport section below.
@@ -158,7 +200,7 @@ Everything else in this document is a consequence of that rule. The debug transp
   the entry-stop attach, the single arming gate — `canReArmBreakpoints` decides when an edit re-arms
   at all — and the step-out state, completed from the stack dump that answers it),
   `BreakpointWatchpointModel` (the breakpoint and watchpoint lists — file:line breakpoints,
-  address-based self-inequality watchpoints — with every edit funnelled through that one gate),
+  address- or label-based self-inequality watchpoints — with every edit funnelled through that one gate),
   `SessionLauncher` (`launch()`: ROM selection, the floppy-boot fallback, the backend
   switch and the `SessionConfig`; the quiet/remote refusal path lives here too) and
   `RemoteStateAdapter` (the read-only JSON the remote verbs report; every source it reads is const).
@@ -190,14 +232,31 @@ Everything else in this document is a consequence of that rule. The debug transp
   `MainWindow` signals. The screenshot verb hands the path to the host: a media session's capture
   is the last streamed frame, anything else's is `QScreen::grabWindow` of the IDE window.
 
+- **`hooks/HookApi.h` / `hooks/StopHookEngine.{h,cpp}` / `hooks/StopHookRunner.{h,cpp}`** — the
+  stop-hook subsystem (docs/stop-hooks-plan.md). `HookApi` is the whole surface a Lua script may
+  reach; `StopHookEngine::run()` binds a fresh Lua 5.4.8 interpreter to it — `base`, `table`,
+  `string` and `math` only, with a count hook enforcing the wall-clock budget — and reports which
+  line an error came from; `StopHookRunner` is the seam that drives it at a stop: the typed intents
+  (never debugger text), the wait for each answer (a nested event loop, as `RemoteControl`'s
+  blocking verbs use — which is why it is entered one turn *after* the stop is published, outside
+  the transport's emit stack, rather than from inside it), the console hold that keeps a user's
+  command from being mistaken for the script's, and the `continue()` policy. Deliberately
+  widget-free: `pist_hooks` links QtCore, Lua and `emu/`, which is what lets `tst_emulatorhost`
+  drive the shipped runner against a real session with no display at all. `ui/StopHooksDialog` is
+  the only UI it has. It is also readable from outside: the `hook` verb, its `pist_hook` MCP tool and
+  the `hook` event all report what `StopHookRunner::LastRun` holds — the fields, not the dialog's
+  sentence (docs/stop-hooks-plan.md §10).
+
 ### The build graph
 
 `CMakeLists.txt` builds one static library per module through the `pist_module()` helper —
 `pist_support`, `pist_image`, `pist_build`, `pist_debug`, `pist_emu`, `pist_model`, `pist_project`,
-`pist_toolchain`, `pist_git`, `pist_editor`, `pist_control`, `pist_mcp`, `pist_ui` — plus the two
+`pist_toolchain`, `pist_git`, `pist_editor`, `pist_control`, `pist_mcp`, `pist_hooks`, `pist_ui` —
+plus the two
 executables (`pist`, `pist-mcp`) and one test executable per suite. The module graph is declared with
 one edge per include in the sources, and the layering is enforced by the linker: `support`, `image`,
-`build`, `debug`, `emu`, `model`, `project`, `toolchain`, `git` and `mcp` link no `Qt6::Widgets`, so
+`build`, `debug`, `emu`, `model`, `project`, `toolchain`, `git`, `hooks` and `mcp` link no
+`Qt6::Widgets`, so
 a core module cannot reach a widget (and by extension cannot reach the UI).
 
 The graph is acyclic, so no link line has to repeat an archive to break a cycle. Two static-library
@@ -412,8 +471,14 @@ memory byte emits a signal that `MainWindow` turns into a *typed* backend intent
 stopped. Each backend spells its own wire form (native `r <reg>=$<val>` and `w b $<addr> $<val>`;
 HRDB the same register form and `memset` for the byte), so no caller builds debugger text. Memory
 panes are created by `addMemoryPane()`, each routed by an integer tag so concurrent dumps reach the
-right pane. Watchpoints are address-based change-tracking conditional breakpoints (`b ($a).w ! ($a).w`)
-and can arm before any stop.
+right pane. Watchpoints are change-tracking conditional breakpoints (`b ($a).w ! ($a).w`) and can arm
+before any stop when they were asked for by *address*. One asked for by *label* (`watch counter.l`)
+cannot: the name's address is whatever GEMDOS picked for this run, so it is planned by
+`planWatchpoints()` at the same post-`info basepage` arm a source breakpoint goes through, and the
+panel shows it as pending until then. The stored watchpoint keeps the name — never the resolved
+address — so the stale-address failure has nowhere to live. The remote `watchpoint <a|l>` and
+`clearwatchpoint [a|l]` verbs and the matching MCP tools are the set/clear pair over the same
+model.
 
 ### Embedding the emulator display (removed)
 
@@ -474,7 +539,8 @@ text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fork.
 `MainWindow::createDocks()` enables nesting, installs the app-level event filter, and builds docks
 through `makeDock()` (movable/floatable/closable + a stable `objectName`). The debug views are one
 tab group; Problems, the Build & debug console and the memory panes are ordinary docks tabbed
-together in the bottom area (each a real dock, so they drag and move like any other panel). The
+together in the bottom area (each a real dock, so they drag and move like any other panel). Find in
+Files shares the left group with Project files and Git, Project files first. The
 factory arrangement is captured with `saveState()`, the user's restored from `QSettings`, and
 re-saved on close. Drag surfaces advertise themselves with an open-hand cursor: `makeDock()` sets it
 on the dock (whose painted title bar is its own region) and gives the content an explicit arrow so
@@ -591,7 +657,7 @@ There are two kinds of test:
 
 - **Parser/unit tests** (`tst_parsers`, `tst_image`, `tst_tosrom`, `tst_debug`, `tst_link`,
   `tst_settings`, `tst_toolfetch`, `tst_oscall`, `tst_profile`, `tst_git`, `tst_watcher`,
-  `tst_mcp`) — always run, no emulator and no display needed (`tst_link`'s end-to-end case runs a
+  `tst_mcp`, `tst_stophooks`) — always run, no emulator and no display needed (`tst_link`'s end-to-end case runs a
   real vasm + vlink when both are present and skips otherwise; `tst_git` skips its live cases
   without `git`). `tst_watcher` pins the document watcher's behaviour, headless, against real temp
   files: a staged temp-file rename over the watched path — exactly what `files::write()` does —
@@ -624,6 +690,12 @@ be proven against a real emulator run, not a mock (see PLAN.md §11 "Definition 
   free of UI types; if the verb answers with JSON, the serialisation belongs in
   `RemoteStateAdapter`, whose readers come in through its own `Host`. Document the verb in
   README §Remote control.
+- **Add a scripted API function**: add the virtual to `hooks/HookApi.h`, implement it in
+  `StopHookRunner` using the typed intents only (never debugger text — MAJ-21), and bind it in the
+  `kApi` table in `hooks/StopHookEngine.cpp`, which is the one place the script-visible names live.
+  Document it in README §Stop hooks: that list is the contract, and `tst_stophooks` covers the
+  engine with a fake `HookApi` and the runner with a fake backend, while the real-session path is
+  `tst_emulatorhost`'s stop-hook case.
 - **Add a Hatari CLI option**: emit it in `SessionConfig::toArgv()`, gated on a `HatariCapabilities`
   flag from `probeHatari()` if it is not universal.
 - **Add a machine**: extend the `Machine` enum and the TOS-compatibility table in

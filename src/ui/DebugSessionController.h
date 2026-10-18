@@ -61,6 +61,10 @@ public:
         std::function<BreakpointWatchpointModel *()> breakpoints;
         /// The program map, which turns a source line into an address.
         std::function<const ProgramLineMap &()> programMap;
+        /// The build's symbols, which turn a *name* into a place. A named
+        /// watchpoint is resolved through this, by the same rule a script's
+        /// `sym()` uses, on every arm (docs/glm-features.md §5).
+        std::function<const QVector<SymbolEntry> &()> symbols;
         /// The section bases the last `info basepage` installed. The arming
         /// gate is whether they are live yet (CRIT-4).
         std::function<const LineMap::SectionBases &()> bases;
@@ -119,6 +123,15 @@ public:
     bool stopEventPending() const { return m_stopEventPending; }
     void setStopEventPending(bool on) { m_stopEventPending = on; }
     bool consumeStopEventPending();
+
+    /// The same shape for a step. `s` and `n` are not running→stopped
+    /// transitions, so `stoppedChanged` never fires for them and the step paths
+    /// say so themselves (MainWindow::step) — which leaves nothing else to
+    /// report that the machine moved. Set by the step, consumed by the register
+    /// batch that answers it; the stop hook runs from there.
+    bool stepEventPending() const { return m_stepEventPending; }
+    void setStepEventPending(bool on) { m_stepEventPending = on; }
+    bool consumeStepEventPending();
 
     /// A `profile save` is in flight; its commandFinished parses the file.
     bool profileSavePending() const { return m_profileSavePending; }
@@ -191,6 +204,7 @@ private:
     bool m_breakpointsArmedThisSession = false;
     bool m_stepOutPending = false;
     bool m_stopEventPending = false;
+    bool m_stepEventPending = false;
     bool m_profileSavePending = false;
     bool m_launchAfterBuild = false;
     /// The boot's fast-forward was dropped (or never needed dropping) this

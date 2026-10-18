@@ -154,7 +154,16 @@ Qt 6 (Core, Gui, Widgets, Network, Test)
     https://doc.qt.io/qt-6/licensing.html
 
 
-No code from Hatari, vasm, vlink or Qt is included in this repository's sources.
+Lua 5.4.8 (the stop-hook scripting engine)
+    Linked *statically* into pist, so it has no library file of its own and the
+    release manifest cannot discover it from the artifact: packaging/
+    collect-notices.py names it explicitly, in its STATIC_LIBS list, and its
+    MIT licence text travels in share/doc/pist/licenses/MIT-Lua.txt. Lua is
+    unmodified upstream, checksum-pinned, and built from that tarball.
+    https://www.lua.org/
+
+
+No code from Hatari, vasm, vlink, Lua or Qt is included in this repository's sources.
 
 The ST colour-word layout, Degas/NeoChrome/IFF/STOS bitplane packing, and paint-tool geometry in
 `src/image/` were reimplemented from the known file formats and from the behaviour of the
@@ -180,6 +189,13 @@ binaries present and the libraries the bundled Hatari links. The set is
 derived, not declared: whether Hatari links Capstone depends on the build
 host, so Capstone's BSD-3-Clause text ships exactly when Capstone does, and a
 component that appears without its text fails the release build.
+
+There is one deliberate exception, and it is an exception because the artifact
+cannot answer the question: a library *linked into* PiST leaves no file of its
+own to discover. Lua, the stop-hook scripting engine, is linked statically into
+`pist`, so that script names it in a static list (STATIC_LIBS) instead of
+finding it — the same failure mode the paragraph above avoids, accepted here
+because there is nothing to scan.
 
 The Linux `.deb` and `.rpm` carry one more set. They are staged from the AppDir
 the AppImage is built from, and linuxdeploy copies the *build host's* copyright

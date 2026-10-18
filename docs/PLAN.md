@@ -1008,6 +1008,88 @@ The implementation found three of the spec's premises wrong and measured the
 
 ---
 
+### Next feature sheet (agreed 2026-10-16)
+
+Six features were agreed for development and one roadmap item binned; the sheet
+of record, with the verified current state of each, is
+[docs/glm-features.md](glm-features.md):
+
+- scripted stop hooks (absorbing FUTURE §10), reference authoring (`Example:` /
+  `Typical use:` — the remainder of FUTURE §14), find in files, editor completion / symbol palette /
+  hover card, watchpoint symbols, and the floppy-image pane residue (Delete /
+  Rename / New Folder inside a disk — the add/edit/remove core was verified as
+  already delivered during the sheet's writing);
+- **FUTURE §9 (an in-IDE assistant sidebar) is binned**, not deferred: the MCP
+  route (`pist-mcp`) is the agent surface this project keeps growing, and an
+  embedded chat would duplicate it at the IDE's expense. The reasoning is
+  recorded in glm-features §0 so the decision survives the conversation.
+
+A scope note for this branch, so the sheet's references resolve: the **teaching
+layer** (`docs/tutorial-plan.md`, `lessons/*/lesson.pil`, `src/lessons/`, the
+`Lesson` dock) is **not here yet** — it is `docs/tutorial-plan` (PR #14), held
+back deliberately for a later review pass, which is also why `docs/FUTURE.md`
+has no §14 on this branch and why sheet §2's pointer to it is forward-looking.
+Sheet §2 was re-scoped on 2026-10-17 to `Example:` / `Typical use:` alone — the
+`Used in:` cross-link to the lessons was dropped — so it no longer depends on that
+PR and can start whenever the reference authoring does.
+
+**Scripted stop hooks** (sheet §1) got its own plan of record on this branch,
+[docs/stop-hooks-plan.md](stop-hooks-plan.md): the trigger is the published stop
+rather than the raw `stoppedChanged(true)` event, the runner executes from a
+queued invocation so its read-back nested loop is not inside the transport's
+single-entry drain, scripted writes must complete before a script's `continue()`
+(because `resume()` prunes everything without `keepOnResume`), and the engine
+measured out to **Lua 5.4.8** — pinned, linked statically, the first third-party
+code linked into the binary (the numbers are in §9) — and L2 landed with it: `sym()` over the live
+bases, the stop's cause, and a script attached to a breakpoint. L3 is the agent surface: the `hook`
+verb, its `pist_hook` MCP tool, and the `hook` event a watcher gets when a script runs.
+
+**Editor completion, the symbol palette and the hover card** (sheet §4) are delivered on
+`feature/completion`: one candidate list (`editor/CompletionModel`) and one vocabulary shared with the
+highlighter (`editor/Vocabulary` — which also retires the highlighter's private directive regex), three
+surfaces over them (the editor's popup, `ui/SymbolPaletteDialog`, the window's hover card), and the dock's
+dispatch extracted into `editor/CursorReference` so the dock and the hover cannot disagree. The traps behind
+the decisions are in §9.
+
+**Watchpoint symbols** (sheet §5) are delivered on `feature/watchpoint-symbols`: a watchpoint may
+be asked for by *label*, and `planWatchpoints()` (beside `planBreakpoints()`) resolves it through
+`labelAddress()` — the one rule `sym()` and the remote `breakpoint <label>` verb already use —
+afresh on every arm, because GEMDOS picks the load address again each run. The stored watchpoint
+keeps the name and never the address, so the stale-address failure has nowhere to live; the remote
+verbs are the set/clear pair `watchpoint <a|l>` / `clearwatchpoint [a|l]`, and the MCP tools follow.
+
+**The demo project** is delivered as the release's tour on `feature/demo-project`: `demo/hello.s`
+is a complete GEMDOS program whose parts are chosen so each 0.10.0 feature has something to bite on
+(labels and equates, all three traps, a word to watch by name, a stop-hook script), with
+`hello.hooks.lua` beside it and the `hooks` block in `hello.pistproject` to point at it. A session
+with nothing to reopen opens it, the toolbar carries a Demo button, and the demo is installed with
+the packages (`share/pist/demo`) — under the same lookup rule the welcome view already used, which
+searches `demo/` beside the working directory and the executable's parents.
+
+**Reference authoring** (sheet §2, re-scoped to the reference itself) is delivered on
+`feature/reference-authoring`: `InstructionInfo` and `OsCallInfo` carry `example` and
+`typicalUse`, rendered by the dock that follows the cursor, and `tst_reference` makes
+the authoring mechanical — every entry carries both fields, every example assembles
+under vasm inside the wrapper the test documents, and an example belongs to the entry
+it is attached to.
+
+**Floppy-image pane residue** (sheet §6) is delivered on `feature/floppy-residue`: the pane can
+now Delete…, Rename… and create a New Folder… inside a mounted image, as three more operations on
+`floppy::Transfer` (`removeEntries`/`renameEntry`/`makeDirectory`) behind the transfers' own
+confirm/resync preamble, with a name the disk already shows refused rather than numbered. The
+add/edit/remove core the sheet verified as already delivered is unchanged.
+
+**Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock in the project-files
+group (Project files, then Find in Files, then Git) backed
+by `ui/FindInFiles` (a chunked, cancellable walk of the project directory) and `ui/FindInFilesView`,
+with the scan itself shared with the editor's find bar through the new `editor/FindScan` — which
+makes the sheet's "count the same way in both places" a property of the code rather than a promise.
+The walk is chunked rather than threaded and F4 is *claimed* while the dock has focus rather than
+bound a second time; both are argued in glm-features §3, and the two traps behind those decisions
+are in §9.
+
+---
+
 ## 7. Legal constraints
 
 | Component | License | Can we ship it? | Boundary |
@@ -1021,6 +1103,7 @@ The implementation found three of the spec's premises wrong and measured the
 | Original Atari TOS ROMs | Proprietary | No | User-supplied; validate size/version; add our own hash check |
 | EmuTOS | GPLv2 | Yes | Data file, not linked. GPLv2 text + source offer |
 | Qt 6 | LGPL-3.0-only / GPL-2.0-only / GPL-3.0-only / commercial | Yes | **Dynamic linking** under LGPLv3 (deliver Qt source, relink ability, Installation Information). Qt's GPL-2.0-only option is also available to us, since PiST is GPL-2.0-or-later |
+| **Lua 5.4.8** (the stop-hook scripting engine) | MIT (Expat) | Yes | **Statically linked** into `pist`, built unmodified from the checksum-pinned upstream tarball. The first third-party code linked into the binary, so its notice cannot be derived from the artifact: `collect-notices.py` names it in `STATIC_LIBS` and it ships as `licenses/MIT-Lua.txt` |
 | SDL2 (only if embedding upstream Hatari) | zlib | Yes | Acknowledgement |
 | Capstone | BSD-3-Clause | Yes | Attach `LICENSE.TXT` |
 
@@ -1259,6 +1342,164 @@ load-bearing dependency — which the detection order above already guarantees.
   rejected:
   docs/cursor-plan.md §1, §3, §6
 
+- **The stop-hook scripting engine is Lua 5.4.8, chosen by measurement rather than preference**
+  (2026-10-17, `feature/stop-hooks`; docs/stop-hooks-plan.md §5 D4). Both candidates were spiked as
+  throwaway programs. Lua: `liblua.a` is 676,688 B and adds 353,072 B to a tiny binary (323,664 B
+  stripped); its `LUA_MASKCOUNT` hook aborted `while true do end` 20/20 times in 0.234–0.356 ms; a
+  long C call (`('a'):rep(200000000)`) is *not* interrupted mid-call, because the hook only fires on
+  VM instructions — 325.867 ms to completion, which is the same shape of gap as any C function of
+  ours. Qt 6.8.1's `QJSEngine` adds exactly 8,770,048 B (`libQt6Qml.so` 6,611,968 +
+  `libQt6Network.so` 2,158,080) and needs no QML plugin or import tree (verified under `bwrap` with
+  both trees masked); it can only be interrupted from *another* thread — `setInterrupted` from a
+  second thread stopped the same loop in 500.122 ms of a 500 ms budget, 0.051 ms latency, 8/8, while
+  a same-thread `QTimer` provably cannot fire: it was measured firing 1452 ms after the 1952 ms
+  script it was meant to stop. The Qt route additionally could not configure on this machine at all
+  (distro Qt has `QmlPlugins/` and no `Qt6QmlConfig.cmake`).
+- **A statically linked library is invisible to the release notice scan.** `collect-notices.py`
+  derives the shipped set from what the bundle loads (`linked_libraries()`, `bundled_library_names()`),
+  so Lua — compiled into `pist` — has no library file for a pattern to match. It is named in that
+  script's new `STATIC_LIBS` list instead; running the script against a staged prefix was verified to
+  emit `licenses/MIT-Lua.txt` and a `Lua 5.4.8 (linked into pist)` manifest row. The limitation is
+  stated in the script's docstring, in `NOTICE` and in `packaging/copyright` rather than left
+  implicit — the script's own prose explains why it avoids static lists, and this is the exception
+  that has no scan to replace.
+
+- **A stop hook's `sym()` and its stop cause were verified against a live machine, over both
+  transports** (2026-10-17, `feature/stop-hooks`). In a real session a script's `sym("start")` equalled
+  the machine's actual PC at the entry stop, `sym("msg")` read the program's own `"HI"` back through
+  `readmem`, and `sym()` refused a name that resolves to nothing rather than returning 0 — a legal
+  address. The same script over the **hrdb-main fork** wrote a byte and a register that the fork's own
+  dump and register paths then read back, which is the evidence that the runner holds no
+  transport-specific assumption. This is also the first proof that a *name* survives GEMDOS
+  relocation from a script; the two resolution rules (break-here vs address, D8 in
+  [docs/stop-hooks-plan.md](stop-hooks-plan.md)) are pinned separately in `tst_debug`.
+
+- **The stop hook's agent surface is verified, and its one departure from the sheet is recorded**
+  (2026-10-17, `feature/stop-hooks`). `hook` answers with JSON built from the same
+  `StopHookRunner::LastRun` that renders the dialog's sentence, so the two cannot disagree: the
+  fields are asserted with no project at all (`tst_remotecontrol`), and the MCP tool's mapping,
+  block framing and parsed `structuredContent` in `tst_mcp`, whose catalog list is pinned whole
+  because a dropped or renamed tool breaks an agent silently. The sheet asked for "a `hook` field on
+  the published `stopped` event", which is not implementable: the script runs *after* the stop is
+  published, by design (D1), because it reads registers that must be real first — so the run reports
+  itself in its own `hook` event, emitted before the `continue()` policy so the wire order is
+  `stopped` → `hook` → `running`. The reasoning lives in `docs/stop-hooks-plan.md` §10 rather than
+  being absorbed silently.
+
+- **The editor's find bar and Find in Files count through one scan** (2026-10-17,
+  `feature/find-in-files`): `editor/FindScan.h` holds the options, the whole-word filter (a filter on
+  Qt's match, not one of `QTextDocument::FindFlags`) and the 2000-hit cap, and
+  `CodeEditor::collectMatches` calls it — evidenced by the five existing `tst_gui` find tests passing
+  unchanged, with the rules newly pinned directly by `tst_find`. Two traps were found by running
+  rather than reading: a **negative `from` to `QString::lastIndexOf` means "search from the end"**, so
+  the line containing position 0 of a file read as its *last* (caught by the walk's first unit test;
+  the rule is now in §11); and **two shortcuts on one key are ambiguous** — Qt logs "ambiguous
+  shortcut overload" and fires *neither*, measured in a throwaway program, which is why the dock
+  claims F4 with a `ShortcutOverride` instead of binding a second F4 shortcut.
+
+- **The reference's examples are assembled, not eyeballed** (2026-10-17,
+  `feature/reference-authoring`). 234 examples — every instruction and every TOS call —
+  are run through `vasmm68k_mot -quiet -m68060 -Ftos` by `tst_reference`, each inside one
+  documented wrapper whose whole point is to fix what a fragment may assume (`start`,
+  `msg`, `buffer` and nothing else). The rule that made this cheap to author: an
+  example is a *sentence about the assembler*, so the assembler is the authority on
+  whether it is true. The prose is deliberately unchecked — a test that pinned wording
+  is a test whoever changes the wording re-pins. Measured while doing it: 234 assembler
+  invocations cost ~0.5 s, which is why the whole table can be gated rather than
+  sampled.
+
+- **A name the disk already shows must be refused, not numbered** (2026-10-17, `feature/floppy-residue`).
+  `updateImage`'s documented rule for an addition whose 8.3 name is taken is to *number* it, which is
+  what makes a paste never overwrite — and it is exactly wrong for a rename, which would silently
+  become `NAME(2)` while the pane showed the name that was asked for. The controller therefore
+  checks the destination directory itself before writing and returns a `NameTaken` outcome the
+  browser phrases. The comparison is the display spelling the pane shows (the 8.3 conversion is
+  internal to the writer), so an entry whose stored name field differs from its display name can
+  still collide and be numbered — documented at the function rather than left to be discovered.
+  The second, quieter rule: the directory listing is taken *after* the confirm question, never
+  before, because `confirmTargets` re-reads the drives once every question is answered.
+
+- **A greedy regex tail ate a width suffix, and only a probe found it** (2026-10-17,
+  `feature/watchpoint-symbols`). The text form parses `[label][.b|.w|.l]`, and the label
+  alternative's tail was `[A-Za-z0-9_.$]*` — greedy, so it consumed `.w`/`.l` itself and
+  `counter.l` was looked up as a symbol named `counter.l` and refused. Nothing in the reading
+  suggested it, and the address forms were unaffected; a standalone `QRegularExpression` probe
+  against the exact pattern, run by an independent task, is what showed it. The tail is now lazy
+  (`[A-Za-z0-9_.$]*?`) with a comment saying why, and `tst_gui`'s label case pins the sheet's
+  spelling. Separately, giving `watchpoint` a useful reply (`ok; watch counter.l at $12596`
+  instead of a bare `ok`) broke two existing assertions in `tst_remotecontrol` that had pinned
+  `ok` exactly — a reminder that a single-line reply's *text* is an interface, and that the
+  document of record for the verbs is `ControlProtocol.h`'s table, not the tests.
+
+- **Completion offered nothing before the first build** (2026-10-18, `feature/completion`). The
+  window's candidate list was assigned only inside `rebuildProgramMap()` — after a build — so a
+  project that had never been assembled pushed an *empty* list into every editor and typing a
+  mnemonic offered nothing at all. The vocabulary is static: the mnemonics and directives do not
+  depend on the build, which only *adds* the label and equate candidates. The list is therefore
+  seeded in the window's constructor. This was reported from a real session straight after the
+  platform fix above — the second time this feature was green in the suite and wrong in use, and for
+  the same reason: the completion case used a standalone editor whose candidate list the test seeded
+  by hand, so nothing covered the window's own editor in a fresh session. `tst_gui` now has
+  `windowCompletesBeforeAnyBuild`, which opens a source, types into the window's editor, and fails
+  if the vocabulary is not already there.
+
+- **A doorway handed a project file opened its JSON as a document** (2026-10-18,
+  `feature/demo-project`). `WelcomeView::demoProjects()` returns `.pistproject` *paths* — that is
+  what a demo is keyed by — and the welcome rows passed them straight to `openPath()`, which knows
+  sources, images and floppies but not projects: clicking a demo row opened `hello.pistproject` as
+  a text document. The same mistake was built into the new Demo button, and its test passed,
+  because the test was written from the same wrong assumption. `MainWindow` now derives the source
+  a project implies (`<project>.s` beside it, the rule `openProject()` already used inline) and
+  both doorways open that; the test asserts the tab's title *and* that its text is assembly rather
+  than JSON.
+
+- **A `Qt::Popup` cannot be moved under Wayland, which is how a completion list is
+  invisible in use and green in the suite** (2026-10-18, `feature/completion`). The
+  editor's completion list began as `QCompleter`'s popup — a `Qt::Popup`, i.e. a
+  surface of its own — positioned with `move(mapToGlobal(caret))`. Under Wayland a
+  popup is an `xdg_popup` the compositor places *relative to its parent*, so a global
+  move is not honoured and the surface can be dismissed outright; the offscreen
+  platform used by every test has no compositor at all, so `isVisible()` was true
+  there and the list never appeared on screen. The list is now a `QListView` child of
+  the viewport: drawn inside the editor, positioned in the viewport's own
+  coordinates, and impossible for the window system to take away. Two consequences
+  worth keeping — the keys never leave the editor (so a headless run and a real one
+  take the same path, and the `eventFilter` that existed only to catch a popup's keys
+  is gone), and a click in the text dismisses the list because the caret has moved
+  away from the word it was offering.
+
+- **Qt's `arg` overload set grows between minor versions** (2026-10-17, `feature/watchpoint-symbols`).
+  `QStringLiteral("%1.%2").arg(symbol, QLatin1Char(width))` compiles against the development
+  machine's Qt 6.10.2 and has **no overload** in the 6.8.1 the CI pins — it failed on gcc, clang and
+  MSVC at once, at the same line. The chained form (`.arg(symbol).arg(QLatin1Char(width))`) is the
+  one that exists in both, and the local build is not evidence about the floor the project ships
+  against.
+
+- **A watchpoint can be named, and the name is resolved by the rule that already existed**
+  (2026-10-17, `feature/watchpoint-symbols`). `labelAddress()` (`build/SymbolTable.h`) was written
+  for a hook script's `sym()` and the remote `breakpoint <label>` verb, and it documents that *the
+  caller phrases the refusal* because the reader differs; the watchpoint plan is the third caller and
+  phrases its own, so no resolution logic was copied and a label means the same thing in all three
+  places. The design consequence worth keeping: the resolved address is never written back into the
+  model. The plan's `armed` list is what the panel is handed for the run, and the stored watchpoint
+  keeps `symbol` with `resolved == false` until an arm places it — the alternative (storing what a
+  previous run resolved) is precisely the "most confidently-wrong panel in the IDE" the sheet warned
+  about. Measured while wiring it: a pre-bases arm must skip named watchpoints entirely (their
+  address is not known yet, and `command()` on one would arm `$0` — the vector table, firing at
+  once), while a raw address still arms before the program has loaded.
+
+- **Completion's two Qt traps were found by running, and the vocabulary was one regex until now**
+  (2026-10-17, `feature/completion`). A `QCompleter` attached with `setWidget()` to a widget that is
+  not a `QLineEdit` **hides its own popup as soon as the next key arrives** — its `QCompleter::eventFilter`
+  cannot read the word being typed, concludes the prefix is empty, and calls `popup()->hide()` — measured
+  in the editor's popup test, which saw the first keystroke's popup and no second one; the editor
+  therefore removes the completer's widget filter and drives the prefix and the popup keys itself (the
+  rule is in §11). The same completer's popup is placed at the **widget's** bottom edge, not the caret's,
+  so it is re-moved on every show. Separately, the directive list existed only as a regex inside
+  `AsmHighlighter`, and the first draft of a second copy omitted nineteen of its entries — which is why
+  `editor/Vocabulary.h` is now the single list the highlighter's two patterns and completion's candidates
+  are both built from, asserted by `tst_completion` against the reference the app itself reads.
+
 ### Verified by CI (executed on real runners)
 
 **Current status: Linux, macOS and Windows all build, pass every suite, and
@@ -1360,6 +1601,13 @@ project; everything before it was either Linux-only or read from source.
 - **Only the tab's × reached zero documents before this change** (no Close action existed), which is
   why File ▸ Close File / Close All were added; and `demo/spritedemo/` was carried in the working
   tree while `docs/ARCHITECTURE.md` already described it — this change adds it to the repository.
+
+- **A single step does not emit `stoppedChanged`.** `MainWindow::step`/`stepOver` call
+  `m_host->step()`/`stepOver()` and then an explicit `refresh()`, and the code says why: `s`/`n` are
+  not running→stopped transitions, so `stoppedChanged` never fires for them and `onDebuggerStopped`
+  is never called. The stop hook therefore needed a step flag of its own in `DebugSessionController`
+  to make "every stop" include stepping — glm-features §1 lists stepping among the triggers
+  `stoppedChanged(true)` covers, and it does not cover it.
 
 ### Unverified — to resolve during Phase 0/1
 
@@ -1599,6 +1847,48 @@ requirements:
 - Never emit `echo` into a Hatari script file (§2.4).
 - Capability-probe Hatari at startup; never assume a feature exists in the user's build (§2.4, §5).
 - Keep all emulator-specific knowledge behind `IDebugBackend`/`EmulatorHost`.
+- When rewriting a section of a document that repeats a heading, anchor the edit *inside* that
+  section. Every feature in `docs/glm-features.md` has its own "How to start", "What exists" and
+  "Tested"; a rewrite that searches for the first occurrence takes §1's and silently drops every
+  section after it. That is exactly how sections 2–6 were lost in one edit, and the loss is only
+  visible by counting the headings afterwards.
+- When a user-facing surface names a path, name the *thing*: a `.pistproject` is not a document, and
+  `openPath()` will happily show its JSON. Anything that can be handed a project derives the source
+  beside it first (`<project>.s`), and a test for such a doorway asserts what the user gets — the
+  code's own text — rather than re-deriving the path the same way the code does.
+- A table the application always needs is seeded where the application starts, never by the first
+  successful build. The assembler's vocabulary — mnemonics and directives — is the same in a fresh
+  checkout as after an assembly; introducing it with the first build meant completion offered
+  nothing until a project had been built once, and the tests could not see it because they seeded
+  the list themselves.
+- Never build an in-editor popup as a `Qt::Popup` window. It is a surface of its own, and under
+  Wayland the compositor positions it relative to its parent: a global `move()` is not honoured and
+  it can be dismissed on show — while the offscreen platform every test uses has no compositor, so
+  the test passes and the feature is invisible in use. Make it a child widget of the viewport,
+  positioned in the widget's own coordinates; then it renders wherever the editor does, the keys
+  never leave the text widget, and the two paths are the same one.
+- The CI's pinned Qt is the floor, not the local one. Build locally against something newer and
+  the compiler happily accepts APIs the pinned version lacks — a two-argument
+  `QString::arg(QString, QChar)` is the case that cost a CI round (chain the calls instead). When
+  an overload's existence is in doubt, prefer the spelling that has existed longest.
+- Never store an address a relocated program gave you. GEMDOS picks the load address afresh on
+  every run, so anything derived from one — a breakpoint, a watchpoint resolved from a label, a live
+  base — is resolved at arm time and never written back into a model. `planBreakpoints()` and
+  `planWatchpoints()` are where that happens; the stored entry keeps file:line or the label itself.
+- Never hand Qt's `indexOf`/`lastIndexOf` family a `from` that can be negative: a negative `from`
+  means "search from the end", so asking for the line containing position 0 of a file returns the
+  *last* line instead. Guard with `position > 0` before subtracting.
+- A `QCompleter` attached with `setWidget()` to anything that is not a `QLineEdit` hides its own
+  popup on the next keystroke (its filter reads the widget as a line edit, fails, and treats the
+  prefix as empty). Remove the completer's widget filter and drive the prefix and the popup keys
+  yourself, as `CodeEditor` and `ConsoleInput` both do; its generic popup geometry is the widget's
+  bottom edge, so move the popup to the caret on every show.
+- A test must be portable in what it *asserts*, not only in what it builds. A case whose expectations
+  came from a literal `/p/demo/hello.s` passed on Linux and macOS and failed on Windows MSVC, where
+  that is not an absolute path at all; `QTemporaryDir` is where an absolute path comes from.
+- A field appended to a struct the tree initialises with brace lists gets a default member
+  initializer (`QString scriptPath{}`). A bare declaration turned every `Breakpoint{file, line, …}`
+  in the tree into a `-Wmissing-field-initializers` warning, and zero warnings is the standard.
 
 
 ---

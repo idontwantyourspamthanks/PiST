@@ -220,6 +220,18 @@ int LineMap::nextCodeLine(const QString &file, int line) const
     return best;
 }
 
+int LineMap::nextAddressLine(const QString &file, int line) const
+{
+    int best = 0;
+    for (const Entry &e : m_entries) {
+        if (e.line < line || !sameSource(e.file, file))
+            continue;
+        if (!best || e.line < best)
+            best = e.line;
+    }
+    return best;
+}
+
 bool LineMap::lineForSectionOffset(const QString &section, quint32 offset, Address *result) const
 {
     const QString wanted = section.toLower();

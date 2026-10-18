@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "build/ProgramLineMap.h"
+
 #include <QString>
 #include <QVector>
 
@@ -22,6 +24,13 @@ struct SymbolEntry
     QString name;
     QString file;
     int line = 0;
+
+    /// Whether the definition is an assignment (`name equ value`, `set`, `=`)
+    /// rather than a label. An equate has a *value*, not a place: it emits no
+    /// bytes, so its line has no address and the line after it belongs to
+    /// somebody else. Recorded because a resolver that treated an equate as a
+    /// bare label would silently return the address of whatever follows it.
+    bool equate = false;
 };
 
 /// The symbol definitions in a listing written by `vasmm68k_mot -L`.
@@ -69,5 +78,55 @@ struct SymbolEntry
 /// Returns an empty list if the listing cannot be read.
 QVector<SymbolEntry> symbolsFromListing(const QString &listingPath,
                                         const QString &sourceFile);
+
+/// Where a label lives, as far as the IDE can tell: the source line to break at
+/// and, once a session has supplied live section bases, that line's address.
+struct LabelSite
+{
+    QString file;             ///< the base name breakpoints are keyed by
+    int line = 0;             ///< the first code line at or after the definition
+    quint32 address = 0;
+    bool hasAddress = false;  ///< false until the program map has live bases
+};
+
+/// Why a label could not be turned into a place to break, or an address.
+enum class LabelProblem { None, UnknownName, NoSourcePosition, NoCode };
+
+/// Resolve `name` through `symbols` and `map`.
+///
+/// One rule, several callers — the remote `breakpoint <label>` verb and a hook
+/// script's `sym()` — so a label means the same thing wherever it is named. A
+/// label written on its own line has no code there (`count:` followed by the
+/// instruction on the next line is the norm), so the site is the *first code line
+/// at or after* the definition; an `equ` has no code of its own and is a refusal
+/// rather than whatever instruction happens to follow it. A symbol with no source
+/// position (a command-line define, a name a macro built) cannot be named at all.
+///
+/// The caller phrases the refusal, because its reader differs: a protocol reply
+/// and a script error are not the same sentence.
+bool labelSite(const QVector<SymbolEntry> &symbols, const ProgramLineMap &map,
+               const QString &name, LabelSite *site, LabelProblem *problem);
+
+/// Where a label *is*, for a caller that wants an address rather than a place to
+/// break: the line its definition shares the address of, or — for a label alone
+/// on its line (`buffer:` followed by `ds.b 256`) — the first line at or after it
+/// that emits anything, in any section.
+struct LabelAddress
+{
+    int line = 0;
+    quint32 address = 0;
+};
+
+/// Why a label could not be given an address.
+enum class LabelAddressProblem { None, UnknownName, NoSourcePosition, Equate, NoAddress, NotLive };
+
+/// Resolve `name` to the address it has in this run.
+///
+/// This is `labelSite`'s sibling, not its twin: a breakpoint wants the first line
+/// that *executes*, while a script naming a data label wants where that data
+/// lives. An equate is refused rather than answered with its line's successor.
+bool labelAddress(const QVector<SymbolEntry> &symbols, const ProgramLineMap &map,
+                  const QString &name, LabelAddress *address,
+                  LabelAddressProblem *problem);
 
 } // namespace pist

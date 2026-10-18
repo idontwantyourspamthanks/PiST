@@ -39,6 +39,13 @@ bool DebugSessionController::consumeStopEventPending()
     return pending;
 }
 
+bool DebugSessionController::consumeStepEventPending()
+{
+    const bool pending = m_stepEventPending;
+    m_stepEventPending = false;
+    return pending;
+}
+
 bool DebugSessionController::consumeProfileSavePending()
 {
     const bool pending = m_profileSavePending;
@@ -86,6 +93,7 @@ void DebugSessionController::resetSessionState()
     m_breakpointsArmedThisSession = false;
     m_stepOutPending = false;
     m_stopEventPending = false;
+    m_stepEventPending = false;
     m_bootTurboDropped = false;
 }
 
@@ -193,16 +201,27 @@ void DebugSessionController::armBreakpoints()
     // before the program starts: they arm here, and the panel lists them.
     // Clear first, exactly like the armed path below, so repeated pre-base
     // edits re-arm the full set from the models instead of stacking duplicates.
+    //
+    // A *named* watchpoint is the exception: its address is whatever GEMDOS chose
+    // for this run, so there is nothing to arm yet. It is listed as pending and
+    // armed by the post-bases path below, exactly like a source breakpoint.
     if (!m_host.bases().isValid()) {
         m_host.backend()->clearBreakpoints();
-        for (const Watchpoint &wp : m_host.breakpoints()->watchpoints())
-            m_host.backend()->armBreakpoint(wp.command());
-        m_host.showWatchpoints(m_host.breakpoints()->watchpoints());
+        const QList<Watchpoint> &watchpoints = m_host.breakpoints()->watchpoints();
+        for (const Watchpoint &wp : watchpoints) {
+            if (wp.symbol.isEmpty())
+                m_host.backend()->armBreakpoint(wp.command());
+        }
+        m_host.showWatchpoints(watchpoints);
         return;
     }
 
     m_breakpointsArmedThisSession = true;
     const ArmPlan plan = planBreakpoints(m_host.breakpoints()->breakpoints(), m_host.programMap());
+    // Watchpoints are resolved in the same breath, and *only* here: a name's
+    // address belongs to this run, so it is planned and never remembered.
+    const WatchpointPlan watchpoints =
+        planWatchpoints(m_host.breakpoints()->watchpoints(), m_host.symbols(), m_host.programMap());
 
     // Clear before arming. A rebuilt program can occupy different addresses, so
     // leaving old breakpoints in place would silently break on whatever code now
@@ -214,12 +233,16 @@ void DebugSessionController::armBreakpoints()
 
     // Watchpoints arm alongside the source breakpoints. They are address-based,
     // so unlike source lines they are valid before the program even starts.
-    for (const Watchpoint &wp : m_host.breakpoints()->watchpoints())
-        m_host.backend()->armBreakpoint(wp.command());
+    for (const QString &command : watchpoints.commands)
+        m_host.backend()->armBreakpoint(command);
 
     for (int i = 0; i < plan.unresolved.size(); ++i) {
         m_host.log(MainWindow::tr("[breakpoints] %1: %2")
                        .arg(plan.unresolved.at(i), plan.unresolvedReasons.value(i)));
+    }
+    for (int i = 0; i < watchpoints.unresolved.size(); ++i) {
+        m_host.log(MainWindow::tr("[watchpoints] %1: %2")
+                       .arg(watchpoints.unresolved.at(i), watchpoints.unresolvedReasons.value(i)));
     }
 
     if (!plan.commands.isEmpty()) {
@@ -228,10 +251,9 @@ void DebugSessionController::armBreakpoints()
                        .arg(m_host.breakpoints()->breakpoints().size()));
     }
 
-    // Show the resolved addresses and flag any breakpoint that could not be
-    // placed, so "why did my breakpoint not fire" is answerable at a glance.
-    m_host.showArmedBreakpoints(m_host.breakpoints()->mergeResolved(plan),
-                                m_host.breakpoints()->watchpoints());
+    // Show the resolved addresses and flag any watchpoint or breakpoint that could
+    // not be placed, so "why did my breakpoint not fire" is answerable at a glance.
+    m_host.showArmedBreakpoints(m_host.breakpoints()->mergeResolved(plan), watchpoints.armed);
 }
 
 void DebugSessionController::stepOut()

@@ -5,7 +5,7 @@
 #include "editor/AsmHighlighter.h"
 
 #include "editor/AsmLex.h"
-#include "editor/InstrRef.h"
+#include "editor/Vocabulary.h"
 
 #include <QStringList>
 
@@ -13,41 +13,18 @@ namespace pist {
 
 namespace {
 
-/// Mnemonics vasm's mot module accepts that the 68000 reference does not list:
-/// the 68020+ system instructions and the FPU. The reference is a 68000
-/// reference on purpose (InstrRef says why), so the highlighter unions the two
-/// instead of keeping a second hand-written copy of the 68000 set — that copy
-/// had already drifted by nineteen entries, and the `blo.s` in demo/hello.s
-/// went uncoloured.
-const char *const kExtraMnemonics[] = {
-    // 68020+.
-    "bkpt", "rtd", "callm", "rtm", "extb",
-    // FPU.
-    "fmove", "fadd", "fsub", "fmul", "fdiv", "fsqrt", "fabs", "fneg", "fint",
-    "fintrz", "fcmp", "ftst", "fsin", "fcos", "ftan", "fatan", "fgetexp",
-    "fgetman", "fscale", "fmod", "frem", "fsgldiv", "fsglmul", "fmovecr",
-    "fsave", "frestore", "faddd", "fsubd", "fmuld", "fdivd",
-    nullptr
-};
-
 /// The mnemonic family as one alternation of whole words: `\b(?:move|…)\b`.
-/// Built once from the reference — so adding a mnemonic to InstrRef is enough —
-/// and compiled once per theme and scanned once per line, where a pattern per
-/// mnemonic cost one compile each per theme and one scan each per line. `\b` at
-/// both ends keeps a size suffix (`move.w`, `blo.s`) inside the match and stops
-/// a shorter alternative (`add`) matching inside a longer mnemonic (`adda`).
+/// Built once from `editor/Vocabulary.h` — the 68000 reference plus the 68020+
+/// and FPU names it deliberately leaves out — and compiled once per theme and
+/// scanned once per line, where a pattern per mnemonic cost one compile each per
+/// theme and one scan each per line. `\b` at both ends stops a shorter
+/// alternative (`add`) matching inside a longer mnemonic (`adda`); a size suffix
+/// (`move.w`, `blo.s`) falls *outside* the match, which is why the suffix keeps
+/// the default colour (a tst_gui case pins exactly that).
 const QString &mnemonicPattern()
 {
-    static const QString pattern = [] {
-        QStringList words;
-        const QList<InstructionInfo> &table = instructionTable();
-        words.reserve(table.size() + 40); // the extras below
-        for (const InstructionInfo &info : table)
-            words.append(info.mnemonic.toLower());
-        for (int i = 0; kExtraMnemonics[i]; ++i)
-            words.append(QString::fromLatin1(kExtraMnemonics[i]));
-        return QStringLiteral("\\b(?:%1)\\b").arg(words.join(QLatin1Char('|')));
-    }();
+    static const QString pattern =
+        QStringLiteral("\\b(?:%1)\\b").arg(mnemonicWords().join(QLatin1Char('|')));
     return pattern;
 }
 
@@ -147,14 +124,18 @@ void AsmHighlighter::buildRules()
         m_rules.append(r);
     }
 
-    // Directives and assembler controls (dc.b, ds.l, equ, section, end, opt...).
+    // Directives and assembler controls (dc.b, ds.l, equ, section, end, opt...),
+    // built from the shared vocabulary so that what is painted as a directive and
+    // what completion offers cannot drift apart.
     {
+        QStringList escaped;
+        const QStringList &words = directiveWords();
+        escaped.reserve(words.size());
+        for (const QString &word : words)
+            escaped.append(QRegularExpression::escape(word));
         Rule r;
-        r.pattern = QRegularExpression(QStringLiteral(
-            "^\\s*(dc\\.[bwls]|ds\\.[bwls]|dcb\\.[bwls]|equ|set|even|odd|cnop|align|"
-            "section|text|data|bss|end|include|incbin|incdir|opt|macro|endm|repeat|"
-            "endr|if|else|endif|ifd|ifnd|org|rorg|rsreset|rs|global|xdef|xref|clrfo|"
-            "clrso|far|near|import|export)\\b"),
+        r.pattern = QRegularExpression(
+            QStringLiteral("^\\s*(%1)\\b").arg(escaped.join(QLatin1Char('|'))),
             QRegularExpression::CaseInsensitiveOption);
         r.format = m_directiveFormat;
         m_rules.append(r);

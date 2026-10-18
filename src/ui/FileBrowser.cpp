@@ -730,6 +730,64 @@ bool FileBrowser::pasteIntoFloppy(int drive, const QString &dirInImage)
     return ok;
 }
 
+void FileBrowser::deleteFloppyEntries(int drive, const QStringList &entryPaths)
+{
+    if (drive < 0 || drive > 1 || entryPaths.isEmpty())
+        return;
+    // Name what goes before anything is written: one entry by its path, a set
+    // by its count.
+    const QString what = entryPaths.size() == 1
+        ? entryPaths.first()
+        : tr("%n entries", nullptr, entryPaths.size());
+    if (QMessageBox::question(this, tr("Delete"),
+                              tr("Delete %1 from the disk?").arg(what),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+        != QMessageBox::Yes)
+        return;
+    const floppy::Transfer::Result result = m_transfer.removeEntries(drive, entryPaths);
+    finishTransfer(result);
+}
+
+void FileBrowser::renameFloppyEntry(int drive, const QString &entryPath)
+{
+    if (drive < 0 || drive > 1 || entryPath.isEmpty())
+        return;
+    const int slash = entryPath.lastIndexOf(QLatin1Char('/'));
+    const QString current = slash < 0 ? entryPath : entryPath.mid(slash + 1);
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Rename"), tr("New name:"),
+                                               QLineEdit::Normal, current, &ok).trimmed();
+    if (!ok)
+        return;
+    // The controller answers a bad name with a silent `Invalid`; the dialog is
+    // therefore where the user hears why nothing happened.
+    if (name.isEmpty() || name.contains(QLatin1Char('/'))) {
+        QMessageBox::warning(this, tr("Rename"),
+                             tr("A name cannot be empty or contain \"/\"."));
+        return;
+    }
+    const floppy::Transfer::Result result = m_transfer.renameEntry(drive, entryPath, name);
+    finishTransfer(result);
+}
+
+void FileBrowser::makeFloppyDirectory(int drive, const QString &dirInImage)
+{
+    if (drive < 0 || drive > 1)
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("New Folder"), tr("Folder name:"),
+                                               QLineEdit::Normal, QString(), &ok).trimmed();
+    if (!ok)
+        return;
+    if (name.isEmpty() || name.contains(QLatin1Char('/'))) {
+        QMessageBox::warning(this, tr("New Folder"),
+                             tr("A name cannot be empty or contain \"/\"."));
+        return;
+    }
+    const floppy::Transfer::Result result = m_transfer.makeDirectory(drive, dirInImage, name);
+    finishTransfer(result);
+}
+
 QString FileBrowser::hardDriveTargetDirectory(const QPoint &pos) const
 {
     const QModelIndex index = m_view->indexAt(pos);
@@ -949,6 +1007,11 @@ void FileBrowser::reportTransferFailure(const floppy::Transfer::Result &result)
     case floppy::Transfer::NothingToCopy:
         QMessageBox::warning(this, tr("Copy"), tr("Nothing to copy was found on the disk."));
         return;
+    case floppy::Transfer::NameTaken:
+        // The subject here is a name, not a path: the message is about the name
+        // the disk already shows, in whatever directory the caller asked about.
+        QMessageBox::warning(this, tr("Disk"), tr("%1 is already on this disk.").arg(subject));
+        return;
     }
 }
 
@@ -1043,6 +1106,14 @@ void FileBrowser::onFloppyContextMenu(const QPoint &pos)
     copyAction->setEnabled(hasDisk && !selected.isEmpty());
     cutAction->setEnabled(hasDisk && !selected.isEmpty());
     pasteAction->setEnabled(hasDisk && clipboardUsable());
+    menu.addSeparator();
+    QAction *deleteAction = menu.addAction(tr("Delete…"));
+    QAction *renameAction = menu.addAction(tr("Rename…"));
+    QAction *newFolderAction = menu.addAction(tr("New Folder…"));
+    deleteAction->setEnabled(hasDisk && !selected.isEmpty());
+    // A rename names one entry: a set has no single new name for a pane to ask.
+    renameAction->setEnabled(hasDisk && selected.size() == 1);
+    newFolderAction->setEnabled(hasDisk);
 
     QAction *chosen = menu.exec(pane.view->viewport()->mapToGlobal(pos));
     if (chosen == copyAction)
@@ -1051,6 +1122,12 @@ void FileBrowser::onFloppyContextMenu(const QPoint &pos)
         copyFloppyEntries(drive, selected, true);
     else if (chosen == pasteAction)
         pasteIntoFloppy(drive, floppyTargetDirectory(drive, pos));
+    else if (chosen == deleteAction)
+        deleteFloppyEntries(drive, selected);
+    else if (chosen == renameAction)
+        renameFloppyEntry(drive, selected.first());
+    else if (chosen == newFolderAction)
+        makeFloppyDirectory(drive, floppyTargetDirectory(drive, pos));
 }
 
 void FileBrowser::onContextMenu(const QPoint &pos)

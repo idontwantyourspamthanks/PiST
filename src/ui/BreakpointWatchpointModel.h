@@ -83,6 +83,12 @@ public:
     /// `breakpoint <label>` form.
     bool toggleAtLabel(const QString &name, QString *detail);
 
+    /// Resolve a label to the address it has in this run — what a hook script's
+    /// `sym()` calls. Refuses by name: 0 is a valid address, so there is no "not
+    /// found" value to return, and "no code at its definition" and "the bases are
+    /// not live yet" are refusals of their own rather than a wrong number.
+    bool resolveLabel(const QString &name, quint32 *address, QString *error) const;
+
     void remove(const QString &file, int line);
 
     /// The Run menu's "Clear Breakpoints": breakpoints only.
@@ -95,14 +101,33 @@ public:
     /// created if the line had none.
     void editCondition(int line);
 
-    /// Prompt for and add an address watchpoint (the Add-watchpoint action).
+    /// Prompt for and set the Lua script this breakpoint runs when it fires;
+    /// empty clears it back to the project's hook. Creates the breakpoint if the
+    /// line had none, like the condition edit — and, like it, needs no re-arm:
+    /// the script is read at the stop, not armed with the condition.
+    void editScript(int line);
+
+    /// Prompt for and add a watchpoint (the Add-watchpoint action): an address,
+    /// or a label to resolve on every run.
     void addWatchpoint();
-    /// Parse and add a watchpoint by address text (e.g. "$12345" or
-    /// "$12345.l"). Separated from the dialog so the remote-control interface
-    /// and tests can use it without a prompt. Returns false and sets error on a
-    /// bad address.
-    bool addWatchpointAddress(const QString &text, QString *error);
+    /// Parse and add a watchpoint by text: an address (`$12345`, `0x12345`,
+    /// `12345`) or a label (`counter`), either with an optional `.b`/`.w`/`.l`
+    /// width. Separated from the dialog so the remote-control interface and tests
+    /// can use it without a prompt. Returns false and sets error on a bad address,
+    /// on a name nothing knows, and on a name that has no place to watch.
+    ///
+    /// On success `*added` is what was stored — a label stays a label, because the
+    /// load address GEMDOS picks is not the same twice — with `address`/`resolved`
+    /// filled in when the symbol table can already place it, which is what the
+    /// remote verb reports back.
+    bool addWatchpointAddress(const QString &text, Watchpoint *added, QString *error);
     void removeWatchpoint(int index);
+
+    /// Remove watchpoints: every one when `text` is empty, otherwise those it
+    /// names — a label, `label.width`, what the panel shows, or an address. The
+    /// set/clear pair the remote `watchpoint` verb and its MCP tool use, so
+    /// neither has to toggle. False and a reason when a text matches nothing.
+    bool clearWatchpoints(const QString &text, int *removed, QString *error);
 
     /// Fold the addresses the ArmPlan resolved back into the stored breakpoint
     /// list, so the panel shows where each one actually landed.

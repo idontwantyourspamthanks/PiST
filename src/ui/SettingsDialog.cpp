@@ -7,6 +7,7 @@
 #include "emu/TosRom.h"
 #include "ui/Appearance.h"
 #include "ui/FileBrowser.h"
+#include "ui/GalleryCard.h"
 #include "ui/SetupDialog.h"
 
 #include "ui/EmuAudio.h"
@@ -27,6 +28,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QPalette>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -118,6 +120,47 @@ void addArgsRow(QFormLayout *form, QWidget *tab, const QString &label, QPlainTex
     form->addRow(label, row);
 }
 
+/// A quiet wrapped sentence under a row. Palette ink, so a local stylesheet
+/// does not throw away the rest of the chrome on this one label.
+void quietNote(QLabel *label)
+{
+    label->setWordWrap(true);
+    QPalette ink = label->palette();
+    ink.setColor(QPalette::WindowText, appearance::colors().muted);
+    label->setPalette(ink);
+}
+
+QGroupBox *formSection(const QString &title, QWidget *page, QFormLayout **formOut)
+{
+    auto *box = new QGroupBox(title, page);
+    auto *form = new QFormLayout(box);
+    form->setContentsMargins(16, 18, 16, 14);
+    form->setHorizontalSpacing(18);
+    form->setVerticalSpacing(12);
+    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignTop);
+    *formOut = form;
+    return box;
+}
+
+/// Cards in combo order. The combo stays the value the dialog saves; the cards
+/// are how it is chosen.
+void wireChoiceCards(QComboBox *combo, const QList<GalleryCard *> &cards)
+{
+    auto sync = [combo, cards] {
+        const int current = combo->currentIndex();
+        for (int i = 0; i < cards.size(); ++i)
+            cards.at(i)->setSelected(i == current);
+    };
+    for (int i = 0; i < cards.size(); ++i) {
+        QObject::connect(cards.at(i), &GalleryCard::activated, combo, [combo, i] {
+            combo->setCurrentIndex(i);
+        });
+    }
+    QObject::connect(combo, &QComboBox::currentIndexChanged, combo, [sync](int) { sync(); });
+    sync();
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
@@ -128,13 +171,13 @@ SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
     buildUi();
     loadValues(settings);
 
-    // Preferred 620x520 — but never more window than the screen has room for.
-    // A fixed 520 request on a 768 px screen at 125–150% scaling asks for more
+    // Preferred 800x640 — but never more window than the screen has room for.
+    // A fixed request on a 768 px screen at 125–150% scaling asks for more
     // height than the work area holds, so the window manager clamps the frame
     // while the layout keeps demanding its minimum: whatever is asked for must
     // be what the dialog actually is. The clamp never drops below the layout's
-    // bounded minimum, and 620x520 survives untouched on a normal desktop.
-    QSize preferred(620, 520);
+    // bounded minimum, and a normal desktop keeps the larger window.
+    QSize preferred(800, 640);
     if (const QScreen *screen = QGuiApplication::primaryScreen()) {
         const QRect available = screen->availableGeometry();
         preferred.setWidth(qMin(preferred.width(), available.width() * 9 / 10));
@@ -149,17 +192,42 @@ SettingsDialog::SettingsDialog(const ProjectSettings &settings, QWidget *parent)
 void SettingsDialog::buildUi()
 {
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(24, 20, 24, 16);
+    layout->setSpacing(14);
+
+    auto *heading = new QLabel(tr("Settings"), this);
+    QFont headingFont = heading->font();
+    headingFont.setPointSizeF(headingFont.pointSizeF() * 1.6);
+    headingFont.setBold(true);
+    heading->setFont(headingFont);
+    layout->addWidget(heading);
+
+    auto *intro = new QLabel(
+        tr("The project, the machine it runs on, and how PiST looks."), this);
+    quietNote(intro);
+    layout->addWidget(intro);
+
     auto *tabs = new QTabWidget(this);
+
+    auto pageOf = [](QWidget *tab) {
+        auto *page = new QVBoxLayout(tab);
+        page->setContentsMargins(8, 8, 8, 8);
+        page->setSpacing(12);
+        return page;
+    };
 
     // ---------------------------------------------------------------- build
     auto *buildTab = new QWidget(this);
-    auto *buildLayout = new QFormLayout(buildTab);
+    auto *buildPage = pageOf(buildTab);
+
+    QFormLayout *assemblerForm = nullptr;
+    buildPage->addWidget(formSection(tr("Assembler"), buildTab, &assemblerForm));
 
     // Explicit tool paths. Placed first because a missing assembler blocks
     // everything else, and the hint in the error dialog points here.
     m_assemblerPath = new QLineEdit;
     m_assemblerPath->setPlaceholderText(tr("Detected automatically"));
-    connect(addPathRow(buildLayout, buildTab, tr("vasmm68k_mot:"), m_assemblerPath),
+    connect(addPathRow(assemblerForm, buildTab, tr("vasmm68k_mot:"), m_assemblerPath),
             &QPushButton::clicked, this, &SettingsDialog::browseAssembler);
 
     m_cpu = new QComboBox(buildTab);
@@ -168,7 +236,10 @@ void SettingsDialog::buildUi()
     m_cpu->addItems({QStringLiteral("68000"), QStringLiteral("68010"),
                      QStringLiteral("68020"), QStringLiteral("68030"),
                      QStringLiteral("68040"), QStringLiteral("68060")});
-    buildLayout->addRow(tr("CPU:"), m_cpu);
+    assemblerForm->addRow(tr("CPU:"), m_cpu);
+
+    QFormLayout *modulesForm = nullptr;
+    buildPage->addWidget(formSection(tr("Modules"), buildTab, &modulesForm));
 
     // Additional sources. More than one switches the build to separate
     // compilation, so the note explains the ordering rule that TOS imposes.
@@ -196,10 +267,9 @@ void SettingsDialog::buildUi()
            "first. Adding any file here switches the build to separate compilation "
            "and needs vlink."),
         buildTab);
-    srcNote->setWordWrap(true);
-    srcNote->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    quietNote(srcNote);
     srcLayout->addWidget(srcNote);
-    buildLayout->addRow(tr("Additional sources:"), srcBox);
+    modulesForm->addRow(tr("Additional sources:"), srcBox);
 
     // Include paths
     m_includePaths = new QListWidget(buildTab);
@@ -219,7 +289,7 @@ void SettingsDialog::buildUi()
     incLayout->setContentsMargins(0, 0, 0, 0);
     incLayout->addWidget(m_includePaths);
     incLayout->addLayout(incButtons);
-    buildLayout->addRow(tr("Include paths:"), incBox);
+    modulesForm->addRow(tr("Include paths:"), incBox);
 
     // Defines
     m_defines = new QListWidget(buildTab);
@@ -238,7 +308,10 @@ void SettingsDialog::buildUi()
     defLayout->setContentsMargins(0, 0, 0, 0);
     defLayout->addWidget(m_defines);
     defLayout->addLayout(defButtons);
-    buildLayout->addRow(tr("Defines:"), defBox);
+    modulesForm->addRow(tr("Defines:"), defBox);
+
+    QFormLayout *argsForm = nullptr;
+    buildPage->addWidget(formSection(tr("Arguments"), buildTab, &argsForm));
 
     // Assembler arguments, one list per build mode, each editable with its own
     // reset. PiST adds the flags that describe *this* build — the output format,
@@ -247,11 +320,11 @@ void SettingsDialog::buildUi()
     // -devpac drops the symbol table the debugger reads, so the debug list adds
     // -opt-x+ to put it back.
     m_debugBuildArgs = new QPlainTextEdit(buildTab);
-    addArgsRow(buildLayout, buildTab, tr("Debug assembler args:"), m_debugBuildArgs,
+    addArgsRow(argsForm, buildTab, tr("Debug assembler args:"), m_debugBuildArgs,
                defaultDebugAssemblerArgs());
 
     m_releaseBuildArgs = new QPlainTextEdit(buildTab);
-    addArgsRow(buildLayout, buildTab, tr("Release assembler args:"), m_releaseBuildArgs,
+    addArgsRow(argsForm, buildTab, tr("Release assembler args:"), m_releaseBuildArgs,
                defaultReleaseAssemblerArgs());
 
     auto *argsNote = new QLabel(
@@ -262,19 +335,22 @@ void SettingsDialog::buildUi()
            "debug list adds -opt-x+ to keep the symbol table the debugger reads, "
            "and the release list strips it (-nosym) for a clean PRG."),
         buildTab);
-    argsNote->setWordWrap(true);
-    argsNote->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    buildLayout->addRow(QString(), argsNote);
+    quietNote(argsNote);
+    argsForm->addRow(QString(), argsNote);
+    buildPage->addStretch(1);
 
     tabs->addTab(scrollableTab(buildTab), tr("Build"));
 
     // ------------------------------------------------------------- emulator
     auto *emuTab = new QWidget(this);
-    auto *emuLayout = new QFormLayout(emuTab);
+    auto *emuPage = pageOf(emuTab);
+
+    QFormLayout *programForm = nullptr;
+    emuPage->addWidget(formSection(tr("Program"), emuTab, &programForm));
 
     m_emulatorPath = new QLineEdit;
     m_emulatorPath->setPlaceholderText(tr("Detected automatically"));
-    connect(addPathRow(emuLayout, emuTab, tr("hatari:"), m_emulatorPath),
+    connect(addPathRow(programForm, emuTab, tr("hatari:"), m_emulatorPath),
             &QPushButton::clicked, this, &SettingsDialog::browseEmulator);
 
     m_debugBackend = new QComboBox(emuTab);
@@ -282,39 +358,44 @@ void SettingsDialog::buildUi()
                             QStringLiteral("auto"));
     m_debugBackend->addItem(tr("Native (stock Hatari)"), QStringLiteral("native"));
     m_debugBackend->addItem(tr("HRDB (TCP remote debugging)"), QStringLiteral("hrdb"));
-    emuLayout->addRow(tr("Debug transport:"), m_debugBackend);
+    programForm->addRow(tr("Debug transport:"), m_debugBackend);
+
+    QFormLayout *machineForm = nullptr;
+    emuPage->addWidget(formSection(tr("Machine"), emuTab, &machineForm));
 
     m_machine = new QComboBox(emuTab);
     for (Machine machine : allMachines())
         m_machine->addItem(machineDisplayName(machine), static_cast<int>(machine));
     connect(m_machine, &QComboBox::currentIndexChanged, this, &SettingsDialog::onMachineChanged);
-    emuLayout->addRow(tr("Machine:"), m_machine);
+    machineForm->addRow(tr("Machine:"), m_machine);
 
     // ROM: a combo plus a browse button, because a user's ROMs may live anywhere.
     m_rom = new QComboBox;
     m_rom->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    connect(addPathRow(emuLayout, emuTab, tr("TOS ROM:"), m_rom),
+    connect(addPathRow(machineForm, emuTab, tr("TOS ROM:"), m_rom),
             &QPushButton::clicked, this, &SettingsDialog::browseRom);
 
     m_romNote = new QLabel(emuTab);
-    m_romNote->setWordWrap(true);
-    m_romNote->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    emuLayout->addRow(QString(), m_romNote);
+    quietNote(m_romNote);
+    machineForm->addRow(QString(), m_romNote);
 
     m_monitor = new QComboBox(emuTab);
     m_monitor->addItems({QStringLiteral("mono"), QStringLiteral("rgb"),
                          QStringLiteral("vga"), QStringLiteral("tv")});
-    emuLayout->addRow(tr("Monitor:"), m_monitor);
+    machineForm->addRow(tr("Monitor:"), m_monitor);
 
     m_ram = new QSpinBox(emuTab);
     m_ram->setRange(0, 14);
     m_ram->setSuffix(tr(" MiB"));
     m_ram->setSpecialValueText(tr("512 KiB (default)"));
-    emuLayout->addRow(tr("ST RAM:"), m_ram);
+    machineForm->addRow(tr("ST RAM:"), m_ram);
+
+    QFormLayout *diskForm = nullptr;
+    emuPage->addWidget(formSection(tr("Disks"), emuTab, &diskForm));
 
     m_hardDisk = new QLineEdit;
     m_hardDisk->setPlaceholderText(tr("Optional disk image for ACSI/IDE"));
-    connect(addPathRow(emuLayout, emuTab, tr("Hard disk:"), m_hardDisk),
+    connect(addPathRow(diskForm, emuTab, tr("Hard disk:"), m_hardDisk),
             &QPushButton::clicked, this, &SettingsDialog::browseHardDisk);
 
     // Floppy drives. Both are optional and independent of the GEMDOS hard disk:
@@ -322,18 +403,19 @@ void SettingsDialog::buildUi()
     // the only way to ship data a program expects on A: or B:.
     m_floppyA = new QLineEdit;
     m_floppyA->setPlaceholderText(tr("Optional disk image for drive A:"));
-    connect(addPathRow(emuLayout, emuTab, tr("Floppy A:"), m_floppyA), &QPushButton::clicked,
+    connect(addPathRow(diskForm, emuTab, tr("Floppy A:"), m_floppyA), &QPushButton::clicked,
             this, [this] { browseFloppy(m_floppyA, tr("Select a floppy image for drive A:")); });
 
     m_floppyB = new QLineEdit;
     m_floppyB->setPlaceholderText(tr("Optional disk image for drive B:"));
-    connect(addPathRow(emuLayout, emuTab, tr("Floppy B:"), m_floppyB), &QPushButton::clicked,
+    connect(addPathRow(diskForm, emuTab, tr("Floppy B:"), m_floppyB), &QPushButton::clicked,
             this, [this] { browseFloppy(m_floppyB, tr("Select a floppy image for drive B:")); });
 
     m_extraEmuArgs = new QPlainTextEdit(emuTab);
     m_extraEmuArgs->setPlaceholderText(tr("One argument per line"));
     m_extraEmuArgs->setMaximumHeight(70);
-    emuLayout->addRow(tr("Extra emulator args:"), m_extraEmuArgs);
+    diskForm->addRow(tr("Extra emulator args:"), m_extraEmuArgs);
+    emuPage->addStretch(1);
 
     tabs->addTab(scrollableTab(emuTab), tr("Emulator"));
 
@@ -342,13 +424,13 @@ void SettingsDialog::buildUi()
     // project file: a theme, a font and a size are the user's taste, not the
     // project's.
     auto *appearanceTab = new QWidget(this);
-    auto *appearanceLayout = new QFormLayout(appearanceTab);
+    auto *appearancePage = pageOf(appearanceTab);
 
     auto *scopeNote = new QLabel(
         tr("These are application-wide preferences and are not stored in the project file."),
         appearanceTab);
-    scopeNote->setWordWrap(true);
-    appearanceLayout->addRow(scopeNote);
+    quietNote(scopeNote);
+    appearancePage->addWidget(scopeNote);
 
     m_theme = new QComboBox(appearanceTab);
     m_theme->addItem(tr("System"), QStringLiteral("system"));
@@ -357,7 +439,36 @@ void SettingsDialog::buildUi()
     const int themeIndex = m_theme->findData(appearance::theme());
     if (themeIndex >= 0)
         m_theme->setCurrentIndex(themeIndex);
-    appearanceLayout->addRow(tr("Theme:"), m_theme);
+    m_theme->hide();
+
+    auto *themeLabel = new QLabel(tr("Theme"), appearanceTab);
+    QFont sectionFont = themeLabel->font();
+    sectionFont.setBold(true);
+    themeLabel->setFont(sectionFont);
+    appearancePage->addWidget(themeLabel);
+
+    auto *systemCard = new GalleryCard(appearanceTab);
+    systemCard->setTitle(tr("System"));
+    systemCard->setDetail(tr("Follow the desktop."));
+    systemCard->setMinimumHeight(104);
+    auto *lightCard = new GalleryCard(appearanceTab);
+    lightCard->setTitle(tr("Light"));
+    lightCard->setDetail(tr("Paper, with the GEM green."));
+    lightCard->setMinimumHeight(104);
+    auto *darkCard = new GalleryCard(appearanceTab);
+    darkCard->setTitle(tr("Dark"));
+    darkCard->setDetail(tr("The default. A dark desk."));
+    darkCard->setMinimumHeight(104);
+    auto *themeRow = new QHBoxLayout;
+    themeRow->setSpacing(10);
+    themeRow->addWidget(systemCard);
+    themeRow->addWidget(lightCard);
+    themeRow->addWidget(darkCard);
+    appearancePage->addLayout(themeRow);
+    wireChoiceCards(m_theme, {systemCard, lightCard, darkCard});
+
+    QFormLayout *appearanceLayout = nullptr;
+    appearancePage->addWidget(formSection(tr("Editor"), appearanceTab, &appearanceLayout));
 
     m_fontFamily = new QComboBox(appearanceTab);
     m_fontFamily->addItem(tr("Default"), QString());
@@ -417,7 +528,28 @@ void SettingsDialog::buildUi()
     const int schemeIndex = m_shortcutScheme->findData(appearance::shortcutScheme());
     if (schemeIndex >= 0)
         m_shortcutScheme->setCurrentIndex(schemeIndex);
-    appearanceLayout->addRow(tr("Shortcut scheme:"), m_shortcutScheme);
+    m_shortcutScheme->hide();
+
+    auto *keysLabel = new QLabel(tr("Shortcuts"), appearanceTab);
+    keysLabel->setFont(sectionFont);
+    appearancePage->addWidget(keysLabel);
+    auto *pistCard = new GalleryCard(appearanceTab);
+    pistCard->setTitle(tr("PiST"));
+    pistCard->setDetail(tr("F8 toggles a breakpoint, F9 continues, F10 steps into."));
+    pistCard->setMinimumHeight(104);
+    auto *commonCard = new GalleryCard(appearanceTab);
+    commonCard->setTitle(tr("Common"));
+    commonCard->setDetail(tr("F5 continues, F9 toggles a breakpoint, F10 steps over."));
+    commonCard->setMinimumHeight(104);
+    auto *keysRow = new QHBoxLayout;
+    keysRow->setSpacing(10);
+    keysRow->addWidget(pistCard);
+    keysRow->addWidget(commonCard);
+    appearancePage->addLayout(keysRow);
+    wireChoiceCards(m_shortcutScheme, {pistCard, commonCard});
+
+    QFormLayout *soundForm = nullptr;
+    appearancePage->addWidget(formSection(tr("Sound"), appearanceTab, &soundForm));
 
     m_audioOutput = new QComboBox(appearanceTab);
     m_audioOutput->setObjectName(QStringLiteral("audioOutput"));
@@ -434,7 +566,8 @@ void SettingsDialog::buildUi()
         }
         m_audioOutput->setCurrentIndex(index);
     }
-    appearanceLayout->addRow(tr("Audio output:"), m_audioOutput);
+    soundForm->addRow(tr("Audio output:"), m_audioOutput);
+    appearancePage->addStretch(1);
 
     tabs->addTab(scrollableTab(appearanceTab), tr("Appearance"));
 
@@ -453,6 +586,15 @@ void SettingsDialog::buildUi()
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
+
+    for (QLineEdit *edit : findChildren<QLineEdit *>())
+        edit->setMinimumHeight(30);
+    for (QComboBox *box : findChildren<QComboBox *>()) {
+        if (!box->isHidden())
+            box->setMinimumHeight(30);
+    }
+    for (QSpinBox *spin : findChildren<QSpinBox *>())
+        spin->setMinimumHeight(30);
 }
 
 void SettingsDialog::accept()

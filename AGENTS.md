@@ -74,6 +74,11 @@ code. Use this table for a quick lookup:
 | The app shell, menus, docks, panels, layout | `src/ui/MainWindow.{h,cpp}` |
 | A debug panel (registers, memory, stack, …) | the matching `src/ui/<Name>View.{h,cpp}` |
 | The text editor or gutter/breakpoints | `src/editor/CodeEditor.{h,cpp}` |
+| Completion, the candidate list, the assembler's own vocabulary | `src/editor/{CompletionModel,Vocabulary}.{h,cpp}`, the popup in `src/editor/CodeEditor.cpp` |
+| The Go to Symbol palette | `src/ui/SymbolPaletteDialog.{h,cpp}` |
+| What a cursor position means (the reference dock and the hover card) | `src/editor/CursorReference.{h,cpp}`, `MainWindow::referenceCardAt` |
+| The reference itself — the instruction and TOS-call tables, and what each entry says | `src/editor/{InstrRef,OsCallRef}.{h,cpp}`, the dock in `src/ui/InstructionRefView.{h,cpp}`, and their authoring gate `tst_reference` |
+| Find in Files, or the scan the editor's find bar shares with it | `src/ui/FindInFiles{,View}.{h,cpp}`, `src/editor/FindScan.{h,cpp}` |
 | The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
 | `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats,Transform}.*` |
 | Project files / Disk A / Disk B | `src/ui/FileBrowser.{h,cpp}` |
@@ -87,23 +92,28 @@ code. Use this table for a quick lookup:
 | Hatari's command line for a session | `src/emu/SessionConfig.cpp` (`toArgv()`) |
 | Hatari feature detection | `src/emu/HatariProbe.{h,cpp}` |
 | TOS ROM discovery / version | `src/emu/TosRom.{h,cpp}` |
-| Breakpoint/watchpoint model | `src/debug/{Breakpoint,Watchpoint}.*` |
+| Breakpoint/watchpoint model, and what a label resolves to at arm time | `src/debug/{Breakpoint,Watchpoint}.*`, `labelAddress` in `src/build/SymbolTable.{h,cpp}` |
 | The remote-control protocol | `src/control/RemoteControl.{h,cpp}` |
 | Project file (`.pistproject`) | `src/project/ProjectSettings.{h,cpp}` |
 | vasm/vlink/Hatari discovery | `src/toolchain/Toolchain.{h,cpp}` |
 | First-run tool/ROM setup | `src/ui/SetupDialog.{h,cpp}` + `src/toolchain/ToolFetch.{h,cpp}` |
 | The debug backends (native stdin transport, HRDB TCP) | `src/emu/DebugBackend.h` (the contract), `src/emu/{EmulatorHost,HrdbBackend,HatariTextParse}.{h,cpp}` |
 |The emulator display panel (media channel frames, input grab)|`src/ui/EmulatorDisplayWidget.{h,cpp}`|
+| The stop hook (script API, Lua engine, the runner that drives it at a stop) | `src/hooks/` (`HookApi.h`, `StopHookEngine.{h,cpp}`, `StopHookRunner.{h,cpp}`) |
 | The MCP shim (`pist-mcp`, a shipped binary) | `src/control/mcp/` |
 | The name, author and licence a software centre reports | `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, `packaging/copyright`, and the CPack block in `CMakeLists.txt` |
 | What the Linux installers put where (private prefix, what is pruned and why) | `.github/workflows/release.yml`, the deb/rpm step; `docs/PLAN.md` Phase 4 records the evidence |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_stophooks`/`tst_find`/`tst_completion`/`tst_reference`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the codebase guide (read this to change code).
 - **[docs/PLAN.md](docs/PLAN.md)** — the design document: verified findings, architecture rationale,
   the hard-won launcher rules, the verified-vs-unverified ledger, and licensing analysis.
+- **[docs/glm-features.md](docs/glm-features.md)** — the agreed next feature sheet (what to build
+  next, with each feature's verified current state) and one binned idea with its reasoning.
+- **[docs/qa-0.10.0.md](docs/qa-0.10.0.md)** — how to verify the 0.10.0 features by hand: what to
+  switch on, what to look at and what to expect, feature by feature.
 - **[docs/FUTURE.md](docs/FUTURE.md)** — deferred work, with the reasoning and a starting point for
   each item. Check here before starting something ambitious; it may already be analysed.
 - **[README.md](README.md)** — user-facing features, install, platform support, remote control.

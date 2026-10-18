@@ -4,6 +4,9 @@
 
 #include "debug/Breakpoint.h"
 
+#include <QDir>
+#include <QFileInfo>
+
 namespace pist {
 
 namespace {
@@ -119,6 +122,75 @@ ArmPlan planBreakpoints(const QList<Breakpoint> &breakpoints,
     return plan;
 }
 
+namespace {
+
+/// Why a named watchpoint could not be resolved, in the watchpoint's own voice.
+///
+/// `labelAddress()` gives the cause and lets the caller phrase it, because the
+/// reader differs: a script error and an arm-time log line are not the same
+/// sentence. This is the log's, and it reads as the tail of
+/// `[watchpoints] watch counter.l: <reason>`.
+QString unresolvedReason(const QString &name, LabelAddressProblem problem)
+{
+    switch (problem) {
+    case LabelAddressProblem::NoSourcePosition:
+        return QStringLiteral("'%1' has no source position (a command-line define, or a name "
+                              "a macro built)")
+            .arg(name);
+    case LabelAddressProblem::Equate:
+        return QStringLiteral("'%1' is an equate — it has a value, not a place, and a watchpoint "
+                              "needs one")
+            .arg(name);
+    case LabelAddressProblem::NoAddress:
+        return QStringLiteral("'%1' emits nothing, and nothing after it does either").arg(name);
+    case LabelAddressProblem::NotLive:
+        return QStringLiteral("'%1' has no address yet — no stop has reported the program's bases")
+            .arg(name);
+    case LabelAddressProblem::UnknownName:
+        return QStringLiteral("no symbol named '%1' (has the project been built?)").arg(name);
+    case LabelAddressProblem::None:
+        break;
+    }
+    return QStringLiteral("'%1' could not be resolved to an address").arg(name);
+}
+
+} // namespace
+
+WatchpointPlan planWatchpoints(const QList<Watchpoint> &watchpoints,
+                               const QVector<SymbolEntry> &symbols,
+                               const ProgramLineMap &lineMap)
+{
+    WatchpointPlan plan;
+
+    for (const Watchpoint &wp : watchpoints) {
+        if (wp.symbol.isEmpty()) {
+            // An address means the same thing before the program is loaded as
+            // after, so there is nothing to resolve: it is already resolved.
+            Watchpoint armed = wp;
+            armed.resolved = true;
+            plan.armed.append(armed);
+            plan.commands.append(armed.command());
+            continue;
+        }
+
+        LabelAddress where;
+        LabelAddressProblem problem = LabelAddressProblem::None;
+        if (!labelAddress(symbols, lineMap, wp.symbol, &where, &problem)) {
+            plan.unresolved.append(wp.label());
+            plan.unresolvedReasons.append(unresolvedReason(wp.symbol, problem));
+            continue;
+        }
+
+        Watchpoint armed = wp;
+        armed.address = where.address;
+        armed.resolved = true;
+        plan.armed.append(armed);
+        plan.commands.append(armed.command());
+    }
+
+    return plan;
+}
+
 QList<Breakpoint> renameFile(const QList<Breakpoint> &breakpoints,
                              const QString &oldFile, const QString &newFile)
 {
@@ -134,6 +206,26 @@ QList<Breakpoint> renameFile(const QList<Breakpoint> &breakpoints,
         migrated.append(entry);
     }
     return migrated;
+}
+
+const Breakpoint *breakpointAt(const QList<Breakpoint> &breakpoints, quint32 pc)
+{
+    for (const Breakpoint &bp : breakpoints) {
+        // `resolved` is the arming gate's word: address 0 belongs to a breakpoint
+        // no session ever armed, and code never runs there.
+        if (bp.resolved && bp.address == pc)
+            return &bp;
+    }
+    return nullptr;
+}
+
+QString resolveScriptPath(const QString &typed, const QString &sourceFile)
+{
+    const QString path = typed.trimmed();
+    if (path.isEmpty() || QDir::isAbsolutePath(path))
+        return path;
+
+    return QDir::cleanPath(QFileInfo(sourceFile).absolutePath() + QLatin1Char('/') + path);
 }
 
 } // namespace pist

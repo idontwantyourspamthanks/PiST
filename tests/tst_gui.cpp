@@ -720,6 +720,10 @@ private slots:
     /// Tab completion in the editor: the vocabulary the window pushes in, the word
     /// at the caret as the prefix, and the keys that take a candidate.
     void editorCompletionOffersTheVocabularyAndTakesACandidate();
+    /// Completion in a project that has never been built: the vocabulary is static,
+    /// so an editor must offer mnemonics and directives before the first assembly —
+    /// what a build adds (labels, equates) are extra candidates, not the only ones.
+    void windowCompletesBeforeAnyBuild();
     /// The symbol palette: the same candidates completion filters, presented as a
     /// jump list — filter, pick, and the file opens at the definition.
     void symbolPaletteJumpsToADefinition();
@@ -9106,6 +9110,39 @@ void TstGui::editorCompletionOffersTheVocabularyAndTakesACandidate()
     QTest::keyClick(&editor, Qt::Key_Tab);
     QVERIFY2(!editor.completionVisible(), "no completion inside a comment");
     QCOMPARE(editor.toPlainText(), QStringLiteral("; cou\t"));
+}
+
+// The case the first version of this feature got wrong: completion in a project
+// that has never been assembled. `mov` must offer `move` — the vocabulary is
+// static, and the labels and equates a build contributes are added on top of it
+// rather than being the only candidates there are.
+void TstGui::windowCompletesBeforeAnyBuild()
+{
+    const QString source = m_work->path() + QStringLiteral("/fresh.s");
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("\ttext\nstart:\n\tmov\n\tend\n");
+    file.close();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.openPath(source);
+
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    editor->setFocus();
+    // The caret goes after `mov` on the third line — the only source in this
+    // window — and nothing has been built, so the vocabulary is all there is.
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(2).position() + 4);
+    editor->setTextCursor(cursor);
+
+    QTest::keyClicks(editor, QStringLiteral("e"));
+    QTRY_VERIFY2_WITH_TIMEOUT(editor->completionVisible(),
+                              "the vocabulary does not wait for a build", 2000);
+    QVERIFY2(editor->completionCandidates().contains(QStringLiteral("move")),
+             qPrintable(editor->completionCandidates().mid(0, 5).join(QLatin1Char(','))));
 }
 
 // Find in Files reads the project as text and lists what it found, grouped by

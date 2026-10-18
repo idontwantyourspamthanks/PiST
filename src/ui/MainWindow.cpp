@@ -322,6 +322,14 @@ const QString &layoutPreviousKey()
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    // The assembler's own vocabulary is available before anything is assembled: an
+    // editor opened in a project that has never been built still completes
+    // mnemonics and directives, and a build only *adds* label and equate
+    // candidates on top (rebuildProgramMap). Seeding it here rather than at the
+    // first build is what makes completion work in a fresh session — before this
+    // line existed, so did nothing.
+    m_completionItems = CompletionModel::vocabulary();
+
     // The MAJ-41 seams, before anything they own: the session controller holds
     // the lifecycle flags, the launcher the run path, the models the
     // breakpoint/watchpoint lists, the profiler its collecting mode and the

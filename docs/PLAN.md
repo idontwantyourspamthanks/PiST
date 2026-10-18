@@ -1422,6 +1422,18 @@ load-bearing dependency — which the detection order above already guarantees.
   `ok` exactly — a reminder that a single-line reply's *text* is an interface, and that the
   document of record for the verbs is `ControlProtocol.h`'s table, not the tests.
 
+- **Completion offered nothing before the first build** (2026-10-18, `feature/completion`). The
+  window's candidate list was assigned only inside `rebuildProgramMap()` — after a build — so a
+  project that had never been assembled pushed an *empty* list into every editor and typing a
+  mnemonic offered nothing at all. The vocabulary is static: the mnemonics and directives do not
+  depend on the build, which only *adds* the label and equate candidates. The list is therefore
+  seeded in the window's constructor. This was reported from a real session straight after the
+  platform fix above — the second time this feature was green in the suite and wrong in use, and for
+  the same reason: the completion case used a standalone editor whose candidate list the test seeded
+  by hand, so nothing covered the window's own editor in a fresh session. `tst_gui` now has
+  `windowCompletesBeforeAnyBuild`, which opens a source, types into the window's editor, and fails
+  if the vocabulary is not already there.
+
 - **A `Qt::Popup` cannot be moved under Wayland, which is how a completion list is
   invisible in use and green in the suite** (2026-10-18, `feature/completion`). The
   editor's completion list began as `QCompleter`'s popup — a `Qt::Popup`, i.e. a
@@ -1821,6 +1833,11 @@ requirements:
   "Tested"; a rewrite that searches for the first occurrence takes §1's and silently drops every
   section after it. That is exactly how sections 2–6 were lost in one edit, and the loss is only
   visible by counting the headings afterwards.
+- A table the application always needs is seeded where the application starts, never by the first
+  successful build. The assembler's vocabulary — mnemonics and directives — is the same in a fresh
+  checkout as after an assembly; introducing it with the first build meant completion offered
+  nothing until a project had been built once, and the tests could not see it because they seeded
+  the list themselves.
 - Never build an in-editor popup as a `Qt::Popup` window. It is a surface of its own, and under
   Wayland the compositor positions it relative to its parent: a global `move()` is not honoured and
   it can be dismissed on show — while the offscreen platform every test uses has no compositor, so

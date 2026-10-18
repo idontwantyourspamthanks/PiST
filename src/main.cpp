@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QStandardPaths>
 
@@ -140,7 +141,10 @@ int main(int argc, char *argv[])
                                  QStringLiteral("appimagekit_pist.desktop")}) {
         if (!QStandardPaths::locate(QStandardPaths::ApplicationsLocation,
                                     entry).isEmpty()) {
-            QApplication::setDesktopFileName(entry);
+            // The base name, not the file name: setDesktopFileName() strips a
+            // ".desktop" suffix itself and warns on every start when handed one —
+            // which is the warning this block exists to avoid.
+            QApplication::setDesktopFileName(QFileInfo(entry).completeBaseName());
             break;
         }
     }

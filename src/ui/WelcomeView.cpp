@@ -64,6 +64,14 @@ protected:
         painter.setPen(QPen(border, 1));
         painter.setBrush(fill);
         painter.drawRoundedRect(QRectF(rect()).adjusted(1, 1, -2, -2), 8, 8);
+        // A row that can be reached with Tab must show it: the card is the only
+        // thing on the welcome page with a keyboard path, and a QToolButton's
+        // default style would draw that state under this paint.
+        if (hasFocus()) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(app.color(QPalette::Highlight), 2));
+            painter.drawRoundedRect(QRectF(rect()).adjusted(2, 2, -3, -3), 7, 7);
+        }
 
         const QRect textRect = rect().adjusted(16, 8, -14, -8);
         const QString path = toolTip();
@@ -106,7 +114,10 @@ WelcomeView::WelcomeView(QWidget *parent)
 
     auto *columnHost = new QWidget(this);
     columnHost->setObjectName(QStringLiteral("welcomeColumn"));
-    columnHost->setMinimumWidth(440);
+    // This column's minimum is the whole window's: with the factory docks (268 and
+    // 280 wide) a 440 px floor plus the margins left PiST unshrinkable below about
+    // 1100 px. The words wrap, so the column's width is a preference, not a floor.
+    columnHost->setMinimumWidth(320);
     columnHost->setMaximumWidth(520);
     columnHost->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *column = new QVBoxLayout(columnHost);
@@ -378,6 +389,9 @@ void WelcomeView::rebuildDoorways()
                                              : tr("Recent files"));
     for (const Entry &entry : entries) {
         auto *row = new DoorButton(m_rowsHost);
+        // Reachable with Tab, and the press ring in paintEvent shows where the
+        // focus is; without a policy the row is mouse-only.
+        row->setFocusPolicy(Qt::StrongFocus);
         row->setObjectName(QStringLiteral("welcomeRow"));
         row->setCursor(Qt::PointingHandCursor);
         row->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);

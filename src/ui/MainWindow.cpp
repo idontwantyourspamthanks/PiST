@@ -2807,11 +2807,10 @@ void MainWindow::applyLayoutPreset(const QString &preset)
     if (project)
         projectGroup << project;
     if (sprite) {
-        // Background tabs first. Hiding the current tab last is what drops
-        // the group's tab bar.
-        for (QDockWidget *dock : projectGroup)
-            if (!dock->isVisible())
-                dock->hide();
+        // Hiding every tab of the group drops its tab bar. The whole set is hidden
+        // here, and the current tab goes last because `projectGroup` ends with the
+        // dock that was raised — hiding the current tab first lets the group pick
+        // another one, and the bar survives.
         for (QDockWidget *dock : projectGroup)
             if (dock->isVisible())
                 dock->hide();

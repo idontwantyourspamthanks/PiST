@@ -228,8 +228,19 @@ NewImageDialog::NewImageDialog(QWidget *parent, const QString &directory)
     fileRow->addWidget(browse);
     root->addLayout(fileRow);
 
-    const QString folder = m_directory.isEmpty() ? QDir::currentPath() : m_directory;
-    root->addWidget(muted(tr("Saved in %1").arg(QDir::toNativeSeparators(folder)), this));
+    // The note follows the field rather than the directory it started in: Browse…
+    // writes an absolute path, and a typed path may carry one, so a note frozen at
+    // construction could name a folder the file will not be written to.
+    auto *savedIn = muted(QString(), this);
+    const auto refreshSavedIn = [this, savedIn] {
+        const QString path = filePath();
+        const QString folder = path.isEmpty() ? m_directory : QFileInfo(path).absolutePath();
+        savedIn->setText(tr("Saved in %1").arg(QDir::toNativeSeparators(
+            folder.isEmpty() ? QDir::currentPath() : folder)));
+    };
+    connect(m_file, &QLineEdit::textChanged, this, [refreshSavedIn] { refreshSavedIn(); });
+    refreshSavedIn();
+    root->addWidget(savedIn);
 
     root->addStretch(1);
 

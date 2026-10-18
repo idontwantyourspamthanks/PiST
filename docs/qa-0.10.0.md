@@ -198,11 +198,12 @@ the teaching-layer rethink and is neither shown nor asserted.
 
 ## 3. Find in Files
 
-A project-wide search dock beside Problems, with F4/Shift+F4 touring the hits.
+A project-wide search dock in the project-files group, with F4/Shift+F4 touring the hits.
 
 ### Activate
 
-- `Search ▸ Find in Files…` (`Ctrl+Shift+F`), or the `Find in Files` dock tabbed beside `Problems`.
+- `Search ▸ Find in Files…` (`Ctrl+Shift+F`), or the `Find in Files` tab, which sits beside
+  `Project files` (and `Git`) on the left.
 - Type into the query. `Aa` is `Match case`; `Word` is `Match whole words only`. The defaults are
   case-insensitive and not whole-word — the same defaults as the editor's find bar, because the scan
   is the same one.

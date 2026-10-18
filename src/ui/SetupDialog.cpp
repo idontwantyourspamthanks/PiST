@@ -146,7 +146,17 @@ SetupDialog::SetupDialog(QWidget *parent)
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
-    resize(760, 720);
+    // A fixed request on a 768 px screen at 125–150% scaling asks for more height
+    // than the work area holds, so the window manager clamps the frame while the
+    // layout keeps demanding its minimum — the trap SettingsDialog records. Ask for
+    // 760×720, but never more than nine tenths of the screen.
+    QSize wanted(760, 720);
+    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QSize available = screen->availableGeometry().size();
+        wanted = wanted.boundedTo(
+            QSize(available.width() * 9 / 10, available.height() * 9 / 10));
+    }
+    resize(wanted);
     refresh();
 }
 

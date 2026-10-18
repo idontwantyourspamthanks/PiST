@@ -150,7 +150,8 @@ Everything else in this document is a consequence of that rule. The debug transp
   the app-level event filter's `QEvent::ToolTip` branch), not a widget of its own.
 - **`ui/FindInFiles.{h,cpp}` / `ui/FindInFilesView.{h,cpp}`** — the project-wide search: the walk
   (`FindInFiles`, widget-free and therefore testable without a window) and the dock that shows it
-  (`FindInFilesView`, tabbed with Problems). The walk is chunked by a 10 ms tick budget rather than
+  (`FindInFilesView`, the second tab of the project-files group: Project files, then Find in
+  Files, then Git). The walk is chunked by a 10 ms tick budget rather than
   threaded: no dock here walks a directory off the GUI thread, `Qt6::Concurrent` is not linked, and
   chunking makes "a new query replaces the running one" a state change rather than a race. It emits
   one signal per file with hits and one summary — hits, files *searched*, files skipped, and whether
@@ -538,7 +539,8 @@ text — with `PIST_MEDIA_DISPLAY` left as the dev gate for a video-only fork.
 `MainWindow::createDocks()` enables nesting, installs the app-level event filter, and builds docks
 through `makeDock()` (movable/floatable/closable + a stable `objectName`). The debug views are one
 tab group; Problems, the Build & debug console and the memory panes are ordinary docks tabbed
-together in the bottom area (each a real dock, so they drag and move like any other panel). The
+together in the bottom area (each a real dock, so they drag and move like any other panel). Find in
+Files shares the left group with Project files and Git, Project files first. The
 factory arrangement is captured with `saveState()`, the user's restored from `QSettings`, and
 re-saved on close. Drag surfaces advertise themselves with an open-hand cursor: `makeDock()` sets it
 on the dock (whose painted title bar is its own region) and gives the content an explicit arrow so

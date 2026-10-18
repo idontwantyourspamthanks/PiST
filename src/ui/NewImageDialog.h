@@ -9,7 +9,6 @@
 #include <QDialog>
 #include <QString>
 
-class QComboBox;
 class QDialogButtonBox;
 class QLineEdit;
 class QSpinBox;
@@ -32,13 +31,18 @@ public:
 private:
     void browse();
     void updateOkButton();
+    /// Mark the size card and the palette card that match the fields.
+    void syncChoices();
 
     QString m_directory;
     QSpinBox *m_width = nullptr;
     QSpinBox *m_height = nullptr;
-    QComboBox *m_palette = nullptr;
     QLineEdit *m_file = nullptr;
     QDialogButtonBox *m_buttons = nullptr;
+    PaletteKind m_kind = PaletteKind::Ste;
+    /// True while a preset card is writing both spin boxes, so the first write
+    /// does not clear the selection the second write is about to confirm.
+    bool m_applyingPreset = false;
 };
 
 } // namespace pist

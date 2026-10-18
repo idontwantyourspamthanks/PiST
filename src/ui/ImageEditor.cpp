@@ -33,6 +33,9 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMenu>
+#include <QPainter>
+#include <QPalette>
+#include <QPen>
 #include <QPixmap>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -181,7 +184,7 @@ QToolButton *toolButton(appearance::Icon icon, const QString &tip)
     button->setCheckable(true);
     button->setAutoRaise(true);
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    button->setIconSize(QSize(20, 20));
+    button->setIconSize(QSize(22, 22));
     return button;
 }
 
@@ -196,14 +199,10 @@ QString swatchStyleSheet(const QColor &color)
         || qAbs(hue - ringHue) > 310;
     if (qAbs(color.lightness() - ring.lightness()) < 48 && similarHue)
         ring = pal.color(QPalette::WindowText);
-    // The index glyph uses the same idea as the ring: a light chip gets dark
-    // type, a dark chip gets light type, so a yellow swatch is still readable.
-    const QColor ink = color.lightness() > 140 ? QColor(0x10, 0x13, 0x10)
-                                                : QColor(0xe6, 0xea, 0xe4);
-    return QStringLiteral("QToolButton { background-color: %1; color: %2;"
-                          " border: 2px solid %3; border-radius: 3px; }"
-                          "QToolButton:checked { border: 3px solid %4; color: %2; }")
-        .arg(color.name(), ink.name(), mute.name(), ring.name());
+    return QStringLiteral("QToolButton { background-color: %1; border: 2px solid %2;"
+                          " border-radius: 6px; }"
+                          "QToolButton:checked { border: 3px solid %3; }")
+        .arg(color.name(), mute.name(), ring.name());
 }
 
 QString imageStatusColour(int colour)
@@ -257,7 +256,8 @@ appearance::Icon iconForTool(DrawTool tool)
 QToolBar *ImageEditor::buildToolbar()
 {
     auto *bar = new QToolBar(this);
-    bar->setIconSize(QSize(20, 20));
+    bar->setObjectName(QStringLiteral("imageToolBar"));
+    bar->setIconSize(QSize(22, 22));
     bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     bar->setMovable(false);
     m_tools = new QButtonGroup(this);
@@ -615,14 +615,6 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         return button;
     };
-    auto makeTextButton = [this](const QString &text, const QString &tip) {
-        auto *button = new QToolButton(this);
-        button->setText(text);
-        button->setToolTip(tip);
-        button->setAutoRaise(true);
-        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        return button;
-    };
     auto packIcons = [](QHBoxLayout *row) {
         row->setSpacing(4);
         row->setContentsMargins(0, 0, 0, 0);
@@ -635,9 +627,9 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
     connect(m_dupFrame, &QToolButton::clicked, this, &ImageEditor::duplicateFrame);
     m_removeFrame = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete frame"));
     connect(m_removeFrame, &QToolButton::clicked, this, &ImageEditor::removeFrame);
-    m_frameUp = makeTextButton(QStringLiteral("▲"), tr("Move frame up"));
+    m_frameUp = makeIconButton(appearance::Icon::ShiftUp, tr("Move frame up"));
     connect(m_frameUp, &QToolButton::clicked, this, &ImageEditor::moveFrameUp);
-    m_frameDown = makeTextButton(QStringLiteral("▼"), tr("Move frame down"));
+    m_frameDown = makeIconButton(appearance::Icon::ShiftDown, tr("Move frame down"));
     connect(m_frameDown, &QToolButton::clicked, this, &ImageEditor::moveFrameDown);
     m_onion = new QComboBox(this);
     m_onion->setObjectName(QStringLiteral("imageOnion"));
@@ -658,19 +650,38 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
     packIcons(frameBtns);
     canvasColumn->addLayout(frameBtns);
 
-    auto *right = new QVBoxLayout;
-    right->setSpacing(4);
+    auto *side = new QWidget(this);
+    side->setObjectName(QStringLiteral("imageSide"));
+    side->setMinimumWidth(208);
+    side->setMaximumWidth(248);
+    side->setAutoFillBackground(true);
+    {
+        QPalette panel = side->palette();
+        panel.setColor(QPalette::Window, QApplication::palette().color(QPalette::AlternateBase));
+        side->setPalette(panel);
+    }
+    auto *right = new QVBoxLayout(side);
+    right->setContentsMargins(10, 8, 10, 8);
+    right->setSpacing(6);
+
+    auto sectionTitle = [this](const QString &text) {
+        auto *label = new QLabel(text, this);
+        QFont font = label->font();
+        font.setBold(true);
+        label->setFont(font);
+        return label;
+    };
 
     // The player owns the preview box, the fps box and the play/pause action;
-    // it is fixed-size, so `right` gives it the same column the pieces had.
+    // it is fixed-size, so this column gives it the same left edge the pieces had.
+    right->addWidget(sectionTitle(tr("Preview")));
     m_previewWidget = new AnimationPreviewWidget(&m_doc, this);
     right->addWidget(m_previewWidget);
 
-    right->addWidget(new QLabel(tr("Layers"), this));
+    right->addWidget(sectionTitle(tr("Layers")));
     m_layers = new QListWidget(this);
     m_layers->setObjectName(QStringLiteral("imageLayers"));
-    m_layers->setMaximumWidth(160);
-    m_layers->setMaximumHeight(140);
+    m_layers->setMaximumHeight(108);
     m_layers->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     connect(m_layers, &QListWidget::currentRowChanged, this, &ImageEditor::selectLayer);
     connect(m_layers, &QListWidget::itemChanged, this, &ImageEditor::layerVisibilityChanged);
@@ -682,9 +693,9 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
     connect(m_addLayer, &QToolButton::clicked, this, &ImageEditor::addLayer);
     m_removeLayer = makeIconButton(appearance::Icon::RemoveFrame, tr("Delete layer"));
     connect(m_removeLayer, &QToolButton::clicked, this, &ImageEditor::removeLayer);
-    m_layerUp = makeTextButton(QStringLiteral("▲"), tr("Move layer up"));
+    m_layerUp = makeIconButton(appearance::Icon::ShiftUp, tr("Move layer up"));
     connect(m_layerUp, &QToolButton::clicked, this, &ImageEditor::moveLayerUp);
-    m_layerDown = makeTextButton(QStringLiteral("▼"), tr("Move layer down"));
+    m_layerDown = makeIconButton(appearance::Icon::ShiftDown, tr("Move layer down"));
     connect(m_layerDown, &QToolButton::clicked, this, &ImageEditor::moveLayerDown);
     auto *layerBtns = new QHBoxLayout;
     layerBtns->addWidget(m_addLayer);
@@ -712,10 +723,10 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
                 if (row >= 0 && m_phases && m_phases->currentRow() != row)
                     m_phases->setCurrentRow(row);
             });
+    right->addWidget(sectionTitle(tr("Phase")));
     auto *phaseRow = new QHBoxLayout;
     phaseRow->setSpacing(4);
     phaseRow->setContentsMargins(0, 0, 0, 0);
-    phaseRow->addWidget(new QLabel(tr("This phase"), this));
     phaseRow->addWidget(m_phasePicker, 1);
     m_addPhase = makeIconButton(appearance::Icon::AddFrame, tr("Add phase"));
     m_addPhase->setObjectName(QStringLiteral("imageAddPhase"));
@@ -733,7 +744,8 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
     auto *placementLayout = new QVBoxLayout(m_phasePlacement);
     placementLayout->setContentsMargins(0, 0, 0, 0);
     placementLayout->setSpacing(4);
-    auto *placementRow = new QHBoxLayout;
+    auto *placementRow = new QVBoxLayout;
+    placementRow->setSpacing(4);
     m_phaseSheet = new QComboBox(m_phasePlacement);
     m_phaseSheet->setObjectName(QStringLiteral("imagePhaseSheet"));
     connect(m_phaseSheet, qOverload<int>(&QComboBox::currentIndexChanged), this,
@@ -773,7 +785,7 @@ void ImageEditor::buildEditorBody(QVBoxLayout *layout)
     right->addWidget(m_phasePlacement);
     right->addStretch(1);
 
-    body->addLayout(right);
+    body->addWidget(side);
 }
 
 ImageEditor::ImageEditor(QWidget *parent)
@@ -1071,6 +1083,12 @@ void ImageEditor::applyAppearance()
     if (m_actReExport)
         m_actReExport->setIcon(appearance::icon(Icon::Save));
     m_previewWidget->applyAppearance();
+    if (QWidget *side = findChild<QWidget *>(QStringLiteral("imageSide"))) {
+        side->setAutoFillBackground(true);
+        QPalette panel = side->palette();
+        panel.setColor(QPalette::Window, palette().color(QPalette::AlternateBase));
+        side->setPalette(panel);
+    }
     if (m_addFrame)
         m_addFrame->setIcon(appearance::icon(Icon::AddFrame));
     if (m_dupFrame)
@@ -1081,6 +1099,14 @@ void ImageEditor::applyAppearance()
         m_addLayer->setIcon(appearance::icon(Icon::AddFrame));
     if (m_removeLayer)
         m_removeLayer->setIcon(appearance::icon(Icon::RemoveFrame));
+    if (m_frameUp)
+        m_frameUp->setIcon(appearance::icon(Icon::ShiftUp));
+    if (m_frameDown)
+        m_frameDown->setIcon(appearance::icon(Icon::ShiftDown));
+    if (m_layerUp)
+        m_layerUp->setIcon(appearance::icon(Icon::ShiftUp));
+    if (m_layerDown)
+        m_layerDown->setIcon(appearance::icon(Icon::ShiftDown));
     if (m_addPhase)
         m_addPhase->setIcon(appearance::icon(Icon::AddFrame));
     if (m_removePhase)
@@ -1403,6 +1429,8 @@ void ImageEditor::rebuildSwatches()
     auto *box = qobject_cast<QVBoxLayout *>(m_swatchBar->layout());
     while (QLayoutItem *item = box->takeAt(0))
         delete item;
+    box->setSpacing(5);
+    box->setContentsMargins(8, 8, 6, 8);
 
     m_swatches = new QButtonGroup(m_swatchBar);
     m_swatches->setExclusive(true);
@@ -1415,9 +1443,19 @@ void ImageEditor::rebuildSwatches()
         button->setFocusPolicy(Qt::NoFocus);
         button->setFixedSize(28, 28);
         button->setProperty("cube", cube);
-        button->setText(cube < 0 ? QStringLiteral("0") : QString::number(cube));
         button->setToolTip(cube < 0 ? label
                                     : tr("Colour %1 — %2").arg(cube).arg(label));
+        if (cube < 0) {
+            QPixmap mark(16, 16);
+            mark.fill(Qt::transparent);
+            QPainter pen(&mark);
+            pen.setRenderHint(QPainter::Antialiasing);
+            pen.setPen(QPen(QColor(0xe6, 0xea, 0xe4), 1.6, Qt::SolidLine, Qt::RoundCap));
+            pen.drawLine(QPointF(3.5, 3.5), QPointF(12.5, 12.5));
+            pen.drawLine(QPointF(12.5, 3.5), QPointF(3.5, 12.5));
+            button->setIcon(QIcon(mark));
+            button->setIconSize(QSize(16, 16));
+        }
         button->setStyleSheet(swatchStyleSheet(color));
         m_swatches->addButton(button);
         box->addWidget(button);

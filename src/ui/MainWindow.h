@@ -108,6 +108,20 @@ public slots:
     /// it) blocks the reply forever. Failure is reported by the return value.
     bool openPathQuiet(const QString &path) override;
 
+    /// Open the bundled demo project — the tour of what the IDE does, written as a
+    /// program that uses it (labels to complete and jump to, TOS calls to hover, a
+    /// word to watch by name, a stop hook that logs every stop). The action is
+    /// disabled, and this does nothing, when no demo is reachable: an installed tree
+    /// without one, or a checkout with `demo/` moved.
+    void openDemoProject();
+
+    /// The first-run doorway: open the demo when the window is still empty — the
+    /// app was started with no file and there was nothing to reopen. Called once by
+    /// `main()`, queued after the window's own start-up step, which is what reopens
+    /// the last document. A window built by a test never calls it, which is why the
+    /// policy lives here rather than in the window's constructor.
+    void openDemoIfIdle();
+
     /// Add a memory pane in its own tabbed dock, with a fresh routing tag.
     void addMemoryPane(quint32 initialAddress = 0);
 
@@ -981,6 +995,7 @@ private:
     QAction *m_actReplace = nullptr;
     QAction *m_actFindInFiles = nullptr;
     QAction *m_actOpenProject = nullptr;
+    QAction *m_actOpenDemo = nullptr;
     QAction *m_actProfileStart = nullptr;
     QAction *m_actProfileStop = nullptr;
     QAction *m_actProfileToCursor = nullptr;

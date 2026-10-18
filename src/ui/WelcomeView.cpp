@@ -172,9 +172,17 @@ void WelcomeView::applyAppearance()
 
 QList<WelcomeView::Entry> WelcomeView::demoProjects()
 {
-    // Where the repository is, if this is a development build: the working
-    // directory first (run.sh and ctest both start in the tree), then upwards
-    // from the executable, which sits in build/ inside it.
+    // The demos are in one of two places, and one walk of the same directories
+    // finds either. In a source checkout they are the repository's `demo/`: the
+    // working directory first (run.sh and ctest both start in the tree), then
+    // upwards from the executable, which sits in build/ inside it. An installed
+    // PiST carries the same files in its own data directory instead —
+    // `share/pist/demo` under the prefix it was installed into — and the same
+    // upwards walk reaches that without knowing where the prefix is: `bin/pist`
+    // reaches `../share`, the AppImage's `usr/bin` reaches `usr/share`, a macOS
+    // bundle's `Contents/MacOS` reaches `Contents/share`, and an installed
+    // package's private `lib/pist/bin` reaches `lib/pist/share`. This is the
+    // walk paths::bundledDataSearchPaths() makes for the ROM.
     QStringList bases;
     bases << QDir::currentPath();
     QDir up(QCoreApplication::applicationDirPath());
@@ -183,14 +191,23 @@ QList<WelcomeView::Entry> WelcomeView::demoProjects()
         if (!up.cdUp())
             break;
     }
-    QString demoDir;
-    for (const QString &base : bases) {
-        const QString candidate = QDir(base).filePath(QStringLiteral("demo"));
-        if (QFileInfo::exists(QDir(candidate).filePath(QStringLiteral("hello.pistproject")))) {
-            demoDir = candidate;
-            break;
+
+    // The checkout is asked first: a developer sitting in their tree wants the
+    // tree's demos, and that keeps the source-checkout behaviour exactly what it
+    // was. Either way the marker is the same file, and a directory that lacks it
+    // is not the demo set — a row that opens nothing is worse than no row.
+    const auto findDemos = [&bases](const QString &relative) {
+        for (const QString &base : bases) {
+            const QString candidate = QDir(base).filePath(relative);
+            if (QFileInfo::exists(
+                    QDir(candidate).filePath(QStringLiteral("hello.pistproject"))))
+                return candidate;
         }
-    }
+        return QString();
+    };
+    QString demoDir = findDemos(QStringLiteral("demo"));
+    if (demoDir.isEmpty())
+        demoDir = findDemos(QStringLiteral("share/pist/demo"));
     if (demoDir.isEmpty())
         return {};
 

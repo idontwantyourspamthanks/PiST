@@ -724,6 +724,10 @@ private slots:
     /// so an editor must offer mnemonics and directives before the first assembly —
     /// what a build adds (labels, equates) are extra candidates, not the only ones.
     void windowCompletesBeforeAnyBuild();
+    /// The toolbar's Demo button: present, enabled exactly when there is a demo to
+    /// open, and opening the demo's source (whose sibling `.pistproject` carries
+    /// the hook script and the emulator settings with it).
+    void theToolbarOpensTheDemo();
     /// The symbol palette: the same candidates completion filters, presented as a
     /// jump list — filter, pick, and the file opens at the definition.
     void symbolPaletteJumpsToADefinition();
@@ -9129,7 +9133,12 @@ void TstGui::windowCompletesBeforeAnyBuild()
     QVERIFY(QTest::qWaitForWindowActive(&window));
     window.openPath(source);
 
-    auto *editor = window.findChild<CodeEditor *>();
+    // The window may have opened the demo on start-up — that is what a session with
+    // nothing to reopen does — so the editor under test is the one this file opened,
+    // which is the last one created.
+    const QList<CodeEditor *> editors = window.findChildren<CodeEditor *>();
+    QVERIFY(!editors.isEmpty());
+    auto *editor = editors.last();
     QVERIFY(editor);
     editor->setFocus();
     // The caret goes after `mov` on the third line — the only source in this
@@ -9143,6 +9152,42 @@ void TstGui::windowCompletesBeforeAnyBuild()
                               "the vocabulary does not wait for a build", 2000);
     QVERIFY2(editor->completionCandidates().contains(QStringLiteral("move")),
              qPrintable(editor->completionCandidates().mid(0, 5).join(QLatin1Char(','))));
+}
+
+// The Demo button is how a person finds the tour. It exists on the toolbar, it is
+// enabled exactly when there is a demo to open — a packaged tree without one says so
+// by being disabled rather than by opening nothing — and opening it lands on the
+// demo's source, whose sibling `.pistproject` brings the hook script and the session
+// settings with it.
+void TstGui::theToolbarOpensTheDemo()
+{
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+
+    auto *action = window.findChild<QAction *>(QStringLiteral("demoAction"));
+    QVERIFY2(action, "the toolbar has a Demo action");
+    QCOMPARE(action->isEnabled(), !demos.isEmpty());
+    auto *bar = window.findChild<QToolBar *>(QStringLiteral("mainToolBar"));
+    QVERIFY(bar);
+    QVERIFY2(bar->actions().contains(action), "the Demo action is on the main toolbar");
+
+    if (demos.isEmpty())
+        QSKIP("no demo project is reachable from here (a packaged tree without one)");
+
+    action->trigger();
+    auto *tabs = window.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 1);
+    // The tour, not the project file: opening `hello.pistproject` as a document is
+    // what the doorway used to do, and it showed JSON.
+    QCOMPARE(tabs->tabText(0), QStringLiteral("hello.s"));
+    const auto *editor = qobject_cast<CodeEditor *>(tabs->currentWidget());
+    QVERIFY(editor);
+    QVERIFY2(editor->toPlainText().startsWith(QStringLiteral("* hello.s")),
+             qPrintable(editor->toPlainText().left(40)));
 }
 
 // Find in Files reads the project as text and lists what it found, grouped by

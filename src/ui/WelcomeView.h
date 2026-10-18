@@ -64,7 +64,8 @@ public:
     /// (docs/untitled-plan.md §5.4).
     void setRecentSources(const QStringList &sources);
 
-    /// The demo projects that exist in this checkout; see demoProjects().
+    /// The demo projects that exist where this PiST is running; see
+    /// demoProjects().
     void setDemoProjects(const QList<Entry> &demos);
 
     /// Toolchain readiness: the lines that say what was found, and whether
@@ -78,15 +79,26 @@ public:
     /// with the welcome view on show does not leave the old theme's greys.
     void applyAppearance();
 
-    /// The demo projects shipped beside this PiST, or an empty list when it is
-    /// not running from a source tree.
+    /// The demo projects PiST can offer from where it is running — this
+    /// checkout's, or the ones an installed PiST carries — or an empty list when
+    /// it has neither.
     ///
-    /// The demos live in the repository, not in an installed prefix (nothing
-    /// installs `demo/`), so a packaged PiST offers no rows rather than rows
-    /// that open nothing. The lookup is deliberately dull: the project files
-    /// beside the process's working directory, which is where `run.sh` and the
-    /// tests both start, then walking up from the executable — a development
-    /// build sits in `build/` inside the tree.
+    /// The lookup is deliberately dull, and it is one walk of the same
+    /// directories. In a source checkout the demos are the repository's `demo/`:
+    /// the project files beside the process's working directory, which is where
+    /// `run.sh` and the tests both start, then walking up from the executable,
+    /// which sits in `build/` inside the tree — that answer is asked for first
+    /// and is unchanged. An installed PiST carries the same files in its own
+    /// data directory, `share/pist/demo` under the prefix it was installed into
+    /// (CMakeLists.txt installs them there), which the same upwards walk reaches
+    /// without being told where the prefix is: `bin/pist` reaches `../share`, an
+    /// AppImage's `usr/bin` reaches `usr/share`, a macOS bundle's
+    /// `Contents/MacOS` reaches `Contents/share`, a deb/rpm's private
+    /// `lib/pist/bin` reaches `lib/pist/share`. It is the walk
+    /// `paths::bundledDataSearchPaths()` makes for the ROM.
+    ///
+    /// A candidate counts only when the demo it names is really there, so a row
+    /// that would open nothing is never offered.
     static QList<Entry> demoProjects();
 
 signals:

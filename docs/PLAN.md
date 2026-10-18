@@ -1058,6 +1058,14 @@ afresh on every arm, because GEMDOS picks the load address again each run. The s
 keeps the name and never the address, so the stale-address failure has nowhere to live; the remote
 verbs are the set/clear pair `watchpoint <a|l>` / `clearwatchpoint [a|l]`, and the MCP tools follow.
 
+**The demo project** is delivered as the release's tour on `feature/demo-project`: `demo/hello.s`
+is a complete GEMDOS program whose parts are chosen so each 0.10.0 feature has something to bite on
+(labels and equates, all three traps, a word to watch by name, a stop-hook script), with
+`hello.hooks.lua` beside it and the `hooks` block in `hello.pistproject` to point at it. A session
+with nothing to reopen opens it, the toolbar carries a Demo button, and the demo is installed with
+the packages (`share/pist/demo`) — under the same lookup rule the welcome view already used, which
+searches `demo/` beside the working directory and the executable's parents.
+
 **Reference authoring** (sheet §2, re-scoped to the reference itself) is delivered on
 `feature/reference-authoring`: `InstructionInfo` and `OsCallInfo` carry `example` and
 `typicalUse`, rendered by the dock that follows the cursor, and `tst_reference` makes
@@ -1433,6 +1441,16 @@ load-bearing dependency — which the detection order above already guarantees.
   by hand, so nothing covered the window's own editor in a fresh session. `tst_gui` now has
   `windowCompletesBeforeAnyBuild`, which opens a source, types into the window's editor, and fails
   if the vocabulary is not already there.
+
+- **A doorway handed a project file opened its JSON as a document** (2026-10-18,
+  `feature/demo-project`). `WelcomeView::demoProjects()` returns `.pistproject` *paths* — that is
+  what a demo is keyed by — and the welcome rows passed them straight to `openPath()`, which knows
+  sources, images and floppies but not projects: clicking a demo row opened `hello.pistproject` as
+  a text document. The same mistake was built into the new Demo button, and its test passed,
+  because the test was written from the same wrong assumption. `MainWindow` now derives the source
+  a project implies (`<project>.s` beside it, the rule `openProject()` already used inline) and
+  both doorways open that; the test asserts the tab's title *and* that its text is assembly rather
+  than JSON.
 
 - **A `Qt::Popup` cannot be moved under Wayland, which is how a completion list is
   invisible in use and green in the suite** (2026-10-18, `feature/completion`). The
@@ -1833,6 +1851,10 @@ requirements:
   "Tested"; a rewrite that searches for the first occurrence takes §1's and silently drops every
   section after it. That is exactly how sections 2–6 were lost in one edit, and the loss is only
   visible by counting the headings afterwards.
+- When a user-facing surface names a path, name the *thing*: a `.pistproject` is not a document, and
+  `openPath()` will happily show its JSON. Anything that can be handed a project derives the source
+  beside it first (`<project>.s`), and a test for such a doorway asserts what the user gets — the
+  code's own text — rather than re-deriving the path the same way the code does.
 - A table the application always needs is seeded where the application starts, never by the first
   successful build. The assembler's vocabulary — mnemonics and directives — is the same in a fresh
   checkout as after an assembly; introducing it with the first build meant completion offered

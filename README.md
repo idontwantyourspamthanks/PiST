@@ -86,6 +86,11 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   as the active set. The select tool drags a rectangle you
   can move (drag inside it or nudge with the arrows), and copy, cut, paste
   (Ctrl+C/X/V) and delete; pasting keeps transparent pixels see-through.
+- **A demo that is the tour** — `demo/hello.s` is a small, complete GEMDOS program written to show
+  the IDE off: labels and equates to complete and jump to, TOS calls across all three traps to
+  hover, a word to watch by name, and a hook script that logs every stop. Open it with the
+  toolbar's **Demo** button or File ▸ Open Demo Project, and a session with nothing to reopen
+  opens it for you — its own comments say what to try and where.
 - **Project files** — the left pane groups the host project (the GEMDOS hard drive) with Disk A
   and Disk B. Change or eject a floppy there (the same paths as in project settings); export
   selected hard-drive files to a new `.st` or `.msa` image; and edit a disk's own contents —

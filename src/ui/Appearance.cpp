@@ -120,14 +120,23 @@ QString chromeStyleSheet()
 QToolBar {
     background: palette(window);
     border: none;
-    spacing: 4px;
-    padding: 2px 8px;
+    spacing: 2px;
+    padding: 4px 10px;
     border-bottom: 1px solid palette(mid);
 }
 QToolBar::separator {
     width: 1px;
-    margin: 6px 6px;
+    margin: 8px 12px;
     background: palette(mid);
+}
+QToolBar QToolButton {
+    padding: 5px;
+    margin: 0 1px;
+    border-radius: 6px;
+}
+QToolBar QToolButton:checked {
+    background: palette(button);
+    border: 1px solid palette(highlight);
 }
 QStatusBar {
     background: palette(window);
@@ -151,8 +160,9 @@ QDockWidget {
 }
 QDockWidget::title {
     background: palette(button);
-    padding: 5px 8px;
+    padding: 6px 10px;
     text-align: left;
+    font-weight: 700;
 }
 QTabWidget::pane {
     border: none;
@@ -164,6 +174,10 @@ QTabBar::tab {
     padding: 5px 12px;
     border: none;
     margin-right: 1px;
+    font-weight: 400;
+}
+QMainWindowTabBar::tab {
+    font-weight: 700;
 }
 QTabBar::tab:selected {
     color: palette(window-text);

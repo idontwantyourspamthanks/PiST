@@ -4709,12 +4709,13 @@ void TstGui::layoutPresetsHideDocksAndRestore()
     for (QToolButton *button : swatches->findChildren<QToolButton *>()) {
         const int cube = button->property("cube").toInt();
         if (cube == kTransparent) {
-            QCOMPARE(button->text(), QStringLiteral("0"));
+            QVERIFY(button->text().isEmpty());
             QCOMPARE(button->toolTip(), QStringLiteral("Erase"));
             sawErase = true;
-        } else if (!button->text().isEmpty()) {
-            QCOMPARE(button->text(), QString::number(cube));
+        } else {
+            QVERIFY(button->text().isEmpty());
             QVERIFY(button->toolTip().startsWith(QStringLiteral("Colour ")));
+            QVERIFY(button->toolTip().contains(QString::number(cube)));
             QVERIFY(button->toolTip().contains(QStringLiteral("—")));
             sawNumber = true;
         }

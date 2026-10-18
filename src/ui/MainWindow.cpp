@@ -2121,8 +2121,17 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         if (auto *tabBar = qobject_cast<QTabBar *>(watched);
             tabBar
             && QLatin1String(tabBar->metaObject()->className())
-                   == QLatin1String("QMainWindowTabBar"))
+                   == QLatin1String("QMainWindowTabBar")) {
             tabBar->setCursor(Qt::OpenHandCursor);
+            // The panel name is a dock title whether it is painted as a title
+            // bar or as one of these tabs. Document tabs stay at the regular
+            // weight; these are the names of the panels.
+            QFont font = tabBar->font();
+            if (!font.bold()) {
+                font.setBold(true);
+                tabBar->setFont(font);
+            }
+        }
         return QMainWindow::eventFilter(watched, event);
     }
 
@@ -2863,7 +2872,7 @@ void MainWindow::createToolBar()
 {
     auto *bar = addToolBar(tr("Main"));
     bar->setObjectName(QStringLiteral("mainToolBar"));
-    bar->setIconSize(QSize(20, 20));
+    bar->setIconSize(QSize(22, 22));
     bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     bar->setFloatable(false);
     bar->addAction(m_actOpen);

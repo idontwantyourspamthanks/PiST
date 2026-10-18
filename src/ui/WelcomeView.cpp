@@ -6,6 +6,7 @@
 
 #include "ui/Appearance.h"
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -55,9 +56,11 @@ protected:
     {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        QColor fill = palette().color(QPalette::Base);
-        fill.setAlpha(underMouse() ? 235 : 210);
-        const QColor border = palette().color(underMouse() ? QPalette::Highlight : QPalette::Mid);
+        // Opaque. A translucent card lets the plate show through, and in the
+        // light theme that turns the file name into dark type on the machine.
+        const QPalette app = QApplication::palette();
+        const QColor fill = app.color(underMouse() ? QPalette::AlternateBase : QPalette::Base);
+        const QColor border = app.color(underMouse() ? QPalette::Highlight : QPalette::Mid);
         painter.setPen(QPen(border, 1));
         painter.setBrush(fill);
         painter.drawRoundedRect(QRectF(rect()).adjusted(1, 1, -2, -2), 8, 8);
@@ -68,7 +71,7 @@ protected:
         QFont title = font();
         title.setBold(true);
         painter.setFont(title);
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(app.color(QPalette::Text));
         if (!twoLines) {
             painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, text());
             return;
@@ -292,6 +295,8 @@ void WelcomeView::applyAppearance()
         rule.setColor(QPalette::Window, palette().color(QPalette::Highlight));
         m_rule->setPalette(rule);
     }
+    for (QToolButton *row : findChildren<QToolButton *>(QStringLiteral("welcomeRow")))
+        row->update();
     update();
 }
 

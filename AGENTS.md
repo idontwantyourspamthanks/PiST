@@ -131,7 +131,9 @@ code. Use this table for a quick lookup:
   `release: <version>` and tag `v<version>` — but tag only a commit whose CI run has finished green.
   The release workflow's `await-ci` job blocks packaging until the CI workflow has passed that exact
   commit, and refuses a tag on a commit that never reached master: push master, wait for CI, then
-  push the tag.
+  push the tag. When the integration branch carries the version's name (0.10.0 was developed on a
+  branch called `v0.10.0`), `git push origin v0.10.0` refuses — the name matches both the branch and
+  the tag — so push `refs/tags/v0.10.0`.
 - **Tests:** add one only where a plausible bug would fail it; assert observable behaviour, not
   implementation. Match the existing QTest style. Do not write tests so a change "has tests".
 - **Style:** follow the surrounding code. Qt parent-child ownership; `tr()` for user-facing strings;

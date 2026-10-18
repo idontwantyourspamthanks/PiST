@@ -138,6 +138,14 @@ QToolBar QToolButton:checked {
     background: palette(button);
     border: 1px solid palette(highlight);
 }
+QToolBar QToolButton#buildToolButton {
+    padding: 4px 12px 4px 6px;
+}
+QToolBar QToolButton#buildToolButton::menu-button {
+    width: 14px;
+    border: none;
+    background: transparent;
+}
 QStatusBar {
     background: palette(window);
     border-top: 1px solid palette(mid);

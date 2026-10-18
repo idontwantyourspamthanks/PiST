@@ -2885,6 +2885,8 @@ void MainWindow::createToolBar()
     // arguments (F7), and its arrow offers the Release build too — one icon, no
     // second near-identical one to tell apart.
     if (auto *buildButton = qobject_cast<QToolButton *>(bar->widgetForAction(m_actBuild))) {
+        buildButton->setObjectName(QStringLiteral("buildToolButton"));
+        buildButton->setMinimumWidth(46);
         auto *buildChoices = new QMenu(buildButton);
         buildChoices->addAction(m_actBuild);
         buildChoices->addAction(m_actBuildRelease);

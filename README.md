@@ -14,9 +14,9 @@ Write 68000 assembly, assemble it, run it in an emulator, and debug it — witho
 editor. `PiST` bundles the pieces that are otherwise scattered across a text editor, a build
 script, a terminal, a debugger and an emulator, and presents them as one tool.
 
-![PiST with hello.s open — editor, project files with disks, breakpoint and memory panes](docs/screenshots/ide.png)
+![PiST debugging hello.s — the editor, the ST's screen in the emulator panel, project files and git](docs/screenshots/ide.png)
 
-![The sprite editor: pixel grid, ST palette, frames and phases](docs/screenshots/sprite-editor.png)
+![The sprite editor, painting on the ST palette, with the emulator still running beside it](docs/screenshots/sprite-editor.png)
 
 > **Status: early, and usable.** The full loop works — write, assemble, run under Hatari, and
 > debug with breakpoints, stepping, registers, memory, disassembly, watchpoints, a stack
@@ -138,6 +138,9 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
     Profile Start/Stop manually across several stops). Results land as a routines tree
     (counts *and* cycles, with milliseconds and frames), the OS's share as a TOS/ROM row,
     and heat in the editor gutter
+- **Crash reports** — off until you turn them on. A crash of PiST, not of the program you are
+  debugging, can send a stack and a session phase on the next launch. Nothing from your source
+  goes with it ([below](#crash-reports))
 - **Movable, tabbed debug panels** — arrange the views and the emulator display however you like;
   a hand cursor marks the drag surfaces (drag a title bar to move a panel between areas, drag a tab
   to rearrange), or right-click for a "Move to" menu. The layout persists. View → Layout applies
@@ -151,6 +154,37 @@ fork, the macOS app carrying the fork's Homebrew dylib closure inside the bundle
 On a machine with no assembler or ROM, the first run offers a **guided setup**: a
 checksum-pinned vasm source build and an EmuTOS download, each named with its URL and checksum
 before anything is fetched. The button at the bottom of Project Settings reopens it.
+
+## Crash reports
+
+A crash of PiST can send a short report, so a fault in the IDE can be fixed. Nothing is sent
+until you ask, and a crash of the program you are debugging is not one of these: the 68000
+faulting inside Hatari is the session, and it stays on your machine.
+
+The switch is **File ▸ Project Settings…** (**Ctrl+,**), on the **Appearance** tab, under
+**Crash reports**: "Send a stack and the session phase when PiST crashes".
+
+![Project Settings, Appearance, with crash reports switched on](docs/screenshots/crash-reports.png)
+
+Leave it off and the record is never posted. Turn it on and the **next** launch after a crash
+sends it. The crash itself does not open a network connection.
+
+What leaves the machine is a small fixed record, and only that:
+
+- the signal (`SIGSEGV`, `SIGABRT`, and the like)
+- the PiST version, the operating system, the CPU architecture, how the build was packaged, and
+  the Qt version
+- a stack of the PiST thread that crashed
+- a few session-phase labels the IDE wrote itself, such as `build` or `run`
+
+It is not a minidump, and the handler does not go and read anything. Your source, your project,
+the debugger's console, the emulated machine's registers, your environment and your settings are
+not in it. The phase labels are words the IDE logs, not text from the editor. A frame in the
+stack can name the path of the PiST binary or of a library it had loaded; that is the process
+that crashed, not a copy of your files.
+
+The record goes to the project's own report desk at `pistapi.kswapps.com`. Linux and macOS
+capture it. The Windows build does not install the handler yet.
 
 ## Target platform
 

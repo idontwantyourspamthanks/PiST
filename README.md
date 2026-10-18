@@ -43,8 +43,8 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
 - **Editor** with m68k Motorola-syntax highlighting, error markers and the current execution line,
   find/replace (**Ctrl+F** / **Ctrl+H**, F3 and Shift+F3, match highlighting as you type,
   match-case and whole-word options, and a hit counter that admits its cap — past 2000 it reads
-  "N of more than 2000" rather than counting on), completion as you type (**Ctrl+Space** for the
-  whole list: mnemonics, directives, and the build's labels and equates), a **Go to Symbol** palette
+  "N of more than 2000" rather than counting on), completion as you type (**Ctrl+Space**, or **Tab**
+  on a word: mnemonics, directives, and the build's labels and equates), a **Go to Symbol** palette
   (**Ctrl+Shift+O**), a hover card for any mnemonic, TOS call or label ([below](#completion-the-symbol-palette-and-the-hover-card)),
   **Ctrl+click** to open an `include` or jump to a label,
   and a searchable **68000 instruction + TOS system-call reference** dock that follows
@@ -499,12 +499,14 @@ the build's labels and equates with where they are defined. Because the list is
 built once and read three ways, the popup, the palette and the hover cannot
 disagree about the assembler.
 
-- **Completion** appears as you type a word (**Ctrl+Space** asks for the whole
-  list) and filters what the word so far could become, prefixes before mere
-  substrings. **Tab** or **Return** takes the highlighted candidate and replaces
-  the word at the caret, not the line; **Up**/**Down** walk the list and
-  **Escape** dismisses it. A comment is prose and offers nothing, and a word
-  already typed in full is not offered back.
+- **Completion** appears as you type a word (**Ctrl+Space**, or **Tab** on a word
+  that has candidates, asks for it explicitly) and filters what the word so far
+  could become, prefixes before mere substrings. The list is drawn inside the
+  editor, under the caret — never a separate window — so it is on screen wherever
+  the editor is. **Tab** or **Return** takes the highlighted candidate and
+  replaces the word at the caret, not the line; **Up**/**Down** walk the list and
+  **Escape** dismisses it. Tab anywhere else still indents, a comment is prose and
+  offers nothing, and a word already typed in full is not offered back.
 - **Go to Symbol** (**Ctrl+Shift+O**, or Search ▸ Go to Symbol…) is the same list
   as a jump list: type to filter, **Enter** opens the definition's file at its
   line. It needs a build, not a run — the definitions come from the listing.

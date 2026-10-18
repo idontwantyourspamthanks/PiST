@@ -9003,6 +9003,22 @@ void TstGui::editorCompletionOffersTheVocabularyAndTakesACandidate()
     QVERIFY2(candidates.first().startsWith(QStringLiteral("mov")),
              qPrintable(candidates.first()));
 
+    // ...and it stays open while the word grows. A completer attached with
+    // setWidget() to a widget that is not a QLineEdit hides its own popup on the
+    // next keystroke unless its widget filter is removed; the popup is therefore
+    // re-checked after each character, not only after the first.
+    QTest::keyClicks(&editor, QStringLiteral("e"));
+    QTest::qWait(50);
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove"));
+    QVERIFY2(editor.completionVisible(), "a second word character keeps the list open");
+
+    // The list is a child of the editor, not a window of its own: a `Qt::Popup` is
+    // a surface the window system places, and under Wayland one positioned by a
+    // global move can be dismissed instead — visible in a test, invisible in use.
+    auto *list = editor.findChild<QListView *>(QStringLiteral("completionList"));
+    QVERIFY(list);
+    QVERIFY2(!list->isWindow(), "the completion list must be a child widget, not a popup");
+
     // Tab takes one: the word at the caret is replaced, not the line.
     QTest::keyClick(&editor, Qt::Key_Tab);
     QVERIFY(!editor.completionVisible());
@@ -9057,6 +9073,39 @@ void TstGui::editorCompletionOffersTheVocabularyAndTakesACandidate()
     QCOMPARE(editor.completionCandidates().first(), QStringLiteral("counter"));
     QTest::keyClick(&editor, Qt::Key_Return);
     QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove.w\tcounter"));
+
+    // Tab asks for the list when it is not showing: mid-word on a word with
+    // candidates it opens the list, and the next Tab takes the match. (The list
+    // above carried `counter`, which is the only candidate for `cou`.)
+    editor.setPlainText(QStringLiteral("\tmove.w\tcou"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QVERIFY2(!editor.completionVisible(), "nothing is offering until Tab asks");
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QTRY_VERIFY2_WITH_TIMEOUT(editor.completionVisible(), "Tab opens the list mid-word", 2000);
+    QCOMPARE(editor.completionCandidates().first(), QStringLiteral("counter"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\tmove.w\tcounter"));
+    QVERIFY(!editor.completionVisible());
+
+    // ...and everywhere else Tab still indents: the start of a line has no word to
+    // complete...
+    editor.setPlainText(QString());
+    cursor = editor.textCursor();
+    editor.setTextCursor(cursor);
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QVERIFY2(!editor.completionVisible(), "nothing to complete at the start of a line");
+    QCOMPARE(editor.toPlainText(), QStringLiteral("\t"));
+
+    // ...and neither does a comment, which is prose.
+    editor.setPlainText(QStringLiteral("; cou"));
+    cursor = editor.textCursor();
+    cursor.movePosition(QTextCursor::End);
+    editor.setTextCursor(cursor);
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QVERIFY2(!editor.completionVisible(), "no completion inside a comment");
+    QCOMPARE(editor.toPlainText(), QStringLiteral("; cou\t"));
 }
 
 // Find in Files reads the project as text and lists what it found, grouped by

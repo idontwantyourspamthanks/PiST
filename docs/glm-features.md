@@ -307,14 +307,23 @@ Three surfaces over the *same* model:
   another in a tooltip. The dock's word now comes from `asmlex`'s token alphabet
   instead of a private loop, so a label keeps its underscore — a small fix the
   shared rule brought with it.
-- **The popup is driven by hand, from `ConsoleInput`'s conventions.** QCompleter
-  supplies the model, the popup and the filtering; the prefix, the keys and the
-  placement are ours. Two quirks cost a measurement each: a completer attached
-  with `setWidget()` to anything that is not a `QLineEdit` **hides its own popup
-  on the next keystroke** — it cannot read the word being typed, decides the
-  prefix is empty and hides — so its widget filter is removed; and its generic
-  popup placement is the *widget's* bottom edge, so the popup is moved under the
-  caret on every show.
+- **The list is drawn inside the editor, and the prefix, keys and placement are
+  ours** (amended 2026-10-18). It began as a `QCompleter`, which brought two
+  quirks that cost a measurement each — a completer attached with `setWidget()` to
+  anything that is not a `QLineEdit` hides its own popup on the next keystroke, and
+  its generic placement is the *widget's* bottom edge. Both were worked around,
+  and then the whole thing went: the completer's popup is a `Qt::Popup`, a surface
+  of its own, and under Wayland (where a popup is positioned relative to its
+  parent) the global move that put it under the caret is not something the
+  compositor honours — the list could be "visible" in a test and invisible in use.
+  It is now a `QListView` **child of the viewport**, which is simply drawn inside
+  the editor wherever the editor is, and which never takes the keyboard, so every
+  completion key arrives in `keyPressEvent` on every platform.
+- **Tab asks for the list when it is not showing** (added 2026-10-18): on a word
+  with candidates it opens the list, preselected; on a word it is already showing
+  it takes the candidate, as before; at the start of a line, inside a comment or on
+  a word nothing knows, it still indents. `Ctrl+Space` remains the explicit ask
+  from anywhere.
 - **The palette is a jump list, not a report.** **Ctrl+Shift+O** (Search ▸ Go to
   Symbol…) opens a non-modal list of the build's labels and equates with their
   definitions — only symbols with a definition, because a row that cannot jump is

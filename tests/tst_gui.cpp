@@ -3992,13 +3992,15 @@ void TstGui::dockTitleBarMoveMenuMovesDock()
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
-    // Factory layout tabs Git with Project files, and a tabbed dock has no
-    // painted title bar. Split Git off so this test still presses that bar.
+    // The factory layout tabs Git and Find in Files with Project files, and a
+    // tabbed dock has no painted title bar. Split everything tabbed with it off,
+    // rather than naming today's companions, so a layout change does not bring
+    // this precondition down again.
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
-    auto *git = window.findChild<QDockWidget *>(QStringLiteral("gitDock"));
     QVERIFY(dock);
-    if (git)
-        window.addDockWidget(Qt::RightDockWidgetArea, git);
+    const QList<QDockWidget *> tabbed = window.tabifiedDockWidgets(dock);
+    for (QDockWidget *other : tabbed)
+        window.addDockWidget(Qt::RightDockWidgetArea, other);
     QVERIFY(window.tabifiedDockWidgets(dock).isEmpty());
     QVERIFY(window.dockWidgetArea(dock) != Qt::BottomDockWidgetArea);
 

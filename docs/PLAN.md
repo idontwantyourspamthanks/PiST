@@ -1422,6 +1422,21 @@ load-bearing dependency — which the detection order above already guarantees.
   `ok` exactly — a reminder that a single-line reply's *text* is an interface, and that the
   document of record for the verbs is `ControlProtocol.h`'s table, not the tests.
 
+- **A `Qt::Popup` cannot be moved under Wayland, which is how a completion list is
+  invisible in use and green in the suite** (2026-10-18, `feature/completion`). The
+  editor's completion list began as `QCompleter`'s popup — a `Qt::Popup`, i.e. a
+  surface of its own — positioned with `move(mapToGlobal(caret))`. Under Wayland a
+  popup is an `xdg_popup` the compositor places *relative to its parent*, so a global
+  move is not honoured and the surface can be dismissed outright; the offscreen
+  platform used by every test has no compositor at all, so `isVisible()` was true
+  there and the list never appeared on screen. The list is now a `QListView` child of
+  the viewport: drawn inside the editor, positioned in the viewport's own
+  coordinates, and impossible for the window system to take away. Two consequences
+  worth keeping — the keys never leave the editor (so a headless run and a real one
+  take the same path, and the `eventFilter` that existed only to catch a popup's keys
+  is gone), and a click in the text dismisses the list because the caret has moved
+  away from the word it was offering.
+
 - **Qt's `arg` overload set grows between minor versions** (2026-10-17, `feature/watchpoint-symbols`).
   `QStringLiteral("%1.%2").arg(symbol, QLatin1Char(width))` compiles against the development
   machine's Qt 6.10.2 and has **no overload** in the 6.8.1 the CI pins — it failed on gcc, clang and
@@ -1806,6 +1821,12 @@ requirements:
   "Tested"; a rewrite that searches for the first occurrence takes §1's and silently drops every
   section after it. That is exactly how sections 2–6 were lost in one edit, and the loss is only
   visible by counting the headings afterwards.
+- Never build an in-editor popup as a `Qt::Popup` window. It is a surface of its own, and under
+  Wayland the compositor positions it relative to its parent: a global `move()` is not honoured and
+  it can be dismissed on show — while the offscreen platform every test uses has no compositor, so
+  the test passes and the feature is invisible in use. Make it a child widget of the viewport,
+  positioned in the widget's own coordinates; then it renders wherever the editor does, the keys
+  never leave the text widget, and the two paths are the same one.
 - The CI's pinned Qt is the floor, not the local one. Build locally against something newer and
   the compiler happily accepts APIs the pinned version lacks — a two-argument
   `QString::arg(QString, QChar)` is the case that cost a CI round (chain the calls instead). When

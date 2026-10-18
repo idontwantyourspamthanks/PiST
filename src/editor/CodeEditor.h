@@ -14,8 +14,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 
-class QAbstractItemView;
-class QCompleter;
+class QListView;
 class QFrame;
 class QLabel;
 class QLineEdit;
@@ -193,8 +192,8 @@ public slots:
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
-    bool event(QEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
 
 private slots:
@@ -217,18 +216,19 @@ private:
     void buildFindBar();
     void buildGotoBar();
     void buildCompletions();
-    /// Refresh the popup for the word at the caret. `explicitRequest` is
-    /// Ctrl+Space, which offers the whole list even with nothing typed yet.
+    /// Refresh the list for the word at the caret. `explicitRequest` is
+    /// Ctrl+Space or Tab, which offer the list even with nothing typed yet.
     void showCompletions(bool explicitRequest);
     void hideCompletions();
-    /// Put the popup under the caret: QCompleter places one for a line edit and
-    /// would put this at the editor's bottom edge.
-    void placeCompletionPopup();
-    /// Take the key the popup owns (Tab/Return accept, Up/Down move, Escape
-    /// dismisses) — from the popup's filter, or from event() when the popup could
-    /// not take the keyboard.
+    /// Put the list under the caret, inside the viewport: below it when it fits,
+    /// above it when it does not. Coordinates are the viewport's, because the list
+    /// is a child of it.
+    void placeCompletionList();
+    /// Take the key the list owns (Tab/Return accept, Up/Down move, Escape
+    /// dismisses). The list never takes the keyboard, so every key arrives here
+    /// and a headless run behaves like a real one.
     bool completionKey(QKeyEvent *key);
-    /// Replace the word the popup was completing with `word`.
+    /// Replace the word the list was completing with `word`.
     void insertCompletion(const QString &word);
     /// The word characters immediately before the caret — what a candidate would
     /// replace — and empty inside a comment, where completion is noise.
@@ -295,10 +295,14 @@ private:
     QString m_lastError;
 
     CompletionModel m_completions;
-    QCompleter *m_completer = nullptr;
-    QStringListModel *m_completionWords = nullptr;
-    /// The completer's popup, which the completer owns and deletes with itself.
-    QPointer<QAbstractItemView> m_completionPopup;
+    /// The candidate list, as a child of the viewport rather than a popup window:
+    /// a `Qt::Popup` is a surface of its own that the window system places (and,
+    /// under Wayland, positions relative to its parent or dismisses outright), so
+    /// it can be on screen in tests and invisible in use. A child widget is drawn
+    /// inside the editor wherever the editor is, and never takes the keyboard
+    /// away from the text.
+    QListView *m_completionList = nullptr;
+    QStringListModel *m_completionRows = nullptr;
 
     QFrame *m_findBar = nullptr;
     QWidget *m_replaceRow = nullptr;

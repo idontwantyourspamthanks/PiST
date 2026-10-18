@@ -9,6 +9,7 @@
 #include "ui/MainWindow.h"
 #include "ui/Appearance.h"
 #include "control/RemoteControl.h"
+#include "support/CrashReport.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -153,6 +154,11 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("PiST"));
     QApplication::setApplicationVersion(QStringLiteral(PIST_VERSION));
     QApplication::setOrganizationName(QStringLiteral("PiST"));
+
+    // After the name is set, so the cache path matches the one a crash will use.
+    // The handler is not installed under the tests: they have their own main.
+    pist::crash::arm();
+    pist::crash::uploadPending();
 
     // Before anything else touches the style: applyTheme() captures the
     // platform's own style and palette here so the "system" preference can

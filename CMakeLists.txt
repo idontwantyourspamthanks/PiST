@@ -124,11 +124,13 @@ function(pist_module name)
     target_compile_definitions(${name} PUBLIC "PIST_VERSION=\"${PROJECT_VERSION}\"")
 endfunction()
 
-# support/ — the leaf utilities the whole graph may use. One rule lives here so
-# far: how a file is written so that a failed write cannot destroy what the user
-# already had. Qt6::Core, no module edges of its own, so it sits under the graph
-# the way model/ does.
+# support/ — the leaf utilities the whole graph may use. How a file is written
+# so that a failed write cannot destroy what the user already had, and the crash
+# record that is posted on the next launch. Qt6::Core and Qt6::Network, no
+# module edges of its own, so it sits under the graph the way model/ does.
 pist_module(pist_support
+    src/support/CrashReport.cpp
+    src/support/CrashReport.h
     src/support/DocumentWatcher.cpp
     src/support/DocumentWatcher.h
     src/support/FileWrite.cpp
@@ -404,7 +406,7 @@ qt_add_resources(pist_ui welcome_plate
 # image, build, debug, emu, model, project, toolchain and git stay widget-free:
 # they link Qt6::Core / Qt6::Gui / Qt6::Network and never Qt6::Widgets.
 target_link_libraries(pist_model PUBLIC Qt6::Core)                 # the machine vocabulary: QtCore only
-target_link_libraries(pist_support PUBLIC Qt6::Core)               # the write-once-safely rule: QtCore only
+target_link_libraries(pist_support PUBLIC Qt6::Core Qt6::Network) # file writes, and the crash-report POST
 target_link_libraries(pist_image PUBLIC Qt6::Gui pist_support)     # QImage/QColor in the codecs and the document; .pim and ST exports save through files::write
 target_link_libraries(pist_build PUBLIC Qt6::Core pist_support)    # subprocess + parsed text only; saveRaw writes the user's floppy image
 target_link_libraries(pist_debug PUBLIC Qt6::Core pist_build)      # Breakpoint.h includes build/LineMap.h + ProgramLineMap.h
@@ -815,6 +817,14 @@ qt_add_executable(tst_watcher
 )
 target_link_libraries(tst_watcher PRIVATE pist_support Qt6::Test)
 pist_add_test(watcher)
+
+# The crash record: allowlisted JSON, a breadcrumb that stays one line, and the
+# opt-in staying off. No signal is raised and nothing is posted.
+qt_add_executable(tst_crash
+    tests/tst_crash.cpp
+)
+target_link_libraries(tst_crash PRIVATE pist_support Qt6::Test)
+pist_add_test(crash)
 set_tests_properties(watcher PROPERTIES TIMEOUT 120)
 
 # First-run fetch/install: checksum verification, archive extraction, and the
@@ -903,7 +913,7 @@ set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 # every test target - it had drifted once (tst_oscall and tst_profile missing),
 # which on Windows left those two GUI-subsystem with a detached stdout: the
 # test runs, fails, and reports nothing at all (MIN-62).
-foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_stophooks tst_link tst_settings tst_watcher tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
+foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_stophooks tst_link tst_settings tst_watcher tst_crash tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

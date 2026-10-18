@@ -5,6 +5,7 @@
 #include "ui/SettingsDialog.h"
 
 #include "emu/TosRom.h"
+#include "support/CrashReport.h"
 #include "ui/Appearance.h"
 #include "ui/FileBrowser.h"
 #include "ui/GalleryCard.h"
@@ -13,6 +14,7 @@
 #include "ui/EmuAudio.h"
 
 #include <QAudioDevice>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QMediaDevices>
@@ -567,6 +569,14 @@ void SettingsDialog::buildUi()
         m_audioOutput->setCurrentIndex(index);
     }
     soundForm->addRow(tr("Audio output:"), m_audioOutput);
+
+    QFormLayout *reportForm = nullptr;
+    appearancePage->addWidget(formSection(tr("Crash reports"), appearanceTab, &reportForm));
+    m_crashReports = new QCheckBox(
+        tr("Send a stack and the session phase when PiST crashes"), appearanceTab);
+    m_crashReports->setObjectName(QStringLiteral("crashReports"));
+    m_crashReports->setChecked(crash::reportsEnabled());
+    reportForm->addRow(m_crashReports);
     appearancePage->addStretch(1);
 
     tabs->addTab(scrollableTab(appearanceTab), tr("Appearance"));
@@ -610,6 +620,7 @@ void SettingsDialog::accept()
                          m_shortcutScheme->currentData().toString());
     QSettings().setValue(QLatin1String(pist::kAudioOutputDeviceKey),
                          m_audioOutput->currentData().toByteArray());
+    crash::setReportsEnabled(m_crashReports->isChecked());
     QDialog::accept();
 }
 

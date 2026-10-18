@@ -189,7 +189,7 @@ which is the state this feature changed.
 
 ### The design
 
-A dock in the Problems pane's group: a query line, a scope (the project
+A dock, now the second tab of the project-files group (it first shipped beside Problems): a query line, a scope (the project
 directory; per-file is what the editor already does), and results grouped by
 file, line number, and the matching span highlighted — double-click opens at
 the line, F4 / Shift+F4 tours them, consistent with the build-diagnostics that

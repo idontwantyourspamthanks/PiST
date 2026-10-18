@@ -1079,7 +1079,8 @@ now Delete…, Rename… and create a New Folder… inside a mounted image, as t
 confirm/resync preamble, with a name the disk already shows refused rather than numbered. The
 add/edit/remove core the sheet verified as already delivered is unchanged.
 
-**Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock beside Problems backed
+**Find in Files** (sheet §3) is delivered on `feature/find-in-files`: a dock in the project-files
+group (Project files, then Find in Files, then Git) backed
 by `ui/FindInFiles` (a chunked, cancellable walk of the project directory) and `ui/FindInFilesView`,
 with the scan itself shared with the editor's find bar through the new `editor/FindScan` — which
 makes the sheet's "count the same way in both places" a property of the code rather than a promise.

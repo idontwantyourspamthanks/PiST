@@ -122,7 +122,7 @@ FindInFilesView::FindInFilesView(QWidget *parent)
     m_scopeLabel = new QLabel(this);
     m_scopeLabel->setObjectName(QStringLiteral("findInFilesScope"));
     m_scopeLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_scopeLabel->setWordWrap(false);
+    m_scopeLabel->setWordWrap(true);
 
     m_status = new QLabel(this);
     m_status->setObjectName(QStringLiteral("findInFilesStatus"));
@@ -135,6 +135,8 @@ FindInFilesView::FindInFilesView(QWidget *parent)
     m_results->setUniformRowHeights(true);
     m_results->setItemDelegateForColumn(1, new MatchSpanDelegate(m_results));
     m_results->header()->setStretchLastSection(true);
+    m_results->header()->setMinimumSectionSize(48);
+    m_results->setTextElideMode(Qt::ElideMiddle);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
@@ -263,15 +265,9 @@ void FindInFilesView::activate(QTreeWidgetItem *item)
 
 QSize FindInFilesView::sizeHint() const
 {
-    // A dock body's sizeHint is what the bottom group is sized by, and that group
-    // is a strip: this asks for its own controls and a few result rows — the list
-    // itself scrolls, and takes whatever height it is given.
-    const int rowHeight = m_results->sizeHintForRow(0) > 0 ? m_results->sizeHintForRow(0)
-                                                           : fontMetrics().height();
-    const int height = m_query->sizeHint().height() + m_scopeLabel->sizeHint().height()
-                       + m_status->sizeHint().height() + m_results->header()->sizeHint().height()
-                       + 4 * rowHeight;
-    return QSize(QWidget::sizeHint().width(), height);
+    // The left group starts from this width (applyFactoryDockSizes pins it).
+    // Height is whatever the column has; the result list scrolls.
+    return QSize(280, 420);
 }
 
 bool FindInFilesView::eventFilter(QObject *watched, QEvent *event)

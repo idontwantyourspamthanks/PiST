@@ -5217,9 +5217,11 @@ void TstGui::gitDockStaysUnderProjectFiles()
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
     auto *git = window.findChild<QDockWidget *>(QStringLiteral("gitDock"));
+    auto *find = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
     auto *project = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
-    QVERIFY(git && project);
+    QVERIFY(git && find && project);
     QCOMPARE(window.dockWidgetArea(git), window.dockWidgetArea(project));
+    QCOMPARE(window.dockWidgetArea(find), window.dockWidgetArea(project));
 
     auto *blame = window.findChild<QAction *>(QStringLiteral("gitBlameAction"));
     QVERIFY(blame && blame->isCheckable());
@@ -5232,16 +5234,20 @@ void TstGui::gitDockStaysUnderProjectFiles()
             bool sawProject = false;
             bool sawGit = false;
             int projectAt = -1;
+            int findAt = -1;
             int current = bar->currentIndex();
             for (int i = 0; i < bar->count(); ++i) {
                 if (bar->tabText(i) == QLatin1String("Project files") && bar->isTabVisible(i)) {
                     sawProject = true;
                     projectAt = i;
                 }
+                if (bar->tabText(i) == QLatin1String("Find in Files") && bar->isTabVisible(i))
+                    findAt = i;
                 if (bar->tabText(i) == QLatin1String("Git") && bar->isTabVisible(i))
                     sawGit = true;
             }
-            if (sawProject && sawGit)
+            // Project files, then Find in Files, with Project files showing.
+            if (sawProject && sawGit && findAt == projectAt + 1)
                 return projectAt == current;
         }
         return false;
@@ -5259,6 +5265,7 @@ void TstGui::gitDockStaysUnderProjectFiles()
     sprite->trigger();
     QVERIFY(project->isHidden());
     QVERIFY(git->isHidden());
+    QVERIFY(find->isHidden());
     // The tab bar drops a removed dock on the next layout pass.
     QTest::qWait(0);
     QStringList gitTabs;
@@ -5266,8 +5273,10 @@ void TstGui::gitDockStaysUnderProjectFiles()
         if (!bar->isVisible())
             continue;
         for (int i = 0; i < bar->count(); ++i) {
-            if (bar->tabText(i) == QLatin1String("Git") && bar->isTabVisible(i))
-                gitTabs << QStringLiteral("%1 (bar %2)").arg(bar->tabText(i)).arg(bar->isVisible());
+            const QString tab = bar->tabText(i);
+            if ((tab == QLatin1String("Git") || tab == QLatin1String("Find in Files"))
+                && bar->isTabVisible(i))
+                gitTabs << QStringLiteral("%1 (bar %2)").arg(tab).arg(bar->isVisible());
         }
     }
     QVERIFY2(gitTabs.isEmpty(), qPrintable(gitTabs.join(QStringLiteral(", "))));
@@ -9208,7 +9217,11 @@ void TstGui::findInFilesSearchesTheProjectAndNavigates()
 
     MainWindow window;
     auto *dock = window.findChild<QDockWidget *>(QStringLiteral("findInFilesDock"));
-    QVERIFY2(dock, "Find in Files is a dock beside Problems");
+    QVERIFY2(dock, "Find in Files is a dock in the project-files group");
+    QCOMPARE(window.dockWidgetArea(dock), Qt::LeftDockWidgetArea);
+    auto *projectDock = window.findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
+    QVERIFY(projectDock);
+    QVERIFY(window.tabifiedDockWidgets(projectDock).contains(dock));
     auto *results = dock->findChild<QTreeWidget *>(QStringLiteral("findInFilesResults"));
     auto *query = dock->findChild<QLineEdit *>(QStringLiteral("findInFilesQuery"));
     auto *status = dock->findChild<QLabel *>(QStringLiteral("findInFilesStatus"));

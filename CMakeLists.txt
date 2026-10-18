@@ -374,6 +374,8 @@ pist_module(pist_ui
     src/ui/NewImageDialog.h
     src/ui/NewFileDialog.cpp
     src/ui/NewFileDialog.h
+    src/ui/GalleryCard.cpp
+    src/ui/GalleryCard.h
     src/ui/NewFileSpec.cpp
     src/ui/NewFileSpec.h
     src/ui/FileTemplates.cpp
@@ -386,6 +388,14 @@ pist_module(pist_ui
     src/ui/WelcomeView.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
+)
+
+# The welcome plate. A static library drops an unreferenced resource object,
+# so WelcomeView calls Q_INIT_RESOURCE(welcome_plate).
+qt_add_resources(pist_ui welcome_plate
+    PREFIX "/pist"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources/welcome"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/welcome/desk.png"
 )
 
 # ---------------------------------------------------------------------------

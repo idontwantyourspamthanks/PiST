@@ -45,10 +45,8 @@ public:
     /// Put the caret in the query field, for the Search menu's entry.
     void focusQuery();
 
-    /// The dock's controls plus a few rows: the factory layout sizes the whole
-    /// bottom group from its docks' size hints and that group is meant to be a
-    /// strip (`MainWindow::applyFactoryDockSizes()` explains why it is not sized
-    /// by hand), so this body must not claim the height of a list that scrolls.
+    /// A sidebar's width, not a bottom strip's height. The list scrolls for
+    /// whatever height the project-files group is given.
     QSize sizeHint() const override;
 
 protected:

@@ -2276,21 +2276,34 @@ void MainWindow::buildPanels()
     QList<QDockWidget *> debugTabs;
 
     // --- left: project navigation --------------------------------------------
+    // One group, in this order: Project files, Find in Files, Git. Project
+    // files stays on top. Find in Files is present on a first run (Search ▸
+    // Find in Files raises it); it is not a debug dock, so the factory hide
+    // loop leaves the group here. Sprite hides the whole group.
     m_fileBrowser = new FileBrowser(this);
-    addDockWidget(Qt::LeftDockWidgetArea,
-                  makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser));
+    auto *projectDock =
+        makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser);
+    addDockWidget(Qt::LeftDockWidgetArea, projectDock);
 
-    // Tabbed with Project files, and not raised: tabify would put Git on top,
-    // and a first run is the project-files picture. Not a debug dock, so the
-    // factory hide loop leaves it here. Sprite hides it with the project pane.
+    m_findInFiles = new FindInFilesView(this);
+    m_findInFiles->navigate = [this](const QString &path, int line, int column, int length) {
+        if (!navigateToSourceLine(path, line))
+            return;
+        // The caret is on the line now, and marking the match itself is the
+        // rest of what "take me to that hit" means.
+        if (m_editor)
+            m_editor->selectSpan(line, column, length);
+    };
+    m_findInFilesDock =
+        makeDock(tr("Find in Files"), QStringLiteral("findInFilesDock"), m_findInFiles);
+    addDockWidget(Qt::LeftDockWidgetArea, m_findInFilesDock);
+    tabifyDockWidget(projectDock, m_findInFilesDock);
+
     m_gitPanel = new GitPanel(this);
-    auto *projectDock = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
     m_gitDock = makeDock(tr("Git"), QStringLiteral("gitDock"), m_gitPanel);
     addDockWidget(Qt::LeftDockWidgetArea, m_gitDock);
-    if (projectDock) {
-        tabifyDockWidget(projectDock, m_gitDock);
-        projectDock->raise();
-    }
+    tabifyDockWidget(projectDock, m_gitDock);
+    projectDock->raise();
 
     // --- right, top: the emulator display, which wants to be prominent --------
     // Hidden until a media session engages it (docs/PLAN.md §12): with no
@@ -2411,23 +2424,6 @@ void MainWindow::buildPanels()
         makeDock(tr("Build & debug console"), QStringLiteral("consoleDock"), consoleWidget);
     addDockWidget(Qt::BottomDockWidgetArea, consoleDock);
     tabifyDockWidget(m_problemsDock, consoleDock);
-
-    // Find in Files joins the same group: it is the same shape of answer as
-    // Problems — a list of places to go to — asked of the whole project rather
-    // than of one build.
-    m_findInFiles = new FindInFilesView(this);
-    m_findInFiles->navigate = [this](const QString &path, int line, int column, int length) {
-        if (!navigateToSourceLine(path, line))
-            return;
-        // The caret is on the line now, and marking the match itself is the
-        // rest of what "take me to that hit" means.
-        if (m_editor)
-            m_editor->selectSpan(line, column, length);
-    };
-    m_findInFilesDock =
-        makeDock(tr("Find in Files"), QStringLiteral("findInFilesDock"), m_findInFiles);
-    addDockWidget(Qt::BottomDockWidgetArea, m_findInFilesDock);
-    tabifyDockWidget(m_problemsDock, m_findInFilesDock);
 
     // The first memory pane (tag 0) tabs onto this group; more can be added
     // from its "+" button.
@@ -2626,6 +2622,7 @@ void MainWindow::buildViewMenu()
         // by being left out of the list.
         const QStringList preferred = {
             QStringLiteral("projectFilesDock"),
+            QStringLiteral("findInFilesDock"),
             QStringLiteral("gitDock"),
             QStringLiteral("emulatorDisplayDock"),
             QStringLiteral("registersDock"),
@@ -2638,7 +2635,6 @@ void MainWindow::buildViewMenu()
             QStringLiteral("symbolsDock"),
             QStringLiteral("profilerDock"),
             QStringLiteral("problemsDock"),
-            QStringLiteral("findInFilesDock"),
             QStringLiteral("consoleDock"),
             QStringLiteral("memoryDock"),
         };
@@ -2723,13 +2719,14 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
 
 void MainWindow::applyFactoryDockSizes()
 {
-    // 1280-wide window: left ~200, right ~280, so the editor keeps about 60%
-    // once the splitter handles are counted. The bottom group is a strip, not
-    // a second editor.
+    // 1280-wide window: left ~268 (Project files shares it with Find in Files,
+    // which needs a query and a path), right ~280, so the editor keeps about
+    // half once the splitter handles are counted. The bottom group is a strip,
+    // not a second editor.
     auto *files = findChild<QDockWidget *>(QStringLiteral("projectFilesDock"));
     auto *registers = findChild<QDockWidget *>(QStringLiteral("registersDock"));
     if (files && registers)
-        resizeDocks({files, registers}, {200, 280}, Qt::Horizontal);
+        resizeDocks({files, registers}, {268, 280}, Qt::Horizontal);
     // The bottom group keeps its size hint, which is already a short strip.
     // Pinning it taller is recorded by saveState, and restoring that pin
     // crashes, so Reset layout could not survive the force.
@@ -2786,25 +2783,40 @@ void MainWindow::applyLayoutPreset(const QString &preset)
         return findChild<QDockWidget *>(name);
     };
 
-    // Git stays in the project-files tab. Sprite puts both away; Editing and
-    // Debugging bring them back with Project files on top, so the Git tab
-    // does not become the left pane just because it was shown last.
+    // Project files, Find in Files and Git share one tab. Sprite puts the
+    // group away; Editing and Debugging bring it back with Project files on
+    // top, so neither of the other two becomes the left pane just because it
+    // was shown last.
     QDockWidget *project = dockNamed(QStringLiteral("projectFilesDock"));
+    QDockWidget *find = dockNamed(QStringLiteral("findInFilesDock"));
     QDockWidget *git = dockNamed(QStringLiteral("gitDock"));
+    QList<QDockWidget *> projectGroup;
+    if (find)
+        projectGroup << find;
+    if (git)
+        projectGroup << git;
+    if (project)
+        projectGroup << project;
     if (sprite) {
-        // Git first. It is the background tab; hiding the current tab last is
-        // what drops the group's tab bar, the same way Project files alone did.
-        if (git)
-            git->hide();
-        if (project)
-            project->hide();
+        // Background tabs first. Hiding the current tab last is what drops
+        // the group's tab bar.
+        for (QDockWidget *dock : projectGroup)
+            if (!dock->isVisible())
+                dock->hide();
+        for (QDockWidget *dock : projectGroup)
+            if (dock->isVisible())
+                dock->hide();
     } else if (project) {
         project->show();
+        if (find) {
+            find->show();
+            tabifyDockWidget(project, find);
+        }
         if (git) {
             git->show();
             tabifyDockWidget(project, git);
-            project->raise();
         }
+        project->raise();
     }
     if (QDockWidget *problems = dockNamed(QStringLiteral("problemsDock")))
         problems->setVisible(!sprite);

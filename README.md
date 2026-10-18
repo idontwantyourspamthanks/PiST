@@ -52,7 +52,7 @@ script, a terminal, a debugger and an emulator, and presents them as one tool.
   GEMDOS/BIOS/XBIOS call being made and what it is being called with, and every entry
   carries a worked example and one line on when to reach for it
 - **Find in Files** — search the whole project, not just the document in front of you
-  (**Ctrl+Shift+F**, or the dock beside Problems): results grouped by file with the match
+  (**Ctrl+Shift+F**, or the dock tabbed with Project files): results grouped by file with the match
   highlighted, **double-click** or **F4** / **Shift+F4** to walk them, and a header that says how
   many files were searched and what was skipped. It counts exactly the way the editor's find bar
   does, because the two run the same scan ([below](#find-in-files))
@@ -523,7 +523,7 @@ disagree about the assembler.
 
 ## Find in files
 
-**Ctrl+Shift+F** (Search ▸ Find in Files…) brings the dock up beside Problems. Type a query,
+**Ctrl+Shift+F** (Search ▸ Find in Files…) brings up the dock tabbed with Project files. Type a query,
 pause, and the project directory is searched as one walk: results are grouped by file, each row
 carrying the line number and the line itself, with the match marked in the same colour the editor
 uses for its own hits. **Double-click** a row (or press Return) to open that file at that line

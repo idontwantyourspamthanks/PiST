@@ -5,10 +5,12 @@
 #pragma once
 
 #include <QList>
+#include <QPixmap>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
 
+class QFrame;
 class QLabel;
 class QVBoxLayout;
 
@@ -108,9 +110,15 @@ signals:
     void browseRequested();
     void setupRequested();
 
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
 private:
     void rebuildDoorways();
 
+    QPixmap m_plate;
+
+    QFrame *m_rule = nullptr;
     QLabel *m_subtitle = nullptr;
     QLabel *m_doorTitle = nullptr;
     QLabel *m_readiness = nullptr;

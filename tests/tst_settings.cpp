@@ -1000,6 +1000,17 @@ void TstSettings::aHookProjectIsTrustedOnlyWhenAllowed()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
+
+    // The trusted list lives in QSettings, so the suite needs an application
+    // identity that is the same in the process that writes it and the one that
+    // reads it back. Without one, Qt derives the scope from the executable's
+    // base name — `tst_settings` on Unix, `tst_settings.exe` on Windows — and the
+    // write and the read land under different roots. Pinned here, as tst_crash
+    // pins its own; restored afterwards so no other case depends on it.
+    const QString oldOrganization = QCoreApplication::organizationName();
+    const QString oldApplication = QCoreApplication::applicationName();
+    QCoreApplication::setOrganizationName(QStringLiteral("PiSTSettingsTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("tst_settings"));
     QSettings().remove(QStringLiteral("hooks/trustedProjects"));
 
     const QString project = dir.filePath(QStringLiteral("someone-elses.pistproject"));
@@ -1040,6 +1051,8 @@ void TstSettings::aHookProjectIsTrustedOnlyWhenAllowed()
     QVERIFY(settings::hookProjectIsTrusted(plain, project, shipped));
 
     QSettings().remove(QStringLiteral("hooks/trustedProjects"));
+    QCoreApplication::setOrganizationName(oldOrganization);
+    QCoreApplication::setApplicationName(oldApplication);
 }
 
 int main(int argc, char *argv[])

@@ -92,6 +92,9 @@ private slots:
     /// A walk replaced by a newer query never reports: its summary would describe
     /// results that are already off the screen.
     void aReplacedWalkReportsNothing();
+    /// CRLF endings — what most ST sources have — count as one break: the line
+    /// and column must be the editor's, not an offset into the raw bytes.
+    void aCrlfFileReportsColumnsTheEditorAgreesWith();
 };
 
 void TstFind::theScanCountsWhatTheFindBarCounts()
@@ -292,6 +295,39 @@ void TstFind::aReplacedWalkReportsNothing()
     QCOMPARE(result.summary.hits, 0);
     QCOMPARE(result.summary.files, 40); // the second query's own walk
     QVERIFY2(result.files.isEmpty(), "the replaced query's hits were never reported");
+}
+
+void TstFind::aCrlfFileReportsColumnsTheEditorAgreesWith()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    // Three lines, CRLF, with the second one's match indented: enough that a
+    // miscount shows up in both the line and the column.
+    QVERIFY(writeFixture(dir.filePath(QStringLiteral("crlf.s")),
+                         QByteArrayLiteral("first line\r\n  move.w d0,d1\r\nthird line\r\n")));
+    // The same file with the same content and LF endings, as the control.
+    QVERIFY(writeFixture(dir.filePath(QStringLiteral("lf.s")),
+                         QByteArrayLiteral("first line\n  move.w d0,d1\nthird line\n")));
+
+    FindInFiles walk;
+    WalkResult result;
+    QVERIFY(runWalk(&walk, dir.path(), QStringLiteral("move.w"), FindOptions{}, &result));
+    QCOMPARE(result.files.size(), 2);
+
+    QList<FindInFilesHit> crlf;
+    QList<FindInFilesHit> lf;
+    for (const auto &file : result.files)
+        (file.first.endsWith(QStringLiteral("crlf.s")) ? crlf : lf) = file.second;
+
+    QCOMPARE(crlf.size(), 1);
+    QCOMPARE(lf.size(), 1);
+    QCOMPARE(crlf.at(0).line, 2);
+    QCOMPARE(crlf.at(0).line, lf.at(0).line);
+    // "  move.w": two spaces before it, whether the line ends CRLF or LF.
+    QCOMPARE(crlf.at(0).column, 2);
+    QCOMPARE(crlf.at(0).column, lf.at(0).column);
+    QCOMPARE(crlf.at(0).length, lf.at(0).length);
+    QCOMPARE(crlf.at(0).preview, lf.at(0).preview);
 }
 
 QTEST_MAIN(TstFind)

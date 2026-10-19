@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QSet>
 #include <QStringDecoder>
+#include <QTextBlock>
 #include <QTextDocument>
 #include <QTimer>
 
@@ -30,14 +31,18 @@ constexpr qint64 kMaxFileBytes = 4 * 1024 * 1024;
 /// text — the same evidence the open path uses, and enough for any real source.
 constexpr int kBinarySniffBytes = 4096;
 
-/// Every file under `dir`, in a stable order (name-sorted, directories walked
-/// where their name falls), skipping symbolic links and hidden directories.
+/// One directory's entries, in a stable order (name-sorted, directories walked
+/// where their name falls), skipping symbolic links and hidden directories, with
+/// the directories queued for a later tick rather than descended into now.
 ///
 /// Sorted because the results list and the tests both want a walk that is
 /// reproducible — and because the order a user expects is the order the paths
 /// read in. Hidden directories because `.git` is not the project's own text
-/// however much of it is plain.
-void collectFiles(const QString &dir, QStringList *out)
+/// however much of it is plain. Handing the directories back instead of
+/// recursing is what keeps the walk inside its time budget: a tree of ten
+/// thousand directories used to be read in one uninterruptible call before the
+/// first file was even opened.
+void collectOneLevel(const QString &dir, QStringList *files, QStringList *directories)
 {
     const QFileInfoList entries = QDir(dir).entryInfoList(QDir::Files | QDir::Dirs
                                                               | QDir::NoDotAndDotDot,
@@ -49,10 +54,10 @@ void collectFiles(const QString &dir, QStringList *out)
             continue;
         if (entry.isDir()) {
             if (!entry.fileName().startsWith(QLatin1Char('.')))
-                collectFiles(entry.absoluteFilePath(), out);
+                directories->append(entry.absoluteFilePath());
             continue;
         }
-        out->append(entry.absoluteFilePath());
+        files->append(entry.absoluteFilePath());
     }
 }
 
@@ -87,26 +92,22 @@ QString lineTextAt(const QString &text, int position)
 
 /// The hits of one file, as rows: 1-based line, the column the match starts at
 /// within its line, its length, and the line's text.
-QList<FindInFilesHit> describeHits(const QString &text, const QList<QTextCursor> &hits)
+///
+/// The line and column come from the document, not from `'\n'` offsets in the
+/// text: `QTextDocument` treats a `\r\n` pair as one line break, while a walk over
+/// the raw string would count the `\r` as a character and put every hit after a
+/// CRLF line one column too far right — which is most Atari ST sources.
+QList<FindInFilesHit> describeHits(QTextDocument *document, const QString &text,
+                                   const QList<QTextCursor> &hits)
 {
     QList<FindInFilesHit> rows;
     rows.reserve(hits.size());
-    int line = 1;
-    int lineStart = 0;
     for (const QTextCursor &hit : hits) {
         const int position = hit.selectionStart();
-        // Hits arrive in order, so the line count is a walk from the last one
-        // rather than a search from the top for each.
-        while (true) {
-            const int next = text.indexOf(QLatin1Char('\n'), lineStart);
-            if (next < 0 || next >= position)
-                break;
-            lineStart = next + 1;
-            ++line;
-        }
+        const QTextBlock block = document->findBlock(position);
         FindInFilesHit row;
-        row.line = line;
-        row.column = position - lineStart;
+        row.line = block.blockNumber() + 1;
+        row.column = position - block.position();
         row.length = hit.selectionEnd() - position;
         row.preview = lineTextAt(text, position);
         rows.append(row);
@@ -162,7 +163,9 @@ void FindInFiles::start(const QString &root, const QString &needle, const FindOp
         return;
     }
 
-    collectFiles(root, &m_files);
+    // The root's own entries only; `step` descends the rest a directory per
+    // tick, so a large tree cannot freeze the window before the first result.
+    m_pendingDirs = {root};
     m_running = true;
     m_tick->start(0);
 }
@@ -174,6 +177,7 @@ void FindInFiles::cancel()
     m_tick->stop();
     m_running = false;
     m_files.clear();
+    m_pendingDirs.clear();
     m_next = 0;
 }
 
@@ -184,6 +188,19 @@ void FindInFiles::step()
 
     QElapsedTimer budget;
     budget.start();
+
+    // Descend while the budget holds: one directory per call, its files appended
+    // to the work list in name order. The listing is the expensive part on a big
+    // tree, and it is now interruptible like the scanning.
+    while (!m_pendingDirs.isEmpty() && budget.elapsed() < kTickMs) {
+        const QString dir = m_pendingDirs.takeFirst();
+        collectOneLevel(dir, &m_files, &m_pendingDirs);
+    }
+    if (!m_pendingDirs.isEmpty()) {
+        m_tick->start(0);
+        return;
+    }
+
     while (m_next < m_files.size() && budget.elapsed() < kTickMs) {
         const QString path = m_files.at(m_next++);
 
@@ -210,7 +227,7 @@ void FindInFiles::step()
         const QList<QTextCursor> hits = findScan(&document, m_needle, m_options,
                                                  kMaxMatches - m_summary.hits, &capped);
         if (!hits.isEmpty())
-            emit hitsFound(path, describeHits(text, hits));
+            emit hitsFound(path, describeHits(&document, text, hits));
         m_summary.hits += hits.size();
 
         // One hit inside this file past what is left of the cap, or the cap

@@ -100,6 +100,9 @@ private:
     /// The files to scan, in the order the tree gave them (directories sorted,
     /// hidden ones left out), and how far the walk has got.
     QStringList m_files;
+    /// Directories found but not yet listed, drained a few per tick so walking
+    /// a large tree stays inside the same budget as scanning it.
+    QStringList m_pendingDirs;
     int m_next = 0;
     FindInFilesSummary m_summary;
     bool m_running = false;

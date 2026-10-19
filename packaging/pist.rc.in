@@ -1,0 +1,4 @@
+// Application icon for pist.exe. Explorer and shortcuts take this resource;
+// the icon painted on the live window is a separate path. The path is absolute
+// because rc.exe looks the file up from the build directory.
+1 ICON "@PIST_ICON_PATH@"

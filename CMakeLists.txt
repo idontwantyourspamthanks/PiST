@@ -450,6 +450,18 @@ qt_add_executable(pist
 # helpers and the toolchain lookup on top of the UI.
 target_link_libraries(pist PRIVATE pist_ui pist_control pist_emu pist_toolchain)
 
+# Explorer and the Start Menu shortcut take their icon from a resource in the
+# executable. setWindowIcon() only paints the live window, so without this
+# pist.exe and its shortcut carry the generic application icon. The artwork is
+# packaging/pist.svg, the same glyph the window paints.
+if(WIN32)
+    file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/pist.ico" PIST_ICON_PATH)
+    configure_file(packaging/pist.rc.in "${CMAKE_CURRENT_BINARY_DIR}/pist.rc" @ONLY)
+    target_sources(pist PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/pist.rc")
+    set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/pist.rc"
+        PROPERTY OBJECT_DEPENDS "${PIST_ICON_PATH}")
+endif()
+
 # The MCP stdio shim: lets Claude/Cursor-class agents discover a running PiST
 # as a native tool, bridging MCP JSON-RPC (stdio) to the RemoteControl TCP
 # protocol. Console application everywhere — WIN32_EXECUTABLE would detach

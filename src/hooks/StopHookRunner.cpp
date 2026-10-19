@@ -314,7 +314,9 @@ bool StopHookRunner::writeMemory(quint32 address, quint8 value, QString *error)
         *error = tr("writemem: the machine is running, not stopped");
         return false;
     }
-    if (!issueAndWait([&] { backend->writeMemoryByte(address, value); }, QStringLiteral("writemem"), error))
+    if (!issueAndWait(QStringLiteral("w b $%1 $%2").arg(address, 0, 16).arg(value, 0, 16),
+                      [&] { backend->writeMemoryByte(address, value); },
+                      QStringLiteral("writemem"), error))
         return false;
     m_stateDirty = true;
     ++m_writes;
@@ -361,7 +363,9 @@ bool StopHookRunner::writeRegister(const QString &name, quint32 value, QString *
         *error = tr("writereg: the machine is running, not stopped");
         return false;
     }
-    if (!issueAndWait([&] { backend->writeRegister(wanted, value); }, QStringLiteral("writereg"), error))
+    if (!issueAndWait(QStringLiteral("r %1=$%2").arg(wanted).arg(value, 0, 16),
+                      [&] { backend->writeRegister(wanted, value); },
+                      QStringLiteral("writereg"), error))
         return false;
     // Not patched into the copy: marking it dirty makes the next read a real
     // round-trip, which is the only answer that cannot be wrong.
@@ -440,19 +444,33 @@ bool StopHookRunner::fetchRegisters(MachineState *out, QString *error)
     return true;
 }
 
-bool StopHookRunner::issueAndWait(const std::function<void()> &issue, const QString &what,
-                                  QString *error)
+bool StopHookRunner::issueAndWait(const QString &expected, const std::function<void()> &issue,
+                                  const QString &what, QString *error)
 {
     IDebugBackend *backend = m_host.backend ? m_host.backend() : nullptr;
-    if (!backend)
+    if (!backend) {
+        // The same sentence the per-operation checks give, so a missing session
+        // is never reported as an empty failure.
+        *error = tr("%1: no emulator session is running").arg(what);
         return false;
+    }
 
     QEventLoop loop;
     bool done = false;
-    // Connected before the command is issued: the completion cannot be missed,
-    // and the console is held for the run, so the next completion is this one's.
+    // The completion this waits for is identified by the command's text: the
+    // console being held (below) keeps the user's own commands out, but a
+    // toolbar Step/Continue or a remote-control command can still complete while
+    // the hook is waiting, and counting that as the hook's reply would mark a
+    // write done that the debugger has not yet answered.
+    //
+    // Every backend completes a typed command with the text it was asked with
+    // (`w b $addr $val`, `r d0=$val`), which is `expected` — composed by the
+    // caller, because only it knows which backend method it called.
+    m_commandInFlight = expected;
     const auto finished = connect(backend, &IDebugBackend::commandFinished, this,
-                                  [&](const QString &, const QString &) {
+                                  [&](const QString &command, const QString &) {
+                                      if (command != m_commandInFlight)
+                                          return;
                                       done = true;
                                       loop.quit();
                                   });

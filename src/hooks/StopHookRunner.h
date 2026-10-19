@@ -150,9 +150,12 @@ private:
     void runQueued();
     void doRun();
     /// Issue one debugger command and wait for the transport to complete it.
-    /// Safe to call only while a run holds the console, so the completion that
-    /// arrives is provably this command's.
-    bool issueAndWait(const std::function<void()> &issue, const QString &what, QString *error);
+    /// `expected` is the text the backend will report in `commandFinished` — the
+    /// only completion this waits for. Holding the console keeps the user's own
+    /// commands out, but not the toolbar's or the remote channel's, which complete
+    /// while a hook is waiting.
+    bool issueAndWait(const QString &expected, const std::function<void()> &issue,
+                      const QString &what, QString *error);
     /// A fresh register batch, for when the published copy is no longer the
     /// machine's truth (a scripted write came first).
     bool fetchRegisters(MachineState *out, QString *error);
@@ -179,6 +182,9 @@ private:
     int m_loggedLines = 0;
     bool m_queued = false;
     bool m_running = false;
+    /// The text of the command `issueAndWait` is waiting on, so a completion that
+    /// belongs to someone else is ignored rather than taken as its answer.
+    QString m_commandInFlight;
     LastRun m_lastRun;
 };
 

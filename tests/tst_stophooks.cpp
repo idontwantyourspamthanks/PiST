@@ -188,7 +188,7 @@ public:
     {
         events << QStringLiteral("write %1=%2").arg(address).arg(value);
         memory.insert(address, value);
-        complete();
+        complete(QStringLiteral("w b $%1 $%2").arg(address, 0, 16).arg(value, 0, 16));
     }
 
     void writeRegister(const QString &name, quint32 value) override
@@ -196,7 +196,14 @@ public:
         events << QStringLiteral("write %1=$%2").arg(name).arg(value, 0, 16);
         if (name == QLatin1String("d0"))
             state.regs.d[0] = value;
-        complete();
+        complete(QStringLiteral("r %1=$%2").arg(name).arg(value, 0, 16));
+    }
+
+    /// Complete a command *someone else* issued, as a toolbar Step or the remote
+    /// channel can while a hook is waiting.
+    void completeForeign(const QString &command)
+    {
+        emit commandFinished(command, QString());
     }
 
     void readDisassembly() override {}
@@ -205,14 +212,16 @@ public:
     BackendKind kind() const override { return BackendKind::Native; }
 
 private:
-    /// The command's completion, one turn later — the transport's prompt.
-    void complete()
+    /// The command's completion, one turn later — the transport's prompt. The
+    /// text is the one the backend was asked with, which is what the runner
+    /// correlates on.
+    void complete(const QString &command)
     {
         if (holdCommands)
             return;
-        QTimer::singleShot(0, this, [this] {
+        QTimer::singleShot(0, this, [this, command] {
             events << QStringLiteral("ack");
-            emit commandFinished(QStringLiteral("(fake)"), QString());
+            emit commandFinished(command, QString());
         });
     }
 };
@@ -248,6 +257,11 @@ private slots:
     void offersContinueAndResume();
     void printJoinsItsArgumentsOnTheConsole();
     void reportsTheLineAnErrorCameFrom();
+    /// The sandbox cannot be widened from inside a script, and a binary chunk
+    /// is refused rather than trusted.
+    void refusesToCompileMoreCodeAndBinaryChunks();
+    /// The budget is not defeatable by catching its error in a `pcall`.
+    void aBudgetCannotBeSwallowedByPcall();
 
     // --- the runner ------------------------------------------------------
 
@@ -270,6 +284,8 @@ private slots:
     /// A script attached to a breakpoint wins over the project's, and is enabled
     /// by being attached rather than by the project's switch.
     void aBreakpointScriptOverridesTheProjectHook();
+    /// Someone else's command completing while a hook waits is not its answer.
+    void anotherCommandsCompletionIsNotTheHooks();
 };
 
 // ---------------------------------------------------------------------------
@@ -443,6 +459,75 @@ void TstStopHooks::reportsTheLineAnErrorCameFrom()
     QVERIFY(!result.ok);
     QCOMPARE(result.line, 2);
     QCOMPARE(api.logs, QStringList{QStringLiteral("first")});
+}
+
+void TstStopHooks::refusesToCompileMoreCodeAndBinaryChunks()
+{
+    QTemporaryDir dir;
+    FakeApi api;
+
+    // `load`, `loadfile` and `dofile` are gone from the script's world: any of
+    // them would compile a chunk from a string, and a prefixed one is a binary
+    // chunk the interpreter does not verify. `string.dump` would produce one.
+    const QString path = writeScript(
+        dir,
+        QStringLiteral("local refused, why = pcall(load, \"return 1\")\n"
+                       "log(tostring(refused) .. \" \" .. tostring(why))\n"
+                       "local lf, e1 = pcall(loadfile, \"x.lua\")\n"
+                       "local df, e2 = pcall(dofile, \"x.lua\")\n"
+                       "log(tostring(lf) .. \" \" .. tostring(e1))\n"
+                       "log(tostring(df) .. \" \" .. tostring(e2))\n"
+                       "log(tostring(string.dump))"));
+    const hooks::StopHookResult result = hooks::StopHookEngine::run(path, api);
+
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(api.logs.size(), 4);
+    // Every loader refuses rather than compiling, and names itself.
+    QVERIFY2(api.logs.at(0).startsWith(QStringLiteral("false")), qPrintable(api.logs.at(0)));
+    QVERIFY2(api.logs.at(0).contains(QStringLiteral("disabled")), qPrintable(api.logs.at(0)));
+    QVERIFY2(api.logs.at(1).startsWith(QStringLiteral("false")), qPrintable(api.logs.at(1)));
+    QVERIFY2(api.logs.at(1).contains(QStringLiteral("disabled")), qPrintable(api.logs.at(1)));
+    QVERIFY2(api.logs.at(2).startsWith(QStringLiteral("false")), qPrintable(api.logs.at(2)));
+    QVERIFY2(api.logs.at(2).contains(QStringLiteral("disabled")), qPrintable(api.logs.at(2)));
+    // And the producer of a binary chunk is gone.
+    QCOMPARE(api.logs.at(3), QStringLiteral("nil"));
+
+    // A bytecode chunk is refused by the loader itself, before it runs. The
+    // signature is Lua's own (`\x1bLua`); "t" is the mode it is loaded in, so
+    // the error names the mode rather than executing the bytes.
+    QFile binary(dir.filePath(QStringLiteral("binary.lua")));
+    QVERIFY(binary.open(QIODevice::WriteOnly));
+    binary.write(QByteArray::fromHex("1b4c7561") + QByteArrayLiteral("\x54\x00\x19\x93\r\n\x1a\n")
+                 + QByteArray(8, '\0'));
+    binary.close();
+    const hooks::StopHookResult precompiled =
+        hooks::StopHookEngine::run(binary.fileName(), api);
+    QVERIFY(!precompiled.ok);
+    QVERIFY2(precompiled.error.contains(QStringLiteral("binary")),
+             qPrintable(precompiled.error));
+}
+
+void TstStopHooks::aBudgetCannotBeSwallowedByPcall()
+{
+    QTemporaryDir dir;
+    FakeApi api;
+
+    // The error the deadline raises is an ordinary Lua error, so a script can
+    // catch it — and one that loops around a `pcall` would then never stop. The
+    // deadline is latched: every later instruction raises again, and the engine
+    // refuses to call a run that swallowed the last one finished.
+    const QString path = writeScript(
+        dir,
+        QStringLiteral("while true do pcall(function() while true do end end) end"));
+
+    QElapsedTimer clock;
+    clock.start();
+    const hooks::StopHookResult result = hooks::StopHookEngine::run(path, api, 80);
+    const qint64 elapsed = clock.elapsed();
+
+    QVERIFY2(result.timedOut, qPrintable(result.error));
+    QVERIFY(!result.ok);
+    QVERIFY2(elapsed < 5000, qPrintable(QStringLiteral("took %1 ms").arg(elapsed)));
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +1035,51 @@ void TstStopHooks::aBreakpointScriptOverridesTheProjectHook()
     offRunner.onStopPublished(state, plain);
     QTest::qWait(150);
     QVERIFY(console.isEmpty());
+}
+
+void TstStopHooks::anotherCommandsCompletionIsNotTheHooks()
+{
+    QTemporaryDir dir;
+    FakeBackend backend;
+    QStringList console;
+    QStringList events;
+    const QString path = writeScript(dir, QStringLiteral("writemem(0x200, 9)"));
+
+    StopHookRunner::Host host;
+    host.backend = [&backend] { return &backend; };
+    host.log = [&console](const QString &line) { console << line; };
+    host.scriptPath = [&path] { return path; };
+    host.enabled = [] { return true; };
+    host.autoContinue = [] { return false; };
+    host.resume = [&events] { events << QStringLiteral("resume"); };
+    host.refresh = [&events] { events << QStringLiteral("refresh"); };
+    host.holdConsole = [](bool) {};
+    StopHookRunner runner(host);
+
+    // The hook's write is issued but never acknowledged by the backend; while it
+    // waits, a toolbar Step completes. Counting that as the hook's answer would
+    // report a write the debugger never performed.
+    backend.holdCommands = true;
+    MachineState state;
+    state.regs.valid = true;
+    runner.onStopPublished(state);
+    QTest::qWait(50);
+
+    backend.completeForeign(QStringLiteral("s"));
+    QTest::qWait(50);
+    QVERIFY2(console.join(QLatin1Char('|')).contains(QStringLiteral("did not acknowledge")),
+             qPrintable(console.join(QLatin1Char('|'))));
+
+    // The hook's own completion still counts: the correlation is by text, not a
+    // count of completions.
+    console.clear();
+    backend.events.clear();
+    backend.holdCommands = false;
+    StopHookRunner second(host);
+    second.onStopPublished(state);
+    QTest::qWait(150);
+    QVERIFY(!console.join(QLatin1Char('|')).contains(QStringLiteral("did not acknowledge")));
+    QCOMPARE(backend.memory.value(0x200), quint8(9));
 }
 
 QTEST_MAIN(TstStopHooks)

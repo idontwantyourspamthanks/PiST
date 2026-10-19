@@ -1565,6 +1565,22 @@ project; everything before it was either Linux-only or read from source.
 
 ### Verified by reading source (not executed)
 
+- **Lua's error path is `longjmp`, not C++ exceptions** (0.10.3): this tree compiles Lua as C
+  (`CMakeLists.txt` takes upstream's `*.c`, no `LUA_USE_CXX`), and `ldo.c:73` selects
+  `longjmp`/`setjmp`. A `luaL_error` therefore jumps out of a C function without running the
+  destructors of C++ locals; the stop-hook API now copies its message and raises only after
+  those locals have gone (`hooks/StopHookEngine.cpp`, `raiseLuaError`).
+- **`luaL_loadbuffer` accepts precompiled chunks**, which Lua 5.4 documents as unverified, and
+  the base library's `load` takes one from a string. `luaL_loadbufferx(..., "t")` plus refusing
+  `load`/`loadfile`/`dofile` and removing `string.dump` is what closes that: a `\x1bLua` chunk
+  is now refused with "attempt to load a binary chunk", asserted in `tst_stophooks`.
+- **A guarded `pcall` is what makes the budget unswallowable**: the deadline's error is a light
+  userdata (a token a script cannot forge), and the `pcall`/`xpcall` bound into the script
+  re-raise it instead of returning it. Re-raising from inside a guarded frame unwinds to the
+  next guarded one, and the engine's own protected call is the last — so nesting does not
+  outlast the deadline. Measured: the review's `while true do pcall(...) end` loop stops at an
+  80 ms budget instead of running forever.
+
 - Absence of a GDB stub and memory watchpoints upstream
 - Autoload defaults and gating (`configuration.c:615` / `:621`, `symbols.c`, `debugui.c:1346`)
 - Single-positional argument handling and `INF_SetAutoStart` (`options.c:1128-1183`)

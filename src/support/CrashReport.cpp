@@ -6,6 +6,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QFile>
 #include <QObject>
 #include <QJsonArray>
@@ -284,10 +285,27 @@ void arm()
         if (!QFile::rename(path, g_pendingPath))
             g_pendingPath.clear();
     }
+    if (g_pendingPath.isEmpty()) {
+        // A record parked by an earlier launch that has not been posted yet: a
+        // dropped connection, or reports switched off since. Without this the
+        // file is never looked at again — uploadPending() only knows the path
+        // it was handed here — so the "the next launch tries again" promise in
+        // the header would hold only when *this* launch also crashed.
+        const QString parked = cacheDir() + QStringLiteral("/crash-report.pending");
+        if (QFileInfo::exists(parked))
+            g_pendingPath = parked;
+    }
 
     publishSnapshot();
 
 #if defined(Q_OS_UNIX)
+    // backtrace() loads the unwinder and allocates on its first call, which is
+    // not async-signal-safe. Doing it here, in ordinary context, is what makes
+    // the handler's own call safe later.
+    {
+        void *frames[1];
+        (void)::backtrace(frames, 1);
+    }
     g_fd = ::open(QFile::encodeName(path).constData(),
                   O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     struct sigaction action;

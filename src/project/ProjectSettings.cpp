@@ -232,7 +232,20 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     // guess whether the feature was ever configured. An older PiST ignores an
     // object it does not know, so this stays version 2.
     QJsonObject hooks;
-    hooks[QStringLiteral("scriptPath")] = s.stopHookPath;
+    // A path inside the project is stored relative to the project file, so a
+    // project that travels (the demo, a repository) carries a script reference
+    // that still resolves on the next machine. Loading rebases it the same way
+    // every other relative path is rebased (`load()`), which is what makes the
+    // round-trip a no-op. An absolute path outside the project stays absolute:
+    // there is no relative spelling for it that would mean the same thing.
+    const QString projectDir = QFileInfo(path).absolutePath();
+    QString hookPath = s.stopHookPath;
+    if (!hookPath.isEmpty() && QFileInfo(hookPath).isAbsolute()) {
+        const QString relative = QDir(projectDir).relativeFilePath(hookPath);
+        if (!relative.startsWith(QLatin1String("../")) && relative != QLatin1String(".."))
+            hookPath = relative;
+    }
+    hooks[QStringLiteral("scriptPath")] = hookPath;
     hooks[QStringLiteral("enabled")] = s.stopHookEnabled;
     hooks[QStringLiteral("autoContinue")] = s.stopHookAutoContinue;
     root[QStringLiteral("hooks")] = hooks;
@@ -244,6 +257,43 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     // cannot reach the disk must leave the project the user had, not a zero-byte
     // file that the next load() reports as invalid.
     return files::write(path, QJsonDocument(root).toJson(QJsonDocument::Indented), error);
+}
+
+QStringList trustedHookProjects()
+{
+    return QSettings().value(QStringLiteral("hooks/trustedProjects")).toStringList();
+}
+
+void trustHookProject(const QString &projectPath)
+{
+    const QString canonical = QFileInfo(projectPath).canonicalFilePath();
+    if (canonical.isEmpty())
+        return;
+    QStringList trusted = trustedHookProjects();
+    if (trusted.contains(canonical))
+        return;
+    trusted.append(canonical);
+    QSettings().setValue(QStringLiteral("hooks/trustedProjects"), trusted);
+}
+
+bool hookProjectIsTrusted(const ProjectSettings &settings, const QString &projectPath,
+                          const QString &shippedDataDir)
+{
+    if (!settings.stopHookEnabled || settings.stopHookPath.isEmpty())
+        return true;
+
+    const QString canonical = QFileInfo(projectPath).canonicalFilePath();
+    if (canonical.isEmpty())
+        return true;   // no file yet: nothing has been imported from anywhere
+
+    // A script that shipped with PiST travels with the binary's own data
+    // directory, so the demo projects are trusted by provenance.
+    if (!shippedDataDir.isEmpty()) {
+        const QString shipped = QFileInfo(shippedDataDir).canonicalFilePath();
+        if (!shipped.isEmpty() && canonical.startsWith(shipped + QLatin1Char('/')))
+            return true;
+    }
+    return trustedHookProjects().contains(canonical);
 }
 
 bool load(ProjectSettings *s, const QString &path, QString *error)

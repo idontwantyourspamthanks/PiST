@@ -171,8 +171,22 @@ QString projectFileFor(const QString &sourcePath);
 /// Write @p settings to @p path.
 ///
 /// Stored strings are written exactly as given: nothing is re-relativised
-/// against the project, so a save never rewrites a path the user typed.
+/// against the project, so a save never rewrites a path the user typed. The one
+/// exception is the stop hook's script, which is written relative when it lives
+/// inside the project, so a project that travels still finds its script.
 bool save(const ProjectSettings &settings, const QString &path, QString *error);
+
+/// The projects whose stop hooks the user has allowed to run, in `QSettings`.
+/// A project file travels — a download, a clone, a shared folder — and a hook is
+/// code that runs at every stop, so the window asks once per project file.
+QStringList trustedHookProjects();
+void trustHookProject(const QString &projectPath);
+
+/// Whether a project's hook may run without asking: it has no hook, it shipped
+/// with PiST itself, or its file is already in `trustedHookProjects()`. Pure —
+/// the caller asks the question when this says no.
+bool hookProjectIsTrusted(const ProjectSettings &settings, const QString &projectPath,
+                          const QString &shippedDataDir);
 
 /// Read @p path into @p settings.
 ///

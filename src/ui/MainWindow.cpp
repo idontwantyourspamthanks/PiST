@@ -287,6 +287,7 @@ const QString &offeredDebuggingKey()
     return key;
 }
 
+
 const QString &layoutStateKey()
 {
     static const QString key = QStringLiteral("layout/state");
@@ -3706,6 +3707,30 @@ void MainWindow::openDemoProject()
     openPath(source);
 }
 
+/// Whether a project's hook may run. The policy lives in `settings` (so the
+/// decision has a test); this asks it and, when the answer is "not yet", puts the
+/// question to the person who opened the project.
+bool MainWindow::hookMayRunFor(const QString &projectPath)
+{
+    const QString shipped = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/../share/pist");
+    if (settings::hookProjectIsTrusted(m_settings, projectPath, shipped))
+        return true;
+
+    const QMessageBox::StandardButton answer = QMessageBox::warning(
+        this, tr("Stop hook"),
+        tr("This project runs a script at every debugger stop:\n\n%1\n\n"
+           "A hook can read and write the machine's memory and registers. Only allow "
+           "it if you trust where this project came from.")
+            .arg(QDir::toNativeSeparators(m_settings.stopHookPath)),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return false;
+
+    settings::trustHookProject(projectPath);
+    return true;
+}
+
 void MainWindow::openProject()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -3752,6 +3777,13 @@ void MainWindow::openProject()
     }
 
     m_settings = loaded;
+    // A project that came with a hook asks once, and a refusal leaves the hook
+    // off for this load (the setting itself stays in the file, so the decision is
+    // the user's, not an edit of their project).
+    if (!hookMayRunFor(path)) {
+        m_settings.stopHookEnabled = false;
+        m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
+    }
     settings::rememberLastSource(source);
     syncFileBrowserDisks();
     statusBar()->showMessage(tr("Opened project %1").arg(QFileInfo(path).fileName()), 5000);

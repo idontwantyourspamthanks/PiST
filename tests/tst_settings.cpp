@@ -133,6 +133,10 @@ private slots:
     // path rebases like every other relative path, and a wrong-typed `hooks`
     // value is refused by name rather than read as "off".
     void stopHookSettingsRoundTrip();
+    /// A project that brought a hook is not trusted until it is allowed, and a
+    /// refusal is per project file; the demo shipped with PiST is trusted by
+    /// provenance.
+    void aHookProjectIsTrustedOnlyWhenAllowed();
 
     // A file written by a newer PiST must be refused, not silently downgraded and
     // then overwritten, and a malformed entry must fail the load by name.
@@ -392,6 +396,30 @@ void TstSettings::stopHookSettingsRoundTrip()
     QCOMPARE(loaded.stopHookAutoContinue, true);
     QCOMPARE(loaded.stopHookPath,
              projectDir.filePath(QStringLiteral("hooks/trainer.lua")));
+
+    // A script inside the project is written *relative*, so the demo and any
+    // committed project carry a path that still resolves beside the project
+    // file — not the absolute path of the machine that saved it.
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+        QCOMPARE(root.value(QStringLiteral("hooks")).toObject()
+                     .value(QStringLiteral("scriptPath")).toString(),
+                 QStringLiteral("hooks/trainer.lua"));
+    }
+
+    // One outside the project stays absolute: there is no relative spelling that
+    // would mean the same thing on the next machine.
+    const QString outside = QDir::temp().absoluteFilePath(QStringLiteral("elsewhere.lua"));
+    original.stopHookPath = outside;
+    QVERIFY2(settings::save(original, path, &error), qPrintable(error));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    QCOMPARE(root.value(QStringLiteral("hooks")).toObject()
+                 .value(QStringLiteral("scriptPath")).toString(),
+             outside);
 
     // Absent — which is every project written before the feature: off, no error.
     QFile bare(path);
@@ -968,6 +996,52 @@ void TstSettings::emulatorEnvOverride()
 /// first use. QStandardPaths::setTestModeEnabled() is deliberately not used: it
 /// would also move the data root the toolchain cases resolve tools from, exactly
 /// as tst_gui records for the same redirect.
+void TstSettings::aHookProjectIsTrustedOnlyWhenAllowed()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QSettings().remove(QStringLiteral("hooks/trustedProjects"));
+
+    const QString project = dir.filePath(QStringLiteral("someone-elses.pistproject"));
+    QFile file(project);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QByteArrayLiteral("{\"version\":2}"));
+    file.close();
+
+    ProjectSettings hooked;
+    hooked.stopHookEnabled = true;
+    hooked.stopHookPath = dir.filePath(QStringLiteral("hook.lua"));
+    const QString shipped = dir.filePath(QStringLiteral("share/pist"));
+
+    // A hook that has not been allowed is not trusted...
+    QVERIFY(!settings::hookProjectIsTrusted(hooked, project, shipped));
+    // ...and allowing it is remembered for that file only.
+    settings::trustHookProject(project);
+    QVERIFY(settings::hookProjectIsTrusted(hooked, project, shipped));
+
+    const QString other = dir.filePath(QStringLiteral("another.pistproject"));
+    QFile otherFile(other);
+    QVERIFY(otherFile.open(QIODevice::WriteOnly));
+    otherFile.write(QByteArrayLiteral("{\"version\":2}"));
+    otherFile.close();
+    QVERIFY(!settings::hookProjectIsTrusted(hooked, other, shipped));
+
+    // The demo's own directory is trusted by provenance: it shipped with PiST.
+    const QString demo = shipped + QStringLiteral("/demo/hello.pistproject");
+    QVERIFY(QDir().mkpath(QFileInfo(demo).absolutePath()));
+    QFile demoFile(demo);
+    QVERIFY(demoFile.open(QIODevice::WriteOnly));
+    demoFile.write(QByteArrayLiteral("{\"version\":2}"));
+    demoFile.close();
+    QVERIFY(settings::hookProjectIsTrusted(hooked, demo, shipped));
+
+    // A project with no hook is never a question.
+    ProjectSettings plain;
+    QVERIFY(settings::hookProjectIsTrusted(plain, project, shipped));
+
+    QSettings().remove(QStringLiteral("hooks/trustedProjects"));
+}
+
 int main(int argc, char *argv[])
 {
     // macOS's own temp root is long enough that sessionBaseDir() falls back to

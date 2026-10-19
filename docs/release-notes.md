@@ -16,24 +16,14 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.10.1
+## What's new in 0.10.2
 
-0.10.1 can send a short report when PiST itself crashes, and only if you ask it to.
+The Windows executable and its Start Menu shortcut now show the PiST icon.
 
 ### New
 
-- **Opt-in crash reports.** Project Settings ▸ Appearance ▸ Crash reports: "Send a stack and the
-  session phase when PiST crashes". It stays off until you turn it on. A crash writes a small record
-  and the next launch posts it. The report is the signal, the version, the operating system, the
-  architecture, how the build was packaged, the Qt version, a stack, and whether a build or a run
-  was underway. It does not include your source or the program you were debugging. A fault inside
-  the emulated machine is the session, not a PiST crash, and is not sent.
-
-### Worth knowing
-
-- The report is captured on Linux and macOS. The Windows build does not install the handler yet.
-- A report the server rejects is discarded. A report that never reaches the server is kept and
-  tried again on the next launch.
+- **A PiST icon on Windows.** `pist.exe` carries the same monitor glyph the window paints, so
+  Explorer and the Start Menu shortcut show it instead of the generic application icon.
 
 ### Linux
 

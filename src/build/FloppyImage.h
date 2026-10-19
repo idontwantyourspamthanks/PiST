@@ -66,6 +66,18 @@ struct Item {
     QByteArray name11;
 };
 
+/// The 11-byte 8.3 name field a host name is written with — the conversion
+/// `updateImage` applies to a name entering the disk.
+///
+/// Exposed because the caller that asks "is this name taken?" has to ask it in
+/// the spelling the disk will hold: two long names that share their first eight
+/// characters are one 8.3 name, and comparing the typed text said otherwise.
+QByteArray name11FromHost(const QString &component);
+
+/// An 8.3 field as the pane spells it (`FOO.TXT`), the inverse of the
+/// conversion above for display purposes.
+QString display83(const QByteArray &name11);
+
 /// Decode a `.st` (raw) or `.msa` (Magic Shadow Archiver) image to a flat
 /// sector dump. `.dim` is the same dump with a 32-byte header stripped.
 bool loadRaw(const QString &imagePath, QByteArray *raw, QString *error);

@@ -605,6 +605,7 @@ private slots:
     /// Rename re-adds it under a new name, New Folder makes an empty one, and a
     /// refused name leaves the image alone. The image is asserted, not the row.
     void floppyPaneEditsItsDisk();
+    void floppyRenameRefusesAnEightyThreeClash();
     /// A move across volumes materialises a nested symlink rather than handing
     /// it to whatever QFile::rename does internally. A guard, not a red: see
     /// the test's comment for what was measured.
@@ -6319,6 +6320,59 @@ void TstGui::floppyPaneEditsItsDisk()
     QByteArray after;
     QVERIFY2(floppy::loadRaw(image, &after, &error), qPrintable(error));
     QCOMPARE(after, before);
+}
+
+// Renaming to a name that *shortens* to an existing 8.3 name must be refused,
+// not silently numbered. The check used to compare the typed spelling, so
+// `LONGFILE.TXT` next to `LONGFIL2.TXT` looked free and the writer then did what
+// it does for a copy: gave the newcomer `LONGFIL3.TXT`.
+void TstGui::floppyRenameRefusesAnEightyThreeClash()
+{
+    const QString dir = m_work->path() + QStringLiteral("/clash");
+    QVERIFY(QDir().mkpath(dir));
+
+    QVector<floppy::Item> items;
+    floppy::Item taken;
+    taken.destPath = QStringLiteral("LONGFILE.TXT");
+    taken.data = QByteArrayLiteral("taken");
+    items.append(taken);
+    const QString image = dir + QStringLiteral("/clash.st");
+    QString error;
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    struct Host : floppy::Transfer::Host
+    {
+        QString image;
+        QString mountedImage(int) const override { return image; }
+        bool confirmRewrite(const QString &) override { return true; }
+    } host;
+    host.image = image;
+    floppy::Transfer transfer(&host);
+
+    // The disk holds `LONGFILE.TXT`; renaming it to `LONGFILE2.TXT` asks for a
+    // name whose 8.3 field is identical. Comparing the typed spelling said the
+    // name was free, and the writer then did what it does for a copy: it numbered
+    // the entry instead of refusing a rename nobody asked to be numbered.
+    const floppy::Transfer::Result result =
+        transfer.renameEntry(0, QStringLiteral("LONGFILE.TXT"), QStringLiteral("LONGFILE2.TXT"));
+    QVERIFY2(result.outcome == floppy::Transfer::NameTaken,
+             qPrintable(QStringLiteral("outcome %1").arg(int(result.outcome))));
+
+    // And nothing was written: the entry still has its old name.
+    QByteArray raw;
+    QVERIFY2(floppy::loadRaw(image, &raw, &error), qPrintable(error));
+    const QVector<floppy::Entry> entries = floppy::listRaw(raw, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(entries.size(), 1);
+    QCOMPARE(entries.first().path, QStringLiteral("LONGFILE.TXT"));
+
+    // A folder named for the same field is *not* refused: FAT keys an entry by
+    // its 11-byte name plus its directory bit, and a file and a folder may share
+    // a name. The clamp is the writer's, so the transfer must not invent one.
+    const floppy::Transfer::Result folder =
+        transfer.makeDirectory(0, QString(), QStringLiteral("LONGFILE"));
+    QVERIFY2(folder.outcome == floppy::Transfer::Completed,
+             qPrintable(QStringLiteral("outcome %1").arg(int(folder.outcome))));
 }
 
 // A move across volumes must materialise a symbolic link inside the moved tree

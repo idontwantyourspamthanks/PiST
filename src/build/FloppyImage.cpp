@@ -462,7 +462,7 @@ QString latin1Field(const QByteArray &field)
     return QString::fromLatin1(end < 0 ? field : field.left(end));
 }
 
-QString display83(const QByteArray &name11)
+QString display83Impl(const QByteArray &name11)
 {
     const QString name = sanitize83Component(latin1Field(name11.left(8)).trimmed());
     const QString ext = sanitize83Component(latin1Field(name11.mid(8, 3)).trimmed());
@@ -552,7 +552,7 @@ QVector<RawDirEntry> parseDirBytes(const QByteArray &dir)
         if ((attr & 0x08) && !(attr & 0x10))
             continue;
         const QByteArray name11 = dir.mid(off, 11);
-        const QString name = display83(name11);
+        const QString name = display83Impl(name11);
         if (name == QLatin1String(".") || name == QLatin1String("..") || name.isEmpty())
             continue;
         RawDirEntry e;
@@ -635,7 +635,7 @@ QString sanitizeComponent(const QString &text, bool allowEmpty)
     return out;
 }
 
-QByteArray name11FromHost(const QString &component)
+QByteArray name11FromHostImpl(const QString &component)
 {
     QString base = component;
     QString ext;
@@ -854,7 +854,7 @@ QByteArray carriedName11(const QHash<QString, QByteArray> &carried, const QStrin
                          const QString &component)
 {
     const auto it = carried.constFind(key);
-    return it == carried.constEnd() ? name11FromHost(component) : it.value();
+    return it == carried.constEnd() ? name11FromHostImpl(component) : it.value();
 }
 
 bool insertItem(Node *root, const Item &item, const QHash<QString, QByteArray> &carried,
@@ -978,6 +978,16 @@ void collectPath(const QString &root, const QString &path, bool recurseHidden,
 }
 
 } // namespace
+
+QByteArray name11FromHost(const QString &component)
+{
+    return name11FromHostImpl(component);
+}
+
+QString display83(const QByteArray &name11)
+{
+    return display83Impl(name11);
+}
 
 bool writeAutoFolderImage(const QString &imagePath, const QString &programPath,
                           QString *error)

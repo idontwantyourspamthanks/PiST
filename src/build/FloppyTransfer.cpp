@@ -54,17 +54,30 @@ QString imageDestination(const QString &dirInImage, const QString &entryPath)
 }
 
 /// Whether the image directory `dir` (empty for the root) already shows an
-/// entry called `name`.
+/// entry whose *8.3* name is the one `name` would be written with.
 ///
-/// The comparison is the spelling the pane shows, which is what a rename or a
-/// new folder is typed against. It is the precondition `updateImage` cannot
-/// express: a name it is handed that is taken is *numbered* rather than
-/// refused, which is right for a copy and wrong for a rename.
+/// The comparison has to be after the conversion, not before: `LONGFILE.TXT`
+/// and `LONGFILE2.TXT` both shorten to `LONGFIL?.TXT`, and two long names that
+/// differ in their ninth character are the same 8.3 name. Asking the disk
+/// whether it shows the typed spelling said "no" for both, and `updateImage`
+/// then did what it does for a copy — numbered the newcomer (`LONGFIL1.TXT`)
+/// instead of refusing a rename the user had not asked for.
 bool directoryHas(const QVector<Entry> &entries, const QString &dir, const QString &name)
 {
-    const QString wanted = imageDestination(dir, name);
+    const QByteArray wanted = name11FromHost(name);
+    const QString parent = imageDestination(dir, QString());
     for (const Entry &entry : entries) {
-        if (entry.path.compare(wanted, Qt::CaseInsensitive) == 0)
+        const int slash = entry.path.lastIndexOf(QLatin1Char('/'));
+        const QString entryParent = slash < 0 ? QString() : entry.path.left(slash);
+        if (entryParent.compare(parent, Qt::CaseInsensitive) != 0)
+            continue;
+        // The field the entry actually holds when the listing carried one (a
+        // third-party disk's lower case, accent or NUL padding survives there),
+        // and otherwise the conversion of the spelling the pane shows.
+        const QByteArray field = entry.name11.isEmpty()
+            ? name11FromHost(entry.path.section(QLatin1Char('/'), -1))
+            : entry.name11;
+        if (field == wanted)
             return true;
     }
     return false;

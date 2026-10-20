@@ -215,6 +215,18 @@ QString suggestedRomDir()
     return base + QStringLiteral("/PiST/roms");
 }
 
+QString suggestedDemoDir()
+{
+    // Next to the tools and ROMs a first run installs into: one per-user PiST
+    // directory, so a backup or a cleanup has a single place to name. This is
+    // the writable counterpart of the read-only `share/pist/demo` (see
+    // WelcomeView::demoProjects()).
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QStringLiteral("/.local/share");
+    return base + QStringLiteral("/PiST/demos");
+}
+
 QString sessionBaseDir()
 {
     // Platform temp location: /tmp on Linux, /var/folders/... on macOS, and

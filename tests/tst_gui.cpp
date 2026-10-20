@@ -804,6 +804,10 @@ private slots:
     /// open, and opening the demo's source (whose sibling `.pistproject` carries
     /// the hook script and the emulator settings with it).
     void theToolbarOpensTheDemo();
+    /// An installed demo under a read-only prefix is copied to a writable per-user
+    /// directory before it is offered, so its first build can write the listing
+    /// and the program beside the source.
+    void installedDemosAreCopiedToAWritableDirectory();
     /// The symbol palette: the same candidates completion filters, presented as a
     /// jump list — filter, pick, and the file opens at the definition.
     void symbolPaletteJumpsToADefinition();
@@ -9442,6 +9446,91 @@ void TstGui::theToolbarOpensTheDemo()
     QVERIFY(editor);
     QVERIFY2(editor->toPlainText().startsWith(QStringLiteral("* hello.s")),
              qPrintable(editor->toPlainText().left(40)));
+}
+
+// An installed PiST keeps its demos under the read-only prefix. Offering that
+// path is what made the first build fail: vasm writes the `.lst` beside the
+// source. The demo is therefore copied into the per-user data directory, and
+// that copy — not the shipped tree — is what the doorways return.
+void TstGui::installedDemosAreCopiedToAWritableDirectory()
+{
+#ifdef Q_OS_WIN
+    QSKIP("directory write permissions cannot be simulated on Windows");
+#else
+    TestModeScope testMode;
+    const QString writable = paths::suggestedDemoDir();
+    QDir(writable).removeRecursively();
+    QVERIFY(!QDir(writable).exists());
+
+    QTemporaryDir install;
+    QVERIFY(install.isValid());
+    const QString shipped = install.path() + QStringLiteral("/demo");
+    QVERIFY(QDir().mkpath(shipped + QStringLiteral("/spritedemo")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.s"), QByteArrayLiteral("\tnop\n")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.pistproject"),
+                      QByteArrayLiteral("{\"version\":1}")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/spritedemo/sprites.s"),
+                      QByteArrayLiteral("\tnop\n")));
+
+    // A package installs its content under a directory the user cannot write.
+    QVERIFY(QFile::setPermissions(shipped, QFile::ReadOwner | QFile::ExeOwner
+                                              | QFile::ReadGroup | QFile::ExeGroup
+                                              | QFile::ReadOther | QFile::ExeOther));
+    const auto restoreWrite = [&shipped] {
+        QFile::setPermissions(shipped, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                                          | QFile::ReadGroup | QFile::ExeGroup
+                                          | QFile::ReadOther | QFile::ExeOther);
+    };
+    // root (a containerised run) can write despite the mode, which makes the
+    // situation this test is about impossible to stage.
+    if (QFileInfo(shipped).isWritable()) {
+        restoreWrite();
+        QSKIP("this account can still write a mode-0555 directory");
+    }
+
+    // demoProjects() searches the working directory first; putting the fake
+    // installed tree there is how the test says "this is what was installed".
+    const QString previous = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(install.path()));
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+
+    // The reporter's session had already stored the read-only source as
+    // `last/source`; a reopen (or a command line, or Open Recent) names that
+    // path directly, so it has to translate to the copy too.
+    const QString staleSource = shipped + QStringLiteral("/hello.s");
+    const QString mappedSource = WelcomeView::writableDemoPath(staleSource);
+    const QString mappedSprite =
+        WelcomeView::writableDemoPath(shipped + QStringLiteral("/spritedemo/sprites.s"));
+    const QString unrelated = install.path() + QStringLiteral("/other.s");
+    QCOMPARE(WelcomeView::writableDemoPath(unrelated), unrelated);
+
+    QVERIFY(QDir::setCurrent(previous));
+
+    // Restore write access so QTemporaryDir can remove its tree.
+    restoreWrite();
+
+    QCOMPARE(demos.size(), 1);
+    QVERIFY2(demos.first().path.startsWith(writable), qPrintable(demos.first().path));
+    QVERIFY(QFileInfo(writable).isWritable());
+
+    // The authored tree, including its subdirectory, came across...
+    QVERIFY(QFileInfo(writable + QStringLiteral("/hello.s")).isWritable());
+    QVERIFY(QFileInfo(writable + QStringLiteral("/hello.pistproject")).exists());
+    QVERIFY(QFileInfo(writable + QStringLiteral("/spritedemo/sprites.s")).exists());
+    QCOMPARE(mappedSource, writable + QStringLiteral("/hello.s"));
+    QCOMPARE(mappedSprite, writable + QStringLiteral("/spritedemo/sprites.s"));
+    // The copy is what PiST vouches for, not the whole directory: the project
+    // file it copied is on the hook trust list from this run.
+    QVERIFY(settings::trustedHookProjects().contains(
+        QFileInfo(writable + QStringLiteral("/hello.pistproject")).canonicalFilePath()));
+
+    // ...and this is the directory a build writes into.
+    QFile listing(writable + QStringLiteral("/hello.lst"));
+    QVERIFY2(listing.open(QIODevice::WriteOnly), qPrintable(listing.errorString()));
+    listing.close();
+
+    QDir(writable).removeRecursively();
+#endif
 }
 
 // Find in Files reads the project as text and lists what it found, grouped by

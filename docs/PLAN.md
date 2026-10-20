@@ -1453,6 +1453,23 @@ load-bearing dependency — which the detection order above already guarantees.
   both doorways open that; the test asserts the tab's title *and* that its text is assembly rather
   than JSON.
 
+- **An installed demo could not build itself** (2026-10-20). The packages install the demos under
+  the read-only prefix (`/usr/lib/pist/share/pist/demo` in the deb), and the build writes the
+  listing and the program beside the source — the first `F7` failed with `fatal error 14: could
+  not open <.../hello.lst> for output`, before any of the tour could run. A demo is a project, not
+  a viewer: the fix copies the shipped tree once into `paths::suggestedDemoDir()`
+  (`~/.local/share/PiST/demos`) and offers that copy, because an edit has to be savable for the
+  same reason. A source checkout is writable and keeps using its own `demo/`; the copy is reused
+  across runs so changes made to it survive, and the files PiST copied in that first run are put on
+  the hook trust list (a project later dropped into that directory is not trusted just by being
+  there). A session that already opened the read-only path also stored it
+  as `last/source` and in its recents, and the constructor reopens that before the Demo doorway
+  runs — so `WelcomeView::writableDemoPath()` translates any document under the read-only tree at
+  `openPath()` and `openProject()`, not only the welcome rows. `tst_gui`'s
+  `installedDemosAreCopiedToAWritableDirectory` puts a demo under a non-writable directory in the
+  working-directory slot discovery reads and asserts the returned path is the writable copy, that
+  the copy includes a subdirectory, and that the stored read-only source maps onto it.
+
 - **A `Qt::Popup` cannot be moved under Wayland, which is how a completion list is
   invisible in use and green in the suite** (2026-10-18, `feature/completion`). The
   editor's completion list began as `QCompleter`'s popup — a `Qt::Popup`, i.e. a

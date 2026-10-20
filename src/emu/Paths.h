@@ -62,6 +62,19 @@ QStringList tosSearchPaths();
 /// because the search below includes it.
 QString suggestedRomDir();
 
+/// Per-user copy of the demo projects: `~/.local/share/PiST/demos` on Linux and
+/// the equivalent elsewhere.
+///
+/// The demos installed with a package sit under the read-only prefix
+/// (`share/pist/demo`), but opening one has to be able to write beside its
+/// source: the build writes the listing and the program there, and an edit has
+/// to be savable. When the shipped directory cannot be written, its tree is
+/// copied here on first use and the copy is what the welcome view and the Demo
+/// action offer. A source checkout keeps using its own `demo/` unchanged.
+///
+/// Not created by this function.
+QString suggestedDemoDir();
+
 /// Base directory for per-session state (the generated bootstrap script, the
 /// control socket, and the isolated config directory).
 ///

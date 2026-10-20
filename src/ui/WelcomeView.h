@@ -101,7 +101,22 @@ public:
     ///
     /// A candidate counts only when the demo it names is really there, so a row
     /// that would open nothing is never offered.
+    ///
+    /// The paths are writable. A source checkout's `demo/` is used as it is; a
+    /// demo found under an installed PiST's read-only prefix is copied to
+    /// `paths::suggestedDemoDir()` on first use, because opening a project has
+    /// to be able to write its build outputs and saves beside the source. The
+    /// copy is reused on later runs, so edits made to it are kept.
     static QList<Entry> demoProjects();
+
+    /// Translate a document inside a read-only demo tree to its writable copy.
+    ///
+    /// `last/source` and the recent list can still name the installed path — a
+    /// session that tried to build it before this copy existed wrote it there —
+    /// and so can a command line or a project opened by hand. Returns `path`
+    /// unchanged when it is not inside the demo tree, the tree is writable, or
+    /// no copy could be made.
+    static QString writableDemoPath(const QString &path);
 
 signals:
     void openRequested(const QString &path);

@@ -3476,12 +3476,12 @@ void MainWindow::openFile()
 
 bool MainWindow::openPath(const QString &path)
 {
-    return openPathImpl(path, /*quiet=*/false);
+    return openPathImpl(WelcomeView::writableDemoPath(path), /*quiet=*/false);
 }
 
 bool MainWindow::openPathQuiet(const QString &path)
 {
-    return openPathImpl(path, /*quiet=*/true);
+    return openPathImpl(WelcomeView::writableDemoPath(path), /*quiet=*/true);
 }
 
 bool MainWindow::openPathImpl(const QString &path, bool quiet)
@@ -3714,6 +3714,8 @@ bool MainWindow::hookMayRunFor(const QString &projectPath)
 {
     const QString shipped = QCoreApplication::applicationDirPath()
         + QStringLiteral("/../share/pist");
+    // A copied demo was recorded as trusted when the copy was made (see
+    // WelcomeView::demoProjects()), so the shipped-tree check here is enough.
     if (settings::hookProjectIsTrusted(m_settings, projectPath, shipped))
         return true;
 
@@ -3740,9 +3742,13 @@ void MainWindow::openProject()
     if (path.isEmpty())
         return;
 
+    // A project picked from the installed demo directory is read-only. Open its
+    // copy instead, or its implied source and its settings would land there.
+    const QString projectPath = WelcomeView::writableDemoPath(path);
+
     ProjectSettings loaded;
     QString error;
-    if (!settings::load(&loaded, path, &error)) {
+    if (!settings::load(&loaded, projectPath, &error)) {
         QMessageBox::critical(this, tr("Open project"), error);
         return;
     }
@@ -3753,10 +3759,15 @@ void MainWindow::openProject()
     // blindly would produce an arbitrary path.
     QString source = settings::lastSourcePath();
     QString implied;
-    if (path.endsWith(QLatin1String(settings::kProjectSuffix), Qt::CaseInsensitive)) {
-        implied = path.left(path.size() - QLatin1String(settings::kProjectSuffix).size())
+    if (projectPath.endsWith(QLatin1String(settings::kProjectSuffix), Qt::CaseInsensitive)) {
+        implied = projectPath.left(projectPath.size()
+                                  - QLatin1String(settings::kProjectSuffix).size())
                 + QStringLiteral(".s");
     }
+    // A stale last source can still name the read-only tree after that file
+    // has gone; translate it before deciding it no longer exists, because its
+    // copy may well be there.
+    source = WelcomeView::writableDemoPath(source);
     if (!implied.isEmpty() && QFileInfo::exists(implied))
         source = implied;
     else if (!source.isEmpty() && !QFileInfo::exists(source))
@@ -3780,14 +3791,15 @@ void MainWindow::openProject()
     // A project that came with a hook asks once, and a refusal leaves the hook
     // off for this load (the setting itself stays in the file, so the decision is
     // the user's, not an edit of their project).
-    if (!hookMayRunFor(path)) {
+    if (!hookMayRunFor(projectPath)) {
         m_settings.stopHookEnabled = false;
         m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
     }
     settings::rememberLastSource(source);
     syncFileBrowserDisks();
-    statusBar()->showMessage(tr("Opened project %1").arg(QFileInfo(path).fileName()), 5000);
-    m_log->appendPlainText(tr("[project] loaded %1").arg(path));
+    statusBar()->showMessage(
+        tr("Opened project %1").arg(QFileInfo(projectPath).fileName()), 5000);
+    m_log->appendPlainText(tr("[project] loaded %1").arg(projectPath));
 }
 
 void MainWindow::saveProject()

@@ -338,7 +338,11 @@ modified document and returns false when that offer was cancelled; the tab's × 
 both go through it, and Close All sweeps until `closeTab()` refuses — so a Cancel stops it where the
 user stopped. `updateCentralPage()` puts the welcome view on show the moment the count reaches zero,
 rebuilding it as it appears (`refreshWelcome()`: recents, the demo projects on a first run, toolchain
-and ROM readiness, the usage shelf) — the welcome view carries no per-document state.
+and ROM readiness, the usage shelf) — the welcome view carries no per-document state. A demo found
+under the installed prefix is read-only, so `WelcomeView::demoProjects()` copies it to
+`paths::suggestedDemoDir()` first: a build writes its listing and program beside the source.
+`WelcomeView::writableDemoPath()` applies the same rule to a path that arrives later — the
+`last/source` reopen, Open Recent, a command line, or File ▸ Open Project.
 
 **External change.** `DocumentWatcher` watches every open document's path. A *deletion*
 (`documentVanished()`) closes an unmodified tab when the sidebar's own delete was the gesture (that

@@ -16,56 +16,28 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.10.3
+## What's new in 0.10.4
 
-A hardening release. It closes a sandbox escape in stop hooks, makes a runaway
-hook unable to freeze the IDE, and fixes the errors an independent review of
-0.9.1–0.10.2 found in search, crash reporting and the floppy pane.
-
-### Security
-
-- **A stop hook can no longer compile more code or load a precompiled chunk.**
-  The engine loaded scripts with `luaL_loadbuffer`, which accepts the binary form
-  the interpreter does not verify, and left `load`, `loadfile` and `dofile`
-  reachable — so a script could compile one at run time. Chunks now load
-  text-only, the three loaders refuse by name, and `string.dump` is gone. This
-  matters because a project's hook is code from wherever the project came from.
-- **Opening a project now asks before running its hook.** A `.pistproject` can
-  name a script anywhere on disk; the first time a project with a hook is
-  opened, PiST says what a hook can do (read and write memory and registers) and
-  waits for an answer. The answer is remembered per project file. Projects that
-  ship with PiST — the demo — are trusted by provenance and are not asked about.
+A bugfix release for packaged installs: the demo project that opens on a first
+run could not build.
 
 ### Fixed
 
-- **A hook that loops around `pcall` can no longer freeze the IDE.** The time
-  limit was an ordinary Lua error, so
-  `while true do pcall(function() while true do end end) end` caught it and ran
-  forever — on the window's own thread. The deadline now carries a token a
-  script cannot forge, and the `pcall` it sees re-raises it instead of returning
-  it, so no nesting keeps a runaway alive.
-- **No more undefined behaviour when a hook raises.** Lua's C build unwinds with
-  `longjmp`, which skipped the destructors of the API functions' string objects
-  on every script error. Errors now cross into the interpreter after those
-  objects are gone.
-- **A hook's write is no longer mistaken for someone else's command.** The wait
-  after a scripted write took *any* completion, so a toolbar Step or a
-  remote-control command arriving mid-hook counted as the answer. It now waits
-  for its own command.
-- **Find in Files gives the editor's column in CRLF files** — which is most Atari
-  ST sources. Every hit after a `\r\n` line was one column too far right.
-- **Find in Files no longer stalls before its first result.** The directory tree
-  was read in one blocking call; it is now listed within the same time budget as
-  the scan.
-- **Renaming on a floppy refuses the name it would really write.** The clash
-  check compared the typed spelling, so a rename to a name sharing its 8.3 field
-  with an existing entry was silently numbered instead of refused.
-- **A hook script inside a project is saved relative to the project**, so the
-  demo and any committed project no longer carry the saving machine's
-  `/home/...` path.
-- **A crash report that failed to upload is retried**, as the code always said it
-  would be: a parked report is now picked up on the next launch, and the
-  unwinder is warmed before the signal handler needs it.
+- **The demo now builds from a packaged install.** Packages keep the demos under
+  the read-only install prefix (`/usr/lib/pist/share/pist/demo` in the `.deb`),
+  while the build writes its listing and program beside the source — so the
+  first build failed with `fatal error 14: could not open .../hello.lst for
+  output`. The shipped demo tree is now copied to
+  `~/.local/share/PiST/demos` on first use, and that writable copy is what the
+  welcome view and the Demo action open. Edits to the copy are kept across
+  runs.
+- **A session already pointed at the installed demo moves to the copy.** A
+  read-only demo source stored as the last open file or in Open Recent is
+  translated when it is reopened, so upgrading does not leave the failing path
+  in place.
+- **The copied demo's stop hook is trusted without a prompt.** Only the project
+  files PiST copied are recorded; a project later placed in that directory is
+  not trusted just by being there.
 
 ### Linux
 

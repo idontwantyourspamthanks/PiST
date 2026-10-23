@@ -3,3 +3,8 @@
 # an error that says nothing about line endings — and the Windows leg is the one
 # that now actually runs these tests.
 tests/data/* -text
+
+# Shell scripts are run by bash on every runner, including windows-latest (the
+# release packaging job's `shell: bash` steps). A core.autocrlf checkout would
+# hand msys2 a CRLF script and it fails on the first `\r`.
+*.sh text eol=lf

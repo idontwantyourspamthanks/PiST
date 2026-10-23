@@ -784,7 +784,14 @@ Remaining assessments:
 - A **release workflow** producing self-contained archives per platform, each
   carrying PiST, a vasm compiled from the author's unmodified source (pinned by
   sha256), and EmuTOS 1.4 (GPLv2) as a working default ROM, plus the licence and
-  notices. Qt is deployed with macdeployqt/windeployqt on macOS and Windows, and
+  notices. The vasm/vlink source is fetched through
+  `scripts/fetch-pinned-tool.sh`, which tries the author's host and, only when
+  that host cannot be reached, a raw Internet Archive capture of the same URL;
+  both attempts are checked against the same sha256. A reachable host that
+  serves different bytes still fails the build, so the pin keeps raising the
+  alarm it exists for. (The author's host went offline on 2026-10-23 and
+  blocked both CI and a release.) Qt is deployed
+  with macdeployqt/windeployqt on macOS and Windows, and
   the **Linux AppImage, the Windows archive and the macOS app all additionally
   bundle Hatari**, built from the pinned hatari-pist fork commit (upstream 2.6.1
   plus the HRDB listener and the media channel) by the same action CI uses (see

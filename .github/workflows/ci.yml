@@ -23,26 +23,32 @@ jobs:
     name: vasm (windows cross-build)
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install mingw-w64
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
 
       - name: Fetch, verify and cross-build vasm and vlink
         run: |
           set -euo pipefail
-          # Same pinned source as the other legs and the release.
+          # Same pinned source as the other legs and the release. The archived
+          # copy is the fallback for the author's host going down; both are
+          # checked against the same sha256.
           VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+          VASM_ARCHIVE_URL=https://web.archive.org/web/20260903181732id_/http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
           VASM_SHA256=c84b2de1cbb87831795fe64a85c5d9a7002a766e3a7c30b0a2d7d5e99d878f49
-          curl -fsSL -o vasm.tar.gz "$VASM_URL"
-          echo "$VASM_SHA256  vasm.tar.gz" | sha256sum -c -
+          bash scripts/fetch-pinned-tool.sh "$VASM_URL" "$VASM_ARCHIVE_URL" \
+            "$VASM_SHA256" vasm.tar.gz
           tar xzf vasm.tar.gz
           make -C vasm CPU=m68k SYNTAX=mot CC=x86_64-w64-mingw32-gcc
           file vasm/vasmm68k_mot.exe
           # vlink, from the same author: its Win32FromLinux makefile hardcodes
           # the 32-bit triplet, so the compilers are overridden to x86_64.
           VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
+          VLINK_ARCHIVE_URL=https://web.archive.org/web/20260903181732id_/http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
           VLINK_SHA256=8d151cdd30a4feb575a364e68810c2bc300fe1a7c074dbbee6fd1175a6c5bfae
-          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
-          echo "$VLINK_SHA256  vlink.tar.gz" | sha256sum -c -
+          bash scripts/fetch-pinned-tool.sh "$VLINK_URL" "$VLINK_ARCHIVE_URL" \
+            "$VLINK_SHA256" vlink.tar.gz
           tar xzf vlink.tar.gz
           make -C vlink -f Makefile.Win32FromLinux \
             CC=x86_64-w64-mingw32-gcc LD=x86_64-w64-mingw32-gcc
@@ -126,19 +132,22 @@ jobs:
         run: |
           set -euo pipefail
           VASM_URL=http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
+          VASM_ARCHIVE_URL=https://web.archive.org/web/20260903181732id_/http://sun.hasenbraten.de/vasm/release/vasm.tar.gz
           # Pinned: an unexpected change upstream must fail loudly rather than
-          # silently altering what we test against.
+          # silently altering what we test against. The archive copy carries the
+          # same bytes and the same check.
           VASM_SHA256=c84b2de1cbb87831795fe64a85c5d9a7002a766e3a7c30b0a2d7d5e99d878f49
-          curl -fsSL -o vasm.tar.gz "$VASM_URL"
-          echo "$VASM_SHA256  vasm.tar.gz" | shasum -a 256 -c -
+          bash scripts/fetch-pinned-tool.sh "$VASM_URL" "$VASM_ARCHIVE_URL" \
+            "$VASM_SHA256" vasm.tar.gz
           tar xzf vasm.tar.gz
           make -C vasm CPU=m68k SYNTAX=mot
           # vlink, same author and same discipline: tst_link's end-to-end case
           # needs it, and skips without it.
           VLINK_URL=http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
+          VLINK_ARCHIVE_URL=https://web.archive.org/web/20260903181732id_/http://sun.hasenbraten.de/vlink/release/vlink.tar.gz
           VLINK_SHA256=8d151cdd30a4feb575a364e68810c2bc300fe1a7c074dbbee6fd1175a6c5bfae
-          curl -fsSL -o vlink.tar.gz "$VLINK_URL"
-          echo "$VLINK_SHA256  vlink.tar.gz" | shasum -a 256 -c -
+          bash scripts/fetch-pinned-tool.sh "$VLINK_URL" "$VLINK_ARCHIVE_URL" \
+            "$VLINK_SHA256" vlink.tar.gz
           tar xzf vlink.tar.gz
           make -C vlink
           mkdir -p "$HOME/.local/bin"

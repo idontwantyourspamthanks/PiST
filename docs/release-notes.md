@@ -16,28 +16,24 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.10.4
+## What's new in 0.10.5
 
-A bugfix release for packaged installs: the demo project that opens on a first
-run could not build.
+### New
 
-### Fixed
-
-- **The demo now builds from a packaged install.** Packages keep the demos under
-  the read-only install prefix (`/usr/lib/pist/share/pist/demo` in the `.deb`),
-  while the build writes its listing and program beside the source — so the
-  first build failed with `fatal error 14: could not open .../hello.lst for
-  output`. The shipped demo tree is now copied to
-  `~/.local/share/PiST/demos` on first use, and that writable copy is what the
-  welcome view and the Demo action open. Edits to the copy are kept across
-  runs.
-- **A session already pointed at the installed demo moves to the copy.** A
-  read-only demo source stored as the last open file or in Open Recent is
-  translated when it is reopened, so upgrading does not leave the failing path
-  in place.
-- **The copied demo's stop hook is trusted without a prompt.** Only the project
-  files PiST copied are recorded; a project later placed in that directory is
-  not trusted just by being there.
+- **The entry stop explains itself, and resumes with one click.** Run stops at
+  the program's first instruction so you can step through it from the start.
+  The emulator panel now says so: a **Program loaded** card appears over the
+  last frame instead of leaving a still screen that reads as a hang. Its
+  **Continue** button names the current shortcut, and the card is the button —
+  clicking it resumes. The button pulses briefly when the card first appears,
+  then settles.
+- **Every stop names the way out.** The small badge at later stops reads
+  "Paused — *key* continues", following the shortcut scheme in use.
+- **The hint is there even without the display panel.** A session driven by a
+  stock Hatari, or one whose panel is hidden, gets the same message in the
+  status bar: the program is loaded and paused, and the Continue key runs it.
+- **An entry stop that beats the first frame still explains itself.** The card
+  is drawn even when no media frame has arrived yet.
 
 ### Linux
 

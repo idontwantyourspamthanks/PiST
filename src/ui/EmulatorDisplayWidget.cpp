@@ -11,9 +11,10 @@
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QPalette>
 #include <QPainter>
+#include <QPalette>
 #include <QScreen>
+#include <QVariantAnimation>
 
 namespace pist {
 
@@ -68,32 +69,206 @@ void EmulatorDisplayWidget::setFrame(const QImage &frame)
     update();
 }
 
-void EmulatorDisplayWidget::setPaused(bool paused)
+void EmulatorDisplayWidget::setPaused(bool paused, bool atEntry, const QString &continueHint)
 {
-    if (m_paused == paused)
+    const bool entry = paused && atEntry;
+    if (m_paused == paused && m_atEntry == entry && m_continueHint == continueHint)
         return;
+
+    const bool wasPaused = m_paused;
+    const bool wasAtEntry = m_atEntry;
     m_paused = paused;
+    m_atEntry = entry;
+    m_continueHint = continueHint;
+
+    if (!m_paused) {
+        if (m_pulseAnimation)
+            m_pulseAnimation->stop();
+        m_pulse = 1.0;
+        setAccessibleName(QString());
+        setAccessibleDescription(QString());
+        update();
+        return;
+    }
+
+    // The card is the one "is it hung?" answer, so it gets the attention
+    // treatment exactly once when it first appears — not on every repaint and
+    // not for later stops, where the user knows why the machine halted.
+    if (m_atEntry && (!wasPaused || !wasAtEntry))
+        startAttentionPulse();
+
+    if (m_atEntry) {
+        setAccessibleName(tr("Emulator paused at program entry"));
+        setAccessibleDescription(
+            tr("The program has loaded and the emulator is paused before it runs. "
+               "%1 resumes it.")
+                .arg(continueLabel()));
+    } else {
+        setAccessibleName(tr("Emulator paused"));
+        setAccessibleDescription(tr("%1 resumes the program.").arg(continueLabel()));
+    }
     update();
+}
+
+void EmulatorDisplayWidget::setContinueHint(const QString &continueHint)
+{
+    if (m_continueHint == continueHint)
+        return;
+    m_continueHint = continueHint;
+    if (m_paused)
+        update();
+}
+
+QString EmulatorDisplayWidget::continueLabel() const
+{
+    return m_continueHint.isEmpty() ? tr("Continue")
+                                    : tr("Continue (%1)").arg(m_continueHint);
+}
+
+EmulatorDisplayWidget::PauseCardLayout EmulatorDisplayWidget::pauseCardLayout() const
+{
+    // Geometry is derived from the press and paint alike, so the whole card
+    // is a target — a button that looks clickable and isn't is worse than no
+    // button at all.
+    constexpr int pad = 20;
+    QFont titleFont = font();
+    titleFont.setBold(true);
+    titleFont.setPointSizeF(font().pointSizeF() * 1.25);
+    const QFontMetrics titleMetrics(titleFont);
+    const QFontMetrics bodyMetrics(font());
+
+    const int cardWidth = qBound(240, width() - 48, 460);
+    const int innerWidth = cardWidth - 2 * pad;
+    const int bodyHeight =
+        bodyMetrics
+            .boundingRect(QRect(0, 0, innerWidth, 10000), Qt::AlignLeft | Qt::TextWordWrap,
+                          tr("The emulator is paused before your program runs."))
+            .height();
+    const int buttonHeight = bodyMetrics.height() + 14;
+    const int cardHeight =
+        pad + titleMetrics.height() + 8 + bodyHeight + 16 + buttonHeight + pad;
+
+    PauseCardLayout layout;
+    layout.card = QRect((width() - cardWidth) / 2, (height() - cardHeight) / 2, cardWidth,
+                        cardHeight);
+    layout.title = QRect(layout.card.x() + pad, layout.card.y() + pad, innerWidth,
+                         titleMetrics.height());
+    layout.body = QRect(layout.card.x() + pad, layout.title.bottom() + 8, innerWidth, bodyHeight);
+    layout.button = QRect(layout.card.x() + pad, layout.body.bottom() + 16, innerWidth,
+                          buttonHeight);
+    return layout;
+}
+
+void EmulatorDisplayWidget::paintPauseCard(QPainter &p)
+{
+    const PauseCardLayout layout = pauseCardLayout();
+    p.setRenderHint(QPainter::Antialiasing);
+
+    // Dark, but not opaque: the last frame showing round the edges is the
+    // evidence that the machine really did load and is merely stopped. The
+    // outline keeps the card legible when there is no frame at all (black).
+    p.setPen(QPen(QColor(90, 90, 90), 1));
+    p.setBrush(QColor(0, 0, 0, 205));
+    p.drawRoundedRect(layout.card.adjusted(0, 0, -1, -1), 8, 8);
+
+    QFont titleFont = p.font();
+    titleFont.setBold(true);
+    titleFont.setPointSizeF(p.font().pointSizeF() * 1.25);
+    p.setFont(titleFont);
+    p.setPen(QColor(240, 240, 240));
+    p.drawText(layout.title, Qt::AlignLeft | Qt::AlignVCenter, tr("Program loaded"));
+
+    p.setFont(font());
+    p.setPen(QColor(210, 210, 210));
+    p.drawText(layout.body, Qt::AlignLeft | Qt::TextWordWrap,
+               tr("The emulator is paused before your program runs."));
+
+    // The highlighted button is what pulses: a moving bright rectangle in a
+    // still panel is hard to miss, and it settles rather than blinking
+    // forever.
+    QColor accent = palette().color(QPalette::Highlight);
+    accent.setAlphaF(0.45 + 0.55 * m_pulse);
+    p.setPen(Qt::NoPen);
+    p.setBrush(accent);
+    p.drawRoundedRect(layout.button, 6, 6);
+    p.setPen(palette().color(QPalette::HighlightedText));
+    p.drawText(layout.button, Qt::AlignCenter, continueLabel());
+}
+
+void EmulatorDisplayWidget::paintPausedBadge(QPainter &p)
+{
+    // A small badge, top-right, that stays out of the video's way but makes the
+    // stopped state unmistakable. Semi-transparent so the last frame still shows
+    // through beneath it. The Continue hint rides along: the state and the way
+    // out of it should never need a manual.
+    p.setRenderHint(QPainter::Antialiasing);
+    const QString text = m_continueHint.isEmpty()
+                             ? tr("Paused")
+                             : tr("Paused — %1 continues").arg(m_continueHint);
+    QFont f = p.font();
+    f.setBold(true);
+    p.setFont(f);
+    const QFontMetrics fm(f);
+    const int padX = 10, padY = 6;
+    const QRect textRect = fm.boundingRect(text);
+    const QRect badge(width() - textRect.width() - padX * 2 - 8, 8,
+                      textRect.width() + padX * 2, textRect.height() + padY * 2);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, 170));
+    p.drawRoundedRect(badge, 4, 4);
+    p.setPen(QColor(230, 230, 230));
+    p.drawText(badge, Qt::AlignCenter, text);
+}
+
+void EmulatorDisplayWidget::startAttentionPulse()
+{
+    if (!isVisible())
+        return; // A hidden panel has nobody to attract; show it at rest.
+    if (!m_pulseAnimation) {
+        m_pulseAnimation = new QVariantAnimation(this);
+        m_pulseAnimation->setDuration(1100);
+        m_pulseAnimation->setStartValue(1.0);
+        m_pulseAnimation->setKeyValueAt(0.5, 0.25);
+        m_pulseAnimation->setEndValue(1.0);
+        m_pulseAnimation->setLoopCount(2);
+        m_pulseAnimation->setEasingCurve(QEasingCurve::InOutSine);
+        connect(m_pulseAnimation, &QVariantAnimation::valueChanged, this,
+                [this](const QVariant &value) {
+                    m_pulse = value.toReal();
+                    update();
+                });
+        connect(m_pulseAnimation, &QVariantAnimation::finished, this, [this] {
+            m_pulse = 1.0;
+            update();
+        });
+    }
+    m_pulse = 1.0;
+    m_pulseAnimation->start();
 }
 
 void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
 {
     QWidget::paintEvent(event);
 
+    QPainter p(this);
+
     if (m_frame.isNull()) {
         // With nothing to show this is a black rectangle, which reads as a
-        // broken emulator rather than as an empty panel. Say what it is.
-        QPainter p(this);
-        p.setPen(QColor(150, 150, 150));
-        p.drawText(rect().adjusted(24, 24, -24, -24), Qt::AlignCenter | Qt::TextWordWrap,
-                   tr("The emulator's display appears here when a session runs "
-                      "with the hatari-pist emulator."));
-        return;
+        // broken emulator rather than as an empty panel. Say what it is —
+        // unless a stop is already known, in which case the pause overlay
+        // below is the better answer (the entry stop can beat the first
+        // frame, and that is exactly when the user needs the card).
+        if (!m_paused) {
+            p.setPen(QColor(150, 150, 150));
+            p.drawText(rect().adjusted(24, 24, -24, -24), Qt::AlignCenter | Qt::TextWordWrap,
+                       tr("The emulator's display appears here when a session runs "
+                          "with the hatari-pist emulator."));
+            return;
+        }
+    } else {
+        // The panel owns the pixels: draw the latest frame, aspect-fit and centred.
+        p.drawImage(fittedRect(width(), height(), m_frame.width(), m_frame.height()), m_frame);
     }
-
-    // The panel owns the pixels: draw the latest frame, aspect-fit and centred.
-    QPainter p(this);
-    p.drawImage(fittedRect(width(), height(), m_frame.width(), m_frame.height()), m_frame);
 
     // The grab indicator (§12.4): an accent border while input is captured,
     // plus the release hint — the user must always be able to see how to get
@@ -123,24 +298,10 @@ void EmulatorDisplayWidget::paintEvent(QPaintEvent *event)
     if (!m_paused)
         return;
 
-    // A small badge, top-right, that stays out of the video's way but makes the
-    // stopped state unmistakable. Semi-transparent so the last frame still shows
-    // through beneath it.
-    p.setRenderHint(QPainter::Antialiasing);
-    const QString text = tr("Paused");
-    QFont f = p.font();
-    f.setBold(true);
-    p.setFont(f);
-    const QFontMetrics fm(f);
-    const int padX = 10, padY = 6;
-    const QRect textRect = fm.boundingRect(text);
-    const QRect badge(width() - textRect.width() - padX * 2 - 8, 8,
-                      textRect.width() + padX * 2, textRect.height() + padY * 2);
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0, 0, 0, 170));
-    p.drawRoundedRect(badge, 4, 4);
-    p.setPen(QColor(230, 230, 230));
-    p.drawText(badge, Qt::AlignCenter, text);
+    if (m_atEntry)
+        paintPauseCard(p);
+    else
+        paintPausedBadge(p);
 }
 
 void EmulatorDisplayWidget::setMediaSession(bool running)
@@ -208,8 +369,28 @@ void EmulatorDisplayWidget::leaveEvent(QEvent *event)
         unsetCursor();
 }
 
+void EmulatorDisplayWidget::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    // The attention pulse is a one-shot; a hidden panel must not keep
+    // repainting for it, and a later show must not resume mid-breath.
+    if (m_pulseAnimation) {
+        m_pulseAnimation->stop();
+        m_pulse = 1.0;
+    }
+}
+
 void EmulatorDisplayWidget::mousePressEvent(QMouseEvent *event)
 {
+    // The entry card is a button. It has to be answered before the input-grab
+    // branch below, or a session that is stopped (and therefore not captured)
+    // would treat the click as "grab the keyboard" and appear to do nothing.
+    if (m_paused && m_atEntry && event->button() == Qt::LeftButton
+        && pauseCardLayout().card.contains(event->pos())) {
+        emit resumeRequested();
+        event->accept();
+        return;
+    }
     if (m_mediaSession && !m_inputCaptured && event->button() == Qt::LeftButton) {
         // The grabbing click is consumed — press and release both: it
         // belongs to the grab, not to wherever the guest cursor happened

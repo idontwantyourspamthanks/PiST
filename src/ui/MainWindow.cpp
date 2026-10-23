@@ -1849,10 +1849,17 @@ void MainWindow::wireBackend()
         updateRunContinueShortcut();
         updateSessionChip();
         updateRegisterStrip();
+        // The first stop of a session is the entry stop: the program has
+        // loaded and the debugger is waiting before its first instruction.
+        // That is the one stop a new user reads as a hang, so the panel names
+        // it and offers Continue rather than only muting the video.
+        const bool entryStop = stopped && !m_session->sessionArmed();
+        const QString continueHint =
+            m_actResume->shortcut().toString(QKeySequence::NativeText);
         // The embedded panel renders no frames while stopped, so tell it to show
         // its paused hint rather than look frozen.
         if (m_display)
-            m_display->setPaused(stopped);
+            m_display->setPaused(stopped, entryStop, continueHint);
         // A stop is also when the user wants their keyboard back: a machine
         // halted in its debugger cannot consume input, so anything typed
         // would sit in the media socket until a resume replayed it (seen
@@ -1876,6 +1883,18 @@ void MainWindow::wireBackend()
                 statusBar()->showMessage(
                     tr("View → Layout → Debugging arranges the panels around a stop."),
                     8000);
+            }
+            // The panel carries the same message, but it is hidden when the
+            // session uses an emulator without the media channel — and a
+            // loaded program that never moves is the report that prompted
+            // this. The status bar is the one surface both transports share.
+            if (entryStop && m_display && !m_display->isVisible()) {
+                statusBar()->showMessage(
+                    continueHint.isEmpty()
+                        ? tr("Program loaded and paused — choose Continue to run it.")
+                        : tr("Program loaded and paused — press %1 to run it.")
+                              .arg(continueHint),
+                    10000);
             }
         }
     });
@@ -2346,6 +2365,10 @@ void MainWindow::buildPanels()
                     if (m_actReleaseInput)
                         m_actReleaseInput->setEnabled(captured);
                 });
+        // The entry-stop card is a Continue button: the panel is where the
+        // user is looking when the loaded screen stops moving.
+        connect(m_display, &EmulatorDisplayWidget::resumeRequested, this,
+                &MainWindow::resume);
     }
 
     m_profiler = new ProfilerView(this);
@@ -2947,6 +2970,10 @@ void MainWindow::applyShortcutScheme()
     }
     updateRunContinueShortcut();
     refreshToolbarStatusTips();
+    // A stopped session's pause card names the Continue shortcut, and the
+    // scheme can change while it is up.
+    if (m_display && m_host && m_host->isStopped())
+        m_display->setContinueHint(m_actResume->shortcut().toString(QKeySequence::NativeText));
     if (m_breakpointPanel && m_actToggleBreakpoint) {
         const QString key =
             m_actToggleBreakpoint->shortcut().toString(QKeySequence::NativeText);

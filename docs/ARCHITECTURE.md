@@ -102,9 +102,13 @@ Everything else in this document is a consequence of that rule. The debug transp
 - **`ui/EmulatorDisplayWidget.{h,cpp}`** — the emulator's display panel (docs/PLAN.md §12). The
   hatari-pist fork runs windowless and pushes its frames over the media channel; the panel paints
   the latest one aspect-fit, owns the VirtualBox-style input grab (click captures, F12 releases,
-  §12.4) and paints a "Paused" badge when stopped. The X11-reparenting and Windows-adoption
-  embedding paths that used to live here were deleted in the phase-4 cutover — the media channel
-  is the only embedded display.
+  §12.4) and marks a stop: the session's entry stop gets a centred "Program loaded" card whose
+  Continue button (the action's current shortcut, and clicking the card) resumes through
+  `resumeRequested`, while later stops get a small "Paused" badge naming the Continue shortcut.
+  The card answers the "the emulator is hung" reading of a loaded screen that never moves; it
+  pulses once when it first appears. The X11-reparenting and Windows-adoption embedding paths that
+  used to live here were deleted in the phase-4 cutover — the media channel is the only embedded
+  display.
 - **Debug panels** (`ui/`): `RegistersView` (editable D0–D7/A0–A7, PC, SR, USP/ISP, flags),
   `DisassemblyView` (current PC highlighted), `MemoryView` (hex, byte editing, address navigation),
   `StackView` (longs at SP, return-address annotation), `HardwareView` (`info <subject>` output —

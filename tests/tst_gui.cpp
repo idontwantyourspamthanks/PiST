@@ -509,6 +509,9 @@ private slots:
     /// The Emulator panel hosts another process's window, or nothing at all
     /// before a session: it must say which, rather than show a black void.
     void emulatorPanelExplainsItselfWhenEmpty();
+    /// The entry stop must read as paused, not hung, and its card must act
+    /// as the Continue button it looks like.
+    void emulatorPauseCardContinuesOnClick();
     void mouseScalerAccumulatesSubPixelDeltas();
     void inputGrabRoutesKeysAndMouse();
     void stKeyboardMapsQtKeysToStScancodes();
@@ -4859,6 +4862,58 @@ void TstGui::emulatorPanelExplainsItselfWhenEmpty()
         }
     }
     QVERIFY2(lit > 100, "an empty emulator panel paints its explanation, not a black void");
+}
+
+// The entry stop is the one stop a new user reads as a hang: the program has
+// loaded, the screen goes still and no further frames arrive. The panel must
+// name that state over the frame, and the card it paints must be the Continue
+// button it looks like — clicking the panel while stopped used to mean "grab
+// the keyboard" and nothing else.
+void TstGui::emulatorPauseCardContinuesOnClick()
+{
+    EmulatorDisplayWidget display;
+    display.resize(640, 480);
+    QImage frame(320, 200, QImage::Format_RGB32);
+    frame.fill(QColor(20, 60, 20));
+    display.setFrame(frame);
+    display.setPaused(true, true, QStringLiteral("F9"));
+    display.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&display));
+
+    // The card is dark with light text: bright pixels in the middle band can
+    // only be its title, body or button.
+    const auto brightInCentre = [](const QImage &shot) {
+        int bright = 0;
+        const int x0 = shot.width() / 4, x1 = shot.width() * 3 / 4;
+        const int y0 = shot.height() / 3, y1 = shot.height() * 2 / 3;
+        for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                if (qGray(shot.pixel(x, y)) > 180)
+                    ++bright;
+            }
+        }
+        return bright;
+    };
+    QVERIFY2(brightInCentre(display.grab().toImage()) > 20,
+             "the entry stop paints its card over the loaded screen");
+
+    QSignalSpy resume(&display, &EmulatorDisplayWidget::resumeRequested);
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier, display.rect().center());
+    QCOMPARE(resume.count(), 1);
+
+    // Away from the card the click is not Continue.
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier, QPoint(4, 4));
+    QCOMPARE(resume.count(), 1);
+
+    // The entry stop can beat the media channel's first frame. The card must
+    // still be the answer; the empty-state text used to return before it.
+    EmulatorDisplayWidget beforeFirstFrame;
+    beforeFirstFrame.resize(640, 480);
+    beforeFirstFrame.setPaused(true, true, QStringLiteral("F9"));
+    beforeFirstFrame.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&beforeFirstFrame));
+    QVERIFY2(brightInCentre(beforeFirstFrame.grab().toImage()) > 20,
+             "the entry card is drawn before the first frame arrives");
 }
 
 // The media channel's KEY messages carry ST scancodes (docs/PLAN.md §12), and

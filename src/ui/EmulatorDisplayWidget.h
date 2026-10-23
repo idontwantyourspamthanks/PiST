@@ -8,6 +8,9 @@
 #include "ui/MouseScaling.h"
 #include <QWidget>
 
+class QPainter;
+class QVariantAnimation;
+
 namespace pist {
 
 /// The emulator's display panel (docs/PLAN.md §12).
@@ -22,7 +25,9 @@ namespace pist {
 /// cursor (the guest cursor is baked into the frames, §12.3), events
 /// translated and emitted as keyIntent/mouseIntent. F12 releases (it is
 /// never forwarded to the guest); a focus change or a session end releases
-/// too, because a trapped user is the failure mode.
+/// too, because a trapped user is the failure mode. The one exception is
+/// the entry-stop card: a click inside it is Continue (resumeRequested),
+/// not a grab, and it is handled before the capture branch.
 class EmulatorDisplayWidget : public QWidget
 {
     Q_OBJECT
@@ -53,9 +58,24 @@ public slots:
     /// Show or hide the "paused" hint. The panel renders no new frames while
     /// the debugger is stopped, which on its own reads as a crash; a small
     /// badge makes the stopped state legible instead.
-    void setPaused(bool paused);
+    ///
+    /// `atEntry` marks the first stop of a session — the debugger halting at
+    /// the program's entry point before any of it has run. That one gets a
+    /// centred card naming the state and offering Continue, because a user
+    /// seeing the loaded screen and no motion otherwise has no way to tell a
+    /// paused emulator from a hung one. `continueHint` is the Continue
+    /// action's shortcut text, already formatted for display.
+    void setPaused(bool paused, bool atEntry = false, const QString &continueHint = QString());
+
+    /// Refresh the shortcut shown on the pause card and badge (the shortcut
+    /// scheme can change while a session is stopped).
+    void setContinueHint(const QString &continueHint);
 
 signals:
+    /// The user clicked the entry-stop card. The window answers it with
+    /// Continue — the card is a button, and clicking the panel while stopped
+    /// must not look like it did nothing.
+    void resumeRequested();
     /// One key for the guest, already translated to an ST scancode
     /// (ui/StKeyboard). Emitted only while input is captured.
     void keyIntent(int scancode, bool down);
@@ -74,12 +94,35 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
+    /// The entry-stop card's geometry, shared by painting and hit testing.
+    struct PauseCardLayout
+    {
+        QRect card;
+        QRect title;
+        QRect body;
+        QRect button;
+    };
+    PauseCardLayout pauseCardLayout() const;
+    QString continueLabel() const;
+    void paintPauseCard(QPainter &p);
+    void paintPausedBadge(QPainter &p);
+    void startAttentionPulse();
+
     /// The latest media-channel frame, null in the empty state.
     QImage m_frame;
     /// Whether the debugger is stopped (drives the paused hint).
     bool m_paused = false;
+    /// The stop is the session's entry stop (drives the centred card).
+    bool m_atEntry = false;
+    /// Continue's shortcut, shown beside the paused hint.
+    QString m_continueHint;
+    /// 1.0 at rest; the entry card breathes between this and its dim value.
+    qreal m_pulse = 1.0;
+    /// One short pulse when the entry card first appears, then rest.
+    QVariantAnimation *m_pulseAnimation = nullptr;
     /// A media session is running (drives host-cursor hiding and the grab).
     bool m_mediaSession = false;
     /// The VirtualBox-style grab is active (docs/PLAN.md §12.4).

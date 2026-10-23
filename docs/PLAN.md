@@ -2075,6 +2075,15 @@ the always-available paths, and **ungrab on child death too, or the user is trap
 accent border + transient overlay ("Input captured — F12 releases") + status-bar hint. macOS and
 Wayland come along for free.
 
+**One click is not a grab:** the session's entry stop draws a centred "Program loaded" card over
+the last frame (`EmulatorDisplayWidget::paintPauseCard`), and a left-click inside that card is
+Continue, not capture — it emits `resumeRequested` and is answered before the grab branch in
+`mousePressEvent`. A user who has just launched a program and sees a still screen must not have to
+guess whether a click will start the program or take their keyboard; the card names the shortcut
+(`Continue` action's current binding, not a hardcoded key) and acts as the button it looks like.
+Later stops keep the small "Paused" badge and normal grab behaviour. The card is drawn even when
+no media frame has arrived yet: an entry stop can beat the first frame.
+
 ### 12.5 Capability gating and the backend end-state
 
 - The default flipped at phase 2 (2026-09-28): the media display is the default when the

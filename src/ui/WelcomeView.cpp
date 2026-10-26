@@ -166,10 +166,13 @@ bool copyMissingDemoFiles(const QString &from, const QString &to, QStringList *c
 /// walk paths::bundledDataSearchPaths() makes for the ROM.
 ///
 /// Empty when neither place has the marker file.
-QString findDemoSourceDir(bool *installed)
+QString findDemoSourceDir(bool *installed, bool includeWorkingDirectory = true)
 {
     QStringList bases;
-    bases << QDir::currentPath();
+    // The welcome view may use a checkout named by the launch directory. Hook
+    // provenance may not: that directory belongs to the caller, not to PiST.
+    if (includeWorkingDirectory)
+        bases << QDir::currentPath();
     QDir up(QCoreApplication::applicationDirPath());
     for (int depth = 0; depth < 3; ++depth) {
         bases << up.absolutePath();
@@ -429,6 +432,11 @@ void WelcomeView::applyAppearance()
     for (QToolButton *row : findChildren<QToolButton *>(QStringLiteral("welcomeRow")))
         row->update();
     update();
+}
+
+QString WelcomeView::demoSourceDir()
+{
+    return findDemoSourceDir(nullptr, false);
 }
 
 QList<WelcomeView::Entry> WelcomeView::demoProjects()

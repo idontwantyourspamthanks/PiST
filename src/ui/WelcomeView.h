@@ -109,6 +109,12 @@ public:
     /// copy is reused on later runs, so edits made to it are kept.
     static QList<Entry> demoProjects();
 
+    /// The unmodified demo tree found from this executable's location. The
+    /// empty string means no demo tree was found. Unlike demoProjects(), this
+    /// never trusts the launch directory: hook provenance must come from the
+    /// application itself.
+    static QString demoSourceDir();
+
     /// Translate a document inside a read-only demo tree to its writable copy.
     ///
     /// `last/source` and the recent list can still name the installed path — a

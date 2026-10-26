@@ -218,11 +218,12 @@ log(string.format("stop at $%06x  d0=$%08x", readreg("pc"), readreg("d0")))
 /// question to the person who opened the project.
 bool MainWindow::hookMayRunFor(const QString &projectPath, bool quiet)
 {
-    const QString shipped = QCoreApplication::applicationDirPath()
-        + QStringLiteral("/../share/pist");
-    // A copied demo was recorded as trusted when the copy was made (see
-    // WelcomeView::demoProjects()), so the shipped-tree check here is enough.
-    if (settings::hookProjectIsTrusted(m_settings, projectPath, shipped))
+    // Use the executable-relative half of the welcome view's demo discovery,
+    // covering multi-config trees such as Windows' build/Release/ without
+    // treating the caller's working directory as trusted provenance. Writable
+    // installed copies carry explicit trust records from demoProjects().
+    if (settings::hookProjectIsTrusted(m_settings, projectPath,
+                                       WelcomeView::demoSourceDir()))
         return true;
 
     // The remote-control `open` must answer; a modal it cannot dismiss would

@@ -117,7 +117,6 @@
 
 namespace pist {
 
-
 /// The source a project file implies: `<project>.pistproject` sits beside
 /// `<project>.s`. The source path is deliberately not stored in the file — it
 /// would go stale the moment either moved — so the derivation lives here once, and

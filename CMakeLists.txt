@@ -310,6 +310,7 @@ pist_module(pist_ui
     src/ui/MainWindowDocuments.cpp
     src/ui/MainWindowImage.cpp
     src/ui/MainWindowProject.cpp
+    src/ui/MainWindowBuildRun.cpp
     src/ui/MainWindowPrivate.h
     src/ui/DebugSessionController.cpp
     src/ui/DebugSessionController.h

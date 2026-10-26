@@ -8,6 +8,11 @@
 
 namespace pist {
 
+/// The source a project file implies: `<project>.pistproject` sits beside
+/// `<project>.s`. The path is deliberately not stored in the file, so every
+/// doorway that can be handed a project derives it the same way.
+QString sourceForProject(const QString &projectPath);
+
 /// QSettings keys read by more than one MainWindow translation unit.
 ///
 /// One spelling per key (MIN-53): the layout keys are read by the chrome and by

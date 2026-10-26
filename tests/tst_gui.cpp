@@ -811,6 +811,10 @@ private slots:
     /// directory before it is offered, so its first build can write the listing
     /// and the program beside the source.
     void installedDemosAreCopiedToAWritableDirectory();
+    /// A writable install tree (the macOS bundle case) is still copied: writing
+    /// a listing into a signed bundle breaks the signature, so provenance — not
+    /// the permission bit — decides.
+    void installedDemosAreCopiedEvenWhenWritable();
     /// The symbol palette: the same candidates completion filters, presented as a
     /// jump list — filter, pick, and the file opens at the definition.
     void symbolPaletteJumpsToADefinition();
@@ -9513,6 +9517,7 @@ void TstGui::installedDemosAreCopiedToAWritableDirectory()
     QSKIP("directory write permissions cannot be simulated on Windows");
 #else
     TestModeScope testMode;
+    QSettings().remove(QStringLiteral("hooks/trustedProjects"));
     const QString writable = paths::suggestedDemoDir();
     QDir(writable).removeRecursively();
     QVERIFY(!QDir(writable).exists());
@@ -9523,7 +9528,10 @@ void TstGui::installedDemosAreCopiedToAWritableDirectory()
     QVERIFY(QDir().mkpath(shipped + QStringLiteral("/spritedemo")));
     QVERIFY(writeFile(shipped + QStringLiteral("/hello.s"), QByteArrayLiteral("\tnop\n")));
     QVERIFY(writeFile(shipped + QStringLiteral("/hello.pistproject"),
-                      QByteArrayLiteral("{\"version\":1}")));
+                      QByteArrayLiteral("{\"version\":1,\"hooks\":{\"scriptPath\":"
+                                        "\"hello.hooks.lua\",\"enabled\":true}}")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.hooks.lua"),
+                      QByteArrayLiteral("log('hello')\n")));
     QVERIFY(writeFile(shipped + QStringLiteral("/spritedemo/sprites.s"),
                       QByteArrayLiteral("\tnop\n")));
 
@@ -9571,18 +9579,62 @@ void TstGui::installedDemosAreCopiedToAWritableDirectory()
     // The authored tree, including its subdirectory, came across...
     QVERIFY(QFileInfo(writable + QStringLiteral("/hello.s")).isWritable());
     QVERIFY(QFileInfo(writable + QStringLiteral("/hello.pistproject")).exists());
+    QVERIFY(QFileInfo(writable + QStringLiteral("/hello.hooks.lua")).exists());
     QVERIFY(QFileInfo(writable + QStringLiteral("/spritedemo/sprites.s")).exists());
     QCOMPARE(mappedSource, writable + QStringLiteral("/hello.s"));
     QCOMPARE(mappedSprite, writable + QStringLiteral("/spritedemo/sprites.s"));
     // The copy is what PiST vouches for, not the whole directory: the project
-    // file it copied is on the hook trust list from this run.
-    QVERIFY(settings::trustedHookProjects().contains(
-        QFileInfo(writable + QStringLiteral("/hello.pistproject")).canonicalFilePath()));
+    // and script it copied were recorded together from this run.
+    const QString records = settings::trustedHookProjects().join(QLatin1Char('\n'));
+    QVERIFY2(records.contains(QFileInfo(writable
+                                        + QStringLiteral("/hello.pistproject"))
+                                  .canonicalFilePath()),
+             qPrintable(records));
 
     // ...and this is the directory a build writes into.
     QFile listing(writable + QStringLiteral("/hello.lst"));
     QVERIFY2(listing.open(QIODevice::WriteOnly), qPrintable(listing.errorString()));
     listing.close();
+
+    QDir(writable).removeRecursively();
+#endif
+}
+
+void TstGui::installedDemosAreCopiedEvenWhenWritable()
+{
+#ifdef Q_OS_WIN
+    QSKIP("the installed-tree layout differs on Windows");
+#else
+    TestModeScope testMode;
+    QSettings().remove(QStringLiteral("hooks/trustedProjects"));
+    const QString writable = paths::suggestedDemoDir();
+    QDir(writable).removeRecursively();
+    QVERIFY(!QDir(writable).exists());
+
+    QTemporaryDir install;
+    QVERIFY(install.isValid());
+    const QString shipped = install.path() + QStringLiteral("/share/pist/demo");
+    QVERIFY(QDir().mkpath(shipped));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.s"), QByteArrayLiteral("\tnop\n")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.pistproject"),
+                      QByteArrayLiteral("{\"version\":1}")));
+
+    // The macOS case: /Applications/PiST.app is writable by an admin, so
+    // isWritable() must not decide that the bundle can host the build.
+    QVERIFY(QFileInfo(shipped).isWritable());
+
+    const QString previous = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(install.path()));
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+    const QString mapped = WelcomeView::writableDemoPath(shipped + QStringLiteral("/hello.s"));
+    QVERIFY(QDir::setCurrent(previous));
+
+    QCOMPARE(demos.size(), 1);
+    QVERIFY2(demos.first().path.startsWith(writable), qPrintable(demos.first().path));
+    QVERIFY(!demos.first().path.startsWith(shipped));
+    QCOMPARE(mapped, writable + QStringLiteral("/hello.s"));
+    // The installed tree is used for reading only; the source did not move.
+    QVERIFY(QFileInfo(shipped + QStringLiteral("/hello.s")).exists());
 
     QDir(writable).removeRecursively();
 #endif

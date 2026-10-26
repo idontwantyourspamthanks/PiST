@@ -177,28 +177,32 @@ QString findDemoSourceDir(bool *installed)
             break;
     }
 
-    // The checkout is asked first: a developer sitting in their tree wants the
-    // tree's demos, and that keeps the source-checkout behaviour exactly what it
-    // was. Either way the marker is the same file, and a directory that lacks it
-    // is not the demo set — a row that opens nothing is worse than no row.
-    const auto findDemos = [&bases](const QString &relative) {
-        for (const QString &base : bases) {
-            const QString candidate = QDir(base).filePath(relative);
-            if (QFileInfo::exists(
-                    QDir(candidate).filePath(QStringLiteral("hello.pistproject"))))
-                return candidate;
-        }
-        return QString();
+    // The closest base wins, and within one base the checkout's `demo/` wins
+    // over its `share/pist/demo/`. Asking every base for `demo/` first would let
+    // a checkout found above an installed tree decide that an installed run is a
+    // checkout — the distinction this walk exists to make. The marker is the same
+    // file either way, and a directory that lacks it is not the demo set: a row
+    // that opens nothing is worse than no row.
+    const auto hasMarker = [](const QString &dir) {
+        return QFileInfo::exists(QDir(dir).filePath(QStringLiteral("hello.pistproject")));
     };
-    QString demoDir = findDemos(QStringLiteral("demo"));
-    if (!demoDir.isEmpty()) {
-        if (installed)
-            *installed = false;
-        return demoDir;
+    QString demoDir;
+    bool fromInstall = false;
+    for (const QString &base : bases) {
+        const QString checkout = QDir(base).filePath(QStringLiteral("demo"));
+        if (hasMarker(checkout)) {
+            demoDir = checkout;
+            break;
+        }
+        const QString shipped = QDir(base).filePath(QStringLiteral("share/pist/demo"));
+        if (hasMarker(shipped)) {
+            demoDir = shipped;
+            fromInstall = true;
+            break;
+        }
     }
-    demoDir = findDemos(QStringLiteral("share/pist/demo"));
     if (installed)
-        *installed = !demoDir.isEmpty();
+        *installed = fromInstall;
     return demoDir;
 }
 

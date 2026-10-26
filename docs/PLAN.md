@@ -1747,8 +1747,28 @@ project; everything before it was either Linux-only or read from source.
    upstream" must run against the pristine pinned tarball (sha256 in
    `../hatari-pist/HATARI-PIST.md`), not against the fork tree.
 
+### Fixed in the 2026-10-26 review cleanup
+
+- **The guarded `xpcall` was calling the handler as the body.** Its layout now matches upstream
+  `luaB_xpcall` (`push true`, `pushvalue(1)`, `lua_rotate(3, 2)`, `pcall(n-2, …, 2)`), and both
+  guarded wrappers re-raise the deadline whenever `run->timedOut` is latched — including after a
+  handler returns a normal value or throws a different error. Pinned by
+  `guardedXpcallRunsTheBodyAndItsHandler` and `aBudgetCannotBeSwallowedByXpcall`.
+- **Hook trust is keyed by the project, the resolved script path and the script's SHA-256.** A
+  `git pull` that changes either the script or `hooks.scriptPath` is no longer covered by an old
+  answer. The gate also runs from `loadProjectForSource` (the command line, recents and file
+  browser path) and again before a debug launch; the remote-controlled quiet path refuses instead
+  of opening a modal. Pinned by `aHookProjectIsTrustedOnlyWhenAllowed`.
+- **An installed demo is always copied, even when the user can write into the install tree.** The
+  decision is provenance (installed vs checkout), not `isWritable()`; an administrator can write
+  inside a macOS bundle and break its signature. Only project and script files actually created by
+  the copy are trusted. `writableDemoPath()` shares the same predicate, so welcome/recents cannot
+  resolve back into the bundle.
+- **The crash log no longer negates Qt's signal number.** On Unix `QProcess` reports the positive
+  `WTERMSIG`; Windows gets crash-code wording instead of "signal -11".
 
 ---
+
 
 ## 10. Licensing decision: open source
 

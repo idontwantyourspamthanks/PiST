@@ -48,7 +48,17 @@ Everything else in this document is a consequence of that rule. The debug transp
 
 ### Per-file detail
 
-- **`ui/MainWindow.{h,cpp}`** — the central controller and by far the largest file. It owns the
+- **`ui/MainWindow.{h,cpp}`** — the central controller, split by seam into one translation unit per
+  cluster so the shell itself stays readable:
+  `MainWindow.cpp` (construction/destruction, the control verbs and the `ControlHost` event
+  subscriptions), `MainWindowChrome.cpp` (actions, menus, docks, panels, layout, toolbar, status
+  bar, appearance), `MainWindowDocuments.cpp` (tabs, open/save/close, the watcher, floppy
+  documents, recents and the welcome view), `MainWindowProject.cpp` (project load/save, settings,
+  the hook trust gate, git/find scope), `MainWindowBuildRun.cpp` (build, run, problems, profiler),
+  `MainWindowDebug.cpp` (backend wiring, steps, breakpoints/watchpoints, the stop state and PC
+  follow), `MainWindowImage.cpp` (image tabs and export) and `MainWindowReference.cpp` (the
+  reference dock and hover card). `MainWindowPrivate.h` holds the few helpers two clusters share.
+  The window owns the
   document model — the central `QStackedWidget` (`m_center`, objectName `centralPages`: page 0 the
   document tabs, page 1 the `WelcomeView`) — every dock, the `BuildService`, the debug backend
   (`m_host`, an `IDebugBackend` — `EmulatorHost` or `HrdbBackend`) and the `ProgramLineMap`; creates
@@ -312,7 +322,7 @@ are the whole of what it can do to the window — and four of them are also reac
 `MainWindow`'s accessors (`sessionController()`, `breakpointsModel()`, `profilerController()`,
 `sessionLauncher()`) by the handlers that drive them. The state adapter is not exposed at all: the
 remote JSON verbs go through `MainWindow`'s thin `…Json()` helpers, which delegate to it
-(`MainWindow.cpp:4019-4056`), and those same helpers are `ControlHost`'s state reads — the interface
+(`MainWindow.cpp`), and those same helpers are `ControlHost`'s state reads — the interface
 and the IDE's own callers meet at the one implementation rather than at two copies of the JSON.
 
 The build path and the debug path share only the line map and the settings; they never talk to each

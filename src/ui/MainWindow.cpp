@@ -3540,7 +3540,7 @@ bool MainWindow::openPathImpl(const QString &path, bool quiet)
     if (created)
         settings::noteFileOpened();
     if (!isPimPath(path) && !isImportableImagePath(path))
-        loadProjectForSource(path);
+        loadProjectForSource(path, quiet);
     updateModifiedState();
 
     if (m_fileBrowser)
@@ -3737,7 +3737,7 @@ void MainWindow::openDemoProject()
 /// Whether a project's hook may run. The policy lives in `settings` (so the
 /// decision has a test); this asks it and, when the answer is "not yet", puts the
 /// question to the person who opened the project.
-bool MainWindow::hookMayRunFor(const QString &projectPath)
+bool MainWindow::hookMayRunFor(const QString &projectPath, bool quiet)
 {
     const QString shipped = QCoreApplication::applicationDirPath()
         + QStringLiteral("/../share/pist");
@@ -3746,17 +3746,23 @@ bool MainWindow::hookMayRunFor(const QString &projectPath)
     if (settings::hookProjectIsTrusted(m_settings, projectPath, shipped))
         return true;
 
+    // The remote-control `open` must answer; a modal it cannot dismiss would
+    // hold the reply until the client's timeout. Refusing is the safe answer.
+    if (quiet)
+        return false;
+
     const QMessageBox::StandardButton answer = QMessageBox::warning(
         this, tr("Stop hook"),
         tr("This project runs a script at every debugger stop:\n\n%1\n\n"
            "A hook can read and write the machine's memory and registers. Only allow "
-           "it if you trust where this project came from.")
+           "it if you trust this project and the current contents of that script.")
             .arg(QDir::toNativeSeparators(m_settings.stopHookPath)),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes)
         return false;
 
-    settings::trustHookProject(projectPath);
+    // The in-memory path, not a re-read: it is the script the prompt just named.
+    settings::trustHookProject(projectPath, m_settings.stopHookPath);
     return true;
 }
 
@@ -3920,7 +3926,7 @@ void MainWindow::editSettings()
         5000);
 }
 
-void MainWindow::loadProjectForSource(const QString &sourcePath)
+void MainWindow::loadProjectForSource(const QString &sourcePath, bool quiet)
 {
     if (sourcePath.isEmpty())
         return;
@@ -3946,6 +3952,14 @@ void MainWindow::loadProjectForSource(const QString &sourcePath)
 
     loaded.sourceFile = sourcePath;
     m_settings = loaded;
+
+    // Opening a source is the ordinary way into a cloned project: the settings
+    // beside it are loaded here, not through the Open project dialog, so the
+    // hook question has to be asked here too.
+    if (!hookMayRunFor(projectPath, quiet)) {
+        m_settings.stopHookEnabled = false;
+        m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
+    }
 
     // A project that names tool paths must not keep the construction-time
     // discovery answer: the override wins as soon as it is known.
@@ -4634,6 +4648,18 @@ void MainWindow::runInteractive()
 void MainWindow::runImpl(bool quiet)
 {
     crash::note("run");
+
+    // The project file or its script may have changed since it was opened — a
+    // `git pull` is the ordinary case. Trust is content-keyed, so ask again
+    // before the session that would actually run the hook.
+    const QString hookSource = buildSourcePath();
+    if (!hookSource.isEmpty()) {
+        const QString projectPath = settings::projectFileFor(hookSource);
+        if (QFileInfo::exists(projectPath) && !hookMayRunFor(projectPath, quiet)) {
+            m_settings.stopHookEnabled = false;
+            m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
+        }
+    }
     // Always rebuild before running: this keeps the listing in step with the
     // binary, which is what the line map depends on.
     //

@@ -541,12 +541,15 @@ private:
     void runImpl(bool quiet);
 
     /// Load the project settings that sit beside a source file, if any.
-    void loadProjectForSource(const QString &sourcePath);
+    ///
+    /// `quiet` is the remote-control path: a refusal to trust a hook turns it off
+    /// rather than opening a modal nobody can dismiss.
+    void loadProjectForSource(const QString &sourcePath, bool quiet = false);
 
     /// Whether the currently loaded project's hook may run: no hook, a project
     /// that shipped with PiST, or one the user has already allowed. Otherwise asks
-    /// once and records the answer.
-    bool hookMayRunFor(const QString &projectPath);
+    /// once and records the answer. `quiet` skips the question and refuses.
+    bool hookMayRunFor(const QString &projectPath, bool quiet = false);
 
     /// Persist `m_settings` beside the current source, if a source is known.
     void persistSettings();

@@ -1759,6 +1759,12 @@ project; everything before it was either Linux-only or read from source.
   answer. The gate also runs from `loadProjectForSource` (the command line, recents and file
   browser path) and again before a debug launch; the remote-controlled quiet path refuses instead
   of opening a modal. Pinned by `aHookProjectIsTrustedOnlyWhenAllowed`.
+  Demo provenance is executable-relative, never the working directory: the marker-gated walk finds
+  the checkout's `demo/` (including multi-config trees such as `build/Release/`) or an installed
+  `share/pist/demo`. A refusal suppresses the hook for the current session without changing the
+  project's saved `hooks.enabled`, so a later save cannot turn the user's answer into a lasting
+  edit. Pinned by `demoDiscoveryHandlesMultiConfigBuildLayouts` and
+  `refusedHookDoesNotRewriteEnabledSetting`.
 - **An installed demo is always copied, even when the user can write into the install tree.** The
   decision is provenance (installed vs checkout), not `isWritable()`; an administrator can write
   inside a macOS bundle and break its signature. Only project and script files actually created by

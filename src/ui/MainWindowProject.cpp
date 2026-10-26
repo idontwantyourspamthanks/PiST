@@ -302,11 +302,11 @@ void MainWindow::openProject()
     }
 
     m_settings = loaded;
-    // A project that came with a hook asks once, and a refusal leaves the hook
-    // off for this load (the setting itself stays in the file, so the decision is
-    // the user's, not an edit of their project).
+    m_stopHookRefused = false;
+    // A refusal suppresses the hook for this load only. The enabled setting
+    // stays untouched so a later unrelated save cannot rewrite the project.
     if (!hookMayRunFor(projectPath)) {
-        m_settings.stopHookEnabled = false;
+        m_stopHookRefused = true;
         m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
     }
     settings::rememberLastSource(source);
@@ -438,12 +438,13 @@ void MainWindow::loadProjectForSource(const QString &sourcePath, bool quiet)
 
     loaded.sourceFile = sourcePath;
     m_settings = loaded;
+    m_stopHookRefused = false;
 
     // Opening a source is the ordinary way into a cloned project: the settings
     // beside it are loaded here, not through the Open project dialog, so the
     // hook question has to be asked here too.
     if (!hookMayRunFor(projectPath, quiet)) {
-        m_settings.stopHookEnabled = false;
+        m_stopHookRefused = true;
         m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
     }
 
@@ -584,6 +585,9 @@ void MainWindow::editStopHooks()
     m_settings.stopHookPath = dialog.scriptPath();
     m_settings.stopHookEnabled = dialog.enabled();
     m_settings.stopHookAutoContinue = dialog.autoContinue();
+    // This is an explicit configuration decision, not a persisted echo of the
+    // earlier refusal. The new trust check still runs before the next launch.
+    m_stopHookRefused = false;
 
     // The hook lives in the project file, and a project file is named after a
     // source: with none open there is nowhere to keep it, and saying so beats a

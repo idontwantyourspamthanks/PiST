@@ -542,8 +542,8 @@ private:
 
     /// Load the project settings that sit beside a source file, if any.
     ///
-    /// `quiet` is the remote-control path: a refusal to trust a hook turns it off
-    /// rather than opening a modal nobody can dismiss.
+    /// `quiet` is the remote-control path: a refusal to trust a hook suppresses
+    /// it for this session rather than opening a modal nobody can dismiss.
     void loadProjectForSource(const QString &sourcePath, bool quiet = false);
 
     /// Whether the currently loaded project's hook may run: no hook, a project
@@ -987,6 +987,9 @@ private:
     /// source, so settings travel with the project (docs/PLAN.md §5 rule 7 —
     /// never via a user's hatari.cfg).
     ProjectSettings m_settings;
+    /// A trust refusal suppresses this project's hook for the current session
+    /// without changing the enabled setting persisted in the user's file.
+    bool m_stopHookRefused = false;
 
     QAction *m_actOpen = nullptr;
     QAction *m_actNewFile = nullptr;

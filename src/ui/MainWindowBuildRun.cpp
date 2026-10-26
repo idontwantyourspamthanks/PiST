@@ -419,9 +419,11 @@ void MainWindow::runImpl(bool quiet)
     const QString hookSource = buildSourcePath();
     if (!hookSource.isEmpty()) {
         const QString projectPath = settings::projectFileFor(hookSource);
-        if (QFileInfo::exists(projectPath) && !hookMayRunFor(projectPath, quiet)) {
-            m_settings.stopHookEnabled = false;
-            m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
+        if (QFileInfo::exists(projectPath)) {
+            const bool allowed = hookMayRunFor(projectPath, quiet);
+            m_stopHookRefused = !allowed;
+            if (!allowed)
+                m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
         }
     }
     // Always rebuild before running: this keeps the listing in step with the

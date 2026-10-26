@@ -294,15 +294,6 @@ QString trustRecord(const QString &projectPath, const QString &scriptPath, const
 
 } // namespace
 
-void trustHookProject(const QString &projectPath)
-{
-    ProjectSettings settings;
-    QString error;
-    if (!load(&settings, projectPath, &error))
-        return;
-    trustHookProject(projectPath, settings.stopHookPath);
-}
-
 void trustHookProject(const QString &projectPath, const QString &scriptPath)
 {
     const QString canonicalProject = QFileInfo(projectPath).canonicalFilePath();

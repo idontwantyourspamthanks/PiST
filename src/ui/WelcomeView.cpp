@@ -166,14 +166,15 @@ bool copyMissingDemoFiles(const QString &from, const QString &to, QStringList *c
 /// walk paths::bundledDataSearchPaths() makes for the ROM.
 ///
 /// Empty when neither place has the marker file.
-QString findDemoSourceDir(bool *installed, bool includeWorkingDirectory = true)
+QString findDemoSourceDir(const QString &applicationDir, bool *installed,
+                          bool includeWorkingDirectory = true)
 {
     QStringList bases;
     // The welcome view may use a checkout named by the launch directory. Hook
     // provenance may not: that directory belongs to the caller, not to PiST.
     if (includeWorkingDirectory)
         bases << QDir::currentPath();
-    QDir up(QCoreApplication::applicationDirPath());
+    QDir up(applicationDir);
     for (int depth = 0; depth < 3; ++depth) {
         bases << up.absolutePath();
         if (!up.cdUp())
@@ -436,13 +437,18 @@ void WelcomeView::applyAppearance()
 
 QString WelcomeView::demoSourceDir()
 {
-    return findDemoSourceDir(nullptr, false);
+    return findDemoSourceDir(QCoreApplication::applicationDirPath(), nullptr, false);
+}
+
+QString WelcomeView::demoSourceDirFrom(const QString &applicationDir)
+{
+    return findDemoSourceDir(applicationDir, nullptr, false);
 }
 
 QList<WelcomeView::Entry> WelcomeView::demoProjects()
 {
     bool installed = false;
-    QString demoDir = findDemoSourceDir(&installed);
+    QString demoDir = findDemoSourceDir(QCoreApplication::applicationDirPath(), &installed);
     if (demoDir.isEmpty())
         return {};
 
@@ -519,7 +525,7 @@ QString WelcomeView::writableDemoPath(const QString &path)
         return path;
 
     bool installed = false;
-    const QString sourceDir = findDemoSourceDir(&installed);
+    const QString sourceDir = findDemoSourceDir(QCoreApplication::applicationDirPath(), &installed);
     if (sourceDir.isEmpty() || !demoNeedsCopy(sourceDir, installed))
         return path;
 

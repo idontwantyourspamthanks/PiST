@@ -339,7 +339,7 @@ MainWindow::MainWindow(QWidget *parent)
     hookHost.symbol = [this](const QString &name, quint32 *address, QString *error) {
         return m_bpModel->resolveLabel(name, address, error);
     };
-    hookHost.enabled = [this] { return m_settings.stopHookEnabled; };
+    hookHost.enabled = [this] { return m_settings.stopHookEnabled && !m_stopHookRefused; };
     hookHost.autoContinue = [this] { return m_settings.stopHookAutoContinue; };
     hookHost.resume = [this] { resume(); };
     hookHost.refresh = [this] { m_host->refresh(); };
@@ -375,7 +375,7 @@ MainWindow::MainWindow(QWidget *parent)
     stateHost.symbols = symbolsNow;
     stateHost.programMap = programMapNow;
     stateHost.profile = [this]() -> const AttributedProfile & { return m_profiling->results(); };
-    stateHost.hookEnabled = [this] { return m_settings.stopHookEnabled; };
+    stateHost.hookEnabled = [this] { return m_settings.stopHookEnabled && !m_stopHookRefused; };
     stateHost.hookPath = [this] { return m_settings.stopHookPath; };
     stateHost.hookAutoContinue = [this] { return m_settings.stopHookAutoContinue; };
     stateHost.hookLastRun = [this]() -> const StopHookRunner::LastRun & {

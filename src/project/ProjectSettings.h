@@ -183,7 +183,6 @@ bool save(const ProjectSettings &settings, const QString &path, QString *error);
 /// folder — and so does its script: a `git pull` that changes either must ask
 /// again rather than run the new code under the old answer.
 QStringList trustedHookProjects();
-void trustHookProject(const QString &projectPath);
 void trustHookProject(const QString &projectPath, const QString &scriptPath);
 
 /// Whether a project's hook may run without asking: it has no hook, it shipped

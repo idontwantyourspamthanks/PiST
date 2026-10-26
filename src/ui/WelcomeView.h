@@ -115,6 +115,10 @@ public:
     /// application itself.
     static QString demoSourceDir();
 
+    /// The same lookup for a known executable directory. Used by tests to cover
+    /// build layouts independently of the test binary's own location.
+    static QString demoSourceDirFrom(const QString &applicationDir);
+
     /// Translate a document inside a read-only demo tree to its writable copy.
     ///
     /// `last/source` and the recent list can still name the installed path — a

@@ -213,6 +213,9 @@ log(string.format("stop at $%06x  d0=$%08x", readreg("pc"), readreg("d0")))
 }
 } // namespace
 
+/// Whether a project's hook may run. The policy lives in `settings` (so the
+/// decision has a test); this asks it and, when the answer is "not yet", puts the
+/// question to the person who opened the project.
 bool MainWindow::hookMayRunFor(const QString &projectPath, bool quiet)
 {
     const QString shipped = QCoreApplication::applicationDirPath()

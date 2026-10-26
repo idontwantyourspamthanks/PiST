@@ -1045,10 +1045,6 @@ void MainWindow::openDemoProject()
     openPath(source);
 }
 
-/// Whether a project's hook may run. The policy lives in `settings` (so the
-/// decision has a test); this asks it and, when the answer is "not yet", puts the
-/// question to the person who opened the project.
-
 void MainWindow::saveFile()
 {
     // Save is unconditionally "write to the path this document already has"

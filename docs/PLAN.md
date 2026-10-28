@@ -1738,6 +1738,14 @@ project; everything before it was either Linux-only or read from source.
       The banner check runs with `SDL_ASSERT=abort`, and the seal step boots the sealed
       emulator to the entry stop before the dmg is cut.
 
+   The application now applies the same noninteractive policy instead of leaving it to CI:
+   capability probes use `SDL_VIDEODRIVER=dummy` and `SDL_ASSERT=abort`; sessions use
+   `SDL_ASSERT=abort`, and media sessions also use the dummy video driver. This covers SDL
+   assertion dialogs, not sdl2-compat's unconditional constructor `error_dialog()`: the
+   original failed-SDL3-load hang remains prevented by bundling SDL3 and booting the sealed
+   emulator before release. This additional prevention is code-reviewed and covered by an
+   environment regression test, not verified on a physical Mac.
+
 11. ~~The fork's root `readme.txt` is a verbatim upstream blob~~ — **changed 2026-10-07,
    documentation only**: hatari-pist's `readme.txt` now opens with a section 0 stating the fork's
    purpose (the `--pist-media` channel, the HRDB listener, and the `hatari` binary-name /

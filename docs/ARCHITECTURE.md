@@ -622,7 +622,10 @@ These exist because a test or a real failure caught them. Do not break them.
    flags (`--control-socket`, `--debug-except`) on the probe, and the symbol-autoload *form* — the
    bootstrap script writes `symbols autoload debugger` on a build with the three-mode command and
    `symbols autoload on` otherwise. `--symload` is never passed: `SessionConfig::toArgv()` emits
-   no such flag.
+   no such flag. Information-only probes run with `SDL_VIDEODRIVER=dummy` and
+   `SDL_ASSERT=abort`: SDL's default macOS assertion handler is a modal dialog, which would block
+   a background child instead of letting the probe fail. Sessions also set `SDL_ASSERT=abort`;
+   media sessions set the dummy video driver because no SDL window is available for its GUI.
 7. **Never emit `echo` into a Hatari script file** — it aborts Hatari 2.6.1.
 8. **TOS autostart needs ≥ 1.04 read from the image header** (`TosRom`), not the filename. Below
    that there is no Pexec, no symbols, and the entry breakpoint never fires on the GEMDOS-HD

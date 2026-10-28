@@ -482,6 +482,9 @@ private slots:
     /// Capabilities come from the probe by *option name*, never inferred from the
     /// version (MAJ-48 seam). Emulator-free: a script answers `--version`/`-h`.
     void capabilitiesKeyOnOptionNamesNotVersion();
+    /// Capability probes and media sessions cannot open a Cocoa window or a
+    /// modal SDL assertion dialog in a background process on macOS.
+    void emulatorLaunchesSuppressInteractiveSdlFailures();
 
 private:
     QString m_hatari;
@@ -1626,6 +1629,50 @@ void TstEmulatorHost::capabilitiesKeyOnOptionNamesNotVersion()
     QVERIFY2(!caps.hasControlSocket, "--control-socket is not in this build's help");
     QVERIFY2(!caps.hasSymbolAutoloadOption, "--symload is not in this build's help");
     QVERIFY2(!caps.hasHrdb, "this stand-in is not the fork");
+}
+
+void TstEmulatorHost::emulatorLaunchesSuppressInteractiveSdlFailures()
+{
+#ifdef Q_OS_WIN
+    QSKIP("the probe stand-in is a /bin/sh script");
+#endif
+    if (!QFileInfo::exists(QStringLiteral("/bin/sh")))
+        QSKIP("the probe stand-in needs /bin/sh");
+
+    const QString environment = m_work->path() + QStringLiteral("/probe-environment");
+    const QString script = writeScript(m_work->path(), QStringLiteral("headless-probe.sh"),
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$SDL_VIDEODRIVER\" \"$SDL_ASSERT\" > \"$PROBE_ENVIRONMENT\"\n"
+        "case \"$1\" in\n"
+        "  --version) printf 'Hatari v2.6.1 (test build)\\n' ;;\n"
+        "  -h) printf 'Usage: hatari [options]\\n' ;;\n"
+        "esac\n");
+    QVERIFY(!script.isEmpty());
+    const QByteArray oldEnvironment = qgetenv("PROBE_ENVIRONMENT");
+    const bool hadEnvironment = qEnvironmentVariableIsSet("PROBE_ENVIRONMENT");
+    qputenv("PROBE_ENVIRONMENT", environment.toUtf8());
+    const HatariCapabilities caps = probeHatari(script);
+    if (hadEnvironment)
+        qputenv("PROBE_ENVIRONMENT", oldEnvironment);
+    else
+        qunsetenv("PROBE_ENVIRONMENT");
+    QVERIFY(caps.valid);
+    QFile observed(environment);
+    QVERIFY(observed.open(QIODevice::ReadOnly | QIODevice::Text));
+    QCOMPARE(QString::fromUtf8(observed.readAll()), QStringLiteral("dummy\nabort\n"));
+
+    SessionConfig media;
+    media.sessionDir = m_work->path();
+    media.mediaPort = 20000;
+    QProcessEnvironment session = makeSessionEnvironment(media);
+    QCOMPARE(session.value(QStringLiteral("SDL_ASSERT")), QStringLiteral("abort"));
+    QCOMPARE(session.value(QStringLiteral("SDL_VIDEODRIVER")), QStringLiteral("dummy"));
+
+    media.mediaPort = 0;
+    session = makeSessionEnvironment(media);
+    QCOMPARE(session.value(QStringLiteral("SDL_ASSERT")), QStringLiteral("abort"));
+    QVERIFY(!session.contains(QStringLiteral("SDL_VIDEODRIVER"))
+            || session.value(QStringLiteral("SDL_VIDEODRIVER")) != QStringLiteral("dummy"));
 }
 
 // The response type is what the *request* was, not what the command text starts

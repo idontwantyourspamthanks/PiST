@@ -86,6 +86,13 @@ inline QProcessEnvironment makeSessionEnvironment(const SessionConfig &config)
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("HOME"), config.sessionDir);
     env.insert(QStringLiteral("XDG_CONFIG_HOME"), config.sessionDir);
+    // SDL's default assertion handler is a modal dialog on macOS. A failure
+    // inside a background emulator then blocks forever instead of reporting
+    // an error. A media session has no window through which its SDL GUI can
+    // be used, so retain no other fatal-error dialog there either.
+    env.insert(QStringLiteral("SDL_ASSERT"), QStringLiteral("abort"));
+    if (config.mediaPort > 0)
+        env.insert(QStringLiteral("SDL_VIDEODRIVER"), QStringLiteral("dummy"));
     if (!config.mediaToken.isEmpty())
         // Media channel auth (protocol v2): the fork must open with an AUTH
         // carrying this token; MediaServer says nothing to a client that

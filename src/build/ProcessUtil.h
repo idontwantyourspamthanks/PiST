@@ -90,6 +90,8 @@ inline void connectFailedToStart(QProcess *process, QObject *context, Handler ha
 /// copying the loop.
 struct RunOptions
 {
+    /// An empty environment inherits the parent's, QProcess's default.
+    QProcessEnvironment environment;
     /// Empty leaves the run in the caller's own working directory.
     QString workingDirectory;
     /// When set, the child's stdout is written here instead of being captured
@@ -140,6 +142,8 @@ inline SyncRun runSync(const QString &program, const QStringList &args,
 {
     SyncRun run;
     QProcess process;
+    if (!options.environment.isEmpty())
+        process.setProcessEnvironment(options.environment);
     if (!options.workingDirectory.isEmpty())
         process.setWorkingDirectory(options.workingDirectory);
     if (!options.stdoutFile.isEmpty())

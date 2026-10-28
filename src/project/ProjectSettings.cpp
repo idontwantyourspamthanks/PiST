@@ -6,6 +6,7 @@
 
 #include "support/FileWrite.h"
 
+#include <QCryptographicHash>
 #include <QDate>
 #include <QDir>
 #include <QFile>
@@ -264,15 +265,50 @@ QStringList trustedHookProjects()
     return QSettings().value(QStringLiteral("hooks/trustedProjects")).toStringList();
 }
 
-void trustHookProject(const QString &projectPath)
+namespace {
+
+/// The hash of a script's bytes, or empty when it cannot be read. A hook whose
+/// file has gone is not a trust decision that can be remembered.
+QString scriptHash(const QString &scriptPath)
 {
-    const QString canonical = QFileInfo(projectPath).canonicalFilePath();
-    if (canonical.isEmpty())
+    QFile file(scriptPath);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!hash.addData(&file))
+        return {};
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+/// One trust record: the project, the script it names, and that script's bytes.
+/// JSON rather than a separator so a path containing the separator cannot make
+/// two different records compare equal.
+QString trustRecord(const QString &projectPath, const QString &scriptPath, const QString &hash)
+{
+    QJsonObject record;
+    record.insert(QStringLiteral("project"), projectPath);
+    record.insert(QStringLiteral("script"), scriptPath);
+    record.insert(QStringLiteral("sha256"), hash);
+    return QString::fromUtf8(QJsonDocument(record).toJson(QJsonDocument::Compact));
+}
+
+} // namespace
+
+void trustHookProject(const QString &projectPath, const QString &scriptPath)
+{
+    const QString canonicalProject = QFileInfo(projectPath).canonicalFilePath();
+    const QString canonicalScript = QFileInfo(scriptPath).canonicalFilePath();
+    if (canonicalProject.isEmpty() || canonicalScript.isEmpty())
         return;
+    const QString hash = scriptHash(canonicalScript);
+    if (hash.isEmpty())
+        return;
+
+    const QString record = trustRecord(canonicalProject, canonicalScript, hash);
     QStringList trusted = trustedHookProjects();
-    if (trusted.contains(canonical))
+    if (trusted.contains(record))
         return;
-    trusted.append(canonical);
+    trusted.append(record);
     QSettings().setValue(QStringLiteral("hooks/trustedProjects"), trusted);
 }
 
@@ -293,7 +329,14 @@ bool hookProjectIsTrusted(const ProjectSettings &settings, const QString &projec
         if (!shipped.isEmpty() && canonical.startsWith(shipped + QLatin1Char('/')))
             return true;
     }
-    return trustedHookProjects().contains(canonical);
+
+    const QString script = QFileInfo(settings.stopHookPath).canonicalFilePath();
+    if (script.isEmpty())
+        return false;
+    const QString hash = scriptHash(script);
+    if (hash.isEmpty())
+        return false;
+    return trustedHookProjects().contains(trustRecord(canonical, script, hash));
 }
 
 bool load(ProjectSettings *s, const QString &path, QString *error)

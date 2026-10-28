@@ -1024,10 +1024,32 @@ void TstSettings::aHookProjectIsTrustedOnlyWhenAllowed()
     hooked.stopHookPath = dir.filePath(QStringLiteral("hook.lua"));
     const QString shipped = dir.filePath(QStringLiteral("share/pist"));
 
+    const auto writeHook = [&](const QByteArray &bytes) {
+        QFile hook(hooked.stopHookPath);
+        if (!hook.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        return hook.write(bytes) == bytes.size();
+    };
+    QVERIFY(writeHook(QByteArrayLiteral("log('one')\n")));
+
     // A hook that has not been allowed is not trusted...
     QVERIFY(!settings::hookProjectIsTrusted(hooked, project, shipped));
-    // ...and allowing it is remembered for that file only.
-    settings::trustHookProject(project);
+    // ...and allowing it is remembered for that file and those script bytes.
+    settings::trustHookProject(project, hooked.stopHookPath);
+    QVERIFY(settings::hookProjectIsTrusted(hooked, project, shipped));
+
+    // A pull that changes the script is different code and asks again.
+    QVERIFY(writeHook(QByteArrayLiteral("log('two')\n")));
+    QVERIFY(!settings::hookProjectIsTrusted(hooked, project, shipped));
+    QVERIFY(writeHook(QByteArrayLiteral("log('one')\n")));
+    QVERIFY(settings::hookProjectIsTrusted(hooked, project, shipped));
+
+    // A script path change is a different script even with identical bytes.
+    const QString originalScript = hooked.stopHookPath;
+    hooked.stopHookPath = dir.filePath(QStringLiteral("moved.lua"));
+    QVERIFY(writeHook(QByteArrayLiteral("log('one')\n")));
+    QVERIFY(!settings::hookProjectIsTrusted(hooked, project, shipped));
+    hooked.stopHookPath = originalScript;
     QVERIFY(settings::hookProjectIsTrusted(hooked, project, shipped));
 
     const QString other = dir.filePath(QStringLiteral("another.pistproject"));

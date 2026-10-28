@@ -177,14 +177,17 @@ QString projectFileFor(const QString &sourcePath);
 bool save(const ProjectSettings &settings, const QString &path, QString *error);
 
 /// The projects whose stop hooks the user has allowed to run, in `QSettings`.
-/// A project file travels — a download, a clone, a shared folder — and a hook is
-/// code that runs at every stop, so the window asks once per project file.
+///
+/// A record is keyed by the project file, the resolved script path and a hash of
+/// the script's bytes. A project file travels — a download, a clone, a shared
+/// folder — and so does its script: a `git pull` that changes either must ask
+/// again rather than run the new code under the old answer.
 QStringList trustedHookProjects();
-void trustHookProject(const QString &projectPath);
+void trustHookProject(const QString &projectPath, const QString &scriptPath);
 
 /// Whether a project's hook may run without asking: it has no hook, it shipped
-/// with PiST itself, or its file is already in `trustedHookProjects()`. Pure —
-/// the caller asks the question when this says no.
+/// with PiST itself, or the same project/script/content record is already in
+/// `trustedHookProjects()`. Pure — the caller asks the question when this says no.
 bool hookProjectIsTrusted(const ProjectSettings &settings, const QString &projectPath,
                           const QString &shippedDataDir);
 

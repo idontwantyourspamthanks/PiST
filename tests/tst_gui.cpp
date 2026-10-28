@@ -807,10 +807,17 @@ private slots:
     /// open, and opening the demo's source (whose sibling `.pistproject` carries
     /// the hook script and the emulator settings with it).
     void theToolbarOpensTheDemo();
+    /// Demo provenance walks executable-relative layouts, including a
+    /// multi-config `build/Release/`, and never adopts the working directory.
+    void demoDiscoveryHandlesMultiConfigBuildLayouts();
     /// An installed demo under a read-only prefix is copied to a writable per-user
     /// directory before it is offered, so its first build can write the listing
     /// and the program beside the source.
     void installedDemosAreCopiedToAWritableDirectory();
+    /// A writable install tree (the macOS bundle case) is still copied: writing
+    /// a listing into a signed bundle breaks the signature, so provenance — not
+    /// the permission bit — decides.
+    void installedDemosAreCopiedEvenWhenWritable();
     /// The symbol palette: the same candidates completion filters, presented as a
     /// jump list — filter, pick, and the file opens at the definition.
     void symbolPaletteJumpsToADefinition();
@@ -881,6 +888,9 @@ private slots:
     /// The dialog's offer to make the script, and the window operation behind it.
     void stopHooksDialogOffersToMakeAScript();
     void createStopHookScriptWritesItBesideTheSource();
+    /// Declining a hook's trust prompt suppresses it for this session without
+    /// rewriting `hooks.enabled` in the project file on the next save.
+    void refusedHookDoesNotRewriteEnabledSetting();
 
 private:
     QString m_vasm;
@@ -9474,6 +9484,17 @@ void TstGui::windowCompletesBeforeAnyBuild()
 // settings with it.
 void TstGui::theToolbarOpensTheDemo()
 {
+    bool sawModal = false;
+    QTimer poller;
+    poller.setInterval(10);
+    QObject::connect(&poller, &QTimer::timeout, [&sawModal] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            sawModal = true;
+            box->close();
+        }
+    });
+    poller.start();
+
     const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
 
     MainWindow window;
@@ -9491,6 +9512,7 @@ void TstGui::theToolbarOpensTheDemo()
         QSKIP("no demo project is reachable from here (a packaged tree without one)");
 
     action->trigger();
+    QVERIFY2(!sawModal, "opening PiST's demo must not ask for hook trust");
     auto *tabs = window.findChild<QTabWidget *>();
     QVERIFY(tabs);
     QCOMPARE(tabs->count(), 1);
@@ -9503,6 +9525,46 @@ void TstGui::theToolbarOpensTheDemo()
              qPrintable(editor->toPlainText().left(40)));
 }
 
+// MSVC is a multi-config generator: `tst_gui.exe` lives under build/Release,
+// one level deeper than the single-config build trees the Unix jobs use. The
+// trust question happens during the demo's open, so a missed layout there is a
+// 300-second modal hang rather than an assertion. Exercise the executable-side
+// walk directly and prove that the launch directory is not a provenance root.
+void TstGui::demoDiscoveryHandlesMultiConfigBuildLayouts()
+{
+    QTemporaryDir checkout;
+    QVERIFY(checkout.isValid());
+    const QString appDir = QDir(checkout.path()).filePath(QStringLiteral("build/Release"));
+    const QString demo = QDir(checkout.path()).filePath(QStringLiteral("demo"));
+    QVERIFY(QDir().mkpath(appDir));
+    QVERIFY(QDir().mkpath(demo));
+    QVERIFY(writeFile(demo + QStringLiteral("/hello.pistproject"),
+                      QByteArrayLiteral("{\"version\":1}")));
+    QCOMPARE(QFileInfo(WelcomeView::demoSourceDirFrom(appDir)).canonicalFilePath(),
+             QFileInfo(demo).canonicalFilePath());
+
+    // A stranger's checkout-shaped working directory must not stand in for the
+    // tree this executable came from. The walk only uses the executable path.
+    QTemporaryDir elsewhere;
+    QVERIFY(elsewhere.isValid());
+    const QString blankAppDir =
+        QDir(elsewhere.path()).filePath(QStringLiteral("build/Release"));
+    const QString strangerDemo = QDir(elsewhere.path()).filePath(QStringLiteral("stranger/demo"));
+    QVERIFY(QDir().mkpath(blankAppDir));
+    QVERIFY(QDir().mkpath(strangerDemo));
+    QVERIFY(writeFile(strangerDemo + QStringLiteral("/hello.pistproject"),
+                      QByteArrayLiteral("{\"version\":1}")));
+
+    struct RestoreCwd
+    {
+        QString previous = QDir::currentPath();
+        ~RestoreCwd() { QDir::setCurrent(previous); }
+    } restore;
+    QVERIFY(QDir::setCurrent(strangerDemo));
+    QVERIFY2(WelcomeView::demoSourceDirFrom(blankAppDir).isEmpty(),
+             "the working directory must not become hook-trust provenance");
+}
+
 // An installed PiST keeps its demos under the read-only prefix. Offering that
 // path is what made the first build fail: vasm writes the `.lst` beside the
 // source. The demo is therefore copied into the per-user data directory, and
@@ -9513,6 +9575,7 @@ void TstGui::installedDemosAreCopiedToAWritableDirectory()
     QSKIP("directory write permissions cannot be simulated on Windows");
 #else
     TestModeScope testMode;
+    QSettings().remove(QStringLiteral("hooks/trustedProjects"));
     const QString writable = paths::suggestedDemoDir();
     QDir(writable).removeRecursively();
     QVERIFY(!QDir(writable).exists());
@@ -9523,7 +9586,10 @@ void TstGui::installedDemosAreCopiedToAWritableDirectory()
     QVERIFY(QDir().mkpath(shipped + QStringLiteral("/spritedemo")));
     QVERIFY(writeFile(shipped + QStringLiteral("/hello.s"), QByteArrayLiteral("\tnop\n")));
     QVERIFY(writeFile(shipped + QStringLiteral("/hello.pistproject"),
-                      QByteArrayLiteral("{\"version\":1}")));
+                      QByteArrayLiteral("{\"version\":1,\"hooks\":{\"scriptPath\":"
+                                        "\"hello.hooks.lua\",\"enabled\":true}}")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.hooks.lua"),
+                      QByteArrayLiteral("log('hello')\n")));
     QVERIFY(writeFile(shipped + QStringLiteral("/spritedemo/sprites.s"),
                       QByteArrayLiteral("\tnop\n")));
 
@@ -9571,18 +9637,62 @@ void TstGui::installedDemosAreCopiedToAWritableDirectory()
     // The authored tree, including its subdirectory, came across...
     QVERIFY(QFileInfo(writable + QStringLiteral("/hello.s")).isWritable());
     QVERIFY(QFileInfo(writable + QStringLiteral("/hello.pistproject")).exists());
+    QVERIFY(QFileInfo(writable + QStringLiteral("/hello.hooks.lua")).exists());
     QVERIFY(QFileInfo(writable + QStringLiteral("/spritedemo/sprites.s")).exists());
     QCOMPARE(mappedSource, writable + QStringLiteral("/hello.s"));
     QCOMPARE(mappedSprite, writable + QStringLiteral("/spritedemo/sprites.s"));
     // The copy is what PiST vouches for, not the whole directory: the project
-    // file it copied is on the hook trust list from this run.
-    QVERIFY(settings::trustedHookProjects().contains(
-        QFileInfo(writable + QStringLiteral("/hello.pistproject")).canonicalFilePath()));
+    // and script it copied were recorded together from this run.
+    const QString records = settings::trustedHookProjects().join(QLatin1Char('\n'));
+    QVERIFY2(records.contains(QFileInfo(writable
+                                        + QStringLiteral("/hello.pistproject"))
+                                  .canonicalFilePath()),
+             qPrintable(records));
 
     // ...and this is the directory a build writes into.
     QFile listing(writable + QStringLiteral("/hello.lst"));
     QVERIFY2(listing.open(QIODevice::WriteOnly), qPrintable(listing.errorString()));
     listing.close();
+
+    QDir(writable).removeRecursively();
+#endif
+}
+
+void TstGui::installedDemosAreCopiedEvenWhenWritable()
+{
+#ifdef Q_OS_WIN
+    QSKIP("the installed-tree layout differs on Windows");
+#else
+    TestModeScope testMode;
+    QSettings().remove(QStringLiteral("hooks/trustedProjects"));
+    const QString writable = paths::suggestedDemoDir();
+    QDir(writable).removeRecursively();
+    QVERIFY(!QDir(writable).exists());
+
+    QTemporaryDir install;
+    QVERIFY(install.isValid());
+    const QString shipped = install.path() + QStringLiteral("/share/pist/demo");
+    QVERIFY(QDir().mkpath(shipped));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.s"), QByteArrayLiteral("\tnop\n")));
+    QVERIFY(writeFile(shipped + QStringLiteral("/hello.pistproject"),
+                      QByteArrayLiteral("{\"version\":1}")));
+
+    // The macOS case: /Applications/PiST.app is writable by an admin, so
+    // isWritable() must not decide that the bundle can host the build.
+    QVERIFY(QFileInfo(shipped).isWritable());
+
+    const QString previous = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(install.path()));
+    const QList<WelcomeView::Entry> demos = WelcomeView::demoProjects();
+    const QString mapped = WelcomeView::writableDemoPath(shipped + QStringLiteral("/hello.s"));
+    QVERIFY(QDir::setCurrent(previous));
+
+    QCOMPARE(demos.size(), 1);
+    QVERIFY2(demos.first().path.startsWith(writable), qPrintable(demos.first().path));
+    QVERIFY(!demos.first().path.startsWith(shipped));
+    QCOMPARE(mapped, writable + QStringLiteral("/hello.s"));
+    // The installed tree is used for reading only; the source did not move.
+    QVERIFY(QFileInfo(shipped + QStringLiteral("/hello.s")).exists());
 
     QDir(writable).removeRecursively();
 #endif
@@ -10580,6 +10690,53 @@ void TstGui::createStopHookScriptWritesItBesideTheSource()
     QFile again(made);
     QVERIFY(again.open(QIODevice::ReadOnly));
     QCOMPARE(again.readAll(), QByteArray("-- mine now\n"));
+}
+
+// A refusal is a decision for this load, not an edit of the user's project.
+// Persisting it as `hooks.enabled = false` used to happen through any later
+// save — mounting a disk, accepting the hook dialog unchanged, Save Project.
+void TstGui::refusedHookDoesNotRewriteEnabledSetting()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("hooked.s"));
+    QVERIFY(writeFile(source, QByteArrayLiteral("\ttext\nstart:\tnop\n\tend\n")));
+    const QString script = dir.filePath(QStringLiteral("hooked.hooks.lua"));
+    QVERIFY(writeFile(script, QByteArrayLiteral("log('hooked')\n")));
+
+    ProjectSettings project;
+    project.sourceFile = source;
+    project.stopHookPath = script;
+    project.stopHookEnabled = true;
+    const QString projectPath = settings::projectFileFor(source);
+    QString error;
+    QVERIFY2(settings::save(project, projectPath, &error), qPrintable(error));
+
+    bool sawPrompt = false;
+    QTimer poller;
+    poller.setInterval(10);
+    QObject::connect(&poller, &QTimer::timeout, [&sawPrompt] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            sawPrompt = true;
+            box->button(QMessageBox::No)->click();
+        }
+    });
+
+    MainWindow window;
+    poller.start();
+    window.openPath(source);
+    poller.stop();
+    QVERIFY2(sawPrompt, "the untrusted hook should have been put to the user");
+
+    // The hook does not run in this session, but the project still says it is
+    // enabled. A save must not turn the refusal into a lasting setting.
+    QCOMPARE(window.hookJson().value(QStringLiteral("enabled")).toBool(), false);
+    QVERIFY(QMetaObject::invokeMethod(&window, "saveProject", Qt::DirectConnection));
+
+    ProjectSettings reloaded;
+    QVERIFY2(settings::load(&reloaded, projectPath, &error), qPrintable(error));
+    QVERIFY2(reloaded.stopHookEnabled,
+             "a refused hook must not be written back as disabled");
 }
 
 // Run ▸ Stop hooks… is the stop hook's only doorway. An action that exists but

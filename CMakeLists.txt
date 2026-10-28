@@ -306,6 +306,14 @@ pist_module(pist_ui
     src/ui/UiText.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
+    src/ui/MainWindowChrome.cpp
+    src/ui/MainWindowDocuments.cpp
+    src/ui/MainWindowImage.cpp
+    src/ui/MainWindowProject.cpp
+    src/ui/MainWindowBuildRun.cpp
+    src/ui/MainWindowDebug.cpp
+    src/ui/MainWindowReference.cpp
+    src/ui/MainWindowPrivate.h
     src/ui/DebugSessionController.cpp
     src/ui/DebugSessionController.h
     src/ui/SessionLauncher.cpp

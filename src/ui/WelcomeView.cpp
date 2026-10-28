@@ -109,7 +109,8 @@ protected:
 ///
 /// Symlinks are skipped. The installed demo tree contains none, and following
 /// one could copy something outside the demo.
-bool copyMissingDemoFiles(const QString &from, const QString &to, QString *error)
+bool copyMissingDemoFiles(const QString &from, const QString &to, QStringList *created,
+                          QString *error)
 {
     if (!QDir().mkpath(to)) {
         *error = QObject::tr("cannot create '%1'").arg(to);
@@ -125,7 +126,7 @@ bool copyMissingDemoFiles(const QString &from, const QString &to, QString *error
             continue;
         const QString target = QDir(to).filePath(entry.fileName());
         if (entry.isDir()) {
-            if (!copyMissingDemoFiles(entry.absoluteFilePath(), target, error))
+            if (!copyMissingDemoFiles(entry.absoluteFilePath(), target, created, error))
                 return false;
             continue;
         }
@@ -138,6 +139,10 @@ bool copyMissingDemoFiles(const QString &from, const QString &to, QString *error
                          .arg(entry.absoluteFilePath(), target);
             return false;
         }
+        // Only a file this run created may be trusted: a destination file that
+        // was already there is the user's working copy, not PiST's provenance.
+        if (created)
+            created->append(QFileInfo(target).absoluteFilePath());
         // A package may install its content read-only; the copy is a working
         // project, so it has to be editable and rebuildable.
         QFile::setPermissions(target, QFileInfo(target).permissions() | QFile::WriteOwner
@@ -161,34 +166,60 @@ bool copyMissingDemoFiles(const QString &from, const QString &to, QString *error
 /// walk paths::bundledDataSearchPaths() makes for the ROM.
 ///
 /// Empty when neither place has the marker file.
-QString findDemoSourceDir()
+QString findDemoSourceDir(const QString &applicationDir, bool *installed,
+                          bool includeWorkingDirectory = true)
 {
     QStringList bases;
-    bases << QDir::currentPath();
-    QDir up(QCoreApplication::applicationDirPath());
+    // The welcome view may use a checkout named by the launch directory. Hook
+    // provenance may not: that directory belongs to the caller, not to PiST.
+    if (includeWorkingDirectory)
+        bases << QDir::currentPath();
+    QDir up(applicationDir);
     for (int depth = 0; depth < 3; ++depth) {
         bases << up.absolutePath();
         if (!up.cdUp())
             break;
     }
 
-    // The checkout is asked first: a developer sitting in their tree wants the
-    // tree's demos, and that keeps the source-checkout behaviour exactly what it
-    // was. Either way the marker is the same file, and a directory that lacks it
-    // is not the demo set — a row that opens nothing is worse than no row.
-    const auto findDemos = [&bases](const QString &relative) {
-        for (const QString &base : bases) {
-            const QString candidate = QDir(base).filePath(relative);
-            if (QFileInfo::exists(
-                    QDir(candidate).filePath(QStringLiteral("hello.pistproject"))))
-                return candidate;
-        }
-        return QString();
+    // The closest base wins, and within one base the checkout's `demo/` wins
+    // over its `share/pist/demo/`. Asking every base for `demo/` first would let
+    // a checkout found above an installed tree decide that an installed run is a
+    // checkout — the distinction this walk exists to make. The marker is the same
+    // file either way, and a directory that lacks it is not the demo set: a row
+    // that opens nothing is worse than no row.
+    const auto hasMarker = [](const QString &dir) {
+        return QFileInfo::exists(QDir(dir).filePath(QStringLiteral("hello.pistproject")));
     };
-    QString demoDir = findDemos(QStringLiteral("demo"));
-    if (demoDir.isEmpty())
-        demoDir = findDemos(QStringLiteral("share/pist/demo"));
+    QString demoDir;
+    bool fromInstall = false;
+    for (const QString &base : bases) {
+        const QString checkout = QDir(base).filePath(QStringLiteral("demo"));
+        if (hasMarker(checkout)) {
+            demoDir = checkout;
+            break;
+        }
+        const QString shipped = QDir(base).filePath(QStringLiteral("share/pist/demo"));
+        if (hasMarker(shipped)) {
+            demoDir = shipped;
+            fromInstall = true;
+            break;
+        }
+    }
+    if (installed)
+        *installed = fromInstall;
     return demoDir;
+}
+
+/// Whether a demo directory must be copied before use.
+///
+/// An installed tree is always copied, even when the user can write there: an
+/// administrator can usually write inside `/Applications/PiST.app`, and writing
+/// listings into a signed bundle breaks its signature and loses the work on the
+/// next update. A source checkout is used in place when it is writable; the
+/// permission test remains only for a genuinely read-only checkout.
+bool demoNeedsCopy(const QString &demoDir, bool installed)
+{
+    return installed || !QFileInfo(demoDir).isWritable();
 }
 
 } // namespace
@@ -404,28 +435,37 @@ void WelcomeView::applyAppearance()
     update();
 }
 
+QString WelcomeView::demoSourceDir()
+{
+    return findDemoSourceDir(QCoreApplication::applicationDirPath(), nullptr, false);
+}
+
+QString WelcomeView::demoSourceDirFrom(const QString &applicationDir)
+{
+    return findDemoSourceDir(applicationDir, nullptr, false);
+}
+
 QList<WelcomeView::Entry> WelcomeView::demoProjects()
 {
-    QString demoDir = findDemoSourceDir();
+    bool installed = false;
+    QString demoDir = findDemoSourceDir(QCoreApplication::applicationDirPath(), &installed);
     if (demoDir.isEmpty())
         return {};
 
     // An installed PiST carries its demos under the read-only prefix
     // (`share/pist/demo`). A demo is a project, not a viewer: the build writes
     // the listing and the program beside the source, and an edit writes the
-    // source itself. If that directory cannot be written, offer the user's own
-    // copy instead, made once and then reused so edits to it survive. A source
-    // checkout is writable and keeps using its own `demo/`.
-    if (!QFileInfo(demoDir).isWritable()) {
+    // source itself. An installed tree is always copied, even when an
+    // administrator can write into it — a source checkout keeps using its own
+    // `demo/` when that is writable.
+    if (demoNeedsCopy(demoDir, installed)) {
         const QString writable = paths::suggestedDemoDir();
-        // Whether the copy is new decides what may be trusted: an existing
-        // directory is the user's working copy and could have been edited (or
-        // replaced), so it is not PiST's provenance to vouch for.
         const QString marker = QDir(writable).filePath(QStringLiteral("hello.pistproject"));
-        const bool freshCopy = !QFileInfo::exists(marker);
 
+        QStringList created;
         QString error;
-        if (!copyMissingDemoFiles(demoDir, writable, &error) || !QFileInfo::exists(marker)) {
+        if (!copyMissingDemoFiles(demoDir, writable, &created, &error)
+            || !QFileInfo::exists(marker)) {
             // No row is better than one whose first build cannot write its own
             // listing and program. Say why in the log; the GUI has no place for
             // this failure that a first run would show.
@@ -435,18 +475,28 @@ QList<WelcomeView::Entry> WelcomeView::demoProjects()
                                     : error));
             return {};
         }
-        if (freshCopy) {
-            // These files came out of the shipped tree in this run, so they are
-            // exactly what the shipped path used to be trusted for. Recording
-            // the copy's own paths keeps the hook gate narrow: a project later
-            // dropped into this directory is not trusted by being here.
-            const QString projects[] = {
-                QStringLiteral("hello.pistproject"),
-                QStringLiteral("keyred.pistproject"),
-                QStringLiteral("spritedemo/sprites.pistproject"),
-            };
-            for (const QString &relative : projects)
-                settings::trustHookProject(QDir(writable).filePath(relative));
+        // Only a project this run copied is PiST's to vouch for. A file that was
+        // already in the user's working copy may have been edited or replaced,
+        // and must not be trusted just because a sibling was repaired.
+        const QString projects[] = {
+            QStringLiteral("hello.pistproject"),
+            QStringLiteral("keyred.pistproject"),
+            QStringLiteral("spritedemo/sprites.pistproject"),
+        };
+        for (const QString &relative : projects) {
+            const QString projectPath = QDir(writable).filePath(relative);
+            if (!created.contains(QFileInfo(projectPath).absoluteFilePath()))
+                continue;
+            ProjectSettings copied;
+            QString loadError;
+            if (!settings::load(&copied, projectPath, &loadError)
+                || copied.stopHookPath.isEmpty())
+                continue;
+            // The script has to be ours too; a pre-existing script is the
+            // user's code, not the shipped file we just copied.
+            if (!created.contains(QFileInfo(copied.stopHookPath).absoluteFilePath()))
+                continue;
+            settings::trustHookProject(projectPath, copied.stopHookPath);
         }
         demoDir = writable;
     }
@@ -474,8 +524,9 @@ QString WelcomeView::writableDemoPath(const QString &path)
     if (path.isEmpty())
         return path;
 
-    const QString sourceDir = findDemoSourceDir();
-    if (sourceDir.isEmpty() || QFileInfo(sourceDir).isWritable())
+    bool installed = false;
+    const QString sourceDir = findDemoSourceDir(QCoreApplication::applicationDirPath(), &installed);
+    if (sourceDir.isEmpty() || !demoNeedsCopy(sourceDir, installed))
         return path;
 
     // Canonical spellings on both sides, so `..` or a symlinked prefix cannot

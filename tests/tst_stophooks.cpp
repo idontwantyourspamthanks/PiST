@@ -262,6 +262,10 @@ private slots:
     void refusesToCompileMoreCodeAndBinaryChunks();
     /// The budget is not defeatable by catching its error in a `pcall`.
     void aBudgetCannotBeSwallowedByPcall();
+    /// `xpcall` runs the body, not the handler, and still reports errors.
+    void guardedXpcallRunsTheBodyAndItsHandler();
+    /// A handler that consumes or replaces the timeout token cannot swallow it.
+    void aBudgetCannotBeSwallowedByXpcall();
 
     // --- the runner ------------------------------------------------------
 
@@ -477,20 +481,26 @@ void TstStopHooks::refusesToCompileMoreCodeAndBinaryChunks()
                        "local df, e2 = pcall(dofile, \"x.lua\")\n"
                        "log(tostring(lf) .. \" \" .. tostring(e1))\n"
                        "log(tostring(df) .. \" \" .. tostring(e2))\n"
+                       "local fn, e3 = pcall(load, function() return \"return 1\" end)\n"
+                       "log(tostring(fn) .. \" \" .. tostring(e3))\n"
                        "log(tostring(string.dump))"));
     const hooks::StopHookResult result = hooks::StopHookEngine::run(path, api);
 
     QVERIFY2(result.ok, qPrintable(result.error));
-    QCOMPARE(api.logs.size(), 4);
-    // Every loader refuses rather than compiling, and names itself.
-    QVERIFY2(api.logs.at(0).startsWith(QStringLiteral("false")), qPrintable(api.logs.at(0)));
-    QVERIFY2(api.logs.at(0).contains(QStringLiteral("disabled")), qPrintable(api.logs.at(0)));
-    QVERIFY2(api.logs.at(1).startsWith(QStringLiteral("false")), qPrintable(api.logs.at(1)));
-    QVERIFY2(api.logs.at(1).contains(QStringLiteral("disabled")), qPrintable(api.logs.at(1)));
-    QVERIFY2(api.logs.at(2).startsWith(QStringLiteral("false")), qPrintable(api.logs.at(2)));
-    QVERIFY2(api.logs.at(2).contains(QStringLiteral("disabled")), qPrintable(api.logs.at(2)));
+    QCOMPARE(api.logs.size(), 5);
+    // Every loader refuses rather than compiling, and names itself. The name is
+    // the loader's, not the chunk's: `load("return 1")` must not answer with
+    // "return 1: ...", and `load(fn)` must reach the refusal at all.
+    QVERIFY2(api.logs.at(0).startsWith(QStringLiteral("false load: compiling")),
+             qPrintable(api.logs.at(0)));
+    QVERIFY2(api.logs.at(1).startsWith(QStringLiteral("false loadfile: compiling")),
+             qPrintable(api.logs.at(1)));
+    QVERIFY2(api.logs.at(2).startsWith(QStringLiteral("false dofile: compiling")),
+             qPrintable(api.logs.at(2)));
+    QVERIFY2(api.logs.at(3).startsWith(QStringLiteral("false load: compiling")),
+             qPrintable(api.logs.at(3)));
     // And the producer of a binary chunk is gone.
-    QCOMPARE(api.logs.at(3), QStringLiteral("nil"));
+    QCOMPARE(api.logs.at(4), QStringLiteral("nil"));
 
     // A bytecode chunk is refused by the loader itself, before it runs. The
     // signature is Lua's own (`\x1bLua`); "t" is the mode it is loaded in, so
@@ -528,6 +538,68 @@ void TstStopHooks::aBudgetCannotBeSwallowedByPcall()
     QVERIFY2(result.timedOut, qPrintable(result.error));
     QVERIFY(!result.ok);
     QVERIFY2(elapsed < 5000, qPrintable(QStringLiteral("took %1 ms").arg(elapsed)));
+}
+
+void TstStopHooks::guardedXpcallRunsTheBodyAndItsHandler()
+{
+    QTemporaryDir dir;
+    FakeApi api;
+
+    // The body must run, the handler must not run on success, and an ordinary
+    // error must come back through the handler. The old insert(1) layout ran
+    // the handler as the body and left the body on the stack.
+    const QString path = writeScript(
+        dir,
+        QStringLiteral("local calls = 0\n"
+                       "function body(x) calls = calls + 1; return 'body:' .. x end\n"
+                       "function handler(e) return 'handled:' .. tostring(e) end\n"
+                       "local ok, value = xpcall(body, handler, 42)\n"
+                       "log(tostring(ok) .. '|' .. tostring(value) .. '|' .. tostring(calls))\n"
+                       "local ok2, value2 = xpcall(function(x) error('boom:' .. x) end, handler, 7)\n"
+                       "log(tostring(ok2) .. '|' .. tostring(value2))"));
+    const hooks::StopHookResult result = hooks::StopHookEngine::run(path, api);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(api.logs.size(), 2);
+    QCOMPARE(api.logs.at(0), QStringLiteral("true|body:42|1"));
+    QVERIFY2(api.logs.at(1).startsWith(QStringLiteral("false|handled:")),
+             qPrintable(api.logs.at(1)));
+    QVERIFY2(api.logs.at(1).contains(QStringLiteral("boom:7")), qPrintable(api.logs.at(1)));
+}
+
+void TstStopHooks::aBudgetCannotBeSwallowedByXpcall()
+{
+    QTemporaryDir dir;
+    FakeApi api;
+
+    // A handler that returns a normal value is the essential case: with a
+    // correct errfunc it receives the token, so `isTimeout` on the result is
+    // false and only the latched `timedOut` flag can stop the loop.
+    const QString returns = writeScript(
+        dir,
+        QStringLiteral("while true do xpcall(function() while true do end end, "
+                       "function(e) return 1 end) end"),
+        QStringLiteral("returns.lua"));
+    QElapsedTimer clock;
+    clock.start();
+    const hooks::StopHookResult normal = hooks::StopHookEngine::run(returns, api, 80);
+    QVERIFY2(normal.timedOut, qPrintable(normal.error));
+    QVERIFY(!normal.ok);
+    QVERIFY2(clock.elapsed() < 5000,
+             qPrintable(QStringLiteral("took %1 ms").arg(clock.elapsed())));
+
+    // A handler that raises a different error takes the non-LUA_OK branch; the
+    // latched check has to run before that branch too.
+    const QString throws = writeScript(
+        dir,
+        QStringLiteral("while true do xpcall(function() while true do end end, "
+                       "function(e) error('swallowed') end) end"),
+        QStringLiteral("throws.lua"));
+    clock.restart();
+    const hooks::StopHookResult replaced = hooks::StopHookEngine::run(throws, api, 80);
+    QVERIFY2(replaced.timedOut, qPrintable(replaced.error));
+    QVERIFY(!replaced.ok);
+    QVERIFY2(clock.elapsed() < 5000,
+             qPrintable(QStringLiteral("took %1 ms").arg(clock.elapsed())));
 }
 
 // ---------------------------------------------------------------------------

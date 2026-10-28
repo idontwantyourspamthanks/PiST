@@ -85,7 +85,12 @@ void budgetHook(lua_State *L, lua_Debug *)
 /// script that used to work says why it no longer does.
 int refuseLoading(lua_State *L)
 {
-    const char *name = luaL_checkstring(L, 1);
+    // The loader's own name is an upvalue, not argument 1: `load("return 1")`
+    // must not answer with the source it was asked to compile, and `load(fn)`
+    // must still reach this refusal instead of Lua's "string expected" check.
+    const char *name = lua_tostring(L, lua_upvalueindex(1));
+    if (!name)
+        name = "loader";
     return luaL_error(L, "%s: compiling more code from a script is disabled", name);
 }
 
@@ -103,6 +108,14 @@ bool isTimeout(lua_State *L)
     return lua_touserdata(L, -1) == &kTimeoutToken;
 }
 
+/// Re-raise the deadline's token. The run's `timedOut` flag is latched, so the
+/// token is pushed again even when a script's handler consumed the first one.
+int raiseTimeout(lua_State *L)
+{
+    lua_pushlightuserdata(L, &kTimeoutToken);
+    return lua_error(L);
+}
+
 /// `pcall`, guarded: an ordinary error is returned as `false, err` exactly as
 /// Lua's own does, but the deadline's token is *re-raised* rather than reported.
 /// Re-raising from inside the guarded call unwinds to the next guarded one, and
@@ -111,9 +124,16 @@ bool isTimeout(lua_State *L)
 int guardedPcall(lua_State *L)
 {
     luaL_checkany(L, 1);
+    Run *run = currentRun(L);
     lua_pushboolean(L, 1);  /* first result if no errors */
     lua_insert(L, 1);
     const int status = lua_pcall(L, lua_gettop(L) - 2, LUA_MULTRET, 0);
+
+    // Checked before the status branch: a nested guarded `xpcall` can return
+    // normally after swallowing the token, leaving LUA_OK and a latched deadline.
+    if (run && run->timedOut)
+        return raiseTimeout(L);
+
     if (status == LUA_OK)
         return lua_gettop(L);
     if (isTimeout(L))
@@ -123,19 +143,29 @@ int guardedPcall(lua_State *L)
     return 2;
 }
 
-/// `xpcall`, guarded the same way. The handler still runs for ordinary errors;
-/// if it transforms the deadline's token into something else, the hook raises
-/// again at the next instruction, because the deadline stays passed.
+/// `xpcall`, guarded the same way. The handler still runs for ordinary errors.
+///
+/// The layout follows Lua's own `luaB_xpcall`: after the rotate the stack is
+/// `<f, err, true, f, args...>`, so `lua_pcall` sees the real body at the top
+/// and the handler at index 2. An `insert(L, 1)` instead shifts the call frame
+/// by one: the handler runs as the body and the body is left as the handler.
 int guardedXpcall(lua_State *L)
 {
-    const int args = lua_gettop(L);
+    const int n = lua_gettop(L);
+    Run *run = currentRun(L);
     luaL_checktype(L, 2, LUA_TFUNCTION);
-    const int handler = 2;
     lua_pushboolean(L, 1);  /* first result if no errors */
-    lua_insert(L, 1);
-    const int status = lua_pcall(L, args - 2, LUA_MULTRET, handler);
+    lua_pushvalue(L, 1);    /* the function again */
+    lua_rotate(L, 3, 2);    /* <f, err, true, f, args...> */
+    const int status = lua_pcall(L, n - 2, LUA_MULTRET, 2);
+
+    // A handler may return a normal value, or raise a different error, for the
+    // token. Either way the latched deadline is final.
+    if (run && run->timedOut)
+        return raiseTimeout(L);
+
     if (status == LUA_OK)
-        return lua_gettop(L);
+        return lua_gettop(L) - 2;   /* drop f and err, keep true + results */
     if (isTimeout(L))
         return lua_error(L);
     lua_pushboolean(L, 0);
@@ -155,20 +185,24 @@ lua_Integer checkInteger(lua_State *L, int index, const char *what, lua_Integer 
     return value;
 }
 
-/// Raise `sentence` as a Lua error, once every C++ object in the caller's frame
-/// has gone.
+/// Push `sentence` as the pending Lua error. Safe while C++ objects are alive:
+/// it only pushes onto the Lua stack, it does not longjmp.
+void pushLuaError(lua_State *L, const QByteArray &sentence)
+{
+    lua_pushlstring(L, sentence.constData(), size_t(sentence.size()));
+}
+
+/// Raise the string already on top of the Lua stack, once every C++ object in
+/// the caller's frame has gone.
 ///
 /// Lua here is upstream C, so its error handling is `longjmp` (ldo.c: `LUAI_THROW`
 /// is `longjmp` unless Lua is compiled as C++). A `luaL_error` therefore jumps
 /// straight out of a C function that owns a `QString` or a `QByteArray`, skipping
 /// the destructor — undefined behaviour, and a leak on every script error. The
-/// helper is the one place a message crosses into the interpreter, and it must be
-/// called only after the frame's destructors have run: `QString`/`QByteArray`
-/// temporaries live in a `{}` block and the sentence is copied into a `QByteArray`
-/// first, which is trivially destructible.
-[[noreturn]] void raiseLuaError(lua_State *L, const QByteArray &sentence)
+/// message is therefore pushed while the objects are still alive, and this
+/// helper is called from a scope that owns only trivially destructible values.
+[[noreturn]] void raisePendingLuaError(lua_State *L)
 {
-    lua_pushlstring(L, sentence.constData(), size_t(sentence.size()));
     // Longjmp: it does not return, but the compiler cannot know that from C's
     // declaration, so the attribute has to be stated here as well.
     lua_error(L);
@@ -181,19 +215,23 @@ int apiReadmem(lua_State *L)
     const lua_Integer address = checkInteger(L, 1, "readmem: address", 0, 0xFFFFFFFF);
     const lua_Integer length = checkInteger(L, 2, "readmem: length", 1, HookApi::kMaxReadBytes);
 
-    QByteArray bytes;
-    QByteArray sentence;
-    {
-        QString error;
-        if (!run->api->readMemory(quint32(address), int(length), &bytes, &error))
-            sentence = error.toUtf8();
-    }
-    if (!sentence.isEmpty())
-        raiseLuaError(L, sentence);
-
     // A Lua string is its bytes, so a byte above 0x7F survives this — which is
-    // exactly what a debugger read has to promise.
-    lua_pushlstring(L, bytes.constData(), size_t(bytes.size()));
+    // exactly what a debugger read has to promise. Both the success bytes and
+    // the refusal are pushed here, before `bytes`/`error` are destroyed.
+    bool failed = false;
+    {
+        QByteArray bytes;
+        QString error;
+        if (!run->api->readMemory(quint32(address), int(length), &bytes, &error)) {
+            const QByteArray sentence = error.toUtf8();
+            pushLuaError(L, sentence);
+            failed = true;
+        } else {
+            lua_pushlstring(L, bytes.constData(), size_t(bytes.size()));
+        }
+    }
+    if (failed)
+        raisePendingLuaError(L);
     return 1;
 }
 
@@ -203,14 +241,17 @@ int apiWritemem(lua_State *L)
     const lua_Integer address = checkInteger(L, 1, "writemem: address", 0, 0xFFFFFFFF);
     const lua_Integer value = checkInteger(L, 2, "writemem: value", 0, 0xFF);
 
-    QByteArray sentence;
+    bool failed = false;
     {
         QString error;
-        if (!run->api->writeMemory(quint32(address), quint8(value), &error))
-            sentence = error.toUtf8();
+        if (!run->api->writeMemory(quint32(address), quint8(value), &error)) {
+            const QByteArray sentence = error.toUtf8();
+            pushLuaError(L, sentence);
+            failed = true;
+        }
     }
-    if (!sentence.isEmpty())
-        raiseLuaError(L, sentence);
+    if (failed)
+        raisePendingLuaError(L);
     return 0;
 }
 
@@ -219,17 +260,18 @@ int apiReadreg(lua_State *L)
     Run *run = currentRun(L);
     const char *name = luaL_checkstring(L, 1);
     quint32 value = 0;
-    QByteArray sentence;
+
+    bool failed = false;
     {
         QString error;
-        // `fromUtf8` allocates a QString; the read either answers before the
-        // block ends or the error is copied out of it, so nothing it owns is
-        // alive when the error unwinds.
-        if (!run->api->readRegister(QString::fromUtf8(name), &value, &error))
-            sentence = error.toUtf8();
+        if (!run->api->readRegister(QString::fromUtf8(name), &value, &error)) {
+            const QByteArray sentence = error.toUtf8();
+            pushLuaError(L, sentence);
+            failed = true;
+        }
     }
-    if (!sentence.isEmpty())
-        raiseLuaError(L, sentence);
+    if (failed)
+        raisePendingLuaError(L);
     lua_pushinteger(L, lua_Integer(value));
     return 1;
 }
@@ -239,14 +281,18 @@ int apiWritereg(lua_State *L)
     Run *run = currentRun(L);
     const char *name = luaL_checkstring(L, 1);
     const lua_Integer value = checkInteger(L, 2, "writereg: value", 0, 0xFFFFFFFF);
-    QByteArray sentence;
+
+    bool failed = false;
     {
         QString error;
-        if (!run->api->writeRegister(QString::fromUtf8(name), quint32(value), &error))
-            sentence = error.toUtf8();
+        if (!run->api->writeRegister(QString::fromUtf8(name), quint32(value), &error)) {
+            const QByteArray sentence = error.toUtf8();
+            pushLuaError(L, sentence);
+            failed = true;
+        }
     }
-    if (!sentence.isEmpty())
-        raiseLuaError(L, sentence);
+    if (failed)
+        raisePendingLuaError(L);
     return 0;
 }
 
@@ -287,14 +333,18 @@ int apiSym(lua_State *L)
     Run *run = currentRun(L);
     const char *name = luaL_checkstring(L, 1);
     quint32 address = 0;
-    QByteArray sentence;
+
+    bool failed = false;
     {
         QString error;
-        if (!run->api->resolveSymbol(QString::fromUtf8(name), &address, &error))
-            sentence = error.toUtf8();
+        if (!run->api->resolveSymbol(QString::fromUtf8(name), &address, &error)) {
+            const QByteArray sentence = error.toUtf8();
+            pushLuaError(L, sentence);
+            failed = true;
+        }
     }
-    if (!sentence.isEmpty())
-        raiseLuaError(L, sentence);
+    if (failed)
+        raisePendingLuaError(L);
     lua_pushinteger(L, lua_Integer(address));
     return 1;
 }
@@ -395,7 +445,10 @@ StopHookResult StopHookEngine::run(const QString &scriptPath, HookApi &api, int 
     // the load below applies. Replaced rather than only removed: a name that
     // answers with a reason is a script that tells its author what happened.
     for (const luaL_Reg *entry = kRefused; entry->name != nullptr; ++entry) {
-        lua_pushcfunction(L, entry->func);
+        // The loader's name travels as an upvalue, so the refusal names the
+        // loader rather than the chunk it was asked to compile.
+        lua_pushstring(L, entry->name);
+        lua_pushcclosure(L, entry->func, 1);
         lua_setglobal(L, entry->name);
     }
     // The base library's `pcall`/`xpcall` make the budget catchable; the guarded

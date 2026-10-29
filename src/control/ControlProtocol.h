@@ -68,6 +68,24 @@ inline constexpr Verb kVerbs[] = {
     {"asset", "asset <src> <phase> <out> [k=v...]  declare a sprite export\n"
               "                 asset remove <out>  drop the export named <out>", false},
     {"readmem", "readmem <a> <n>  read <n> bytes at <a> as JSON rows (when stopped)", true},
+    {"ripimage", "ripimage <file> <offset> <width> <height> <out.pim> [paletteOffset]\n"
+                 "                 offset and paletteOffset are hex; width and height are decimal",
+     true},
+    {"ripsample", "ripsample <file> <offset> <length> <rate> <out.wav> [signed|unsigned]\n"
+                  "                 offset is hex; length and rate are decimal",
+     true},
+    {"dumpmem", "dumpmem <addr> <len> <file>   copy <len> bytes at <addr> to <file> (stopped)",
+     true},
+    {"capturescreen", "capturescreen <out.pim>   write the low-resolution screen (stopped)", true},
+    {"capturedma", "capturedma <out.wav>      write the STE DMA frame as 8-bit mono WAV (stopped)",
+     true},
+    {"ripavr", "ripavr <file> <offset> <out.wav>\n"
+               "                 offset is hex",
+     true},
+    {"scanmagic", "scanmagic <file>   AVR, IFF, Ice and Atomik magics as JSON", true},
+    {"depack", "depack <file> <offset> <out>   identify Ice or Atomik; does not unpack", true},
+    {"scandisk", "scandisk <image>    magics inside a FAT12 .st/.msa image", true},
+    {"sndhinfo", "sndhinfo <file> <offset>   SNDH text tags as JSON", true},
     {"memmark", "memmark <a> <n>  remember <n> bytes at <a> (when stopped)", true},
     {"memcompare", "memcompare [advance]  how those bytes differ now, as JSON", true},
     {"disasm", "disasm [a]       disassembly as JSON rows (when stopped)", true},

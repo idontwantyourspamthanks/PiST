@@ -235,7 +235,133 @@ bool isPreShiftCount(int count)
     return count == 2 || count == 4 || count == 8;
 }
 
+bool imageFromLowResBitplanesImpl(const QByteArray &planes, int width, int height,
+                                  const QByteArray &paletteWords, ImageDocument *out,
+                                  QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!out)
+        return fail(QStringLiteral("no document"));
+    if (width % 16 != 0 || width < 16 || width > kStScreenWidth)
+        return fail(QObject::tr("width must be a multiple of 16 in 16..%1 (got %2)")
+                        .arg(kStScreenWidth)
+                        .arg(width));
+    if (height < 1 || height > kStScreenHeight)
+        return fail(QObject::tr("height must be in 1..%1 (got %2)").arg(kStScreenHeight).arg(height));
+    const int need = (width / 16) * 8 * height;
+    if (planes.size() < need)
+        return fail(QObject::tr("need %1 plane bytes, got %2").arg(need).arg(planes.size()));
+    if (!paletteWords.isEmpty() && paletteWords.size() != 32)
+        return fail(QObject::tr("palette must be 32 bytes (got %1)").arg(paletteWords.size()));
+
+    QVector<Rgb> palette;
+    palette.reserve(16);
+    if (paletteWords.isEmpty()) {
+        const QVector<int> defaults = defaultActiveIndices(PaletteKind::Ste);
+        for (int i = 0; i < 16; ++i)
+            palette.append(cubeRgb(PaletteKind::Ste, defaults.at(i)));
+    } else {
+        const auto *words = reinterpret_cast<const uchar *>(paletteWords.constData());
+        for (int i = 0; i < 16; ++i)
+            palette.append(rgbFromStfmWord(be16(words + i * 2)));
+    }
+
+    const QVector<int> indices =
+        decodeStBitplanes(reinterpret_cast<const uchar *>(planes.constData()), width, height);
+    const ImportedSheet sheet = sheetFromIndexed(width, height, indices, palette, PaletteKind::Ste);
+    ImageDocument doc = ImageDocument::create(width, height, PaletteKind::Ste);
+    doc.setActive(sheet.active);
+    if (!doc.replaceActiveLayer(sheet.pixels))
+        return fail(QStringLiteral("could not store pixels"));
+    *out = doc;
+    return true;
+}
+
 } // namespace
+
+bool imageFromLowResBitplanes(const QByteArray &planes, int width, int height,
+                              const QByteArray &paletteWords, ImageDocument *out,
+                              QString *error)
+{
+    return imageFromLowResBitplanesImpl(planes, width, height, paletteWords, out, error);
+}
+
+QByteArray wavFromPcm8(const QByteArray &samples, int rate, bool signedSamples, QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return QByteArray();
+    };
+    if (samples.size() < 1 || samples.size() > 65536)
+        return fail(QObject::tr("sample length must be in 1..65536 (got %1)").arg(samples.size()));
+    if (rate < 4000 || rate > 50066)
+        return fail(QObject::tr("sample rate must be in 4000..50066 (got %1)").arg(rate));
+
+    auto putLe16 = [](uchar *p, quint16 v) {
+        p[0] = uchar(v);
+        p[1] = uchar(v >> 8);
+    };
+    auto putLe32 = [](uchar *p, quint32 v) {
+        p[0] = uchar(v);
+        p[1] = uchar(v >> 8);
+        p[2] = uchar(v >> 16);
+        p[3] = uchar(v >> 24);
+    };
+
+    QByteArray out(44 + samples.size(), '\0');
+    auto *p = reinterpret_cast<uchar *>(out.data());
+    p[0] = 'R';
+    p[1] = 'I';
+    p[2] = 'F';
+    p[3] = 'F';
+    putLe32(p + 4, quint32(36 + samples.size()));
+    p[8] = 'W';
+    p[9] = 'A';
+    p[10] = 'V';
+    p[11] = 'E';
+    p[12] = 'f';
+    p[13] = 'm';
+    p[14] = 't';
+    p[15] = ' ';
+    putLe32(p + 16, 16);
+    putLe16(p + 20, 1);
+    putLe16(p + 22, 1);
+    putLe32(p + 24, quint32(rate));
+    putLe32(p + 28, quint32(rate));
+    putLe16(p + 32, 1);
+    putLe16(p + 34, 8);
+    p[36] = 'd';
+    p[37] = 'a';
+    p[38] = 't';
+    p[39] = 'a';
+    putLe32(p + 40, quint32(samples.size()));
+    for (int i = 0; i < samples.size(); ++i) {
+        const uchar byte = uchar(samples.at(i));
+        p[44 + i] = signedSamples ? uchar(byte ^ 0x80) : byte;
+    }
+    return out;
+}
+
+bool imageFromLowResScreen(const QByteArray &planes, const QByteArray &paletteWords,
+                           int resolution, ImageDocument *out, QString *error)
+{
+    if ((resolution & 3) != 0) {
+        if (error)
+            *error = QObject::tr("not low resolution (%1)").arg(resolution);
+        return false;
+    }
+    if (planes.size() != 32000) {
+        if (error)
+            *error = QObject::tr("need 32000 plane bytes, got %1").arg(planes.size());
+        return false;
+    }
+    return imageFromLowResBitplanes(planes, 320, 200, paletteWords, out, error);
+}
 
 StImageFormat stFormatFromPath(const QString &path)
 {

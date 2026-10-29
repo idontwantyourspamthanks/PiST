@@ -9,6 +9,7 @@
 // adapter reads the window only through its Host (MIN-89).
 #include "ui/MainWindow.h"
 
+#include "ui/BinaryView.h"
 #include "ui/ImageEditor.h"
 #include "ui/ProfilerController.h"
 #include "emu/DebugBackend.h"
@@ -94,6 +95,8 @@ QJsonArray RemoteStateAdapter::tabsJson() const
         } else if (auto *image = qobject_cast<ImageEditor *>(tabs->widget(i))) {
             path = image->filePath();
             modified = image->isModifiedSinceLoad();
+        } else if (auto *binary = qobject_cast<BinaryView *>(tabs->widget(i))) {
+            path = binary->filePath();
         }
         tab.insert(QStringLiteral("path"), path);
         tab.insert(QStringLiteral("modified"), modified);

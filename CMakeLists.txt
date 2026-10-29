@@ -156,6 +156,8 @@ pist_module(pist_image
     src/image/Tools.h
     src/image/StFormats.cpp
     src/image/StFormats.h
+    src/image/BinaryScan.cpp
+    src/image/BinaryScan.h
     src/image/AssetBuild.cpp
     src/image/AssetBuild.h
     src/image/Transform.cpp
@@ -356,6 +358,8 @@ pist_module(pist_ui
     src/ui/HardwareView.h
     src/ui/MemoryView.cpp
     src/ui/MemoryView.h
+    src/ui/BinaryView.cpp
+    src/ui/BinaryView.h
     src/ui/ConsoleInput.cpp
     src/ui/ConsoleInput.h
     src/ui/PcHistoryView.cpp

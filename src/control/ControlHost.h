@@ -172,6 +172,69 @@ public:
     /// was taken.
     virtual QString stoppedSourceLocation() const = 0;
 
+    /// Read a slice of `path` as low-resolution bitplanes and write a .pim to
+    /// `outPath`. `hasPalette` selects whether `paletteOffset` is read (32 STfm
+    /// colour words). Synchronous. False, with `*error` set, on a bad range, a
+    /// short read, or a failed write. No emulator.
+    virtual bool ripImage(const QString &path, quint32 offset, int width, int height,
+                          const QString &outPath, bool hasPalette, quint32 paletteOffset,
+                          QString *error) = 0;
+
+    /// Read `length` bytes at `offset` in `path` and write an 8-bit mono WAV to
+    /// `outPath`. `signedSamples` is the source encoding. Synchronous. False, with
+    /// `*error` set, on a bad range or a failed write. No emulator.
+    virtual bool ripSample(const QString &path, quint32 offset, int length, int rate,
+                           bool signedSamples, const QString &outPath,
+                           QString *error) = 0;
+
+    /// Replace `path` with `bytes`. False, with `*error` set, when the write fails.
+    /// Empty `bytes` is a failure (a dump that read nothing must not create an empty
+    /// file and report success).
+    virtual bool writeBinaryFile(const QString &path, const QByteArray &bytes,
+                                 QString *error) = 0;
+
+    /// Turn a stopped low-resolution screen dump into a `.pim`. `resolutionByte`
+    /// is the single shifter byte from $ff8260. No debugger traffic.
+    virtual bool writeCapturedScreen(const QString &outPath, const QByteArray &resolutionByte,
+                                    const QByteArray &paletteWords, const QByteArray &planes,
+                                    QString *error) = 0;
+
+    /// Turn a stopped STE DMA frame into an unsigned 8-bit mono WAV. No debugger
+    /// traffic. Stereo and over-long frames are refused before this is called.
+    virtual bool writeCapturedDma(const QString &outPath, int rateHz, const QByteArray &samples,
+                                 QString *error) = 0;
+
+    /// Read the stopped machine and write a low-resolution .pim. The caller has
+    /// already checked that the machine is stopped. False, with `*error` set.
+    virtual bool captureScreenTo(const QString &outPath, QString *error) = 0;
+
+    /// Read the stopped machine's STE DMA frame and write an 8-bit mono WAV.
+    /// Stereo and a frame longer than 65536 bytes fail with the same sentences the
+    /// verb already returns. The caller has already checked that the machine is stopped.
+    virtual bool captureDmaTo(const QString &outPath, QString *error) = 0;
+
+    /// Read an AVR header at `offset` and the samples it names, and write a WAV.
+    /// Does not read past the declared length. No emulator.
+    virtual bool ripAvr(const QString &path, quint32 offset, const QString &outPath,
+                        QString *error) = 0;
+
+    /// AVR, IFF, Ice and Atomik hits in `path`, as `{offset, kind}` objects.
+    /// `*error` is set when the file cannot be read or is over 2 MiB. An empty
+    /// array with an empty error is a file with no hits.
+    virtual QJsonArray scanFileMagic(const QString &path, QString *error) = 0;
+
+    /// The same hits inside the files of a FAT12 image. A list failure sets
+    /// `*error`. A file that cannot be read is one `{path, error}` object.
+    virtual QJsonArray scanDiskMagic(const QString &imagePath, QString *error) = 0;
+
+    /// "ice", "atomik", or empty. A short read is empty, not an error. `*error`
+    /// is set when the file cannot be opened. Does not write anything.
+    virtual QString identifyPacker(const QString &path, quint32 offset, QString *error) = 0;
+
+    /// SNDH text tags in at most 4096 bytes at `offset`. `found` false is still
+    /// a result. `*error` is set when the file cannot be read.
+    virtual QJsonObject sndhInfo(const QString &path, quint32 offset, QString *error) = 0;
+
     /// Capture the IDE's window into `path` (the `screenshot` verb). False
     /// when the capture or the write failed. The capturing itself is the UI's:
     /// it needs the window handle and, under X11, the XGetImage path the

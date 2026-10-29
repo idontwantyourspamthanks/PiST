@@ -119,5 +119,41 @@ HardwareSummary parseHardwareInfo(const QString &response)
     return summary;
 }
 
+DmaSoundInfo parseDmaSoundInfo(const QString &response)
+{
+    DmaSoundInfo info;
+    if (response.contains(QStringLiteral("ST doesn't include DMA!")))
+        return info;
+
+    const auto take = [&](const char *pattern) -> int {
+        const auto match = QRegularExpression(QLatin1String(pattern)).match(response);
+        if (!match.hasMatch())
+            return -1;
+        bool ok = false;
+        const int value = match.captured(1).toInt(&ok, 16);
+        return ok ? value : -1;
+    };
+    const int startHi = take(R"(\$FF8903\.b : Frame Start High : ([0-9A-Fa-f]{2}))");
+    const int startMid = take(R"(\$FF8905\.b : Frame Start middle : ([0-9A-Fa-f]{2}))");
+    const int startLo = take(R"(\$FF8907\.b : Frame Start low : ([0-9A-Fa-f]{2}))");
+    const int endHi = take(R"(\$FF890F\.b : Frame End High : ([0-9A-Fa-f]{2}))");
+    const int endMid = take(R"(\$FF8911\.b : Frame End middle : ([0-9A-Fa-f]{2}))");
+    const int endLo = take(R"(\$FF8913\.b : Frame End low : ([0-9A-Fa-f]{2}))");
+    const int mode = take(R"(\$FF8921\.b : Sound Mode Control : ([0-9A-Fa-f]{2}))");
+    if (startHi < 0 || startMid < 0 || startLo < 0 || endHi < 0 || endMid < 0 || endLo < 0
+        || mode < 0)
+        return info;
+
+    info.start = (quint32(startHi) << 16) | (quint32(startMid) << 8) | quint32(startLo);
+    info.start &= ~1u;
+    info.end = (quint32(endHi) << 16) | (quint32(endMid) << 8) | quint32(endLo);
+    info.end &= ~1u;
+    static const int kRates[] = {6258, 12517, 25033, 50066};
+    info.rateHz = kRates[mode & 3];
+    info.stereo = (mode & 0x80) == 0;
+    info.present = true;
+    return info;
+}
+
 } // namespace hataritext
 } // namespace pist

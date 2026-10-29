@@ -44,6 +44,7 @@
 #include "ui/DisassemblyView.h"
 #include "ui/HardwareView.h"
 #include "build/ProgramDiff.h"
+#include "ui/BinaryView.h"
 #include "ui/MemoryView.h"
 #include "ui/ProgramDiffDialog.h"
 #include "emu/MemoryDump.h"
@@ -101,6 +102,7 @@
 #include <QTreeView>
 #include <QAbstractItemModel>
 #include <QImage>
+#include <QLocale>
 #include <QPainter>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -490,6 +492,18 @@ private slots:
     void diagnosticKeyboardFlowToursProblems();
     void navigationOpensTheOtherFile();
     void fileMenuAndToolbarMatchTheJobs();
+    void binaryPreviewOpensAPim();
+    void binarySampleWritesAWav();
+    void binaryIdentifyNamesAHeader();
+    void binaryScanListsAMagic();
+    void binaryFirstDataSkipsZeroLines();
+    void binaryAsciiSitsBesideTheHex();
+    void binaryModeHidesTheOtherJob();
+    void binaryWaveformScrubsTheSample();
+    void memorySaveFollowsTheStop();
+    void captureActionsExist();
+    void openDiskHitLoadsABinaryTab();
+    void projectFilesOpenBinaryLoadsTheFile();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -3842,6 +3856,405 @@ void TstGui::navigationOpensTheOtherFile()
     current = qobject_cast<CodeEditor *>(tabs->currentWidget());
     QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
     QCOMPARE(current->textCursor().blockNumber() + 1, 4);
+}
+
+void TstGui::binaryPreviewOpensAPim()
+{
+    BinaryView view;
+
+    QByteArray fixture(128, '\0');
+    for (int row = 0; row < 16; ++row) {
+        fixture[row * 8] = char(0xFF);
+        fixture[row * 8 + 1] = char(0xFF);
+    }
+    view.setBytes(fixture, QStringLiteral("sprite.bin"));
+    view.findChild<QSpinBox *>(QStringLiteral("binaryWidth"))->setValue(16);
+    view.findChild<QSpinBox *>(QStringLiteral("binaryHeight"))->setValue(16);
+    view.findChild<QSpinBox *>(QStringLiteral("binaryOffset"))->setValue(0);
+    auto *palette = view.findChild<QSpinBox *>(QStringLiteral("binaryPalette"));
+    QVERIFY(palette);
+    QCOMPARE(palette->value(), -1);
+    palette->stepBy(1);
+    QCOMPARE(palette->value(), 0);
+    palette->setValue(16);
+    bool paletteOk = false;
+    QCOMPARE(palette->text().toInt(&paletteOk, 16), 16);
+    QVERIFY(paletteOk);
+    palette->setValue(-1);
+    QCOMPARE(view.findChild<QPushButton *>(QStringLiteral("binaryPreview"))->text(),
+             QStringLiteral("Edit image"));
+    const QImage shown =
+        view.findChild<QLabel *>(QStringLiteral("binaryImagePreview"))->pixmap().toImage();
+    QVERIFY(!shown.isNull());
+
+    QSignalSpy spy(&view, &BinaryView::previewReady);
+    view.preview();
+    QCOMPARE(spy.count(), 1);
+    const QString path = spy.takeFirst().at(0).toString();
+    ImageDocument loaded;
+    QString error;
+    QVERIFY2(loaded.load(path, &error), qPrintable(error));
+    QCOMPARE(loaded.pixels().at(0), defaultActiveIndices(PaletteKind::Ste).at(1));
+    QCOMPARE(shown.pixelColor(0, 0).rgb(),
+             cubeColor(PaletteKind::Ste, loaded.pixels().at(0)).rgb());
+
+    view.preview();
+    QCOMPARE(spy.count(), 1);
+    const QString second = spy.takeFirst().at(0).toString();
+    QVERIFY(second != path);
+    QVERIFY(path.contains(QStringLiteral("pist-preview-1.pim")));
+    QVERIFY(second.contains(QStringLiteral("pist-preview-2.pim")));
+
+    auto *offset = view.findChild<QSpinBox *>(QStringLiteral("binaryOffset"));
+    offset->setValue(0);
+    offset->stepBy(1);
+    QCOMPARE(offset->value(), 1);
+    offset->setValue(32);
+    bool ok = false;
+    QCOMPARE(offset->text().toInt(&ok, 16), 32);
+    QVERIFY(ok);
+
+    view.setBytes(QByteArray("\xAB\xCD", 2), QStringLiteral("short.bin"));
+    QVERIFY(view.findChild<QLabel *>(QStringLiteral("binaryImagePreview"))->pixmap().isNull());
+}
+
+void TstGui::binarySampleWritesAWav()
+{
+    BinaryView view;
+    view.setBytes(QByteArray("\x00\xFF", 2), QStringLiteral("pcm.bin"));
+    view.findChild<QSpinBox *>(QStringLiteral("binarySampleLength"))->setValue(2);
+    view.findChild<QSpinBox *>(QStringLiteral("binaryRate"))->setValue(8000);
+    view.findChild<QCheckBox *>(QStringLiteral("binarySigned"))->setChecked(true);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("out.wav"));
+    QString error;
+    QVERIFY2(view.writeSample(path, &error), qPrintable(error));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray wav = file.readAll();
+    QCOMPARE(wav.size(), 46);
+    QCOMPARE(uchar(wav.at(44)), uchar(0x80));
+    QCOMPARE(uchar(wav.at(45)), uchar(0x7F));
+}
+
+void TstGui::binaryIdentifyNamesAHeader()
+{
+    BinaryView view;
+    auto *status = view.findChild<QLabel *>(QStringLiteral("binaryStatus"));
+    auto *offset = view.findChild<QSpinBox *>(QStringLiteral("binaryOffset"));
+    QVERIFY(status && offset);
+
+    view.setBytes(QByteArrayLiteral("ICE!"), QStringLiteral("packed.bin"));
+    offset->setValue(0);
+    view.identifyAtOffset();
+    QVERIFY(status->text().contains(QStringLiteral("Ice")));
+
+    QByteArray sndh("SNDHTITLhello");
+    sndh.append('\0');
+    sndh.append("HDNS");
+    view.setBytes(sndh, QStringLiteral("tune.snd"));
+    view.identifyAtOffset();
+    QVERIFY(status->text().contains(QStringLiteral("hello")));
+}
+
+void TstGui::binaryScanListsAMagic()
+{
+    BinaryView view;
+    view.setBytes(QByteArrayLiteral("xxxxATM5"), QStringLiteral("packed.bin"));
+    auto *scan = view.findChild<QPushButton *>(QStringLiteral("binaryScan"));
+    QVERIFY(scan);
+    scan->click();
+
+    auto *hits = view.findChild<QListWidget *>(QStringLiteral("binaryHits"));
+    QVERIFY(hits);
+    QCOMPARE(hits->count(), 1);
+    QCOMPARE(hits->item(0)->data(Qt::UserRole).toInt(), 4);
+    QCOMPARE(hits->item(0)->data(Qt::UserRole + 1).toString(), QStringLiteral("atomik"));
+
+    hits->setCurrentRow(0);
+    QCOMPARE(view.findChild<QSpinBox *>(QStringLiteral("binaryOffset"))->value(), 4);
+    QVERIFY(view.findChild<QLabel *>(QStringLiteral("binaryStatus"))
+                ->text()
+                .contains(QStringLiteral("Atomik")));
+}
+
+void TstGui::binaryFirstDataSkipsZeroLines()
+{
+    BinaryView view;
+    auto *button = view.findChild<QPushButton *>(QStringLiteral("binaryFirstData"));
+    auto *offset = view.findChild<QSpinBox *>(QStringLiteral("binaryOffset"));
+    auto *hex = view.findChild<QTableWidget *>(QStringLiteral("binaryHex"));
+    auto *status = view.findChild<QLabel *>(QStringLiteral("binaryStatus"));
+    QVERIFY(button && offset && hex && status);
+
+    // A non-zero byte on the first line keeps the window at 0.
+    QByteArray early(16, '\0');
+    early[15] = char(0xAB);
+    view.setBytes(early, QStringLiteral("early.bin"));
+    offset->setValue(0x10);
+    QCOMPARE(hex->item(0, 15)->text(), QString());
+    button->click();
+    QCOMPARE(offset->value(), 0);
+    QCOMPARE(hex->item(0, 15)->text(), QStringLiteral("ab"));
+
+    // Sixteen zeros, then the first data byte, starts the next line.
+    QByteArray padded(16, '\0');
+    padded.append(char(0xCD));
+    view.setBytes(padded, QStringLiteral("padded.bin"));
+    button->click();
+    QCOMPARE(offset->value(), 16);
+    QCOMPARE(hex->item(0, 0)->text(), QStringLiteral("cd"));
+
+    view.setBytes(QByteArray(32, '\0'), QStringLiteral("zeros.bin"));
+    button->click();
+    QCOMPARE(status->text(), QStringLiteral("No non-zero line"));
+    QCOMPARE(offset->value(), 0);
+}
+
+void TstGui::binaryAsciiSitsBesideTheHex()
+{
+    BinaryView view;
+    view.setBytes(QByteArray("A\x00~", 3), QStringLiteral("text.bin"));
+    auto *hex = view.findChild<QTableWidget *>(QStringLiteral("binaryHex"));
+    QVERIFY(hex);
+    QCOMPARE(hex->columnCount(), 17);
+    QCOMPARE(hex->item(0, 16)->text(), QStringLiteral("A.~"));
+}
+
+void TstGui::binaryModeHidesTheOtherJob()
+{
+    BinaryView view;
+    view.setBytes(QByteArray(16, '\0'), QStringLiteral("block.bin"));
+    auto *mode = view.findChild<QComboBox *>(QStringLiteral("binaryMode"));
+    auto *width = view.findChild<QSpinBox *>(QStringLiteral("binaryWidth"));
+    auto *audio = view.findChild<QWidget *>(QStringLiteral("binaryAudioRow"));
+    auto *preview = view.findChild<QWidget *>(QStringLiteral("binaryPreviewColumn"));
+    auto *scan = view.findChild<QPushButton *>(QStringLiteral("binaryScan"));
+    auto *offset = view.findChild<QSpinBox *>(QStringLiteral("binaryOffset"));
+    QVERIFY(mode && width && audio && preview && scan && offset);
+
+    QCOMPARE(mode->currentText(), QStringLiteral("Image"));
+    QVERIFY(!width->isHidden());
+    QVERIFY(audio->isHidden());
+    QVERIFY(!preview->isHidden());
+    QVERIFY(!scan->isHidden());
+
+    mode->setCurrentText(QStringLiteral("Audio"));
+    QVERIFY(width->isHidden());
+    QVERIFY(!audio->isHidden());
+    QVERIFY(preview->isHidden());
+    QVERIFY(!scan->isHidden());
+    QVERIFY(!offset->isHidden());
+
+    mode->setCurrentText(QStringLiteral("Data"));
+    QVERIFY(width->isHidden());
+    QVERIFY(audio->isHidden());
+    QVERIFY(preview->isHidden());
+    QVERIFY(!offset->isHidden());
+
+    view.showHit(0, QStringLiteral("avr"));
+    QCOMPARE(mode->currentText(), QStringLiteral("Audio"));
+    view.showHit(0, QStringLiteral("iff"));
+    QCOMPARE(mode->currentText(), QStringLiteral("Image"));
+    view.showHit(0, QStringLiteral("atomik"));
+    QCOMPARE(mode->currentText(), QStringLiteral("Data"));
+}
+
+void TstGui::binaryWaveformScrubsTheSample()
+{
+    BinaryView view;
+    view.setBytes(QByteArray(8000, '\xff'), QStringLiteral("tone.bin"));
+    view.resize(640, 480);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto *mode = view.findChild<QComboBox *>(QStringLiteral("binaryMode"));
+    auto *length = view.findChild<QSpinBox *>(QStringLiteral("binarySampleLength"));
+    auto *rate = view.findChild<QSpinBox *>(QStringLiteral("binaryRate"));
+    auto *signedSamples = view.findChild<QCheckBox *>(QStringLiteral("binarySigned"));
+    auto *play = view.findChild<QPushButton *>(QStringLiteral("binaryPlay"));
+    auto *time = view.findChild<QLabel *>(QStringLiteral("binaryPlayTime"));
+    auto *wave = view.findChild<BinaryWaveform *>(QStringLiteral("binaryWaveform"));
+    auto *audio = view.findChild<QWidget *>(QStringLiteral("binaryAudioRow"));
+    QVERIFY(mode && length && rate && signedSamples && play && time && wave && audio);
+
+    QCOMPARE(play->text(), QStringLiteral("Play"));
+    mode->setCurrentText(QStringLiteral("Audio"));
+    length->setValue(8000);
+    QCOMPARE(rate->value(), 8000);
+    QTRY_VERIFY(wave->width() > 20);
+    QCOMPARE(wave->sampleCount(), 8000);
+    QCOMPARE(wave->playhead(), 0);
+    QCOMPARE(time->text(), QStringLiteral("0.00 / 1.00 s"));
+    QVERIFY(wave->isVisible());
+
+    const auto grab = [](QWidget *widget) {
+        QImage image(widget->size(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        widget->render(&image);
+        return image;
+    };
+    const QImage loud = grab(wave);
+    signedSamples->setChecked(true);
+    const QImage asSigned = grab(wave);
+    QVERIFY(loud != asSigned);
+    signedSamples->setChecked(false);
+
+    QTest::mouseClick(wave, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(wave->width() * 3 / 4, wave->height() / 2));
+    QVERIFY(wave->playhead() > 4000);
+    QVERIFY(wave->playhead() < 8000);
+    const QString expected =
+        QStringLiteral("%1 / %2 s")
+            .arg(QLocale::c().toString(double(wave->playhead()) / 8000.0, 'f', 2),
+                 QLocale::c().toString(1.0, 'f', 2));
+    QCOMPARE(time->text(), expected);
+    QCOMPARE(play->text(), QStringLiteral("Play"));
+
+    length->setValue(4000);
+    QCOMPARE(wave->sampleCount(), 4000);
+    QCOMPARE(wave->playhead(), 0);
+    QCOMPARE(time->text(), QStringLiteral("0.00 / 0.50 s"));
+
+    // Silence, so a machine with an output device can run the clock without a buzz.
+    // A machine with no device leaves the button on Play and says so.
+    view.setBytes(QByteArray(4000, '\x80'), QStringLiteral("quiet.bin"));
+    QCOMPARE(wave->sampleCount(), 4000);
+    play->click();
+    if (play->text() == QStringLiteral("Pause"))
+        QTRY_VERIFY_WITH_TIMEOUT(play->text() == QStringLiteral("Play"), 2000);
+    auto *status = view.findChild<QLabel *>(QStringLiteral("binaryStatus"));
+    QVERIFY(status);
+    if (status->text() != QStringLiteral("Could not play the sample.")) {
+        QCOMPARE(play->text(), QStringLiteral("Play"));
+        QCOMPARE(wave->playhead(), 0);
+    }
+
+    mode->setCurrentText(QStringLiteral("Image"));
+    QVERIFY(audio->isHidden());
+    QVERIFY(!wave->isVisible());
+}
+
+void TstGui::memorySaveFollowsTheStop()
+{
+    MainWindow window;
+    auto *button = window.findChild<QPushButton *>(QStringLiteral("memorySave"));
+    QVERIFY(button);
+    QVERIFY(!button->isEnabled());
+}
+
+void TstGui::captureActionsExist()
+{
+    MainWindow window;
+    auto *screen = window.findChild<QAction *>(QStringLiteral("captureScreenAction"));
+    auto *dma = window.findChild<QAction *>(QStringLiteral("captureDmaAction"));
+    QVERIFY(screen);
+    QVERIFY(dma);
+    auto *run = window.findChild<QMenu *>(QStringLiteral("runMenu"));
+    QVERIFY(run);
+    QVERIFY(run->actions().contains(screen));
+    QVERIFY(run->actions().contains(dma));
+    QVERIFY(!screen->isEnabled());
+    QVERIFY(!dma->isEnabled());
+}
+
+void TstGui::openDiskHitLoadsABinaryTab()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item file;
+    file.destPath = QStringLiteral("SAMPLE.BIN");
+    file.data = QByteArrayLiteral("ATM5");
+    file.data.append(4, '\0');
+    items.append(file);
+    const QString image = dir.filePath(QStringLiteral("disk.st"));
+    QString error;
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 0);
+    QVERIFY(!window.findChild<QDockWidget *>(QStringLiteral("binaryDock")));
+
+    QVERIFY2(window.openDiskHit(image, QStringLiteral("SAMPLE.BIN"), 0, QStringLiteral("atomik"),
+                                &error),
+             qPrintable(error));
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->tabText(0), QStringLiteral("SAMPLE.BIN"));
+    auto *view = qobject_cast<BinaryView *>(tabs->currentWidget());
+    QVERIFY(view);
+    QVERIFY(view->filePath().isEmpty());
+    QVERIFY(view->findChild<QLabel *>(QStringLiteral("binaryStatus"))
+                ->text()
+                .contains(QStringLiteral("Atomik")));
+    QCOMPARE(view->findChild<QSpinBox *>(QStringLiteral("binaryOffset"))->value(), 0);
+
+    QVERIFY2(window.openDiskHit(image, QStringLiteral("SAMPLE.BIN"), 0, QStringLiteral("atomik"),
+                                &error),
+             qPrintable(error));
+    QCOMPARE(tabs->count(), 1);
+}
+
+void TstGui::projectFilesOpenBinaryLoadsTheFile()
+{
+    const QString dir = m_work->path() + QStringLiteral("/bins");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = dir + QStringLiteral("/sprite.bin");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("\xAB\xCD\xEF", 3);
+    file.close();
+
+    MainWindow window;
+    QVERIFY(window.findChild<QAction *>(QStringLiteral("openBinaryAction")));
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+    QCOMPARE(tabs->count(), 0);
+
+    browser->openBinaryFile(path);
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->tabText(0), QStringLiteral("sprite.bin"));
+    auto *view = qobject_cast<BinaryView *>(tabs->currentWidget());
+    QVERIFY(view);
+    QCOMPARE(view->filePath(), QFileInfo(path).absoluteFilePath());
+    QCOMPARE(view->findChild<QLabel *>(QStringLiteral("binaryName"))->text(),
+             QStringLiteral("sprite.bin"));
+    QCOMPARE(view->findChild<QLabel *>(QStringLiteral("binaryStatus"))->text(),
+             QStringLiteral("3 bytes"));
+    QCOMPARE(view->findChild<QTableWidget *>(QStringLiteral("binaryHex"))->item(0, 0)->text(),
+             QStringLiteral("ab"));
+    auto *save = window.findChild<QAction *>(QStringLiteral("saveAction"));
+    QVERIFY(save);
+    QVERIFY(!save->isEnabled());
+
+    // Raising the same file keeps the offset the user moved to.
+    auto *offset = view->findChild<QSpinBox *>(QStringLiteral("binaryOffset"));
+    offset->setValue(1);
+    browser->openBinaryFile(path);
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(offset->value(), 1);
+
+    const QString other = dir + QStringLiteral("/other.bin");
+    QFile second(other);
+    QVERIFY(second.open(QIODevice::WriteOnly));
+    second.write("Z", 1);
+    second.close();
+    browser->openBinaryFile(other);
+    QCOMPARE(tabs->count(), 2);
+    QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("other.bin"));
+    browser->openBinaryFile(path);
+    QCOMPARE(tabs->count(), 2);
+    QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("sprite.bin"));
+
+    // A directory is not a binary file: the tab that is open stays put.
+    browser->openBinaryFile(dir);
+    QCOMPARE(tabs->count(), 2);
+    QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("sprite.bin"));
 }
 
 void TstGui::fileMenuAndToolbarMatchTheJobs()

@@ -14,6 +14,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QToolButton>
@@ -71,6 +72,12 @@ MemoryView::MemoryView(QWidget *parent)
     m_previousButton->setAutoRaise(true);
     connect(m_previousButton, &QToolButton::toggled, this, &MemoryView::onPreviousToggled);
     controls->addWidget(m_previousButton);
+
+    m_save = new QPushButton(tr("Save bytes…"), this);
+    m_save->setObjectName(QStringLiteral("memorySave"));
+    m_save->setEnabled(false);
+    connect(m_save, &QPushButton::clicked, this, [this] { emit saveBytesRequested(currentAddress()); });
+    controls->addWidget(m_save);
 
     controls->addStretch(1);
 
@@ -389,6 +396,8 @@ void MemoryView::paintDump(const QList<MemoryRow> &rows, bool advancePrevious)
 void MemoryView::setEditingEnabled(bool enabled)
 {
     m_editingEnabled = enabled;
+    if (m_save)
+        m_save->setEnabled(enabled);
     m_table->setEditTriggers(enabled ? QAbstractItemView::EditKeyPressed
                                      : QAbstractItemView::NoEditTriggers);
     // An editable pane must be focusable: NoFocus would keep F2 and the

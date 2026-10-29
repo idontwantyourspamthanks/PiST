@@ -11,6 +11,7 @@
 
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
 class QToolButton;
@@ -77,6 +78,10 @@ signals:
     /// The user asked for another memory pane (the "+" button).
     void addPaneRequested();
 
+    /// Save bytes starting at the address this pane is showing. The window
+    /// asks for a length and a path. The button does not open a dialog.
+    void saveBytesRequested(quint32 address);
+
 private slots:
     void onAddressEntered();
     void onCellDoubleClicked(int row, int column);
@@ -130,6 +135,7 @@ private:
     /// cell's click can read the pointer at it without reparsing the table.
     QByteArray m_bytes;
     QLineEdit *m_addressEdit = nullptr;
+    QPushButton *m_save = nullptr;
     QTableWidget *m_table = nullptr;
     QLabel *m_status = nullptr;
 

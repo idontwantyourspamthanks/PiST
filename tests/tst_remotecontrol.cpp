@@ -11,9 +11,13 @@
 // emulator suites; here the focus is the protocol itself, which must work with
 // no emulator and no display.
 
+#include "build/FloppyImage.h"
 #include "build/ProgramDiff.h"
 #include "control/RemoteControl.h"
 #include "emu/MemoryDump.h"
+#include "image/ImageDocument.h"
+#include "image/Palette.h"
+#include "image/StFormats.h"
 #include "support/FileWrite.h"
 #include "ui/MainWindow.h"
 
@@ -60,6 +64,14 @@ private slots:
     void symbolsAfterBuildListTheLabels();
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
+    void ripimageWritesAPim();
+    void ripsampleWritesAWav();
+    void dumpmemRefusesWithoutASession();
+    void capturescreenRefusesWhenNotStopped();
+    void ripavrAndScanmagicReadAFile();
+    void depackNamesThePackerAndWritesNothing();
+    void scandiskListsAvrOnAFloppy();
+    void sndhinfoReadsTheTitle();
     void memoryCompareJsonNamesTheChangedByte();
     void buildDiffAndAssetsOverTheProtocol();
     void wrongTokenIsRejectedAndDropped();
@@ -215,6 +227,18 @@ QString blockBody(const QString &raw)
     for (const QString &line : lines)
         unescaped.append(line.startsWith(QLatin1String("..")) ? line.mid(1) : line);
     return unescaped.join(QLatin1Char('\n'));
+}
+
+QByteArray avrFixture()
+{
+    QByteArray header(128, '\0');
+    header.replace(0, 4, QByteArrayLiteral("2BIT"));
+    header[15] = 8;
+    header[24] = char(0x1F);
+    header[25] = char(0x40);
+    header[29] = 2;
+    header.append("\x00\xFF", 2);
+    return header;
 }
 
 } // namespace
@@ -863,6 +887,263 @@ void TstRemoteControl::buildDiffAndAssetsOverTheProtocol()
     QVERIFY(roundTrip(s.client, "asset remove hero.dat").startsWith(QStringLiteral("error")));
     QVERIFY(roundTrip(s.client, "asset hero.pim walk ../nope.dat").startsWith(QStringLiteral("error")));
     QVERIFY(roundTrip(s.client, "asset hero.pim walk hero.dat nope=1").startsWith(QStringLiteral("error")));
+}
+
+void TstRemoteControl::ripimageWritesAPim()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QByteArray planes(128, '\0');
+    for (int row = 0; row < 16; ++row) {
+        planes[row * 8] = char(0xFF);
+        planes[row * 8 + 1] = char(0xFF);
+    }
+    const QString bin = dir.filePath(QStringLiteral("sprite.bin"));
+    const QString pim = dir.filePath(QStringLiteral("sprite.pim"));
+    QFile file(bin);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(planes);
+    file.close();
+
+    const QString reply = roundTripBlock(
+        s.client, "ripimage " + bin.toUtf8() + " 0 16 16 " + pim.toUtf8());
+    QVERIFY2(reply.startsWith(QLatin1String("ok\n")), qPrintable(reply));
+    ImageDocument loaded;
+    QVERIFY2(loaded.load(pim, &error), qPrintable(error));
+    QCOMPARE(loaded.pixels().at(0), defaultActiveIndices(PaletteKind::Ste).at(1));
+
+    // The palette is another range of the same file. It sits after the planes
+    // so offset 0 stays the picture and 0x80 is the 32 STfm words.
+    QByteArray palette(32, '\0');
+    palette[2] = char(0x07);
+    palette[3] = char(0x77);
+    QFile withPalette(bin);
+    QVERIFY(withPalette.open(QIODevice::Append));
+    withPalette.write(palette);
+    withPalette.close();
+    const QString pim2 = dir.filePath(QStringLiteral("sprite2.pim"));
+    const QString coloured = roundTripBlock(
+        s.client, "ripimage " + bin.toUtf8() + " 0 16 16 " + pim2.toUtf8() + " 80");
+    QVERIFY2(coloured.startsWith(QLatin1String("ok\n")), qPrintable(coloured));
+    ImageDocument colouredDoc;
+    QVERIFY2(colouredDoc.load(pim2, &error), qPrintable(error));
+    QCOMPARE(colouredDoc.pixels().at(0),
+             nearestCubeIndex(PaletteKind::Ste, rgbFromStfmWord(0x0777)));
+
+    const QString never = dir.filePath(QStringLiteral("not-written.pim"));
+    const QString usage = roundTripBlock(s.client, "ripimage");
+    QVERIFY(usage.startsWith(QLatin1String("error\n")));
+    QVERIFY(blockBody(usage).contains(QStringLiteral("usage")));
+    QVERIFY(!QFile::exists(never));
+}
+
+void TstRemoteControl::ripsampleWritesAWav()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bin = dir.filePath(QStringLiteral("tone.bin"));
+    const QString wav = dir.filePath(QStringLiteral("tone.wav"));
+    QFile file(bin);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QByteArray("\x00\xFF", 2));
+    file.close();
+
+    const QString reply = roundTripBlock(
+        s.client, "ripsample " + bin.toUtf8() + " 0 2 8000 " + wav.toUtf8() + " signed");
+    QVERIFY2(reply.startsWith(QLatin1String("ok\n")), qPrintable(reply));
+    QFile written(wav);
+    QVERIFY(written.open(QIODevice::ReadOnly));
+    const QByteArray bytes = written.readAll();
+    QCOMPARE(bytes.size(), 46);
+    QCOMPARE(uchar(bytes.at(44)), uchar(0x80));
+    QCOMPARE(uchar(bytes.at(45)), uchar(0x7F));
+
+    const QString bad = roundTripBlock(
+        s.client, "ripsample " + bin.toUtf8() + " 0 2 8000 " + wav.toUtf8() + " stereo");
+    QVERIFY(bad.startsWith(QLatin1String("error\n")));
+    QVERIFY(blockBody(bad).contains(QStringLiteral("usage")));
+}
+
+void TstRemoteControl::dumpmemRefusesWithoutASession()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("dump.bin"));
+
+    // Usage is checked before the debugger wait, so these answer at once.
+    // The missing-session case below waits out the 10 s timeout; it has to be
+    // last, because that wait's socket reader would swallow a later reply.
+    const QString zero = roundTripBlock(s.client, "dumpmem $100 0 " + path.toUtf8());
+    QVERIFY2(zero.startsWith(QLatin1String("error\n")), qPrintable(zero));
+    QVERIFY(blockBody(zero).contains(QStringLiteral("usage")));
+    const QString huge = roundTripBlock(s.client, "dumpmem $100 65537 " + path.toUtf8());
+    QVERIFY2(huge.startsWith(QLatin1String("error\n")), qPrintable(huge));
+    QVERIFY(blockBody(huge).contains(QStringLiteral("usage")));
+
+    QByteArray received;
+    QEventLoop loop;
+    QObject::connect(&s.client, &QTcpSocket::readyRead, &loop, [&] {
+        received += s.client.readAll();
+        if (received.endsWith("\n.\n"))
+            loop.quit();
+    });
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    s.client.write("dumpmem $100 16 " + path.toUtf8() + "\n");
+    timer.start(15000);
+    loop.exec();
+    const QString reply = QString::fromUtf8(received);
+    QVERIFY2(reply.startsWith(QLatin1String("error\n")), qPrintable(reply));
+    QVERIFY(blockBody(reply).contains(QStringLiteral("stopped")));
+    QVERIFY(!QFile::exists(path));
+}
+
+void TstRemoteControl::capturescreenRefusesWhenNotStopped()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    const QString screen = roundTripBlock(s.client, "capturescreen out.pim");
+    QVERIFY2(screen.startsWith(QLatin1String("error\n")), qPrintable(screen));
+    QVERIFY(blockBody(screen).contains(QStringLiteral("not stopped")));
+
+    const QString dma = roundTripBlock(s.client, "capturedma out.wav");
+    QVERIFY2(dma.startsWith(QLatin1String("error\n")), qPrintable(dma));
+    QVERIFY(blockBody(dma).contains(QStringLiteral("not stopped")));
+}
+
+void TstRemoteControl::ripavrAndScanmagicReadAFile()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bin = dir.filePath(QStringLiteral("sample.avr"));
+    const QString wav = dir.filePath(QStringLiteral("sample.wav"));
+    QFile file(bin);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(avrFixture());
+    file.close();
+
+    const QString ripped = roundTripBlock(s.client, "ripavr " + bin.toUtf8() + " 0 " + wav.toUtf8());
+    QVERIFY2(ripped.startsWith(QLatin1String("ok\n")), qPrintable(ripped));
+    QFile out(wav);
+    QVERIFY(out.open(QIODevice::ReadOnly));
+    const QByteArray bytes = out.readAll();
+    QCOMPARE(bytes.size(), 46);
+    QCOMPARE(uchar(bytes.at(45)), uchar(0xFF));
+
+    const QString scanned = roundTripBlock(s.client, "scanmagic " + bin.toUtf8());
+    QVERIFY2(scanned.startsWith(QLatin1String("ok\n")), qPrintable(scanned));
+    const QJsonArray hits = QJsonDocument::fromJson(blockBody(scanned).toUtf8()).array();
+    QCOMPARE(hits.at(0).toObject().value(QStringLiteral("kind")).toString(), QStringLiteral("avr"));
+}
+
+void TstRemoteControl::depackNamesThePackerAndWritesNothing()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString packed = dir.filePath(QStringLiteral("packed.bin"));
+    const QString plain = dir.filePath(QStringLiteral("plain.bin"));
+    const QString out = dir.filePath(QStringLiteral("out.bin"));
+    QFile packedFile(packed);
+    QVERIFY(packedFile.open(QIODevice::WriteOnly));
+    packedFile.write("ATM5");
+    packedFile.close();
+    QFile plainFile(plain);
+    QVERIFY(plainFile.open(QIODevice::WriteOnly));
+    plainFile.write("AAAA");
+    plainFile.close();
+
+    const QString named =
+        roundTripBlock(s.client, "depack " + packed.toUtf8() + " 0 " + out.toUtf8());
+    QVERIFY(named.contains(QStringLiteral("atomik")));
+    QVERIFY(named.contains(QStringLiteral("not implemented")));
+    QVERIFY(!QFile::exists(out));
+
+    const QString unknown =
+        roundTripBlock(s.client, "depack " + plain.toUtf8() + " 0 " + out.toUtf8());
+    QVERIFY(blockBody(unknown).contains(QStringLiteral("not a known packer")));
+    QVERIFY(!QFile::exists(out));
+}
+
+void TstRemoteControl::scandiskListsAvrOnAFloppy()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVector<floppy::Item> items;
+    floppy::Item sample;
+    sample.destPath = QStringLiteral("SAMPLE.AVR");
+    sample.data = avrFixture();
+    items.append(sample);
+    floppy::Item note;
+    note.destPath = QStringLiteral("NOTE.TXT");
+    note.data = QByteArrayLiteral("hello");
+    items.append(note);
+    const QString image = dir.filePath(QStringLiteral("disk.st"));
+    QVERIFY2(floppy::writeImage(image, items, &error), qPrintable(error));
+
+    const QString reply = roundTripBlock(s.client, "scandisk " + image.toUtf8());
+    QVERIFY2(reply.startsWith(QLatin1String("ok\n")), qPrintable(reply));
+    const QJsonArray rows = QJsonDocument::fromJson(blockBody(reply).toUtf8()).array();
+    bool sawAvr = false;
+    for (const QJsonValue &row : rows) {
+        const QJsonObject object = row.toObject();
+        QVERIFY(object.value(QStringLiteral("path")).toString() != QStringLiteral("NOTE.TXT"));
+        if (object.value(QStringLiteral("path")).toString() == QStringLiteral("SAMPLE.AVR")) {
+            const QJsonArray hits = object.value(QStringLiteral("hits")).toArray();
+            QCOMPARE(hits.at(0).toObject().value(QStringLiteral("kind")).toString(),
+                     QStringLiteral("avr"));
+            sawAvr = true;
+        }
+    }
+    QVERIFY(sawAvr);
+
+    const QString missing = roundTripBlock(s.client, "scandisk " + dir.filePath(QStringLiteral("nope")).toUtf8());
+    QVERIFY2(missing.startsWith(QLatin1String("error\n")), qPrintable(missing));
+}
+
+void TstRemoteControl::sndhinfoReadsTheTitle()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("tune.snd"));
+    QByteArray bytes("SNDHTITLhello");
+    bytes.append('\0');
+    bytes.append("HDNS");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(bytes);
+    file.close();
+
+    const QString reply = roundTripBlock(s.client, "sndhinfo " + path.toUtf8() + " 0");
+    QVERIFY2(reply.startsWith(QLatin1String("ok\n")), qPrintable(reply));
+    const QJsonObject tags = QJsonDocument::fromJson(blockBody(reply).toUtf8()).object();
+    QCOMPARE(tags.value(QStringLiteral("title")).toString(), QStringLiteral("hello"));
 }
 
 void TstRemoteControl::readmemAndDisasmRefuseWithoutASession()

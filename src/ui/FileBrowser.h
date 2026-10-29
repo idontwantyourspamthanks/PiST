@@ -84,8 +84,12 @@ public slots:
     bool exportHardDriveSelection(const QString &imagePath, QString *error);
 
     /// Context menu "Open Binary". `path` must be a host file; a directory or
-    /// a missing path is ignored. The window loads it into the Binary dock.
+    /// a missing path is ignored. The window loads it into a binary tab.
     void openBinaryFile(const QString &path);
+
+    /// Context menu "Open for Analysis". `path` must be a host file. The window
+    /// loads a TOS executable into a disassembly tab.
+    void openAnalysisFile(const QString &path);
 
 signals:
     /// A file was activated (double-clicked or Enter). The receiver decides
@@ -95,6 +99,9 @@ signals:
 
     /// The hard-drive context menu's Open Binary. `path` is a host file.
     void openBinaryRequested(const QString &path);
+
+    /// The hard-drive context menu's Open for Analysis. `path` is a host file.
+    void openAnalysisRequested(const QString &path);
 
     /// An entry inside a mounted floppy image was activated (double-clicked
     /// or Enter). `drive` is 0 (A:) or 1 (B:); `entryPath` is image-relative,

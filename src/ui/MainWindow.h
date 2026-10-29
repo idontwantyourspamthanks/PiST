@@ -63,6 +63,7 @@ class GitPanel;
 class IDebugBackend;
 class ImageEditor;
 class MemoryView;
+class AnalysisView;
 class BinaryView;
 class RegistersView;
 class StackView;
@@ -277,6 +278,8 @@ private slots:
     void openFile();
     void openBinary();
     void openBinaryAt(const QString &path);
+    void openAnalysis();
+    void openAnalysisAt(const QString &path);
     void openIffBytes(const QByteArray &bytes);
     void captureScreen();
     void captureDma();
@@ -657,6 +660,12 @@ private:
                              const QString &path, const QString &originKey);
     void wireBinary(BinaryView *view);
 
+    /// A read-only disassembly of a TOS executable. The same path raises the
+    /// tab that is already open; a binary tab of that path is a different
+    /// document and stays put.
+    AnalysisView *addAnalysisTab(const QByteArray &bytes, const QString &name,
+                                 const QString &path);
+
     /// Shared body of openPath (interactive) and openPathQuiet (remote): the
     /// quiet form returns false where the interactive one shows a modal.
     bool openPathImpl(const QString &path, bool quiet);
@@ -715,11 +724,13 @@ private:
     QList<CodeEditor *> openEditors() const;
     QList<ImageEditor *> openImages() const;
     QList<BinaryView *> openBinaryViews() const;
+    QList<AnalysisView *> openAnalysisViews() const;
 
     /// The open editor showing `path`, or null.
     CodeEditor *editorForPath(const QString &path) const;
     ImageEditor *imageForPath(const QString &path) const;
     BinaryView *binaryForKey(const QString &originKey) const;
+    AnalysisView *analysisForPath(const QString &path) const;
 
     /// Sync a tab's label with its document's name and modified state.
     void updateTabTitle(QWidget *widget);
@@ -1056,6 +1067,7 @@ private:
 
     QAction *m_actOpen = nullptr;
     QAction *m_actOpenBinary = nullptr;
+    QAction *m_actOpenAnalysis = nullptr;
     QAction *m_actNewFile = nullptr;
     QAction *m_actNewImage = nullptr;
     QAction *m_actImportImage = nullptr;

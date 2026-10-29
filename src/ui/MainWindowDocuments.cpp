@@ -25,6 +25,8 @@
 #include "emu/DebugBackend.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
+#include "analysis/ProgramTrace.h"
+#include "ui/AnalysisView.h"
 #include "ui/BinaryView.h"
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
@@ -208,6 +210,42 @@ BinaryView *MainWindow::addBinaryTab(const QByteArray &bytes, const QString &nam
 }
 
 
+AnalysisView *MainWindow::addAnalysisTab(const QByteArray &bytes, const QString &name,
+                                         const QString &path)
+{
+    auto *view = new AnalysisView(this);
+    view->setIdentity(path, name);
+    view->setBytes(bytes);
+    const int index = m_tabs->addTab(view, name);
+    m_tabs->setCurrentIndex(index);
+    updateTabTitle(view);
+    return view;
+}
+
+
+QList<AnalysisView *> MainWindow::openAnalysisViews() const
+{
+    QList<AnalysisView *> views;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto *view = qobject_cast<AnalysisView *>(m_tabs->widget(i)))
+            views.append(view);
+    return views;
+}
+
+
+AnalysisView *MainWindow::analysisForPath(const QString &path) const
+{
+    if (path.isEmpty())
+        return nullptr;
+    const QFileInfo wanted(path);
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == wanted)
+            return view;
+    }
+    return nullptr;
+}
+
+
 void MainWindow::wireBinary(BinaryView *view)
 {
     connect(view, &BinaryView::previewReady, this, [this](const QString &path) {
@@ -347,6 +385,8 @@ void MainWindow::updateTabTitle(QWidget *widget)
         modified = image->isModifiedSinceLoad();
     } else if (auto *binary = qobject_cast<BinaryView *>(widget)) {
         name = binary->displayName();
+    } else if (auto *analysis = qobject_cast<AnalysisView *>(widget)) {
+        name = analysis->displayName();
     }
     m_tabs->setTabText(index, name + (modified ? QStringLiteral(" *") : QString()));
 }
@@ -386,6 +426,8 @@ void MainWindow::onTabChanged(int index)
         path = m_image->filePath();
     else if (auto *binary = qobject_cast<BinaryView *>(widget))
         path = binary->filePath();
+    else if (auto *analysis = qobject_cast<AnalysisView *>(widget))
+        path = analysis->filePath();
     if (!path.isEmpty() && m_fileBrowser)
         m_fileBrowser->showFor(path);
     if (m_editor)
@@ -638,6 +680,10 @@ void MainWindow::documentVanished(const QString &path, bool deliberate)
         if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == QFileInfo(path))
             documents.append(view);
     }
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == QFileInfo(path))
+            documents.append(view);
+    }
 
     for (QWidget *document : documents) {
         bool modified = false;
@@ -732,6 +778,13 @@ void MainWindow::followRenamedFile(const QString &oldPath, const QString &newPat
         view->setIdentity(absolute, absolute, QFileInfo(newPath).fileName());
         updateTabTitle(view);
     }
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (view->filePath().isEmpty() || QFileInfo(view->filePath()) != QFileInfo(oldPath))
+            continue;
+        const QString absolute = QFileInfo(newPath).absoluteFilePath();
+        view->setIdentity(absolute, QFileInfo(newPath).fileName());
+        updateTabTitle(view);
+    }
 
     // The breakpoint store, keyed by base name: renaming a file would otherwise
     // strand its breakpoints under a name that no longer exists
@@ -783,6 +836,8 @@ void MainWindow::updateModifiedState()
     } else if (m_tabs) {
         if (auto *binary = qobject_cast<BinaryView *>(m_tabs->currentWidget()))
             name = binary->displayName();
+        else if (auto *analysis = qobject_cast<AnalysisView *>(m_tabs->currentWidget()))
+            name = analysis->displayName();
     }
 
     // The "[*]" placeholder is replaced by Qt when windowModified is set, which
@@ -905,6 +960,49 @@ void MainWindow::openBinaryAt(const QString &path)
         return;
     }
     addBinaryTab(file.readAll(), QFileInfo(path).fileName(), key, key);
+    settings::noteFileOpened();
+}
+
+
+void MainWindow::openAnalysis()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open for Analysis"), QString(),
+        tr("TOS executables (*.prg *.ttp *.app *.acc);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    openAnalysisAt(path);
+}
+
+
+void MainWindow::openAnalysisAt(const QString &path)
+{
+    if (!QFileInfo(path).isFile())
+        return;
+    const QString key = QFileInfo(path).absoluteFilePath();
+    if (AnalysisView *open = analysisForPath(key)) {
+        m_tabs->setCurrentWidget(open);
+        return;
+    }
+
+    constexpr int kLimit = 2 * 1024 * 1024;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Open for Analysis"), file.errorString());
+        return;
+    }
+    if (file.size() > kLimit) {
+        QMessageBox::warning(this, tr("Open for Analysis"),
+                             tr("The file is larger than %1 bytes.").arg(kLimit));
+        return;
+    }
+    const QByteArray bytes = file.readAll();
+    const ProgramListing listing = listProgram(bytes);
+    if (!listing.error.isEmpty()) {
+        QMessageBox::warning(this, tr("Open for Analysis"), listing.error);
+        return;
+    }
+    addAnalysisTab(bytes, QFileInfo(path).fileName(), key);
     settings::noteFileOpened();
 }
 

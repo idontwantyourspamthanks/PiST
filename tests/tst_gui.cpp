@@ -35,6 +35,7 @@
 #include "ui/WelcomeView.h"
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
+#include "ui/AnalysisView.h"
 #include "ui/MainWindow.h"
 #include "ui/SymbolPaletteDialog.h"
 #include "ui/StopHooksDialog.h"
@@ -504,6 +505,7 @@ private slots:
     void captureActionsExist();
     void openDiskHitLoadsABinaryTab();
     void projectFilesOpenBinaryLoadsTheFile();
+    void openAnalysisLoadsATosProgram();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -4255,6 +4257,72 @@ void TstGui::projectFilesOpenBinaryLoadsTheFile()
     browser->openBinaryFile(dir);
     QCOMPARE(tabs->count(), 2);
     QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("sprite.bin"));
+}
+
+void TstGui::openAnalysisLoadsATosProgram()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = dir + QStringLiteral("/leave.prg");
+    QByteArray program;
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    program += be16(0x601A);
+    program += be32(6);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be16(0);
+    program += QByteArray::fromHex("42674E414E71");
+    program += be32(0);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    MainWindow window;
+    auto *action = window.findChild<QAction *>(QStringLiteral("openAnalysisAction"));
+    QVERIFY(action);
+    QVERIFY(action->shortcut().isEmpty());
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+
+    browser->openAnalysisFile(path);
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->tabText(0), QStringLiteral("leave.prg"));
+    auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(view);
+    QCOMPARE(view->filePath(), QFileInfo(path).absoluteFilePath());
+    QCOMPARE(view->findChild<QLabel *>(QStringLiteral("analysisSummary"))->text(),
+             QStringLiteral("6 bytes of code, 0 bytes of data, 0 bytes of bss, 0 symbols, 0 relocations"));
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    QCOMPARE(listing->rowCount(), 3);
+    QCOMPARE(listing->item(0, 3)->text(), QStringLiteral("clr.w -(sp)"));
+    QCOMPARE(listing->item(1, 3)->text(), QStringLiteral("trap #1"));
+    QCOMPARE(listing->item(2, 3)->text(), QStringLiteral("dc.b $4e,$71"));
+    auto *save = window.findChild<QAction *>(QStringLiteral("saveAction"));
+    QVERIFY(save);
+    QVERIFY(!save->isEnabled());
+
+    browser->openAnalysisFile(path);
+    QCOMPARE(tabs->count(), 1);
+
+    browser->openBinaryFile(path);
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(qobject_cast<BinaryView *>(tabs->currentWidget()));
+    browser->openAnalysisFile(path);
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(qobject_cast<AnalysisView *>(tabs->currentWidget()));
 }
 
 void TstGui::fileMenuAndToolbarMatchTheJobs()

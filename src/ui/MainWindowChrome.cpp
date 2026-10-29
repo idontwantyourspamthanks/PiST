@@ -149,6 +149,10 @@ void MainWindow::createActions()
     m_actOpenBinary->setObjectName(QStringLiteral("openBinaryAction"));
     connect(m_actOpenBinary, &QAction::triggered, this, &MainWindow::openBinary);
 
+    m_actOpenAnalysis = new QAction(tr("Open for &Analysis…"), this);
+    m_actOpenAnalysis->setObjectName(QStringLiteral("openAnalysisAction"));
+    connect(m_actOpenAnalysis, &QAction::triggered, this, &MainWindow::openAnalysis);
+
     m_actNewFile = new QAction(tr("&New File…"), this);
     m_actNewFile->setObjectName(QStringLiteral("newFileAction"));
     m_actNewFile->setShortcut(QKeySequence::New);
@@ -457,6 +461,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
     fileMenu->addAction(m_actOpenBinary);
+    fileMenu->addAction(m_actOpenAnalysis);
     fileMenu->addAction(m_actSave);
     fileMenu->addAction(m_actCloseFile);
     fileMenu->addAction(m_actCloseAll);
@@ -988,6 +993,7 @@ void MainWindow::wirePanels()
 {
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
     connect(m_fileBrowser, &FileBrowser::openBinaryRequested, this, &MainWindow::openBinaryAt);
+    connect(m_fileBrowser, &FileBrowser::openAnalysisRequested, this, &MainWindow::openAnalysisAt);
     connect(m_fileBrowser, &FileBrowser::diskScanRequested, this, &MainWindow::scanDiskImage);
     connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
             [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });

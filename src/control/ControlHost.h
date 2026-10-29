@@ -224,10 +224,12 @@ public:
     virtual QJsonArray scanFileMagic(const QString &path, QString *error) = 0;
 
     /// The read-only TOS listing for `path`: `summary` plus `rows` of
-    /// `{address, label, bytes, text, note}`. Addresses are image-relative
-    /// (`0x` and eight hex digits). `*error` is set when the file cannot be
-    /// read, is over 2 MiB, or is not a TOS executable. Does not open a tab
-    /// and does not need the emulator.
+    /// `{address, label, bytes, text, note, xrefs, comment}`. A
+    /// `.pistanalysis` file beside the program supplies names, comments and
+    /// code or data marks. Addresses are image-relative (`0x` and eight hex
+    /// digits). `*error` is set when the file cannot be read, is over 2 MiB,
+    /// is not a TOS executable, or its notes cannot be read. Does not open a
+    /// tab and does not need the emulator.
     virtual QJsonObject analyzeProgram(const QString &path, QString *error) = 0;
 
     /// The same hits inside the files of a FAT12 image. A list failure sets

@@ -43,6 +43,7 @@
 #include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "analysis/AnalysisNotes.h"
 #include "analysis/ProgramTrace.h"
 #include "image/ImageDocument.h"
 #include "build/FloppyImage.h"
@@ -1062,7 +1063,11 @@ QJsonObject MainWindow::analyzeProgram(const QString &path, QString *error)
             *error = file.errorString();
         return {};
     }
-    const ProgramListing listing = listProgram(file.readAll());
+    const QByteArray bytes = file.readAll();
+    AnalysisNotes notes;
+    if (!loadAnalysisNotes(analysisNotesPath(path), &notes, error))
+        return {};
+    const ProgramListing listing = listProgram(bytes, notes);
     if (!listing.error.isEmpty()) {
         if (error)
             *error = listing.error;
@@ -1079,6 +1084,8 @@ QJsonObject MainWindow::analyzeProgram(const QString &path, QString *error)
         object.insert(QStringLiteral("bytes"), row.bytes);
         object.insert(QStringLiteral("text"), row.text);
         object.insert(QStringLiteral("note"), row.note);
+        object.insert(QStringLiteral("xrefs"), row.xrefs);
+        object.insert(QStringLiteral("comment"), row.comment);
         rows.append(object);
     }
     result.insert(QStringLiteral("rows"), rows);

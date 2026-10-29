@@ -71,6 +71,7 @@ private slots:
     void capturescreenRefusesWhenNotStopped();
     void ripavrAndScanmagicReadAFile();
     void analyzeReturnsTheReachedListing();
+    void analyzeAppliesNotesBesideTheProgram();
     void depackNamesThePackerAndWritesNothing();
     void scandiskListsAvrOnAFloppy();
     void sndhinfoReadsTheTitle();
@@ -1118,9 +1119,78 @@ void TstRemoteControl::analyzeReturnsTheReachedListing()
              QStringLiteral("trap #1"));
     QCOMPARE(rows.at(2).toObject().value(QStringLiteral("text")).toString(),
              QStringLiteral("dc.b $4e,$71"));
+    QVERIFY(rows.at(0).toObject().contains(QStringLiteral("xrefs")));
+    QVERIFY(rows.at(0).toObject().contains(QStringLiteral("comment")));
+    QCOMPARE(rows.at(0).toObject().value(QStringLiteral("comment")).toString(), QString());
     auto *tabs = s.window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
     QVERIFY(tabs);
     QCOMPARE(tabs->count(), 0);
+}
+
+void TstRemoteControl::analyzeAppliesNotesBesideTheProgram()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QByteArray program;
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    program += be16(0x601A);
+    program += be32(6);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be16(0);
+    program += QByteArray::fromHex("60024E714E71");
+    program += be32(0);
+    const QString prg = dir.filePath(QStringLiteral("bra.prg"));
+    QFile prgFile(prg);
+    QVERIFY(prgFile.open(QIODevice::WriteOnly));
+    QCOMPARE(prgFile.write(program), qint64(program.size()));
+    prgFile.close();
+
+    const QString notes = prg + QStringLiteral(".pistanalysis");
+    QFile notesFile(notes);
+    QVERIFY(notesFile.open(QIODevice::WriteOnly));
+    notesFile.write("{\"version\":2}");
+    notesFile.close();
+    const QString rejected = roundTripBlock(s.client, "analyze " + prg.toUtf8());
+    QVERIFY2(rejected.startsWith(QLatin1String("error\n")), qPrintable(rejected));
+    QVERIFY(blockBody(rejected).contains(QStringLiteral("version is not 1")));
+
+    QVERIFY(notesFile.open(QIODevice::WriteOnly));
+    notesFile.write("{\"version\":1,\"names\":[{\"address\":4,\"name\":\"there\"}],"
+                    "\"comments\":[{\"address\":4,\"text\":\"landed\"}]}");
+    notesFile.close();
+    const QString listed = roundTripBlock(s.client, "analyze " + prg.toUtf8());
+    QVERIFY2(listed.startsWith(QLatin1String("ok\n")), qPrintable(listed));
+    const QJsonArray rows = QJsonDocument::fromJson(blockBody(listed).toUtf8()).object()
+                                .value(QStringLiteral("rows")).toArray();
+    bool sawBranch = false;
+    bool sawName = false;
+    for (const QJsonValue &value : rows) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QStringLiteral("text")).toString() == QStringLiteral("bra.s there"))
+            sawBranch = true;
+        if (row.value(QStringLiteral("label")).toString() == QStringLiteral("there")) {
+            QCOMPARE(row.value(QStringLiteral("xrefs")).toString(), QStringLiteral("$0"));
+            QCOMPARE(row.value(QStringLiteral("comment")).toString(), QStringLiteral("landed"));
+            sawName = true;
+        }
+    }
+    QVERIFY(sawBranch);
+    QVERIFY(sawName);
 }
 
 void TstRemoteControl::depackNamesThePackerAndWritesNothing()

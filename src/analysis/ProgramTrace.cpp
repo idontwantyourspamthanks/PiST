@@ -72,9 +72,27 @@ QString noteFor(quint32 address, int length, bool indirect, const QSet<quint32> 
     return notes.join(QStringLiteral(", "));
 }
 
+const AnalysisOverride *markAt(const AnalysisNotes &notes, quint32 address);
+
+bool listedAt(quint32 address, const QHash<quint32, QStringList> &labels, const AnalysisNotes &notes)
+{
+    return labels.contains(address) || notes.comments.contains(address);
+}
+
+QString withMark(const QString &note, quint32 address, const AnalysisNotes &notes)
+{
+    const AnalysisOverride *mark = markAt(notes, address);
+    if (!mark)
+        return note;
+    const QString kind = mark->kind == AnalysisOverride::Kind::Code ? QStringLiteral("code")
+                                                                    : QStringLiteral("data");
+    return note.isEmpty() ? kind : kind + QStringLiteral(", ") + note;
+}
+
 void appendSpan(QVector<ListingRow> *rows, const QByteArray &image, quint32 from, quint32 to,
                 const QHash<quint32, DecodedInsn> &instructions,
-                const QHash<quint32, QStringList> &labels, const QSet<quint32> &relocations)
+                const QHash<quint32, QStringList> &labels, const QSet<quint32> &relocations,
+                const AnalysisNotes &notes)
 {
     quint32 address = from;
     while (address < to) {
@@ -84,36 +102,87 @@ void appendSpan(QVector<ListingRow> *rows, const QByteArray &image, quint32 from
                 break;
             ListingRow row;
             row.address = address;
+            row.length = quint32(insn.length);
             row.label = labels.value(address).join(QStringLiteral(", "));
             row.bytes = formatBytes(image, address, insn.length);
             row.text = insn.text;
-            row.note = noteFor(address, insn.length, insn.indirect, relocations);
+            row.note = withMark(noteFor(address, insn.length, insn.indirect, relocations), address, notes);
+            row.comment = notes.comments.value(address);
             rows->append(row);
             address += quint32(insn.length);
             continue;
         }
         quint32 end = address + 1;
-        while (end < to && end - address < 8 && !instructions.contains(end) && !labels.contains(end))
+        const AnalysisOverride *mark = markAt(notes, address);
+        while (end < to && end - address < 8 && !instructions.contains(end) && !listedAt(end, labels, notes)
+               && markAt(notes, end) == mark)
             ++end;
         ListingRow row;
         row.address = address;
+        row.length = end - address;
         row.label = labels.value(address).join(QStringLiteral(", "));
         row.bytes = formatBytes(image, address, int(end - address));
         row.text = formatDc(image, address, int(end - address));
-        row.note = noteFor(address, int(end - address), false, relocations);
+        row.note = withMark(noteFor(address, int(end - address), false, relocations), address, notes);
+        row.comment = notes.comments.value(address);
         rows->append(row);
         address = end;
     }
 }
 
+const AnalysisOverride *markAt(const AnalysisNotes &notes, quint32 address)
+{
+    for (const AnalysisOverride &range : notes.overrides) {
+        if (range.length > 0 && address >= range.address && (address - range.address) < range.length)
+            return &range;
+    }
+    return nullptr;
+}
+
+int rowContaining(const QVector<ListingRow> &rows, quint32 address)
+{
+    int spanning = -1;
+    for (int i = 0; i < rows.size(); ++i) {
+        const ListingRow &row = rows.at(i);
+        if (row.length == 0 && row.address == address)
+            return i;
+        if (row.length > 0 && address >= row.address && (address - row.address) < row.length)
+            spanning = i;
+    }
+    return spanning;
+}
+
+void attachXrefs(QVector<ListingRow> *rows, const QHash<quint32, QVector<quint32>> &inbound,
+                 const QHash<quint32, QStringList> &labels)
+{
+    for (auto it = inbound.cbegin(); it != inbound.cend(); ++it) {
+        const int index = rowContaining(*rows, it.key());
+        if (index < 0)
+            continue;
+        QVector<quint32> sources = it.value();
+        std::sort(sources.begin(), sources.end());
+        sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+        QStringList names;
+        for (quint32 source : sources) {
+            const QStringList at = labels.value(source);
+            names << (at.isEmpty() ? QStringLiteral("$%1").arg(source, 0, 16) : at.first());
+        }
+        rows->operator[](index).xrefs = names.join(QStringLiteral(", "));
+    }
+}
+
 } // namespace
 
-ProgramListing listProgram(const QByteArray &bytes)
+ProgramListing listProgram(const QByteArray &bytes, const AnalysisNotes &notes)
 {
     ProgramListing listing;
     TosProgram program;
     if (!parseTosProgram(bytes, &program, &listing.error))
         return listing;
+
+    const quint32 imageSize = program.textSize + program.dataSize;
+    listing.imageSize = imageSize;
+    listing.endAddress = imageSize + program.bssSize;
 
     QHash<quint32, QStringList> labels;
     QHash<quint32, int> equateCount;
@@ -131,6 +200,12 @@ ProgramListing listProgram(const QByteArray &bytes)
         if (!names.labels.contains(symbol.value))
             names.labels.insert(symbol.value, symbol.name);
     }
+    for (auto it = notes.names.cbegin(); it != notes.names.cend(); ++it) {
+        names.labels.insert(it.key(), it.value());
+        QStringList &at = labels[it.key()];
+        if (!at.contains(it.value()))
+            at.prepend(it.value());
+    }
     for (auto it = equateCount.cbegin(); it != equateCount.cend(); ++it) {
         if (it.value() == 1 && it.key() != 0)
             names.equates.insert(it.key(), equateName.value(it.key()));
@@ -138,58 +213,105 @@ ProgramListing listProgram(const QByteArray &bytes)
     for (quint32 reloc : program.relocations)
         names.relocations.insert(reloc);
 
+    const auto dataAt = [&](quint32 address) {
+        const AnalysisOverride *mark = markAt(notes, address);
+        return mark && mark->kind == AnalysisOverride::Kind::Data;
+    };
+    const auto codeAt = [&](quint32 address) {
+        const AnalysisOverride *mark = markAt(notes, address);
+        return mark && mark->kind == AnalysisOverride::Kind::Code;
+    };
+    const auto canStart = [&](quint32 address) {
+        if ((address & 1u) || address >= imageSize || dataAt(address))
+            return false;
+        return address < program.textSize || codeAt(address);
+    };
+    const auto limitFor = [&](quint32 address) {
+        quint32 limit = address < program.textSize ? program.textSize : imageSize;
+        if (address >= program.textSize) {
+            const AnalysisOverride *mark = markAt(notes, address);
+            limit = mark ? std::min(mark->address + mark->length, imageSize) : address;
+        }
+        for (const AnalysisOverride &range : notes.overrides) {
+            if (range.kind == AnalysisOverride::Kind::Data && range.address > address
+                && range.address < limit)
+                limit = range.address;
+        }
+        return limit;
+    };
+
     QHash<quint32, DecodedInsn> instructions;
-    if (program.textSize >= 2) {
-        QSet<quint32> seen;
-        QVector<quint32> queue;
+    QHash<quint32, QVector<quint32>> inbound;
+    QSet<quint32> seen;
+    QVector<quint32> queue;
+    if (canStart(0))
         queue.append(0);
-        while (!queue.isEmpty()) {
-            const quint32 address = queue.takeFirst();
-            if (seen.contains(address) || address >= program.textSize || (address & 1u))
-                continue;
-            seen.insert(address);
-            DecodedInsn insn = decode68k(program.image, address, program.textSize, names);
-            if (insn.length <= 0 || address + quint32(insn.length) > program.textSize)
-                continue;
-            if (endsProgram(program.image, address))
-                insn.flow = DecodedInsn::Flow::Stop;
-            instructions.insert(address, insn);
-            const auto enqueue = [&](quint32 target) {
-                if ((target & 1u) == 0 && target < program.textSize && !seen.contains(target))
-                    queue.append(target);
-            };
-            if (insn.hasTarget)
-                enqueue(insn.target);
-            if (insn.flow == DecodedInsn::Flow::Fall || insn.flow == DecodedInsn::Flow::Call)
-                enqueue(address + quint32(insn.length));
+    for (const AnalysisOverride &range : notes.overrides) {
+        if (range.kind == AnalysisOverride::Kind::Code && canStart(range.address))
+            queue.append(range.address);
+    }
+    while (!queue.isEmpty()) {
+        const quint32 address = queue.takeFirst();
+        if (seen.contains(address) || !canStart(address))
+            continue;
+        seen.insert(address);
+        const quint32 limit = limitFor(address);
+        DecodedInsn insn = decode68k(program.image, address, limit, names);
+        if (insn.length <= 0 || address + quint32(insn.length) > limit)
+            continue;
+        if (endsProgram(program.image, address))
+            insn.flow = DecodedInsn::Flow::Stop;
+        instructions.insert(address, insn);
+        QSet<quint32> targets;
+        for (quint32 ref : insn.refs)
+            targets.insert(ref);
+        if (insn.hasTarget && !insn.indirect)
+            targets.insert(insn.target);
+        for (quint32 target : targets)
+            inbound[target].append(address);
+        if (insn.hasTarget && canStart(insn.target) && !seen.contains(insn.target))
+            queue.append(insn.target);
+        if (insn.flow == DecodedInsn::Flow::Fall || insn.flow == DecodedInsn::Flow::Call) {
+            const quint32 next = address + quint32(insn.length);
+            if (canStart(next) && !seen.contains(next))
+                queue.append(next);
         }
     }
 
     appendSpan(&listing.rows, program.image, 0, program.textSize, instructions, labels,
-               names.relocations);
-    appendSpan(&listing.rows, program.image, program.textSize, program.textSize + program.dataSize,
-               {}, labels, names.relocations);
+               names.relocations, notes);
+    appendSpan(&listing.rows, program.image, program.textSize, imageSize, instructions, labels,
+               names.relocations, notes);
     if (program.bssSize > 0) {
-        const quint32 base = program.textSize + program.dataSize;
+        const quint32 base = imageSize;
         ListingRow block;
         block.address = base;
+        block.length = program.bssSize;
         block.label = labels.value(base).join(QStringLiteral(", "));
         block.text = QStringLiteral("ds.b %1").arg(program.bssSize);
+        block.comment = notes.comments.value(base);
         listing.rows.append(block);
         QVector<quint32> extras;
         for (auto it = labels.cbegin(); it != labels.cend(); ++it) {
             if (it.key() > base && it.key() < base + program.bssSize)
                 extras.append(it.key());
         }
+        for (auto it = notes.comments.cbegin(); it != notes.comments.cend(); ++it) {
+            if (it.key() > base && it.key() < base + program.bssSize && !labels.contains(it.key()))
+                extras.append(it.key());
+        }
         std::sort(extras.begin(), extras.end());
+        extras.erase(std::unique(extras.begin(), extras.end()), extras.end());
         for (quint32 address : extras) {
             ListingRow row;
             row.address = address;
             row.label = labels.value(address).join(QStringLiteral(", "));
             row.text = QStringLiteral("bss");
+            row.comment = notes.comments.value(address);
             listing.rows.append(row);
         }
     }
+    attachXrefs(&listing.rows, inbound, labels);
 
     listing.summary = QObject::tr("%1 bytes of code, %2 bytes of data, %3 bytes of bss, "
                                   "%4 symbols, %5 relocations")

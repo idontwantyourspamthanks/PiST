@@ -35,6 +35,7 @@
 #include "ui/WelcomeView.h"
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
+#include "analysis/AnalysisNotes.h"
 #include "ui/AnalysisView.h"
 #include "ui/MainWindow.h"
 #include "ui/SymbolPaletteDialog.h"
@@ -506,6 +507,7 @@ private slots:
     void openDiskHitLoadsABinaryTab();
     void projectFilesOpenBinaryLoadsTheFile();
     void openAnalysisLoadsATosProgram();
+    void analysisNotesRenameAndMark();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -4299,6 +4301,7 @@ void TstGui::openAnalysisLoadsATosProgram()
     browser->openAnalysisFile(path);
     QCOMPARE(tabs->count(), 1);
     QCOMPARE(tabs->tabText(0), QStringLiteral("leave.prg"));
+    QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
     auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
     QVERIFY(view);
     QCOMPARE(view->filePath(), QFileInfo(path).absoluteFilePath());
@@ -4323,6 +4326,97 @@ void TstGui::openAnalysisLoadsATosProgram()
     browser->openAnalysisFile(path);
     QCOMPARE(tabs->count(), 2);
     QVERIFY(qobject_cast<AnalysisView *>(tabs->currentWidget()));
+}
+
+void TstGui::analysisNotesRenameAndMark()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-notes");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = QFileInfo(dir + QStringLiteral("/bra.prg")).absoluteFilePath();
+    QByteArray program;
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    program += be16(0x601A);
+    program += be32(6);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be16(0);
+    program += QByteArray::fromHex("60024E714E71");
+    program += be32(0);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    AnalysisNotes notes;
+    QString error;
+    QVERIFY2(setAnalysisName(&notes, 4, QStringLiteral("there"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisComment(&notes, 4, QStringLiteral("landed"), &error), qPrintable(error));
+    QVERIFY2(saveAnalysisNotes(analysisNotesPath(path), notes, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(path);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(view);
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    QCOMPARE(listing->columnCount(), 7);
+    int target = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        if (listing->item(row, 0)->text() == QStringLiteral("$4"))
+            target = row;
+    }
+    QVERIFY(target >= 0);
+    QCOMPARE(listing->item(0, 3)->text(), QStringLiteral("bra.s there"));
+    QCOMPARE(listing->item(target, 1)->text(), QStringLiteral("there"));
+    QCOMPARE(listing->item(target, 5)->text(), QStringLiteral("$0"));
+    QCOMPARE(listing->item(target, 6)->text(), QStringLiteral("landed"));
+
+    auto *markCode = view->findChild<QAction *>(QStringLiteral("analysisMarkCodeAction"));
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisRenameAction")));
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisCommentAction")));
+    QVERIFY(markCode);
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisMarkDataAction")));
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisClearMarkAction")));
+    QVERIFY(!markCode->isEnabled());
+    listing->selectRow(0);
+    QVERIFY(markCode->isEnabled());
+
+    QVERIFY2(view->renameAddress(4, QStringLiteral("dest"), &error), qPrintable(error));
+    QCOMPARE(listing->item(0, 3)->text(), QStringLiteral("bra.s dest"));
+    QFile saved(analysisNotesPath(path));
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(saved.readAll()).contains(QStringLiteral("dest")));
+
+    QVERIFY2(view->markBytes(2, 2, AnalysisOverride::Kind::Code, &error), qPrintable(error));
+    int skipped = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        if (listing->item(row, 0)->text() == QStringLiteral("$2"))
+            skipped = row;
+    }
+    QVERIFY(skipped >= 0);
+    QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("nop"));
+    QVERIFY2(view->clearMark(2, 2, &error), qPrintable(error));
+    skipped = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        if (listing->item(row, 0)->text() == QStringLiteral("$2"))
+            skipped = row;
+    }
+    QVERIFY(skipped >= 0);
+    QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("dc.b $4e,$71"));
 }
 
 void TstGui::fileMenuAndToolbarMatchTheJobs()

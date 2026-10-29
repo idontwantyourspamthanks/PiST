@@ -6,11 +6,14 @@
 // The byte fixtures are fixed encodings, so this suite does not need vasm, a
 // display, or an emulator.
 
+#include "analysis/AnalysisNotes.h"
 #include "analysis/M68kDisasm.h"
 #include "analysis/ProgramTrace.h"
 #include "analysis/TosProgram.h"
 
 #include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include <QTest>
 
 using namespace pist;
@@ -59,6 +62,15 @@ QString rowText(const ProgramListing &listing, quint32 address)
     return {};
 }
 
+const ListingRow *rowAt(const ProgramListing &listing, quint32 address)
+{
+    for (const ListingRow &row : listing.rows) {
+        if (row.address == address)
+            return &row;
+    }
+    return nullptr;
+}
+
 const TosSymbol *symbolNamed(const TosProgram &program, const QString &name)
 {
     for (const TosSymbol &symbol : program.symbols) {
@@ -91,6 +103,11 @@ private slots:
     void dataSegmentStaysData();
     void lineAFallsThrough();
     void fullExtensionStopsTheWalk();
+    void notesRoundTripAndRejectABadFile();
+    void aNameLeadsTheLabelAndTheOperand();
+    void aDataMarkStopsFallThrough();
+    void aCodeMarkReachesSkippedBytesAndTheDataSegment();
+    void aBranchAndARelocationNameTheirTarget();
 };
 
 void tst_analysis::rejectsAFileThatIsNotTos()
@@ -345,6 +362,167 @@ void tst_analysis::fullExtensionStopsTheWalk()
     const ProgramListing listing = listProgram(tos(QByteArray::fromHex("41F001004E71")));
     QCOMPARE(rowText(listing, 0), QStringLiteral("dc.w $41f0,$0100"));
     QCOMPARE(rowText(listing, 4), QStringLiteral("dc.b $4e,$71"));
+}
+
+void tst_analysis::notesRoundTripAndRejectABadFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("leave.prg.pistanalysis"));
+
+    AnalysisNotes missing;
+    QString error;
+    QVERIFY2(loadAnalysisNotes(path, &missing, &error), qPrintable(error));
+    QVERIFY(missing.names.isEmpty());
+
+    AnalysisNotes notes;
+    QVERIFY2(setAnalysisName(&notes, 4, QStringLiteral("there"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisComment(&notes, 4, QStringLiteral("landed"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisOverride(&notes, 0, 2, AnalysisOverride::Kind::Code, &error), qPrintable(error));
+    QVERIFY2(setAnalysisOverride(&notes, 2, 2, AnalysisOverride::Kind::Code, &error), qPrintable(error));
+    QCOMPARE(notes.overrides.size(), 1);
+    QCOMPARE(notes.overrides.at(0).address, 0u);
+    QCOMPARE(notes.overrides.at(0).length, 4u);
+    QVERIFY2(setAnalysisOverride(&notes, 4, 2, AnalysisOverride::Kind::Code, &error), qPrintable(error));
+    QCOMPARE(notes.overrides.at(0).length, 6u);
+    QVERIFY2(setAnalysisOverride(&notes, 2, 2, AnalysisOverride::Kind::Data, &error), qPrintable(error));
+    QCOMPARE(notes.overrides.size(), 3);
+    QCOMPARE(notes.overrides.at(1).kind, AnalysisOverride::Kind::Data);
+    QCOMPARE(notes.overrides.at(2).address, 4u);
+    QCOMPARE(notes.overrides.at(2).kind, AnalysisOverride::Kind::Code);
+    QVERIFY(!setAnalysisOverride(&notes, 1, 2, AnalysisOverride::Kind::Code, &error));
+    QVERIFY(error.contains(QStringLiteral("even")));
+    QVERIFY(!setAnalysisName(&notes, 0, QStringLiteral("1bad"), &error));
+    QVERIFY2(saveAnalysisNotes(path, notes, &error), qPrintable(error));
+
+    AnalysisNotes loaded;
+    QVERIFY2(loadAnalysisNotes(path, &loaded, &error), qPrintable(error));
+    QCOMPARE(loaded.names.value(4), QStringLiteral("there"));
+    QCOMPARE(loaded.comments.value(4), QStringLiteral("landed"));
+    QCOMPARE(loaded.overrides.size(), 3);
+
+    loaded.names.clear();
+    loaded.comments.clear();
+    loaded.overrides.clear();
+    QVERIFY2(saveAnalysisNotes(path, loaded, &error), qPrintable(error));
+    QVERIFY(!QFileInfo::exists(path));
+
+    QFile bad(path);
+    QVERIFY(bad.open(QIODevice::WriteOnly));
+    bad.write("{");
+    bad.close();
+    QVERIFY(!loadAnalysisNotes(path, &loaded, &error));
+    QVERIFY(error.contains(QStringLiteral("not valid JSON")));
+
+    QVERIFY(bad.open(QIODevice::WriteOnly));
+    bad.write("{\"version\":2}");
+    bad.close();
+    QVERIFY(!loadAnalysisNotes(path, &loaded, &error));
+    QVERIFY(error.contains(QStringLiteral("version is not 1")));
+
+    QVERIFY(bad.open(QIODevice::WriteOnly));
+    bad.write("{\"version\":1,\"names\":[{\"address\":0,\"name\":\"1bad\"}]}");
+    bad.close();
+    QVERIFY(!loadAnalysisNotes(path, &loaded, &error));
+    QVERIFY(error.contains(QStringLiteral("invalid name")));
+}
+
+void tst_analysis::aNameLeadsTheLabelAndTheOperand()
+{
+    QFile file(QStringLiteral(PIST_SOURCE_DIR "/demo/hello.prg"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray bytes = file.readAll();
+    const ProgramListing plain = listProgram(bytes);
+    quint32 banner = 0;
+    bool found = false;
+    for (const ListingRow &row : plain.rows) {
+        if (row.label == QStringLiteral("banner")) {
+            banner = row.address;
+            found = true;
+        }
+    }
+    QVERIFY(found);
+
+    AnalysisNotes notes;
+    QString error;
+    QVERIFY(setAnalysisName(&notes, 0, QStringLiteral("entry"), &error));
+    QVERIFY(setAnalysisName(&notes, banner, QStringLiteral("title"), &error));
+    QVERIFY(setAnalysisComment(&notes, banner, QStringLiteral("greeting"), &error));
+    const ProgramListing listing = listProgram(bytes, notes);
+    const ListingRow *start = rowAt(listing, 0);
+    const ListingRow *named = rowAt(listing, banner);
+    QVERIFY(start && named);
+    QCOMPARE(start->label, QStringLiteral("entry, _start"));
+    QCOMPARE(start->text, QStringLiteral("move.l #title,-(sp)"));
+    QCOMPARE(named->label, QStringLiteral("title, banner"));
+    QCOMPARE(named->comment, QStringLiteral("greeting"));
+    QVERIFY(named->xrefs.contains(QStringLiteral("entry")));
+}
+
+void tst_analysis::aDataMarkStopsFallThrough()
+{
+    AnalysisNotes notes;
+    QString error;
+    QVERIFY(setAnalysisOverride(&notes, 2, 2, AnalysisOverride::Kind::Data, &error));
+    const ProgramListing stopped = listProgram(tos(QByteArray::fromHex("4E714E71")), notes);
+    QCOMPARE(rowText(stopped, 0), QStringLiteral("nop"));
+    QCOMPARE(rowText(stopped, 2), QStringLiteral("dc.b $4e,$71"));
+    const ListingRow *marked = rowAt(stopped, 2);
+    QVERIFY(marked);
+    QCOMPARE(marked->note, QStringLiteral("data"));
+
+    AnalysisNotes entry;
+    QVERIFY(setAnalysisOverride(&entry, 0, 2, AnalysisOverride::Kind::Data, &error));
+    const ProgramListing blocked = listProgram(tos(QByteArray::fromHex("4E714E71")), entry);
+    for (const ListingRow &row : blocked.rows)
+        QVERIFY(!row.text.contains(QStringLiteral("nop")));
+}
+
+void tst_analysis::aCodeMarkReachesSkippedBytesAndTheDataSegment()
+{
+    AnalysisNotes skipped;
+    QString error;
+    QVERIFY(setAnalysisOverride(&skipped, 2, 2, AnalysisOverride::Kind::Code, &error));
+    const ProgramListing branch = listProgram(tos(QByteArray::fromHex("60024E714E71")), skipped);
+    QCOMPARE(rowText(branch, 0), QStringLiteral("bra.s $4"));
+    QCOMPARE(rowText(branch, 2), QStringLiteral("nop"));
+    QCOMPARE(rowAt(branch, 2)->note, QStringLiteral("code"));
+    QCOMPARE(rowText(branch, 4), QStringLiteral("nop"));
+
+    AnalysisNotes data;
+    QVERIFY(setAnalysisOverride(&data, 2, 2, AnalysisOverride::Kind::Code, &error));
+    const ProgramListing segment = listProgram(tos(QByteArray::fromHex("4E75"), QByteArray::fromHex("4E71")), data);
+    QCOMPARE(rowText(segment, 0), QStringLiteral("rts"));
+    QCOMPARE(rowText(segment, 2), QStringLiteral("nop"));
+    QCOMPARE(rowAt(segment, 2)->note, QStringLiteral("code"));
+}
+
+void tst_analysis::aBranchAndARelocationNameTheirTarget()
+{
+    const ProgramListing branch = listProgram(tos(QByteArray::fromHex("60024E714E71")));
+    const ListingRow *target = rowAt(branch, 4);
+    QVERIFY(target);
+    QCOMPARE(target->text, QStringLiteral("nop"));
+    QCOMPARE(target->xrefs, QStringLiteral("$0"));
+
+    const ProgramListing lea = listProgram(tos(QByteArray::fromHex("41FA00024E71")));
+    const ListingRow *at = rowAt(lea, 0);
+    const ListingRow *landed = rowAt(lea, 4);
+    QVERIFY(at && landed);
+    QCOMPARE(at->text, QStringLiteral("lea $4(pc),a0"));
+    QCOMPARE(landed->xrefs, QStringLiteral("$0"));
+
+    QFile file(QStringLiteral(PIST_SOURCE_DIR "/demo/hello.prg"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const ProgramListing hello = listProgram(file.readAll());
+    bool saw = false;
+    for (const ListingRow &row : hello.rows) {
+        if (row.label == QStringLiteral("banner")) {
+            QVERIFY(row.xrefs.contains(QStringLiteral("_start")));
+            saw = true;
+        }
+    }
+    QVERIFY(saw);
 }
 
 QTEST_MAIN(tst_analysis)

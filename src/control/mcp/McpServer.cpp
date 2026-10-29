@@ -1235,10 +1235,11 @@ QJsonArray McpServer::tools()
         list.append(toolObject(
             QStringLiteral("pist_analyze"), QStringLiteral("Read a TOS program"),
             QStringLiteral("The read-only listing of a TOS executable of at most 2 MiB: a summary "
-                           "and the instructions a walk from the entry point reaches, as JSON "
-                           "rows {address, label, bytes, text, note}. Addresses are image-relative. "
-                           "Paths must not contain spaces. Does not open a tab and does not need "
-                           "the emulator. pist_disasm reads the stopped machine."),
+                           "and rows {address, label, bytes, text, note, xrefs, comment}. A "
+                           ".pistanalysis file beside the program supplies names, comments and "
+                           "code or data marks. Addresses are image-relative. Paths must not "
+                           "contain spaces. Does not open a tab and does not need the emulator. "
+                           "pist_disasm reads the stopped machine."),
             analyze, QJsonArray{QStringLiteral("file")}));
 
         QJsonObject depack;

@@ -25,6 +25,7 @@
 #include "emu/DebugBackend.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
+#include "analysis/AnalysisNotes.h"
 #include "analysis/ProgramTrace.h"
 #include "ui/AnalysisView.h"
 #include "ui/BinaryView.h"
@@ -785,6 +786,13 @@ void MainWindow::followRenamedFile(const QString &oldPath, const QString &newPat
         view->setIdentity(absolute, QFileInfo(newPath).fileName());
         updateTabTitle(view);
     }
+    const QString oldNotes = analysisNotesPath(QFileInfo(oldPath).absoluteFilePath());
+    const QString newNotes = analysisNotesPath(QFileInfo(newPath).absoluteFilePath());
+    if (QFileInfo::exists(oldNotes) && QFileInfo(oldNotes) != QFileInfo(newNotes)
+        && !QFile::rename(oldNotes, newNotes)) {
+        statusBar()->showMessage(
+            tr("%1 could not be renamed with its program.").arg(QFileInfo(oldNotes).fileName()), 8000);
+    }
 
     // The breakpoint store, keyed by base name: renaming a file would otherwise
     // strand its breakpoints under a name that no longer exists
@@ -997,7 +1005,13 @@ void MainWindow::openAnalysisAt(const QString &path)
         return;
     }
     const QByteArray bytes = file.readAll();
-    const ProgramListing listing = listProgram(bytes);
+    AnalysisNotes notes;
+    QString notesError;
+    if (!loadAnalysisNotes(analysisNotesPath(key), &notes, &notesError)) {
+        QMessageBox::warning(this, tr("Open for Analysis"), notesError);
+        return;
+    }
+    const ProgramListing listing = listProgram(bytes, notes);
     if (!listing.error.isEmpty()) {
         QMessageBox::warning(this, tr("Open for Analysis"), listing.error);
         return;

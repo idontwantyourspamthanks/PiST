@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QSet>
 #include <QString>
+#include <QVector>
 
 namespace pist {
 
@@ -35,6 +36,9 @@ struct DecodedInsn
     quint32 target = 0;
     /// A jump or call whose destination is a register, not an address.
     bool indirect = false;
+    /// Absolute, pc-relative and relocated addresses this instruction names.
+    /// A branch target is `target` and is not repeated here.
+    QVector<quint32> refs;
 };
 
 /// Decode the 68000 instruction at `address`. `limit` is the exclusive end of

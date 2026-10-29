@@ -290,9 +290,12 @@ pist_module(pist_mcp
     src/control/mcp/McpServer.h
 )
 
-# analysis/ — TOS executable structure and a host-side 68000 disassembly. Widget-free
-# on purpose: the listing is bytes and text, and the tests run with no display.
+# analysis/ — TOS executable structure, a host-side 68000 disassembly, and the
+# notes file beside a program. Widget-free on purpose: the listing is bytes and
+# text, and the tests run with no display.
 pist_module(pist_analysis
+    src/analysis/AnalysisNotes.cpp
+    src/analysis/AnalysisNotes.h
     src/analysis/TosProgram.cpp
     src/analysis/TosProgram.h
     src/analysis/M68kDisasm.cpp
@@ -447,7 +450,7 @@ target_link_libraries(pist_emu PUBLIC Qt6::Core Qt6::Network pist_model)   # emu
 target_link_libraries(pist_project PUBLIC Qt6::Core pist_model pist_support)    # ProjectSettings.h includes model/Machine.h, and save() is files::write
 target_link_libraries(pist_toolchain PUBLIC Qt6::Core pist_emu)    # ToolFetch.cpp includes emu/Paths.h
 target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subprocess + porcelain only
-target_link_libraries(pist_analysis PUBLIC Qt6::Core)              # TOS headers and 68000 text only
+target_link_libraries(pist_analysis PUBLIC Qt6::Core pist_support) # notes save through files::write
 
 # The graph is acyclic, and every edge is an include in the sources. ui/ is the
 # only module that reaches both ways by nature — it builds the editors and owns

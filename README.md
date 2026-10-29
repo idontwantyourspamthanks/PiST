@@ -663,9 +663,11 @@ ripavr <file> <offset> <out.wav>
 scanmagic <file>   AVR, IFF, Ice and Atomik offsets as JSON (block reply).
                    Does not search for Degas or NeoChrome
 analyze <file>     a TOS executable's reached code as JSON (block reply):
-                   summary and rows of address, label, bytes, text, note.
-                   Addresses are image-relative. No emulator. A path must
-                   not contain spaces
+                   summary and rows of address, label, bytes, text, note,
+                   xrefs, comment. A .pistanalysis file beside the program
+                   supplies names, comments and code/data marks. Addresses
+                   are image-relative. No emulator. A path must not contain
+                   spaces
 scandisk <image>   the same magics inside a FAT12 .st or .msa (block reply)
 depack <file> <offset> <out>
                    name Ice or Atomik at a hex offset. Does not unpack and does

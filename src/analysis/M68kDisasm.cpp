@@ -5,6 +5,7 @@
 #include "analysis/M68kDisasm.h"
 
 #include <QStringList>
+#include <QVector>
 
 namespace pist {
 
@@ -42,9 +43,12 @@ QString named(quint32 value, const DisasmNames &names)
     return hex(value);
 }
 
-QString immediateText(quint32 value, int sizeBytes, quint32 at, const DisasmNames &names)
+QString immediateText(quint32 value, int sizeBytes, quint32 at, const DisasmNames &names,
+                      QVector<quint32> *refs)
 {
     if (sizeBytes == 4 && names.relocations.contains(at)) {
+        if (refs)
+            refs->append(value);
         const auto it = names.labels.constFind(value);
         if (it != names.labels.cend())
             return QStringLiteral("#") + it.value();
@@ -163,6 +167,7 @@ struct Reader
     quint32 limit = 0;
     quint32 pc = 0;
     bool ok = true;
+    QVector<quint32> *refs = nullptr;
 
     quint16 word()
     {
@@ -263,6 +268,8 @@ Ea readEa(Reader &reader, int mode, int reg, int sizeBytes, EaKind kind, const D
         const quint32 address = wide ? raw : ((raw & 0x8000) ? (0xFFFF0000u | raw) : raw);
         ea.hasAddress = true;
         ea.address = address;
+        if (reader.refs)
+            reader.refs->append(address);
         const auto it = names.labels.constFind(address);
         if (it != names.labels.cend())
             ea.text = it.value();
@@ -279,6 +286,8 @@ Ea readEa(Reader &reader, int mode, int reg, int sizeBytes, EaKind kind, const D
         const quint32 target = extAt + quint32(qint32(qint16(disp)));
         ea.hasAddress = true;
         ea.address = target;
+        if (reader.refs)
+            reader.refs->append(target);
         const auto it = names.labels.constFind(target);
         ea.text = (it != names.labels.cend() ? it.value() : hex(target)) + QStringLiteral("(pc)");
         ea.ok = true;
@@ -304,7 +313,7 @@ Ea readEa(Reader &reader, int mode, int reg, int sizeBytes, EaKind kind, const D
     }
     if (!reader.ok)
         return ea;
-    ea.text = immediateText(value, sizeBytes, at, names);
+    ea.text = immediateText(value, sizeBytes, at, names, reader.refs);
     ea.ok = true;
     return ea;
 }
@@ -331,6 +340,7 @@ public:
     Decoder(const QByteArray &image, quint32 address, quint32 limit, const DisasmNames &names)
         : image(image), names(names), reader{image, limit, address, true}, start(address)
     {
+        reader.refs = &refs;
         op = reader.word();
     }
 
@@ -370,6 +380,7 @@ public:
 private:
     const QByteArray &image;
     const DisasmNames &names;
+    QVector<quint32> refs;
     Reader reader;
     quint32 start = 0;
     quint16 op = 0;
@@ -395,6 +406,8 @@ private:
         insn.hasTarget = hasTarget;
         insn.target = target;
         insn.indirect = indirect;
+        if (reader.refs)
+            insn.refs = *reader.refs;
         return insn;
     }
 
@@ -469,7 +482,7 @@ private:
                                          : (bytes == 1 ? (reader.word() & 0xFF) : reader.word());
         if (!reader.ok)
             return {};
-        const QString imm = immediateText(value, bytes, at, names);
+        const QString imm = immediateText(value, bytes, at, names, reader.refs);
         const bool special = mode() == 7 && eareg() == 4;
         const bool toStatus = special && (operation == 0 || operation == 1 || operation == 5);
         if (toStatus && size == 0)

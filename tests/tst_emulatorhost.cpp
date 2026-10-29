@@ -1661,6 +1661,13 @@ void TstEmulatorHost::emulatorLaunchesSuppressInteractiveSdlFailures()
     QVERIFY(observed.open(QIODevice::ReadOnly | QIODevice::Text));
     QCOMPARE(QString::fromUtf8(observed.readAll()), QStringLiteral("dummy\nabort\n"));
 
+    // Hermetic against the runner: CI exports SDL_VIDEODRIVER=dummy job-wide
+    // so Hatari can run headless, and makeSessionEnvironment() starts from the
+    // system environment. Unset it so a non-media session is observed clean.
+    const QByteArray oldVideo = qgetenv("SDL_VIDEODRIVER");
+    const bool hadVideo = qEnvironmentVariableIsSet("SDL_VIDEODRIVER");
+    qunsetenv("SDL_VIDEODRIVER");
+
     SessionConfig media;
     media.sessionDir = m_work->path();
     media.mediaPort = 20000;
@@ -1671,8 +1678,10 @@ void TstEmulatorHost::emulatorLaunchesSuppressInteractiveSdlFailures()
     media.mediaPort = 0;
     session = makeSessionEnvironment(media);
     QCOMPARE(session.value(QStringLiteral("SDL_ASSERT")), QStringLiteral("abort"));
-    QVERIFY(!session.contains(QStringLiteral("SDL_VIDEODRIVER"))
-            || session.value(QStringLiteral("SDL_VIDEODRIVER")) != QStringLiteral("dummy"));
+    QVERIFY(!session.contains(QStringLiteral("SDL_VIDEODRIVER")));
+
+    if (hadVideo)
+        qputenv("SDL_VIDEODRIVER", oldVideo);
 }
 
 // The response type is what the *request* was, not what the command text starts

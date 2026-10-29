@@ -43,6 +43,7 @@
 #include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "analysis/ProgramTrace.h"
 #include "image/ImageDocument.h"
 #include "build/FloppyImage.h"
 #include "image/BinaryScan.h"
@@ -1046,6 +1047,42 @@ QJsonArray MainWindow::scanFileMagic(const QString &path, QString *error)
         hits.append(object);
     }
     return hits;
+}
+
+QJsonObject MainWindow::analyzeProgram(const QString &path, QString *error)
+{
+    if (QFileInfo(path).size() > qint64(2 * 1024 * 1024)) {
+        if (error)
+            *error = QStringLiteral("file is over 2MiB");
+        return {};
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return {};
+    }
+    const ProgramListing listing = listProgram(file.readAll());
+    if (!listing.error.isEmpty()) {
+        if (error)
+            *error = listing.error;
+        return {};
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("summary"), listing.summary);
+    QJsonArray rows;
+    for (const ListingRow &row : listing.rows) {
+        QJsonObject object;
+        object.insert(QStringLiteral("address"),
+                      QStringLiteral("0x") + hex::hex32(row.address, hex::Case::Lower));
+        object.insert(QStringLiteral("label"), row.label);
+        object.insert(QStringLiteral("bytes"), row.bytes);
+        object.insert(QStringLiteral("text"), row.text);
+        object.insert(QStringLiteral("note"), row.note);
+        rows.append(object);
+    }
+    result.insert(QStringLiteral("rows"), rows);
+    return result;
 }
 
 QJsonArray MainWindow::scanDiskMagic(const QString &imagePath, QString *error)

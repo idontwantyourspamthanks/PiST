@@ -88,6 +88,7 @@ inline constexpr Verb kVerbs[] = {
     {"sndhinfo", "sndhinfo <file> <offset>   SNDH text tags as JSON", true},
     {"memmark", "memmark <a> <n>  remember <n> bytes at <a> (when stopped)", true},
     {"memcompare", "memcompare [advance]  how those bytes differ now, as JSON", true},
+    {"analyze", "analyze <file>     a TOS executable's reached code as JSON", true},
     {"disasm", "disasm [a]       disassembly as JSON rows (when stopped)", true},
     {"setreg", "setreg <n> <v>   write register <n> to <v> (when stopped)", false},
     {"setmem", "setmem <a> <v>   write memory byte at <a> to <v> (when stopped)", false},

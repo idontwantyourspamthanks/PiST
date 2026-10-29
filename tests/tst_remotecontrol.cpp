@@ -25,6 +25,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QTcpSocket>
 #include <QSettings>
 #include <QDir>
@@ -69,6 +70,7 @@ private slots:
     void dumpmemRefusesWithoutASession();
     void capturescreenRefusesWhenNotStopped();
     void ripavrAndScanmagicReadAFile();
+    void analyzeReturnsTheReachedListing();
     void depackNamesThePackerAndWritesNothing();
     void scandiskListsAvrOnAFloppy();
     void sndhinfoReadsTheTitle();
@@ -262,6 +264,7 @@ void TstRemoteControl::helpListsCommands()
     QVERIFY2(reply.contains(QStringLiteral("help             this list")), qPrintable(reply));
     QVERIFY2(reply.contains(QStringLiteral("JSON {path, text}")), qPrintable(reply));
     QVERIFY2(reply.contains(QStringLiteral("builddiff")), qPrintable(reply));
+    QVERIFY2(reply.contains(QStringLiteral("analyze <file>")), qPrintable(reply));
     QVERIFY2(reply.contains(QStringLiteral("memmark")), qPrintable(reply));
     QVERIFY2(reply.contains(QStringLiteral("asset remove")), qPrintable(reply));
     QVERIFY2(!reply.contains(QStringLiteral("'path' then its text")), qPrintable(reply));
@@ -1052,6 +1055,72 @@ void TstRemoteControl::ripavrAndScanmagicReadAFile()
     QVERIFY2(scanned.startsWith(QLatin1String("ok\n")), qPrintable(scanned));
     const QJsonArray hits = QJsonDocument::fromJson(blockBody(scanned).toUtf8()).array();
     QCOMPARE(hits.at(0).toObject().value(QStringLiteral("kind")).toString(), QStringLiteral("avr"));
+}
+
+void TstRemoteControl::analyzeReturnsTheReachedListing()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString usage = roundTripBlock(s.client, "analyze");
+    QVERIFY2(usage.startsWith(QLatin1String("error\n")), qPrintable(usage));
+    QVERIFY(blockBody(usage).contains(QStringLiteral("usage: analyze <file>")));
+
+    const QString plain = dir.filePath(QStringLiteral("notes.txt"));
+    QFile plainFile(plain);
+    QVERIFY(plainFile.open(QIODevice::WriteOnly));
+    plainFile.write("hello");
+    plainFile.close();
+    const QString rejected = roundTripBlock(s.client, "analyze " + plain.toUtf8());
+    QVERIFY2(rejected.startsWith(QLatin1String("error\n")), qPrintable(rejected));
+    QVERIFY(blockBody(rejected).contains(QStringLiteral("not a TOS executable")));
+
+    QByteArray program;
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    program += be16(0x601A);
+    program += be32(6);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be16(0);
+    program += QByteArray::fromHex("42674E414E71");
+    program += be32(0);
+    const QString prg = dir.filePath(QStringLiteral("leave.prg"));
+    QFile prgFile(prg);
+    QVERIFY(prgFile.open(QIODevice::WriteOnly));
+    QCOMPARE(prgFile.write(program), qint64(program.size()));
+    prgFile.close();
+
+    const QString listed = roundTripBlock(s.client, "analyze " + prg.toUtf8());
+    QVERIFY2(listed.startsWith(QLatin1String("ok\n")), qPrintable(listed));
+    const QJsonObject listing = QJsonDocument::fromJson(blockBody(listed).toUtf8()).object();
+    QCOMPARE(listing.value(QStringLiteral("summary")).toString(),
+             QStringLiteral("6 bytes of code, 0 bytes of data, 0 bytes of bss, 0 symbols, 0 relocations"));
+    const QJsonArray rows = listing.value(QStringLiteral("rows")).toArray();
+    QCOMPARE(rows.size(), 3);
+    QCOMPARE(rows.at(0).toObject().value(QStringLiteral("address")).toString(),
+             QStringLiteral("0x00000000"));
+    QCOMPARE(rows.at(0).toObject().value(QStringLiteral("text")).toString(),
+             QStringLiteral("clr.w -(sp)"));
+    QCOMPARE(rows.at(1).toObject().value(QStringLiteral("text")).toString(),
+             QStringLiteral("trap #1"));
+    QCOMPARE(rows.at(2).toObject().value(QStringLiteral("text")).toString(),
+             QStringLiteral("dc.b $4e,$71"));
+    auto *tabs = s.window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 0);
 }
 
 void TstRemoteControl::depackNamesThePackerAndWritesNothing()

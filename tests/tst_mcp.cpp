@@ -279,7 +279,7 @@ private slots:
         names.sort();
         // Pin the whole set: a renamed or dropped tool is how an agent's
         // workflow breaks without anything here noticing.
-        QCOMPARE(names, QStringList({"pist_asset", "pist_assets", "pist_breakpoint",
+        QCOMPARE(names, QStringList({"pist_analyze", "pist_asset", "pist_assets", "pist_breakpoint",
                                      "pist_breakpoints", "pist_build", "pist_build_release",
                                      "pist_builddiff", "pist_capturedma", "pist_capturescreen",
                                      "pist_clearwatchpoint", "pist_cmd", "pist_console",
@@ -393,6 +393,25 @@ private slots:
         QCOMPARE(ide.nextLine(), QStringLiteral("scanmagic in.bin"));
         ide.send("ok\n.\n");
         QVERIFY(!resultIsError(waitReply(1)));
+    }
+
+    void analyzeMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("in.prg"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_analyze"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("analyze in.prg"));
+        ide.send("ok\n{\"summary\":\"2 bytes of code\",\"rows\":[]}\n.\n");
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("structuredContent")).toObject()
+                     .value(QStringLiteral("summary")).toString(),
+                 QStringLiteral("2 bytes of code"));
     }
 
     void depackMapsToTheVerb()

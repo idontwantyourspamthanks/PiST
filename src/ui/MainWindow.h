@@ -201,6 +201,7 @@ public:
     bool captureDmaTo(const QString &outPath, QString *error) override;
     bool ripAvr(const QString &path, quint32 offset, const QString &outPath, QString *error) override;
     QJsonArray scanFileMagic(const QString &path, QString *error) override;
+    QJsonObject analyzeProgram(const QString &path, QString *error) override;
     QJsonArray scanDiskMagic(const QString &imagePath, QString *error) override;
     QString identifyPacker(const QString &path, quint32 offset, QString *error) override;
     QJsonObject sndhInfo(const QString &path, quint32 offset, QString *error) override;

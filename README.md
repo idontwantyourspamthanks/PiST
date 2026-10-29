@@ -662,6 +662,10 @@ ripavr <file> <offset> <out.wav>
                    a mono 8-bit AVR at a hex offset to a WAV (block reply)
 scanmagic <file>   AVR, IFF, Ice and Atomik offsets as JSON (block reply).
                    Does not search for Degas or NeoChrome
+analyze <file>     a TOS executable's reached code as JSON (block reply):
+                   summary and rows of address, label, bytes, text, note.
+                   Addresses are image-relative. No emulator. A path must
+                   not contain spaces
 scandisk <image>   the same magics inside a FAT12 .st or .msa (block reply)
 depack <file> <offset> <out>
                    name Ice or Atomik at a hex offset. Does not unpack and does
@@ -823,7 +827,7 @@ locally started IDE needs no configuration at all. The tools are
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
 `pist_watchpoint`, `pist_clearwatchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`,
 `pist_read`, `pist_hook`, `pist_assets`, `pist_asset`,
-`pist_symbols`, `pist_readmem`, `pist_memmark`, `pist_memcompare`, `pist_disasm`, `pist_tabs`, `pist_save`,
+`pist_symbols`, `pist_readmem`, `pist_memmark`, `pist_memcompare`, `pist_disasm`, `pist_analyze`, `pist_tabs`, `pist_save`,
 `pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
 rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
@@ -833,7 +837,7 @@ rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
 pane's Mark button); `pist_asset` declares or removes a sprite export.
 `pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`, `pist_memmark`,
 `pist_memcompare`, `pist_builddiff`, `pist_assets`,
-`pist_disasm`, `pist_hook`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
+`pist_disasm`, `pist_analyze`, `pist_hook`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to
 the events above and returns them; they also arrive as MCP log notifications,

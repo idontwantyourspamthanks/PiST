@@ -228,6 +228,9 @@ AnalysisView *MainWindow::addAnalysisTab(const QByteArray &bytes, const QString 
     // The stops that ran before this tab existed are already in the recorder.
     // A save now is what puts them on the listing.
     requestCoverageSave();
+    connect(view, &AnalysisView::pictureReady, this, [this](const QString &path) {
+        openPath(path);
+    });
     return view;
 }
 
@@ -1335,6 +1338,17 @@ void MainWindow::saveFile()
     if (m_gitPanel)
         m_gitPanel->refresh();
     refreshBlame();
+}
+
+
+void MainWindow::setEmulatorCaption()
+{
+    if (!m_displayDock)
+        return;
+    if (m_launchedName.isEmpty())
+        m_displayDock->setWindowTitle(tr("Emulator"));
+    else
+        m_displayDock->setWindowTitle(tr("Emulator — %1").arg(m_launchedName));
 }
 
 

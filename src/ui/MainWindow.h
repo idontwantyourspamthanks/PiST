@@ -773,6 +773,9 @@ private:
     /// comes from the live basepage and this file's own section sizes, and it
     /// is not written into the notes.
     void applyAnalysisExecution();
+    /// Title the emulator dock with the source this session is running, or
+    /// restore "Emulator" when nothing is.
+    void setEmulatorCaption();
     /// Ask the emulator for the coverage file when this session is recording
     /// and an analysis tab of the launched program is open.
     void requestCoverageSave();
@@ -912,6 +915,11 @@ private:
     /// tab of this file can mark the stopped PC; any other analysis is left
     /// alone. Empty once the session ends. Never written into the notes file.
     QString m_launchedProgram;
+    /// File name shown on the emulator dock for the session in
+    /// `m_launchedProgram` — the source that was built (`keyred.s`), or the
+    /// program's own name when that source had none. Empty once the session
+    /// ends, which puts the dock title back to "Emulator".
+    QString m_launchedName;
     /// The running Hatari accepted `coverage on`. A stock Hatari does not, and
     /// then no coverage file is read.
     bool m_coverageRecording = false;

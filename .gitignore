@@ -45,6 +45,8 @@ ui_*.h
 
 # Atari ST build artifacts (assembly projects opened in the IDE)
 *.prg
+# The analysis tests read this assembled demo. It is a fixture, not a build product.
+!demo/hello.prg
 *.tos
 *.ttp
 *.app

@@ -44,6 +44,34 @@ bool importNeo(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QString *error);
 bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QString *error);
 
+/// A low-resolution Degas still is this many bytes: the resolution word, 16
+/// palette words, and a 320×200 bitplane screen.
+constexpr int kDegasPictureBytes = 32034;
+/// A low-resolution NeoChrome still.
+constexpr int kNeoPictureBytes = 32128;
+
+/// How a span of bytes was asked to be read as a picture.
+enum class PictureReading { Degas, Neo, Iff, Sprite };
+
+/// Bytes worth opening in the image editor, and whether that reading is a
+/// guess. Degas and NeoChrome have no signature, and a sprite's size is
+/// supplied by the caller, so those three set `guess`. An IFF that begins
+/// with FORM/ILBM does not.
+struct PictureFile {
+    bool guess = false;
+    QString note;
+    QByteArray bytes;
+    QString suffix;
+};
+
+/// Read `bytes` as `reading`. A sprite uses `width` and `height` (width a
+/// multiple of 16, from 16 to 320, height from 1 to 200) and ignores any
+/// bytes past the planes. The still formats ignore `width` and `height`.
+/// On success `*out` holds a file the image editor can open. On failure
+/// `*out` is unchanged.
+bool bytesAsPicture(PictureReading reading, const QByteArray &bytes, int width, int height,
+                    PictureFile *out, QString *error);
+
 /// Decode low-resolution ST bitplanes into a one-frame sprite document.
 ///
 /// `planes` is screen layout: each row is (width/16) groups of four big-endian

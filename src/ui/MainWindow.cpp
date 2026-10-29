@@ -212,6 +212,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_bases = LineMap::SectionBases();
         m_lastState = MachineState();
         m_launchedProgram.clear();
+        m_launchedName.clear();
+        setEmulatorCaption();
         m_coverageRecording = false;
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())
@@ -299,8 +301,12 @@ MainWindow::MainWindow(QWidget *parent)
         statusBar()->showMessage(text, milliseconds);
     };
     launcherHost.session = sessionNow;
-    launcherHost.noteLaunchedProgram = [this](const QString &path) {
+    launcherHost.noteLaunchedProgram = [this](const QString &path, const QString &sourceName) {
         m_launchedProgram = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+        m_launchedName = m_launchedProgram.isEmpty() ? QString() : sourceName;
+        if (m_launchedName.isEmpty() && !m_launchedProgram.isEmpty())
+            m_launchedName = QFileInfo(m_launchedProgram).fileName();
+        setEmulatorCaption();
         applyAnalysisExecution();
     };
     m_launcher = new SessionLauncher(launcherHost, this);

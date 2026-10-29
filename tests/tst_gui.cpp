@@ -511,7 +511,9 @@ private slots:
     void analysisHighlightsTheStoppedPc();
     void analysisExportWritesAssembly();
     void analysisMarksTheRunningProgram();
+    void analysisRunLaunchesThatProgram();
     void analysisNotesAnExecutedAddress();
+    void analysisOpensAGuessedPicture();
     void analysisShowsWhatRan();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
@@ -1183,6 +1185,10 @@ void TstGui::runStartsAnEmulatorSession()
     QVERIFY2(initialBackend, "MainWindow must own a debug backend");
     QVERIFY(!initialBackend->isRunning());
 
+    auto *emulatorDock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(emulatorDock);
+    QCOMPARE(emulatorDock->windowTitle(), QStringLiteral("Emulator"));
+
     window.openPath(source);
     QCOMPARE(window.windowTitle().contains(QLatin1String("PiST")), true);
 
@@ -1201,8 +1207,10 @@ void TstGui::runStartsAnEmulatorSession()
     QSignalSpy stoppedSpy(host, &IDebugBackend::stoppedChanged);
     QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
              "the emulator started but never reached the debugger");
+    QCOMPARE(emulatorDock->windowTitle(), QStringLiteral("Emulator — run.s"));
 
     host->stop();
+    QTRY_COMPARE(emulatorDock->windowTitle(), QStringLiteral("Emulator"));
 }
 
 // Hatari resolves a machine/ROM mismatch itself: it overrides `--machine` to
@@ -4405,6 +4413,9 @@ void TstGui::analysisNotesRenameAndMark()
     QFile saved(analysisNotesPath(path));
     QVERIFY(saved.open(QIODevice::ReadOnly));
     QVERIFY(QString::fromUtf8(saved.readAll()).contains(QStringLiteral("dest")));
+    // Windows will not replace a file that still has a reader. The next edit
+    // rewrites this sidecar.
+    saved.close();
 
     QVERIFY2(view->markBytes(2, 2, AnalysisOverride::Kind::Code, &error), qPrintable(error));
     int skipped = -1;
@@ -4497,6 +4508,8 @@ void TstGui::analysisHighlightsTheStoppedPc()
     QCOMPARE(listing->currentRow(), nop);
     QCOMPARE(listing->item(lea, 0)->background().color(), pc);
     QVERIFY(listing->item(lea, 3)->font().bold());
+    QCOMPARE(listing->verticalHeaderItem(lea)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(nop)->text(), QString());
     QCOMPARE(listing->item(nop, 0)->background().style(), Qt::NoBrush);
 
     // Data lives at its own base, not at textBase + textSize.
@@ -4649,6 +4662,98 @@ void TstGui::analysisMarksTheRunningProgram()
     host->stop();
 }
 
+// The focused analysis is the program to run. An open source that is not
+// focused must not be assembled instead, and vasm must not be handed the
+// program as if it were source.
+void TstGui::analysisRunLaunchesThatProgram()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/other.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "loop:\tbra.s\tloop\n"
+              "\tend\n");
+    src.close();
+
+    const QString program = m_work->path() + QStringLiteral("/guest.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // nop, then rts. Coverage drops the instruction it was switched on at, so
+    // the rts is the first row that can read "ran".
+    const QByteArray bytes = guiTos(QByteArray::fromHex("4E714E75"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    QCOMPARE(QFileInfo(analysis->filePath()), QFileInfo(program));
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(dock);
+    QTRY_COMPARE_WITH_TIMEOUT(dock->windowTitle(), QStringLiteral("Emulator — guest.prg"), 30000);
+    QVERIFY2(!window.debugConsoleText().contains(QLatin1String("--- build ---")),
+             qPrintable(window.debugConsoleText()));
+    QVERIFY2(!window.debugConsoleText().contains(QLatin1String("could not open")),
+             qPrintable(window.debugConsoleText()));
+
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress().has_value(); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(editor->currentExecutionLine(), 0);
+    QVERIFY(!QFileInfo(settings::outputPathsFor(source).program).isFile());
+
+    auto *listing = analysis->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int ret = imageRow(listing, 2);
+    QVERIFY(entry >= 0 && ret >= 0);
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+
+    // "ran" needs the fork's coverage command. A stock Hatari still shows pc.
+    // The reply is queued at this stop, so it can land just after the PC mark.
+    if (!QTest::qWaitFor(
+            [&] {
+                const QString console = window.debugConsoleText();
+                return console.contains(QLatin1String("Command 'coverage' not found"))
+                    || console.contains(QLatin1String("Coverage recording on"));
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (window.debugConsoleText().contains(QLatin1String("Command 'coverage' not found")))
+        return;
+    QVERIFY2(window.debugConsoleText().contains(QLatin1String("Coverage recording on")),
+             qPrintable(window.debugConsoleText()));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QVERIFY(QTest::qWaitFor(
+        [&] { return analysis->executionAddress().has_value() && *analysis->executionAddress() == 2u; },
+        30000));
+    QCOMPARE(listing->verticalHeaderItem(ret)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QString());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return listing->verticalHeaderItem(ret)->text() == QLatin1String("ran"); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(listing->verticalHeaderItem(ret)->text(), QStringLiteral("ran"));
+    QVERIFY(listing->item(ret, 4)->text().contains(QLatin1String("ran")));
+}
+
 void TstGui::analysisNotesAnExecutedAddress()
 {
     const QString dir = m_work->path() + QStringLiteral("/analysis-ran");
@@ -4683,6 +4788,8 @@ void TstGui::analysisNotesAnExecutedAddress()
     QCOMPARE(listing->item(branch, 4)->text(), branchNote);
     QCOMPARE(listing->item(skipped, 4)->text(),
              skippedNote.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + skippedNote);
+    QCOMPARE(listing->verticalHeaderItem(skipped)->text(), QStringLiteral("ran"));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QString());
     QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("dc.b $4e,$71"));
     QCOMPARE(listing->currentRow(), landed);
     QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
@@ -4696,6 +4803,61 @@ void TstGui::analysisNotesAnExecutedAddress()
     view->setCoverage({}, 0x10000, 0, 0);
     QCOMPARE(listing->item(skipped, 4)->text(), skippedNote);
     QCOMPARE(listing->currentRow(), landed);
+}
+
+void TstGui::analysisOpensAGuessedPicture()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-picture");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = QFileInfo(dir + QStringLiteral("/pic.prg")).absoluteFilePath();
+    // clr.w -(sp) / trap #1 ends the walk, so the following bytes stay data.
+    // Those bytes are a low-resolution Degas picture only because they are
+    // long enough and the resolution word is 0 — there is no signature.
+    const QByteArray program = guiTos(QByteArray::fromHex("42674E41"), QByteArray(kDegasPictureBytes, '\0'));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(path);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(view);
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int picture = imageRow(listing, 4);
+    QVERIFY(picture >= 0);
+    listing->selectRow(picture);
+
+    auto *degas = window.findChild<QAction *>(QStringLiteral("analysisOpenDegasAction"));
+    auto *sprite = window.findChild<QAction *>(QStringLiteral("analysisOpenSpriteAction"));
+    auto *iff = window.findChild<QAction *>(QStringLiteral("analysisOpenIffAction"));
+    QVERIFY(degas && sprite && iff);
+    QVERIFY(degas->isEnabled());
+    QVERIFY(sprite->isEnabled());
+    QVERIFY(!iff->isEnabled());
+
+    QString written;
+    QString note;
+    QString error;
+    QVERIFY2(view->openPicture(PictureReading::Degas, 4, 0, 0, &written, &note, &error),
+             qPrintable(error));
+    QCOMPARE(note, QStringLiteral(
+                       "Opened as a low-resolution Degas picture. Degas has no signature, so this is a guess."));
+    QVERIFY(written.endsWith(QLatin1String(".pi1")));
+    QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
+    QCOMPARE(listing->currentRow(), picture);
+
+    QVERIFY(window.openPath(written));
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().size(), 1);
+    QCOMPARE(image->document().sheets().at(0).width, 320);
+    QCOMPARE(image->document().sheets().at(0).height, 200);
 }
 
 void TstGui::analysisShowsWhatRan()

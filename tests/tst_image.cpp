@@ -51,6 +51,7 @@ private slots:
     void pimReMeshesCompositeFromLayers();
     void fillAndLineIndices();
     void pi1RoundTrip();
+    void aPictureReadingNamesAGuess();
     void lowResBitplanesDecodeASolidRow();
     void lowResBitplanesUseTheStfmPalette();
     void lowResBitplanesRejectBadInput();
@@ -537,6 +538,50 @@ void TstImage::pi1RoundTrip()
     QCOMPARE(sheet.height, 200);
     QCOMPARE(sheet.pixels.at(0), doc.active().at(1));
     QCOMPARE(sheet.pixels.at(1), doc.active().at(2));
+}
+
+void TstImage::aPictureReadingNamesAGuess()
+{
+    QString error;
+    PictureFile file;
+
+    QByteArray degas(kDegasPictureBytes, '\0');
+    QVERIFY2(bytesAsPicture(PictureReading::Degas, degas, 0, 0, &file, &error), qPrintable(error));
+    QVERIFY(file.guess);
+    QCOMPARE(file.suffix, QStringLiteral("pi1"));
+    QCOMPARE(file.bytes.size(), kDegasPictureBytes);
+    QCOMPARE(file.note, QStringLiteral(
+                            "Opened as a low-resolution Degas picture. Degas has no signature, so this is a guess."));
+    degas[1] = 2;
+    QVERIFY(!bytesAsPicture(PictureReading::Degas, degas, 0, 0, &file, &error));
+    QCOMPARE(error, QStringLiteral("These bytes are not a low-resolution Degas picture."));
+
+    QByteArray neo(kNeoPictureBytes, '\0');
+    QVERIFY2(bytesAsPicture(PictureReading::Neo, neo, 0, 0, &file, &error), qPrintable(error));
+    QVERIFY(file.guess);
+    QCOMPARE(file.suffix, QStringLiteral("neo"));
+    neo[3] = 1;
+    QVERIFY(!bytesAsPicture(PictureReading::Neo, neo, 0, 0, &file, &error));
+    QCOMPARE(error, QStringLiteral("NEO image is not low resolution (resolution word 1)"));
+
+    QVERIFY2(bytesAsPicture(PictureReading::Sprite, QByteArray(8, '\0'), 16, 1, &file, &error),
+             qPrintable(error));
+    QVERIFY(file.guess);
+    QCOMPARE(file.suffix, QStringLiteral("pim"));
+    QCOMPARE(file.note, QStringLiteral(
+                            "Opened as a 16×1 sprite. Nothing in these bytes names that size."));
+    QVERIFY(!bytesAsPicture(PictureReading::Sprite, QByteArray(8, '\0'), 8, 1, &file, &error));
+    QCOMPARE(error, QStringLiteral(
+                        "A sprite is 16 to 320 pixels wide, in steps of 16, and 1 to 200 tall."));
+
+    ImageDocument doc = ImageDocument::create(16, 8, PaletteKind::Ste);
+    const QByteArray iff = exportIff(doc, 0, &error);
+    QVERIFY2(!iff.isEmpty(), qPrintable(error));
+    QVERIFY2(bytesAsPicture(PictureReading::Iff, iff, 0, 0, &file, &error), qPrintable(error));
+    QVERIFY(!file.guess);
+    QVERIFY(file.note.isEmpty());
+    QCOMPARE(file.suffix, QStringLiteral("iff"));
+    QCOMPARE(file.bytes, iff);
 }
 
 void TstImage::lowResBitplanesDecodeASolidRow()

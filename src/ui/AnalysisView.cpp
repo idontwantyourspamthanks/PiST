@@ -6,12 +6,14 @@
 
 #include "analysis/AssemblyExport.h"
 #include "analysis/ProgramTrace.h"
+#include "image/StFormats.h"
 #include "support/FileWrite.h"
 #include "toolchain/Toolchain.h"
 #include "ui/Appearance.h"
 #include "ui/MainWindow.h"
 
 #include <QAction>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -47,7 +49,14 @@ AnalysisView::AnalysisView(QWidget *parent)
     m_listing->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_listing->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_listing->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_listing->verticalHeader()->hide();
+    // A narrow gutter, not row numbers: "pc" is the stopped instruction and
+    // "ran" is one coverage has seen finish. Both used to live in the note
+    // column, which sits past the stretching instruction text, so a step
+    // updated the registers while the listing looked unchanged.
+    m_listing->verticalHeader()->setVisible(true);
+    m_listing->verticalHeader()->setDefaultAlignment(Qt::AlignCenter);
+    m_listing->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_listing->verticalHeader()->setFixedWidth(44);
     m_listing->setShowGrid(false);
     m_listing->setAlternatingRowColors(true);
     m_listing->horizontalHeader()->setStretchLastSection(false);
@@ -67,6 +76,14 @@ AnalysisView::AnalysisView(QWidget *parent)
     m_clearMark->setObjectName(QStringLiteral("analysisClearMarkAction"));
     m_export = new QAction(tr("Export assembly…"), this);
     m_export->setObjectName(QStringLiteral("analysisExportAction"));
+    m_openDegas = new QAction(tr("Open as Degas picture"), this);
+    m_openDegas->setObjectName(QStringLiteral("analysisOpenDegasAction"));
+    m_openNeo = new QAction(tr("Open as NeoChrome picture"), this);
+    m_openNeo->setObjectName(QStringLiteral("analysisOpenNeoAction"));
+    m_openIff = new QAction(tr("Open as IFF picture"), this);
+    m_openIff->setObjectName(QStringLiteral("analysisOpenIffAction"));
+    m_openSprite = new QAction(tr("Open as sprite…"), this);
+    m_openSprite->setObjectName(QStringLiteral("analysisOpenSpriteAction"));
     updateActions();
 
     connect(m_listing, &QWidget::customContextMenuRequested, this, &AnalysisView::showMenu);
@@ -77,6 +94,10 @@ AnalysisView::AnalysisView(QWidget *parent)
     connect(m_markData, &QAction::triggered, this, &AnalysisView::markSelectedData);
     connect(m_clearMark, &QAction::triggered, this, &AnalysisView::clearSelectedMark);
     connect(m_export, &QAction::triggered, this, &AnalysisView::exportSelected);
+    connect(m_openDegas, &QAction::triggered, this, &AnalysisView::openSelectedDegas);
+    connect(m_openNeo, &QAction::triggered, this, &AnalysisView::openSelectedNeo);
+    connect(m_openIff, &QAction::triggered, this, &AnalysisView::openSelectedIff);
+    connect(m_openSprite, &QAction::triggered, this, &AnalysisView::openSelectedSprite);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
@@ -168,6 +189,11 @@ void AnalysisView::showMenu(const QPoint &pos)
     menu.addAction(m_markCode);
     menu.addAction(m_markData);
     menu.addAction(m_clearMark);
+    menu.addSeparator();
+    menu.addAction(m_openDegas);
+    menu.addAction(m_openNeo);
+    menu.addAction(m_openIff);
+    menu.addAction(m_openSprite);
     menu.addSeparator();
     menu.addAction(m_export);
     menu.exec(m_listing->viewport()->mapToGlobal(pos));
@@ -346,8 +372,7 @@ void AnalysisView::reload()
     m_listing->resizeColumnsToContents();
     m_listing->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_ready = listing.error.isEmpty();
-    paintObserved();
-    paintExecution();
+    paintMarks();
     updateActions();
 }
 
@@ -363,6 +388,15 @@ void AnalysisView::updateActions()
     m_markData->setEnabled(bytes);
     m_clearMark->setEnabled(bytes);
     m_export->setEnabled(m_ready);
+    const bool inImage = row && m_ready && address < m_imageSize;
+    const quint32 room = inImage ? m_imageSize - address : 0;
+    m_openDegas->setEnabled(room >= quint32(kDegasPictureBytes));
+    m_openNeo->setEnabled(room >= quint32(kNeoPictureBytes));
+    m_openSprite->setEnabled(inImage);
+    bool iff = false;
+    if (inImage && m_bytes.size() >= 28 + int(address) + 4)
+        iff = m_bytes.mid(28 + int(address), 4) == QByteArrayLiteral("FORM");
+    m_openIff->setEnabled(iff);
 }
 
 void AnalysisView::setCoverage(const QVector<CoverageSample> &samples, quint32 textBase,
@@ -373,34 +407,7 @@ void AnalysisView::setCoverage(const QVector<CoverageSample> &samples, quint32 t
     m_observed.clear();
     for (quint32 address : image)
         m_observed.insert(address);
-    paintObserved();
-}
-
-void AnalysisView::paintObserved()
-{
-    for (int row = 0; row < m_listing->rowCount(); ++row) {
-        QTableWidgetItem *address = m_listing->item(row, 0);
-        QTableWidgetItem *note = m_listing->item(row, 4);
-        if (!address || !note)
-            continue;
-        const quint32 start = address->data(Qt::UserRole).toUInt();
-        const quint32 length = address->data(Qt::UserRole + 1).toUInt();
-        bool ran = m_observed.contains(start);
-        if (!ran && length > 1) {
-            const quint32 end = start + length;
-            for (quint32 at = start + 1; at < end; ++at) {
-                if (m_observed.contains(at)) {
-                    ran = true;
-                    break;
-                }
-            }
-        }
-        const QString source = note->data(Qt::UserRole).toString();
-        if (ran)
-            note->setText(source.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + source);
-        else
-            note->setText(source);
-    }
+    paintMarks();
 }
 
 void AnalysisView::setExecutionPc(quint32 pc, quint32 textBase, quint32 dataBase, quint32 bssBase)
@@ -410,7 +417,7 @@ void AnalysisView::setExecutionPc(quint32 pc, quint32 textBase, quint32 dataBase
     m_textBase = textBase;
     m_dataBase = dataBase;
     m_bssBase = bssBase;
-    paintExecution();
+    paintMarks();
 }
 
 void AnalysisView::clearExecutionPc()
@@ -418,7 +425,7 @@ void AnalysisView::clearExecutionPc()
     if (!m_havePc)
         return;
     m_havePc = false;
-    paintExecution();
+    paintMarks();
 }
 
 std::optional<quint32> AnalysisView::executionAddress() const
@@ -430,6 +437,109 @@ std::optional<quint32> AnalysisView::executionAddress() const
     if (!image || rowForImage(*image) < 0)
         return std::nullopt;
     return image;
+}
+
+bool AnalysisView::openPicture(PictureReading reading, quint32 address, int width, int height,
+                               QString *path, QString *note, QString *error)
+{
+    if (!m_ready) {
+        if (error)
+            *error = tr("This file has no analysis listing.");
+        return false;
+    }
+    // The listing's addresses are image-relative. The image starts after the
+    // 28-byte TOS header.
+    constexpr int kHeader = 28;
+    int need = 0;
+    switch (reading) {
+    case PictureReading::Degas:
+        need = kDegasPictureBytes;
+        break;
+    case PictureReading::Neo:
+        need = kNeoPictureBytes;
+        break;
+    case PictureReading::Iff:
+        need = 12;
+        break;
+    case PictureReading::Sprite:
+        if (width < 16 || width > 320 || (width % 16) != 0 || height < 1 || height > 200) {
+            if (error)
+                *error = tr("A sprite is 16 to 320 pixels wide, in steps of 16, and 1 to 200 tall.");
+            return false;
+        }
+        need = (width / 16) * 8 * height;
+        break;
+    }
+    if (address >= m_imageSize || quint32(need) > m_imageSize - address
+        || m_bytes.size() < kHeader + int(address) + need) {
+        if (error)
+            *error = tr("That range is outside the program.");
+        return false;
+    }
+    const int available = reading == PictureReading::Iff ? int(m_imageSize - address) : need;
+    const QByteArray span = m_bytes.mid(kHeader + int(address), available);
+    PictureFile file;
+    if (!bytesAsPicture(reading, span, width, height, &file, error))
+        return false;
+    const QString written = QDir::temp().filePath(
+        QStringLiteral("pist-analysis-%1.%2").arg(++m_pictureSerial).arg(file.suffix));
+    if (!files::write(written, file.bytes, error))
+        return false;
+    if (path)
+        *path = written;
+    if (note)
+        *note = file.note;
+    return true;
+}
+
+void AnalysisView::openSelectedPicture(PictureReading reading, const QString &title, int width,
+                                       int height)
+{
+    quint32 address = 0;
+    if (!selectedSpan(&address, nullptr))
+        return;
+    QString path;
+    QString note;
+    QString error;
+    if (!openPicture(reading, address, width, height, &path, &note, &error)) {
+        QMessageBox::warning(this, title, error);
+        return;
+    }
+    emit pictureReady(path);
+    if (!note.isEmpty())
+        QMessageBox::information(this, title, note);
+}
+
+void AnalysisView::openSelectedDegas()
+{
+    openSelectedPicture(PictureReading::Degas, tr("Open as Degas picture"), 0, 0);
+}
+
+void AnalysisView::openSelectedNeo()
+{
+    openSelectedPicture(PictureReading::Neo, tr("Open as NeoChrome picture"), 0, 0);
+}
+
+void AnalysisView::openSelectedIff()
+{
+    openSelectedPicture(PictureReading::Iff, tr("Open as IFF picture"), 0, 0);
+}
+
+void AnalysisView::openSelectedSprite()
+{
+    quint32 address = 0;
+    if (!selectedSpan(&address, nullptr))
+        return;
+    bool ok = false;
+    const int width = QInputDialog::getInt(this, tr("Open as sprite"), tr("Width:"), 16, 16, 320, 16,
+                                           &ok);
+    if (!ok)
+        return;
+    const int height = QInputDialog::getInt(this, tr("Open as sprite"), tr("Height:"), 16, 1, 200, 1,
+                                            &ok);
+    if (!ok)
+        return;
+    openSelectedPicture(PictureReading::Sprite, tr("Open as sprite"), width, height);
 }
 
 bool AnalysisView::exportAssemblyTo(const QString &path, QString *error)
@@ -505,7 +615,7 @@ int AnalysisView::rowForImage(quint32 address) const
     return spanning;
 }
 
-void AnalysisView::paintExecution()
+void AnalysisView::paintMarks()
 {
     const std::optional<quint32> image =
         m_havePc ? imageAddressForPc(m_pc, m_textBase, m_dataBase, m_bssBase, m_textSize, m_dataSize,
@@ -514,7 +624,30 @@ void AnalysisView::paintExecution()
     const int hit = image ? rowForImage(*image) : -1;
     const QColor pc = appearance::colors().pcRow;
     for (int row = 0; row < m_listing->rowCount(); ++row) {
+        QTableWidgetItem *address = m_listing->item(row, 0);
+        QTableWidgetItem *note = m_listing->item(row, 4);
         const bool here = row == hit;
+        bool ran = false;
+        if (address && note) {
+            const quint32 start = address->data(Qt::UserRole).toUInt();
+            const quint32 length = address->data(Qt::UserRole + 1).toUInt();
+            ran = m_observed.contains(start);
+            if (!ran && length > 1) {
+                const quint32 end = start + length;
+                for (quint32 at = start + 1; at < end; ++at) {
+                    if (m_observed.contains(at)) {
+                        ran = true;
+                        break;
+                    }
+                }
+            }
+            const QString source = note->data(Qt::UserRole).toString();
+            if (ran)
+                note->setText(source.isEmpty() ? QStringLiteral("ran")
+                                               : QStringLiteral("ran, ") + source);
+            else
+                note->setText(source);
+        }
         for (int column = 0; column < m_listing->columnCount(); ++column) {
             QTableWidgetItem *item = m_listing->item(row, column);
             if (!item)
@@ -527,6 +660,26 @@ void AnalysisView::paintExecution()
             font.setBold(here);
             item->setFont(font);
         }
+        // The gutter stays put when the note column is scrolled away. "pc" is
+        // the instruction the machine is stopped on; "ran" has finished.
+        QString marker;
+        if (here)
+            marker = QStringLiteral("pc");
+        else if (ran)
+            marker = QStringLiteral("ran");
+        QTableWidgetItem *gutter = m_listing->verticalHeaderItem(row);
+        if (!gutter) {
+            gutter = new QTableWidgetItem;
+            m_listing->setVerticalHeaderItem(row, gutter);
+        }
+        gutter->setText(marker);
+        gutter->setTextAlignment(Qt::AlignCenter);
+    }
+    if (hit >= 0) {
+        const QModelIndex idx = m_listing->model()->index(hit, 0);
+        const QRect visible = m_listing->viewport()->rect();
+        if (!visible.contains(m_listing->visualRect(idx)))
+            m_listing->scrollTo(idx, QAbstractItemView::PositionAtCenter);
     }
 }
 

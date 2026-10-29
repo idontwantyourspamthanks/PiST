@@ -6,6 +6,7 @@
 
 #include "analysis/AnalysisNotes.h"
 #include "analysis/Coverage.h"
+#include "image/StFormats.h"
 
 #include <QSet>
 #include <QWidget>
@@ -65,6 +66,17 @@ public:
     /// not create or change the notes file.
     bool exportAssemblyTo(const QString &path, QString *error);
 
+    /// Write the bytes at `address` as a picture file. `width` and `height`
+    /// are the sprite size; the still readings ignore them. `*note` says when
+    /// the reading is a guess. Does not open a dialog or the image editor,
+    /// and does not create or change the notes file.
+    bool openPicture(PictureReading reading, quint32 address, int width, int height, QString *path,
+                     QString *note, QString *error);
+
+signals:
+    /// A picture file was written at `path`. The window opens it.
+    void pictureReady(const QString &path);
+
 private slots:
     void showMenu(const QPoint &pos);
     void renameSelected();
@@ -73,14 +85,21 @@ private slots:
     void markSelectedData();
     void clearSelectedMark();
     void exportSelected();
+    void openSelectedDegas();
+    void openSelectedNeo();
+    void openSelectedIff();
+    void openSelectedSprite();
 
 private:
     bool selectedSpan(quint32 *address, quint32 *length) const;
+    void openSelectedPicture(PictureReading reading, const QString &title, int width, int height);
     bool apply(const AnalysisNotes &next, QString *error);
     void reload();
     void updateActions();
-    void paintExecution();
-    void paintObserved();
+    /// Row colour, the note column, and the gutter: "pc" on the stopped
+    /// instruction, "ran" on one coverage has seen finish. Scrolls the stopped
+    /// row into view.
+    void paintMarks();
     int rowForImage(quint32 address) const;
 
     QString m_path;
@@ -107,6 +126,11 @@ private:
     QAction *m_markData = nullptr;
     QAction *m_clearMark = nullptr;
     QAction *m_export = nullptr;
+    QAction *m_openDegas = nullptr;
+    QAction *m_openNeo = nullptr;
+    QAction *m_openIff = nullptr;
+    QAction *m_openSprite = nullptr;
+    int m_pictureSerial = 0;
 };
 
 } // namespace pist

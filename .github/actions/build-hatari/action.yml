@@ -63,11 +63,11 @@ inputs:
       variant; the fetch fails loudly on an empty pin rather than silently
       building something else.
     required: false
-    default: 'deb3cc7be903938256972b844f17504ab05bf9e0'
+    default: '41fc91d1cdae16149fa15fcc7cd568c03790f913'
   pist-sha256:
     description: 'SHA-256 of the pinned hatari-pist tarball at pist-commit.'
     required: false
-    default: '25c4a14383b5d781225dc6e3210b2b5f90c0f878be1a156a370e83cb983b0294'
+    default: '7d80ed6c17f397451fb76249f0c284d687a35bcdfe6182eda0fe48c5faaef04e'
 outputs:
   path:
     description: Absolute path to the built `hatari` binary.
@@ -330,6 +330,10 @@ runs:
           || { echo "::error::$BIN lacks the --pist-media channel (protocol v2 marker not found)"; exit 1; }
         grep -aq "Remote Debug Listening on port" "$BIN" \
           || { echo "::error::$BIN lacks the HRDB listener (banner not found)"; exit 1; }
+        # The analysis listing's ran notes read this command. A pin that
+        # predates it would build, and the suite would skip the check.
+        grep -aq "Hatari CPU coverage" "$BIN" \
+          || { echo "::error::$BIN lacks the coverage command (file header not found)"; exit 1; }
 
     - name: Report the fork pin
       id: pin

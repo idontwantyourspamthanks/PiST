@@ -6,20 +6,60 @@
 
 #include <QWidget>
 
+class QAudioSink;
 class QCheckBox;
 class QComboBox;
+class QHideEvent;
 class QLabel;
 class QListWidget;
+class QMouseEvent;
+class QPaintEvent;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
+class QTimer;
 
 namespace pist {
 
 class ImageDocument;
 
+/// The sample in Audio mode: one vertical bar per column, and a playhead the
+/// pointer can drag. Playback is owned by the view, not by this widget.
+class BinaryWaveform : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit BinaryWaveform(QWidget *parent = nullptr);
+
+    void setSamples(const QByteArray &samples, bool signedSamples);
+    void setPlayhead(int index);
+    int playhead() const;
+    int sampleCount() const;
+
+signals:
+    /// The pointer moved the playhead. `scrubFinished` follows on release.
+    void scrubbed(int index);
+    void scrubFinished();
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+
+private:
+    int indexAt(int x) const;
+    int amplitude(int index) const;
+    void scrubAt(int x);
+
+    QByteArray m_samples;
+    bool m_signed = false;
+    int m_playhead = 0;
+};
+
 /// A file shown as hex and ASCII. Image mode draws the current range beside it;
-/// Audio mode offers the sample; Data mode is the hex alone.
+/// Audio mode plays the sample and draws its waveform; Data mode is the hex alone.
 ///
 /// It is a read-only document tab. Closing it closes the view. It does not
 /// participate in Save. Edit image writes a `.pim` in the temp directory and
@@ -31,6 +71,7 @@ class BinaryView : public QWidget
 
 public:
     explicit BinaryView(QWidget *parent = nullptr);
+    ~BinaryView() override;
 
     /// Replace the buffer and show it from offset 0. `name` is the tab label.
     void setBytes(const QByteArray &bytes, const QString &name);
@@ -65,17 +106,27 @@ signals:
     /// them and opens the image when they are a real ILBM.
     void iffHitReady(const QByteArray &bytes);
 
+protected:
+    void hideEvent(QHideEvent *event) override;
+
 private slots:
     void showOffset();
     void scan();
     void firstData();
     void offsetEdited();
     void refreshPreview();
+    void refreshWaveform();
     void setViewMode(int mode);
 
 private:
     bool imageAtControls(ImageDocument *doc, QString *error) const;
+    bool sampleBytes(QByteArray *out, QString *error) const;
     void applyKind(const QString &kind);
+    void startPlayback();
+    void stopPlayback();
+    void finishPlayback();
+    void advancePlayhead();
+    void updatePlayTime();
 
     enum class Focus { Image, Audio, Data };
     Focus m_focus = Focus::Image;
@@ -98,7 +149,15 @@ private:
     QSpinBox *m_sampleLength = nullptr;
     QSpinBox *m_rate = nullptr;
     QCheckBox *m_signed = nullptr;
+    QPushButton *m_play = nullptr;
+    QLabel *m_playTime = nullptr;
+    BinaryWaveform *m_wave = nullptr;
     QPushButton *m_saveWav = nullptr;
+    QAudioSink *m_sink = nullptr;
+    QTimer *m_playTimer = nullptr;
+    qint64 m_playStartMs = 0;
+    int m_playFrom = 0;
+    bool m_resumeAfterScrub = false;
     QPushButton *m_scan = nullptr;
     QLabel *m_status = nullptr;
     QTableWidget *m_hex = nullptr;

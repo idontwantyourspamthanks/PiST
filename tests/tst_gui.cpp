@@ -102,6 +102,7 @@
 #include <QTreeView>
 #include <QAbstractItemModel>
 #include <QImage>
+#include <QLocale>
 #include <QPainter>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -498,6 +499,7 @@ private slots:
     void binaryFirstDataSkipsZeroLines();
     void binaryAsciiSitsBesideTheHex();
     void binaryModeHidesTheOtherJob();
+    void binaryWaveformScrubsTheSample();
     void memorySaveFollowsTheStop();
     void captureActionsExist();
     void openDiskHitLoadsABinaryTab();
@@ -4058,6 +4060,81 @@ void TstGui::binaryModeHidesTheOtherJob()
     QCOMPARE(mode->currentText(), QStringLiteral("Image"));
     view.showHit(0, QStringLiteral("atomik"));
     QCOMPARE(mode->currentText(), QStringLiteral("Data"));
+}
+
+void TstGui::binaryWaveformScrubsTheSample()
+{
+    BinaryView view;
+    view.setBytes(QByteArray(8000, '\xff'), QStringLiteral("tone.bin"));
+    view.resize(640, 480);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto *mode = view.findChild<QComboBox *>(QStringLiteral("binaryMode"));
+    auto *length = view.findChild<QSpinBox *>(QStringLiteral("binarySampleLength"));
+    auto *rate = view.findChild<QSpinBox *>(QStringLiteral("binaryRate"));
+    auto *signedSamples = view.findChild<QCheckBox *>(QStringLiteral("binarySigned"));
+    auto *play = view.findChild<QPushButton *>(QStringLiteral("binaryPlay"));
+    auto *time = view.findChild<QLabel *>(QStringLiteral("binaryPlayTime"));
+    auto *wave = view.findChild<BinaryWaveform *>(QStringLiteral("binaryWaveform"));
+    auto *audio = view.findChild<QWidget *>(QStringLiteral("binaryAudioRow"));
+    QVERIFY(mode && length && rate && signedSamples && play && time && wave && audio);
+
+    QCOMPARE(play->text(), QStringLiteral("Play"));
+    mode->setCurrentText(QStringLiteral("Audio"));
+    length->setValue(8000);
+    QCOMPARE(rate->value(), 8000);
+    QTRY_VERIFY(wave->width() > 20);
+    QCOMPARE(wave->sampleCount(), 8000);
+    QCOMPARE(wave->playhead(), 0);
+    QCOMPARE(time->text(), QStringLiteral("0.00 / 1.00 s"));
+    QVERIFY(wave->isVisible());
+
+    const auto grab = [](QWidget *widget) {
+        QImage image(widget->size(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        widget->render(&image);
+        return image;
+    };
+    const QImage loud = grab(wave);
+    signedSamples->setChecked(true);
+    const QImage asSigned = grab(wave);
+    QVERIFY(loud != asSigned);
+    signedSamples->setChecked(false);
+
+    QTest::mouseClick(wave, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(wave->width() * 3 / 4, wave->height() / 2));
+    QVERIFY(wave->playhead() > 4000);
+    QVERIFY(wave->playhead() < 8000);
+    const QString expected =
+        QStringLiteral("%1 / %2 s")
+            .arg(QLocale::c().toString(double(wave->playhead()) / 8000.0, 'f', 2),
+                 QLocale::c().toString(1.0, 'f', 2));
+    QCOMPARE(time->text(), expected);
+    QCOMPARE(play->text(), QStringLiteral("Play"));
+
+    length->setValue(4000);
+    QCOMPARE(wave->sampleCount(), 4000);
+    QCOMPARE(wave->playhead(), 0);
+    QCOMPARE(time->text(), QStringLiteral("0.00 / 0.50 s"));
+
+    // Silence, so a machine with an output device can run the clock without a buzz.
+    // A machine with no device leaves the button on Play and says so.
+    view.setBytes(QByteArray(4000, '\x80'), QStringLiteral("quiet.bin"));
+    QCOMPARE(wave->sampleCount(), 4000);
+    play->click();
+    if (play->text() == QStringLiteral("Pause"))
+        QTRY_VERIFY_WITH_TIMEOUT(play->text() == QStringLiteral("Play"), 2000);
+    auto *status = view.findChild<QLabel *>(QStringLiteral("binaryStatus"));
+    QVERIFY(status);
+    if (status->text() != QStringLiteral("Could not play the sample.")) {
+        QCOMPARE(play->text(), QStringLiteral("Play"));
+        QCOMPARE(wave->playhead(), 0);
+    }
+
+    mode->setCurrentText(QStringLiteral("Image"));
+    QVERIFY(audio->isHidden());
+    QVERIFY(!wave->isVisible());
 }
 
 void TstGui::memorySaveFollowsTheStop()

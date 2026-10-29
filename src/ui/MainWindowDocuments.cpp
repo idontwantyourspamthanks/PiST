@@ -25,6 +25,10 @@
 #include "emu/DebugBackend.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
+#include "analysis/AnalysisNotes.h"
+#include "analysis/Coverage.h"
+#include "analysis/ProgramTrace.h"
+#include "ui/AnalysisView.h"
 #include "ui/BinaryView.h"
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
@@ -79,6 +83,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -205,6 +210,51 @@ BinaryView *MainWindow::addBinaryTab(const QByteArray &bytes, const QString &nam
     m_tabs->setCurrentIndex(index);
     updateTabTitle(view);
     return view;
+}
+
+
+AnalysisView *MainWindow::addAnalysisTab(const QByteArray &bytes, const QString &name,
+                                         const QString &path)
+{
+    auto *view = new AnalysisView(this);
+    view->setIdentity(path, name);
+    view->setBytes(bytes);
+    const int index = m_tabs->addTab(view, name);
+    m_tabs->setCurrentIndex(index);
+    updateTabTitle(view);
+    // A tab opened after the entry stop still has a PC to mark: the state
+    // update that carried it has already been and gone.
+    applyAnalysisExecution();
+    // The stops that ran before this tab existed are already in the recorder.
+    // A save now is what puts them on the listing.
+    requestCoverageSave();
+    connect(view, &AnalysisView::pictureReady, this, [this](const QString &path) {
+        openPath(path);
+    });
+    return view;
+}
+
+
+QList<AnalysisView *> MainWindow::openAnalysisViews() const
+{
+    QList<AnalysisView *> views;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto *view = qobject_cast<AnalysisView *>(m_tabs->widget(i)))
+            views.append(view);
+    return views;
+}
+
+
+AnalysisView *MainWindow::analysisForPath(const QString &path) const
+{
+    if (path.isEmpty())
+        return nullptr;
+    const QFileInfo wanted(path);
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == wanted)
+            return view;
+    }
+    return nullptr;
 }
 
 
@@ -347,6 +397,8 @@ void MainWindow::updateTabTitle(QWidget *widget)
         modified = image->isModifiedSinceLoad();
     } else if (auto *binary = qobject_cast<BinaryView *>(widget)) {
         name = binary->displayName();
+    } else if (auto *analysis = qobject_cast<AnalysisView *>(widget)) {
+        name = analysis->displayName();
     }
     m_tabs->setTabText(index, name + (modified ? QStringLiteral(" *") : QString()));
 }
@@ -386,6 +438,8 @@ void MainWindow::onTabChanged(int index)
         path = m_image->filePath();
     else if (auto *binary = qobject_cast<BinaryView *>(widget))
         path = binary->filePath();
+    else if (auto *analysis = qobject_cast<AnalysisView *>(widget))
+        path = analysis->filePath();
     if (!path.isEmpty() && m_fileBrowser)
         m_fileBrowser->showFor(path);
     if (m_editor)
@@ -638,6 +692,10 @@ void MainWindow::documentVanished(const QString &path, bool deliberate)
         if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == QFileInfo(path))
             documents.append(view);
     }
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == QFileInfo(path))
+            documents.append(view);
+    }
 
     for (QWidget *document : documents) {
         bool modified = false;
@@ -732,6 +790,20 @@ void MainWindow::followRenamedFile(const QString &oldPath, const QString &newPat
         view->setIdentity(absolute, absolute, QFileInfo(newPath).fileName());
         updateTabTitle(view);
     }
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (view->filePath().isEmpty() || QFileInfo(view->filePath()) != QFileInfo(oldPath))
+            continue;
+        const QString absolute = QFileInfo(newPath).absoluteFilePath();
+        view->setIdentity(absolute, QFileInfo(newPath).fileName());
+        updateTabTitle(view);
+    }
+    const QString oldNotes = analysisNotesPath(QFileInfo(oldPath).absoluteFilePath());
+    const QString newNotes = analysisNotesPath(QFileInfo(newPath).absoluteFilePath());
+    if (QFileInfo::exists(oldNotes) && QFileInfo(oldNotes) != QFileInfo(newNotes)
+        && !QFile::rename(oldNotes, newNotes)) {
+        statusBar()->showMessage(
+            tr("%1 could not be renamed with its program.").arg(QFileInfo(oldNotes).fileName()), 8000);
+    }
 
     // The breakpoint store, keyed by base name: renaming a file would otherwise
     // strand its breakpoints under a name that no longer exists
@@ -783,6 +855,8 @@ void MainWindow::updateModifiedState()
     } else if (m_tabs) {
         if (auto *binary = qobject_cast<BinaryView *>(m_tabs->currentWidget()))
             name = binary->displayName();
+        else if (auto *analysis = qobject_cast<AnalysisView *>(m_tabs->currentWidget()))
+            name = analysis->displayName();
     }
 
     // The "[*]" placeholder is replaced by Qt when windowModified is set, which
@@ -905,6 +979,55 @@ void MainWindow::openBinaryAt(const QString &path)
         return;
     }
     addBinaryTab(file.readAll(), QFileInfo(path).fileName(), key, key);
+    settings::noteFileOpened();
+}
+
+
+void MainWindow::openAnalysis()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open for Analysis"), QString(),
+        tr("TOS executables (*.prg *.ttp *.app *.acc);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    openAnalysisAt(path);
+}
+
+
+void MainWindow::openAnalysisAt(const QString &path)
+{
+    if (!QFileInfo(path).isFile())
+        return;
+    const QString key = QFileInfo(path).absoluteFilePath();
+    if (AnalysisView *open = analysisForPath(key)) {
+        m_tabs->setCurrentWidget(open);
+        return;
+    }
+
+    constexpr int kLimit = 2 * 1024 * 1024;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Open for Analysis"), file.errorString());
+        return;
+    }
+    if (file.size() > kLimit) {
+        QMessageBox::warning(this, tr("Open for Analysis"),
+                             tr("The file is larger than %1 bytes.").arg(kLimit));
+        return;
+    }
+    const QByteArray bytes = file.readAll();
+    AnalysisNotes notes;
+    QString notesError;
+    if (!loadAnalysisNotes(analysisNotesPath(key), &notes, &notesError)) {
+        QMessageBox::warning(this, tr("Open for Analysis"), notesError);
+        return;
+    }
+    const ProgramListing listing = listProgram(bytes, notes);
+    if (!listing.error.isEmpty()) {
+        QMessageBox::warning(this, tr("Open for Analysis"), listing.error);
+        return;
+    }
+    addAnalysisTab(bytes, QFileInfo(path).fileName(), key);
     settings::noteFileOpened();
 }
 
@@ -1215,6 +1338,75 @@ void MainWindow::saveFile()
     if (m_gitPanel)
         m_gitPanel->refresh();
     refreshBlame();
+}
+
+
+void MainWindow::setEmulatorCaption()
+{
+    if (!m_displayDock)
+        return;
+    if (m_launchedName.isEmpty())
+        m_displayDock->setWindowTitle(tr("Emulator"));
+    else
+        m_displayDock->setWindowTitle(tr("Emulator — %1").arg(m_launchedName));
+}
+
+
+void MainWindow::applyAnalysisExecution()
+{
+    const bool live = m_lastState.regs.valid && m_lastState.hasBases() && !m_launchedProgram.isEmpty();
+    const QFileInfo launched(m_launchedProgram);
+    for (AnalysisView *view : openAnalysisViews()) {
+        const bool mine = live && !view->filePath().isEmpty() && QFileInfo(view->filePath()) == launched;
+        if (!mine) {
+            view->clearExecutionPc();
+            continue;
+        }
+        view->setExecutionPc(m_lastState.pc, m_lastState.textBase, m_lastState.dataBase,
+                             m_lastState.bssBase);
+    }
+}
+
+void MainWindow::requestCoverageSave()
+{
+    if (!m_coverageRecording || !m_host || !m_host->isRunning() || m_currentSessionDir.isEmpty())
+        return;
+    if (!m_lastState.regs.valid || !m_lastState.hasBases() || m_launchedProgram.isEmpty())
+        return;
+    const QFileInfo launched(m_launchedProgram);
+    bool watching = false;
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == launched) {
+            watching = true;
+            break;
+        }
+    }
+    if (!watching)
+        return;
+    m_host->coverageSave(m_currentSessionDir + QStringLiteral("/coverage.txt"));
+}
+
+void MainWindow::applyCoverageFile(const QString &path)
+{
+    if (!m_lastState.regs.valid || !m_lastState.hasBases() || m_launchedProgram.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_log->appendPlainText(tr("Could not read the coverage file."));
+        return;
+    }
+    QString error;
+    QVector<CoverageSample> samples;
+    if (!parseCoverage(QString::fromUtf8(file.readAll()), &samples, &error)) {
+        m_log->appendPlainText(error);
+        return;
+    }
+    const QFileInfo launched(m_launchedProgram);
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (view->filePath().isEmpty() || QFileInfo(view->filePath()) != launched)
+            continue;
+        view->setCoverage(samples, m_lastState.textBase, m_lastState.dataBase, m_lastState.bssBase);
+    }
 }
 
 

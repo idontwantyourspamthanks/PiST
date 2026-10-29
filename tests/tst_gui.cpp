@@ -35,6 +35,8 @@
 #include "ui/WelcomeView.h"
 #include "ui/RegistersView.h"
 #include "emu/MachineState.h"
+#include "analysis/AnalysisNotes.h"
+#include "ui/AnalysisView.h"
 #include "ui/MainWindow.h"
 #include "ui/SymbolPaletteDialog.h"
 #include "ui/StopHooksDialog.h"
@@ -504,6 +506,15 @@ private slots:
     void captureActionsExist();
     void openDiskHitLoadsABinaryTab();
     void projectFilesOpenBinaryLoadsTheFile();
+    void openAnalysisLoadsATosProgram();
+    void analysisNotesRenameAndMark();
+    void analysisHighlightsTheStoppedPc();
+    void analysisExportWritesAssembly();
+    void analysisMarksTheRunningProgram();
+    void analysisRunLaunchesThatProgram();
+    void analysisNotesAnExecutedAddress();
+    void analysisOpensAGuessedPicture();
+    void analysisShowsWhatRan();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -1174,6 +1185,10 @@ void TstGui::runStartsAnEmulatorSession()
     QVERIFY2(initialBackend, "MainWindow must own a debug backend");
     QVERIFY(!initialBackend->isRunning());
 
+    auto *emulatorDock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(emulatorDock);
+    QCOMPARE(emulatorDock->windowTitle(), QStringLiteral("Emulator"));
+
     window.openPath(source);
     QCOMPARE(window.windowTitle().contains(QLatin1String("PiST")), true);
 
@@ -1192,8 +1207,10 @@ void TstGui::runStartsAnEmulatorSession()
     QSignalSpy stoppedSpy(host, &IDebugBackend::stoppedChanged);
     QVERIFY2(stoppedSpy.wait(30000) || host->isStopped(),
              "the emulator started but never reached the debugger");
+    QCOMPARE(emulatorDock->windowTitle(), QStringLiteral("Emulator — run.s"));
 
     host->stop();
+    QTRY_COMPARE(emulatorDock->windowTitle(), QStringLiteral("Emulator"));
 }
 
 // Hatari resolves a machine/ROM mismatch itself: it overrides `--machine` to
@@ -4255,6 +4272,689 @@ void TstGui::projectFilesOpenBinaryLoadsTheFile()
     browser->openBinaryFile(dir);
     QCOMPARE(tabs->count(), 2);
     QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("sprite.bin"));
+}
+
+void TstGui::openAnalysisLoadsATosProgram()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = dir + QStringLiteral("/leave.prg");
+    QByteArray program;
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    program += be16(0x601A);
+    program += be32(6);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be16(0);
+    program += QByteArray::fromHex("42674E414E71");
+    program += be32(0);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    MainWindow window;
+    auto *action = window.findChild<QAction *>(QStringLiteral("openAnalysisAction"));
+    QVERIFY(action);
+    QVERIFY(action->shortcut().isEmpty());
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+
+    browser->openAnalysisFile(path);
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->tabText(0), QStringLiteral("leave.prg"));
+    QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
+    auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(view);
+    QCOMPARE(view->filePath(), QFileInfo(path).absoluteFilePath());
+    QCOMPARE(view->findChild<QLabel *>(QStringLiteral("analysisSummary"))->text(),
+             QStringLiteral("6 bytes of code, 0 bytes of data, 0 bytes of bss, 0 symbols, 0 relocations"));
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    QCOMPARE(listing->rowCount(), 3);
+    QCOMPARE(listing->item(0, 3)->text(), QStringLiteral("clr.w -(sp)"));
+    QCOMPARE(listing->item(1, 3)->text(), QStringLiteral("trap #1"));
+    QCOMPARE(listing->item(2, 3)->text(), QStringLiteral("dc.b $4e,$71"));
+    auto *save = window.findChild<QAction *>(QStringLiteral("saveAction"));
+    QVERIFY(save);
+    QVERIFY(!save->isEnabled());
+
+    browser->openAnalysisFile(path);
+    QCOMPARE(tabs->count(), 1);
+
+    browser->openBinaryFile(path);
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(qobject_cast<BinaryView *>(tabs->currentWidget()));
+    browser->openAnalysisFile(path);
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(qobject_cast<AnalysisView *>(tabs->currentWidget()));
+}
+
+void TstGui::analysisNotesRenameAndMark()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-notes");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = QFileInfo(dir + QStringLiteral("/bra.prg")).absoluteFilePath();
+    QByteArray program;
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    program += be16(0x601A);
+    program += be32(6);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be32(0);
+    program += be16(0);
+    program += QByteArray::fromHex("60024E714E71");
+    program += be32(0);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    AnalysisNotes notes;
+    QString error;
+    QVERIFY2(setAnalysisName(&notes, 4, QStringLiteral("there"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisComment(&notes, 4, QStringLiteral("landed"), &error), qPrintable(error));
+    QVERIFY2(saveAnalysisNotes(analysisNotesPath(path), notes, &error), qPrintable(error));
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(path);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(view);
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    QCOMPARE(listing->columnCount(), 7);
+    int target = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        if (listing->item(row, 0)->text() == QStringLiteral("$4"))
+            target = row;
+    }
+    QVERIFY(target >= 0);
+    QCOMPARE(listing->item(0, 3)->text(), QStringLiteral("bra.s there"));
+    QCOMPARE(listing->item(target, 1)->text(), QStringLiteral("there"));
+    QCOMPARE(listing->item(target, 5)->text(), QStringLiteral("$0"));
+    QCOMPARE(listing->item(target, 6)->text(), QStringLiteral("landed"));
+
+    auto *markCode = view->findChild<QAction *>(QStringLiteral("analysisMarkCodeAction"));
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisRenameAction")));
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisCommentAction")));
+    QVERIFY(markCode);
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisMarkDataAction")));
+    QVERIFY(view->findChild<QAction *>(QStringLiteral("analysisClearMarkAction")));
+    QVERIFY(!markCode->isEnabled());
+    listing->selectRow(0);
+    QVERIFY(markCode->isEnabled());
+
+    QVERIFY2(view->renameAddress(4, QStringLiteral("dest"), &error), qPrintable(error));
+    QCOMPARE(listing->item(0, 3)->text(), QStringLiteral("bra.s dest"));
+    QFile saved(analysisNotesPath(path));
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QVERIFY(QString::fromUtf8(saved.readAll()).contains(QStringLiteral("dest")));
+    // Windows will not replace a file that still has a reader. The next edit
+    // rewrites this sidecar.
+    saved.close();
+
+    QVERIFY2(view->markBytes(2, 2, AnalysisOverride::Kind::Code, &error), qPrintable(error));
+    int skipped = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        if (listing->item(row, 0)->text() == QStringLiteral("$2"))
+            skipped = row;
+    }
+    QVERIFY(skipped >= 0);
+    QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("nop"));
+    QVERIFY2(view->clearMark(2, 2, &error), qPrintable(error));
+    skipped = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        if (listing->item(row, 0)->text() == QStringLiteral("$2"))
+            skipped = row;
+    }
+    QVERIFY(skipped >= 0);
+    QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("dc.b $4e,$71"));
+}
+
+namespace {
+
+QByteArray guiTos(const QByteArray &text, const QByteArray &data = {}, quint32 bss = 0)
+{
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    QByteArray bytes;
+    bytes += be16(0x601A);
+    bytes += be32(quint32(text.size()));
+    bytes += be32(quint32(data.size()));
+    bytes += be32(bss);
+    bytes += be32(0);
+    bytes += be32(0);
+    bytes += be32(0);
+    bytes += be16(0);
+    bytes += text;
+    bytes += data;
+    bytes += be32(0);
+    return bytes;
+}
+
+int imageRow(const QTableWidget *listing, quint32 address)
+{
+    int spanning = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        const QTableWidgetItem *item = listing->item(row, 0);
+        if (!item)
+            continue;
+        const quint32 start = item->data(Qt::UserRole).toUInt();
+        const quint32 length = item->data(Qt::UserRole + 1).toUInt();
+        if (length == 0 && start == address)
+            return row;
+        if (length > 0 && address >= start && (address - start) < length)
+            spanning = row;
+    }
+    return spanning;
+}
+
+} // namespace
+
+void TstGui::analysisHighlightsTheStoppedPc()
+{
+    // lea (4) to the nop, rts, then two data bytes. The bases below leave a gap
+    // between text and data, so the mark cannot be a plain subtraction from the
+    // text base.
+    const QByteArray program = guiTos(QByteArray::fromHex("41FA00024E714E75"),
+                                      QByteArray::fromHex("1100"), 4);
+    AnalysisView view;
+    view.setBytes(program);
+    auto *listing = view.findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int nop = imageRow(listing, 4);
+    const int data = imageRow(listing, 8);
+    QVERIFY(nop >= 0);
+    QVERIFY(data >= 0);
+    listing->selectRow(nop);
+    const QColor pc = appearance::colors().pcRow;
+
+    // The PC is two bytes into the lea, so the lea's row is the one marked,
+    // and the selection stays on the nop.
+    view.setExecutionPc(0x10002, 0x10000, 0x20000, 0x30000);
+    const int lea = imageRow(listing, 0);
+    QVERIFY(lea >= 0);
+    QCOMPARE(view.executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->currentRow(), nop);
+    QCOMPARE(listing->item(lea, 0)->background().color(), pc);
+    QVERIFY(listing->item(lea, 3)->font().bold());
+    QCOMPARE(listing->verticalHeaderItem(lea)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(nop)->text(), QString());
+    QCOMPARE(listing->item(nop, 0)->background().style(), Qt::NoBrush);
+
+    // Data lives at its own base, not at textBase + textSize.
+    view.setExecutionPc(0x20000, 0x10000, 0x20000, 0x30000);
+    QCOMPARE(view.executionAddress(), std::optional<quint32>(8));
+    QCOMPARE(listing->currentRow(), nop);
+    QCOMPARE(listing->item(data, 0)->background().color(), pc);
+    QCOMPARE(listing->item(lea, 0)->background().style(), Qt::NoBrush);
+
+    // Just past text, still short of the data base: nothing is marked.
+    view.setExecutionPc(0x10008, 0x10000, 0x20000, 0x30000);
+    QVERIFY(!view.executionAddress().has_value());
+    QCOMPARE(listing->item(data, 0)->background().style(), Qt::NoBrush);
+    QCOMPARE(listing->currentRow(), nop);
+
+    view.setExecutionPc(0x10000, 0, 0, 0);
+    QVERIFY(!view.executionAddress().has_value());
+    view.clearExecutionPc();
+    QVERIFY(!view.executionAddress().has_value());
+}
+
+void TstGui::analysisExportWritesAssembly()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-export");
+    QVERIFY(QDir().mkpath(dir));
+    const QString programPath = QFileInfo(dir + QStringLiteral("/bra.prg")).absoluteFilePath();
+    const QByteArray program = guiTos(QByteArray::fromHex("60024E714E71"));
+    QFile programFile(programPath);
+    QVERIFY(programFile.open(QIODevice::WriteOnly));
+    QCOMPARE(programFile.write(program), qint64(program.size()));
+    programFile.close();
+
+    AnalysisView view;
+    view.setIdentity(programPath, QStringLiteral("bra.prg"));
+    view.setBytes(program);
+    auto *action = view.findChild<QAction *>(QStringLiteral("analysisExportAction"));
+    QVERIFY(action);
+    QCOMPARE(action->text(), QStringLiteral("Export assembly…"));
+    QVERIFY(action->isEnabled());
+
+    const QString out = dir + QStringLiteral("/bra.s");
+    QString error;
+    QVERIFY2(view.exportAssemblyTo(out, &error), qPrintable(error));
+    QFile written(out);
+    QVERIFY(written.open(QIODevice::ReadOnly));
+    const QString source = QString::fromUtf8(written.readAll());
+    QVERIFY(source.contains(QStringLiteral("\tbra.s loc_4\n")));
+    QVERIFY(source.contains(QStringLiteral("loc_4:\n")));
+    QVERIFY(!QFileInfo(programPath + QStringLiteral(".pistanalysis")).exists());
+
+    AnalysisView bad;
+    bad.setBytes(QByteArrayLiteral("nope"));
+    auto *disabled = bad.findChild<QAction *>(QStringLiteral("analysisExportAction"));
+    QVERIFY(disabled);
+    QVERIFY(!disabled->isEnabled());
+    QVERIFY(!bad.exportAssemblyTo(dir + QStringLiteral("/nope.s"), &error));
+    QCOMPARE(error, QStringLiteral("This file has no analysis listing."));
+    QVERIFY(!QFileInfo(dir + QStringLiteral("/nope.s")).exists());
+}
+
+void TstGui::analysisMarksTheRunningProgram()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/pc.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"      // line 1
+              "start:\tnop\n" // line 2, image address 0
+              "\trts\n"       // line 3, image address 2
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    const QString other = m_work->path() + QStringLiteral("/other.prg");
+    QFile decoy(other);
+    QVERIFY(decoy.open(QIODevice::WriteOnly));
+    const QByteArray decoyBytes = guiTos(QByteArray::fromHex("4E75"));
+    QCOMPARE(decoy.write(decoyBytes), qint64(decoyBytes.size()));
+    decoy.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
+
+    const QString prg = settings::outputPathsFor(source).program;
+    QVERIFY(QFileInfo(prg).isFile());
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+    browser->openAnalysisFile(prg);
+    browser->openAnalysisFile(other);
+
+    AnalysisView *running = nullptr;
+    AnalysisView *bystander = nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *view = qobject_cast<AnalysisView *>(tabs->widget(i));
+        if (!view)
+            continue;
+        if (QFileInfo(view->filePath()) == QFileInfo(prg))
+            running = view;
+        else if (QFileInfo(view->filePath()) == QFileInfo(other))
+            bystander = view;
+    }
+    QVERIFY(running);
+    QVERIFY(bystander);
+    QCOMPARE(running->executionAddress(), std::optional<quint32>(0));
+    QVERIFY(!bystander->executionAddress().has_value());
+    auto *listing = running->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    QVERIFY(entry >= 0);
+    QCOMPARE(listing->item(entry, 3)->text(), QStringLiteral("nop"));
+    QCOMPARE(listing->item(entry, 0)->background().color(), appearance::colors().pcRow);
+
+    const int away = imageRow(listing, 2);
+    QVERIFY(away >= 0);
+    listing->selectRow(away);
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                const std::optional<quint32> at = running->executionAddress();
+                return at.has_value() && *at == 2u;
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(running->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->item(away, 3)->text(), QStringLiteral("rts"));
+    QCOMPARE(listing->item(away, 0)->background().color(), appearance::colors().pcRow);
+    QCOMPARE(listing->item(entry, 0)->background().style(), Qt::NoBrush);
+    QCOMPARE(listing->currentRow(), away);
+    QVERIFY(!bystander->executionAddress().has_value());
+
+    auto *host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+    host->stop();
+}
+
+// The focused analysis is the program to run. An open source that is not
+// focused must not be assembled instead, and vasm must not be handed the
+// program as if it were source.
+void TstGui::analysisRunLaunchesThatProgram()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/other.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "loop:\tbra.s\tloop\n"
+              "\tend\n");
+    src.close();
+
+    const QString program = m_work->path() + QStringLiteral("/guest.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // nop, then rts. Coverage drops the instruction it was switched on at, so
+    // the rts is the first row that can read "ran".
+    const QByteArray bytes = guiTos(QByteArray::fromHex("4E714E75"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    QCOMPARE(QFileInfo(analysis->filePath()), QFileInfo(program));
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("emulatorDisplayDock"));
+    QVERIFY(dock);
+    QTRY_COMPARE_WITH_TIMEOUT(dock->windowTitle(), QStringLiteral("Emulator — guest.prg"), 30000);
+    QVERIFY2(!window.debugConsoleText().contains(QLatin1String("--- build ---")),
+             qPrintable(window.debugConsoleText()));
+    QVERIFY2(!window.debugConsoleText().contains(QLatin1String("could not open")),
+             qPrintable(window.debugConsoleText()));
+
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress().has_value(); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(editor->currentExecutionLine(), 0);
+    QVERIFY(!QFileInfo(settings::outputPathsFor(source).program).isFile());
+
+    auto *listing = analysis->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int ret = imageRow(listing, 2);
+    QVERIFY(entry >= 0 && ret >= 0);
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+
+    // "ran" needs the fork's coverage command. A stock Hatari still shows pc.
+    // The reply is queued at this stop, so it can land just after the PC mark.
+    if (!QTest::qWaitFor(
+            [&] {
+                const QString console = window.debugConsoleText();
+                return console.contains(QLatin1String("Command 'coverage' not found"))
+                    || console.contains(QLatin1String("Coverage recording on"));
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (window.debugConsoleText().contains(QLatin1String("Command 'coverage' not found")))
+        return;
+    QVERIFY2(window.debugConsoleText().contains(QLatin1String("Coverage recording on")),
+             qPrintable(window.debugConsoleText()));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QVERIFY(QTest::qWaitFor(
+        [&] { return analysis->executionAddress().has_value() && *analysis->executionAddress() == 2u; },
+        30000));
+    QCOMPARE(listing->verticalHeaderItem(ret)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QString());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return listing->verticalHeaderItem(ret)->text() == QLatin1String("ran"); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(listing->verticalHeaderItem(ret)->text(), QStringLiteral("ran"));
+    QVERIFY(listing->item(ret, 4)->text().contains(QLatin1String("ran")));
+}
+
+void TstGui::analysisNotesAnExecutedAddress()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-ran");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = QFileInfo(dir + QStringLiteral("/bra.prg")).absoluteFilePath();
+    const QByteArray program = guiTos(QByteArray::fromHex("60024E714E71"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(path);
+    auto *view = qobject_cast<AnalysisView *>(
+        window.findChild<QTabWidget *>(QStringLiteral("documentTabs"))->currentWidget());
+    QVERIFY(view);
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int branch = imageRow(listing, 0);
+    const int skipped = imageRow(listing, 2);
+    const int landed = imageRow(listing, 4);
+    QVERIFY(branch >= 0 && skipped >= 0 && landed >= 0);
+    const QString branchNote = listing->item(branch, 4)->text();
+    const QString skippedNote = listing->item(skipped, 4)->text();
+    listing->selectRow(landed);
+
+    // $10002 is image address 2, the bytes the walk left as data. Recording
+    // that they executed notes the row; it does not mark them as code.
+    view->setCoverage({CoverageSample{0x10002, 3}}, 0x10000, 0, 0);
+    QCOMPARE(listing->item(branch, 4)->text(), branchNote);
+    QCOMPARE(listing->item(skipped, 4)->text(),
+             skippedNote.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + skippedNote);
+    QCOMPARE(listing->verticalHeaderItem(skipped)->text(), QStringLiteral("ran"));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QString());
+    QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("dc.b $4e,$71"));
+    QCOMPARE(listing->currentRow(), landed);
+    QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
+
+    QString error;
+    QVERIFY2(view->setAddressComment(2, QStringLiteral("seen"), &error), qPrintable(error));
+    QCOMPARE(listing->item(skipped, 4)->text(),
+             skippedNote.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + skippedNote);
+    QCOMPARE(listing->item(skipped, 6)->text(), QStringLiteral("seen"));
+
+    view->setCoverage({}, 0x10000, 0, 0);
+    QCOMPARE(listing->item(skipped, 4)->text(), skippedNote);
+    QCOMPARE(listing->currentRow(), landed);
+}
+
+void TstGui::analysisOpensAGuessedPicture()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-picture");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = QFileInfo(dir + QStringLiteral("/pic.prg")).absoluteFilePath();
+    // clr.w -(sp) / trap #1 ends the walk, so the following bytes stay data.
+    // Those bytes are a low-resolution Degas picture only because they are
+    // long enough and the resolution word is 0 — there is no signature.
+    const QByteArray program = guiTos(QByteArray::fromHex("42674E41"), QByteArray(kDegasPictureBytes, '\0'));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(path);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *view = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(view);
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int picture = imageRow(listing, 4);
+    QVERIFY(picture >= 0);
+    listing->selectRow(picture);
+
+    auto *degas = window.findChild<QAction *>(QStringLiteral("analysisOpenDegasAction"));
+    auto *sprite = window.findChild<QAction *>(QStringLiteral("analysisOpenSpriteAction"));
+    auto *iff = window.findChild<QAction *>(QStringLiteral("analysisOpenIffAction"));
+    QVERIFY(degas && sprite && iff);
+    QVERIFY(degas->isEnabled());
+    QVERIFY(sprite->isEnabled());
+    QVERIFY(!iff->isEnabled());
+
+    QString written;
+    QString note;
+    QString error;
+    QVERIFY2(view->openPicture(PictureReading::Degas, 4, 0, 0, &written, &note, &error),
+             qPrintable(error));
+    QCOMPARE(note, QStringLiteral(
+                       "Opened as a low-resolution Degas picture. Degas has no signature, so this is a guess."));
+    QVERIFY(written.endsWith(QLatin1String(".pi1")));
+    QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
+    QCOMPARE(listing->currentRow(), picture);
+
+    QVERIFY(window.openPath(written));
+    auto *image = qobject_cast<ImageEditor *>(tabs->currentWidget());
+    QVERIFY(image);
+    QCOMPARE(image->document().sheets().size(), 1);
+    QCOMPARE(image->document().sheets().at(0).width, 320);
+    QCOMPARE(image->document().sheets().at(0).height, 200);
+}
+
+void TstGui::analysisShowsWhatRan()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/ran.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tnop\n" // image address 0, the instruction coverage on is stopped on
+              "\trts\n"       // image address 2, counted once it finishes
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'coverage' not found")))
+        QSKIP("this Hatari has no coverage command");
+    QVERIFY2(window.debugConsoleText().contains(QLatin1String("Coverage recording on")),
+             qPrintable(window.debugConsoleText()));
+
+    const QString prg = settings::outputPathsFor(source).program;
+    QVERIFY(QFileInfo(prg).isFile());
+    const QString other = m_work->path() + QStringLiteral("/other-ran.prg");
+    QFile decoy(other);
+    QVERIFY(decoy.open(QIODevice::WriteOnly));
+    const QByteArray decoyBytes = guiTos(QByteArray::fromHex("4E75"));
+    QCOMPARE(decoy.write(decoyBytes), qint64(decoyBytes.size()));
+    decoy.close();
+
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+    browser->openAnalysisFile(prg);
+    browser->openAnalysisFile(other);
+    AnalysisView *running = nullptr;
+    AnalysisView *bystander = nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *view = qobject_cast<AnalysisView *>(tabs->widget(i));
+        if (!view)
+            continue;
+        if (QFileInfo(view->filePath()) == QFileInfo(prg))
+            running = view;
+        else if (QFileInfo(view->filePath()) == QFileInfo(other))
+            bystander = view;
+    }
+    QVERIFY(running && bystander);
+    auto *listing = running->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int ret = imageRow(listing, 2);
+    QVERIFY(entry >= 0 && ret >= 0);
+    auto *bystanderListing = bystander->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(bystanderListing);
+    const QString bystanderNote = bystanderListing->item(0, 4)->text();
+
+    // The instruction coverage was turned on at is discarded, so one step
+    // leaves the nop uncounted. The rts is counted when it finishes.
+    listing->selectRow(entry);
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QVERIFY(QTest::qWaitFor(
+        [&] { return running->executionAddress().has_value() && *running->executionAddress() == 2u; },
+        30000));
+    QCOMPARE(listing->item(entry, 4)->text().contains(QLatin1String("ran")), false);
+    QCOMPARE(listing->item(ret, 4)->text().contains(QLatin1String("ran")), false);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return listing->item(ret, 4)->text().contains(QLatin1String("ran")); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listing->item(ret, 4)->text().contains(QLatin1String("ran")));
+    QVERIFY(!listing->item(entry, 4)->text().contains(QLatin1String("ran")));
+    QCOMPARE(listing->item(ret, 3)->text(), QStringLiteral("rts"));
+    QCOMPARE(listing->currentRow(), entry);
+    QCOMPARE(bystanderListing->item(0, 4)->text(), bystanderNote);
+    QVERIFY(!QFileInfo(prg + QStringLiteral(".pistanalysis")).exists());
+
+    auto *host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+    host->stop();
 }
 
 void TstGui::fileMenuAndToolbarMatchTheJobs()

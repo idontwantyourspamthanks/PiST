@@ -332,6 +332,21 @@ void MainWindow::wireBackend()
                     return;
                 showProfileResults();
             });
+    connect(m_host, &IDebugBackend::coverageReady, this, [this](bool recording) {
+        // A reply from a session that has already ended belongs to that
+        // session's process, which is gone.
+        if (!m_host->isRunning() || m_currentSessionDir.isEmpty())
+            return;
+        m_coverageRecording = recording;
+        if (recording)
+            requestCoverageSave();
+    });
+    connect(m_host, &IDebugBackend::coverageSaveFinished, this,
+            [this](const QString &path) {
+                if (!m_coverageRecording || m_currentSessionDir.isEmpty())
+                    return;
+                applyCoverageFile(path);
+            });
     connect(m_host, &IDebugBackend::commandFinished, this,
             [this](const QString &command, const QString &response) {
                 // Only the remote `cmd` verb's own text is matched here: it is
@@ -1047,6 +1062,8 @@ void MainWindow::onStateUpdated(const MachineState &state)
 
     locationFromPc(state.pc);
     updateRegisterStrip();
+    applyAnalysisExecution();
+    requestCoverageSave();
 }
 
 

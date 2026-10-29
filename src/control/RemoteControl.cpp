@@ -758,6 +758,20 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         else
             replyBlock(guarded, QString::fromUtf8(QJsonDocument(hits).toJson(QJsonDocument::Compact)));
 
+    } else if (cmd == QLatin1String("analyze")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 1) {
+            replyBlockError(guarded, QStringLiteral("error usage: analyze <file>"));
+            return;
+        }
+        QString error;
+        const QJsonObject listing = m_host->analyzeProgram(fields.at(0), &error);
+        if (!error.isEmpty())
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+        else
+            replyBlock(guarded, QString::fromUtf8(
+                QJsonDocument(listing).toJson(QJsonDocument::Compact)));
+
     } else if (cmd == QLatin1String("depack")) {
         const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
         quint32 offset = 0;

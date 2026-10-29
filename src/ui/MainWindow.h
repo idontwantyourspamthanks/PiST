@@ -63,6 +63,7 @@ class GitPanel;
 class IDebugBackend;
 class ImageEditor;
 class MemoryView;
+class AnalysisView;
 class BinaryView;
 class RegistersView;
 class StackView;
@@ -200,6 +201,7 @@ public:
     bool captureDmaTo(const QString &outPath, QString *error) override;
     bool ripAvr(const QString &path, quint32 offset, const QString &outPath, QString *error) override;
     QJsonArray scanFileMagic(const QString &path, QString *error) override;
+    QJsonObject analyzeProgram(const QString &path, QString *error) override;
     QJsonArray scanDiskMagic(const QString &imagePath, QString *error) override;
     QString identifyPacker(const QString &path, quint32 offset, QString *error) override;
     QJsonObject sndhInfo(const QString &path, quint32 offset, QString *error) override;
@@ -277,6 +279,8 @@ private slots:
     void openFile();
     void openBinary();
     void openBinaryAt(const QString &path);
+    void openAnalysis();
+    void openAnalysisAt(const QString &path);
     void openIffBytes(const QByteArray &bytes);
     void captureScreen();
     void captureDma();
@@ -657,6 +661,12 @@ private:
                              const QString &path, const QString &originKey);
     void wireBinary(BinaryView *view);
 
+    /// A read-only disassembly of a TOS executable. The same path raises the
+    /// tab that is already open; a binary tab of that path is a different
+    /// document and stays put.
+    AnalysisView *addAnalysisTab(const QByteArray &bytes, const QString &name,
+                                 const QString &path);
+
     /// Shared body of openPath (interactive) and openPathQuiet (remote): the
     /// quiet form returns false where the interactive one shows a modal.
     bool openPathImpl(const QString &path, bool quiet);
@@ -715,11 +725,13 @@ private:
     QList<CodeEditor *> openEditors() const;
     QList<ImageEditor *> openImages() const;
     QList<BinaryView *> openBinaryViews() const;
+    QList<AnalysisView *> openAnalysisViews() const;
 
     /// The open editor showing `path`, or null.
     CodeEditor *editorForPath(const QString &path) const;
     ImageEditor *imageForPath(const QString &path) const;
     BinaryView *binaryForKey(const QString &originKey) const;
+    AnalysisView *analysisForPath(const QString &path) const;
 
     /// Sync a tab's label with its document's name and modified state.
     void updateTabTitle(QWidget *widget);
@@ -756,6 +768,20 @@ private:
     void onBuildFinished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void onStateUpdated(const pist::MachineState &state);
     void locationFromPc(quint32 pc);
+    /// Mark the stopped instruction on an analysis tab of the program this
+    /// session launched. Any other analysis tab is left unmarked. The address
+    /// comes from the live basepage and this file's own section sizes, and it
+    /// is not written into the notes.
+    void applyAnalysisExecution();
+    /// Title the emulator dock with the source this session is running, or
+    /// restore "Emulator" when nothing is.
+    void setEmulatorCaption();
+    /// Ask the emulator for the coverage file when this session is recording
+    /// and an analysis tab of the launched program is open.
+    void requestCoverageSave();
+    /// Read a coverage file and note its addresses on that tab. A file that
+    /// cannot be read leaves the previous notes in place.
+    void applyCoverageFile(const QString &path);
 
     /// Hand the caret to the program counter, returning false when there is
     /// nothing to hand it to (no session, or a machine that is running rather
@@ -885,6 +911,18 @@ private:
     /// The most recent machine state, kept so the remote-control interface can
     /// answer `state` without touching the emulator.
     MachineState m_lastState;
+    /// Absolute path of the program the current session launched. An analysis
+    /// tab of this file can mark the stopped PC; any other analysis is left
+    /// alone. Empty once the session ends. Never written into the notes file.
+    QString m_launchedProgram;
+    /// File name shown on the emulator dock for the session in
+    /// `m_launchedProgram` — the source that was built (`keyred.s`), or the
+    /// program's own name when that source had none. Empty once the session
+    /// ends, which puts the dock title back to "Emulator".
+    QString m_launchedName;
+    /// The running Hatari accepted `coverage on`. A stock Hatari does not, and
+    /// then no coverage file is read.
+    bool m_coverageRecording = false;
     /// The dock and widget that host the emulator's display (the media panel).
     /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;
@@ -1056,6 +1094,7 @@ private:
 
     QAction *m_actOpen = nullptr;
     QAction *m_actOpenBinary = nullptr;
+    QAction *m_actOpenAnalysis = nullptr;
     QAction *m_actNewFile = nullptr;
     QAction *m_actNewImage = nullptr;
     QAction *m_actImportImage = nullptr;

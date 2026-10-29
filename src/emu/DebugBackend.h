@@ -61,7 +61,8 @@ enum class ResponseKind { None, Registers, Basepage, Disassembly, MemoryDump };
 ///
 /// What can be read out of that text is the debugger's language: `b …` arms a
 /// breakpoint (Hatari's `b all`, `b pc = $addr`, and the watchpoint
-/// self-inequality `b ($addr).w ! …`), `profile …` controls collection.
+/// self-inequality `b ($addr).w ! …`), `profile …` controls collection, and
+/// `coverage …` arms the instruction-address recorder.
 ///
 /// The arm case matters because callers queue an arm and continue in one stack
 /// frame (MainWindow::profileToCursor arms its breakpoint, turns profiling on,
@@ -73,7 +74,8 @@ enum class ResponseKind { None, Registers, Basepage, Disassembly, MemoryDump };
 /// `profile save`/`profile off` leaves the Profiler stuck on "Saving…".
 inline bool survivesResume(const QString &text)
 {
-    return text.startsWith(QLatin1Char('b')) || text.startsWith(QLatin1String("profile "));
+    return text.startsWith(QLatin1Char('b')) || text.startsWith(QLatin1String("profile "))
+        || text.startsWith(QLatin1String("coverage"));
 }
 
 /// The environment both debug backends hand the Hatari process. Config
@@ -250,6 +252,16 @@ public:
     /// debugger's acknowledgement says nothing about its contents.
     virtual void profileSave(const QString &path) = 0;
 
+    /// Instruction coverage, the hatari-pist `coverage` command. It is not the
+    /// profiler: it counts finished ST RAM instruction addresses and does not
+    /// disassemble. `coverage on` takes effect on the next continue, so it must
+    /// survive a resume(). A Hatari without the command answers "not found";
+    /// that is coverageReady(false), not a failed session. `coverage save`
+    /// reports completion on coverageSaveFinished(path) — the file is what the
+    /// caller reads.
+    virtual void coverageOn() = 0;
+    virtual void coverageSave(const QString &path) = 0;
+
     /// Arm a breakpoint that fires once at `address` — the debugger's
     /// `b pc = $<addr> :once` — the form every "stop there once" gesture uses:
     /// run to cursor, step-out's return address, and the guided profile run.
@@ -335,6 +347,12 @@ signals:
 
     /// A profileSave() completed; `path` is the file it wrote.
     void profileSaveFinished(const QString &path);
+
+    /// coverageOn() was answered. `recording` is true only when the emulator
+    /// accepted the command and is recording.
+    void coverageReady(bool recording);
+    /// A coverageSave() completed; `path` is the file it wrote.
+    void coverageSaveFinished(const QString &path);
 
     /// The text a readHistory() answered with.
     void historyReady(const QString &response);

@@ -606,6 +606,10 @@ void HrdbBackend::completeCurrent(const QByteArray &message)
     // the UI on "Saving…".
     if (!done.profilePath.isEmpty())
         emit profileSaveFinished(done.profilePath);
+    if (done.coverageProbe)
+        emit coverageReady(response.contains(QLatin1String("Coverage recording on")));
+    if (!done.coveragePath.isEmpty())
+        emit coverageSaveFinished(done.coveragePath);
 
     // The execution-path read's text, for the pane that asked (a typed request
     // reports its own answer rather than a caller matching command text).
@@ -914,6 +918,22 @@ void HrdbBackend::profileSave(const QString &path)
     const QString command = QStringLiteral("profile save %1").arg(path);
     Pending p = consoleRequest(command, command, ResponseKind::None, true);
     p.profilePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::coverageOn()
+{
+    Pending p = consoleRequest(QStringLiteral("coverage on"), QStringLiteral("coverage on"),
+                               ResponseKind::None, true);
+    p.coverageProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::coverageSave(const QString &path)
+{
+    const QString command = QStringLiteral("coverage save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.coveragePath = path;
     enqueue(p);
 }
 

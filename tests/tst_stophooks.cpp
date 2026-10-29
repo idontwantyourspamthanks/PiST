@@ -182,6 +182,8 @@ public:
     void profileOn() override {}
     void profileOff() override {}
     void profileSave(const QString &path) override { Q_UNUSED(path); }
+    void coverageOn() override {}
+    void coverageSave(const QString &path) override { Q_UNUSED(path); }
     void breakAtAddressOnce(quint32 address) override { Q_UNUSED(address); }
 
     void writeMemoryByte(quint32 address, quint8 value) override

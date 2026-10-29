@@ -3,6 +3,7 @@
 // PiST - an IDE for Atari ST assembly development
 
 #include "ui/MainWindow.h"
+#include "ui/AnalysisView.h"
 #include "ui/BinaryView.h"
 #include "ui/MainWindowPrivate.h"
 #include "emu/HexFormat.h"
@@ -43,6 +44,8 @@
 #include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "analysis/AnalysisNotes.h"
+#include "analysis/ProgramTrace.h"
 #include "image/ImageDocument.h"
 #include "build/FloppyImage.h"
 #include "image/BinaryScan.h"
@@ -208,9 +211,21 @@ MainWindow::MainWindow(QWidget *parent)
         m_pcFollowInProgress = false;
         m_bases = LineMap::SectionBases();
         m_lastState = MachineState();
+        m_launchedProgram.clear();
+        m_launchedName.clear();
+        setEmulatorCaption();
+        m_coverageRecording = false;
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())
             editor->clearCurrentExecutionLine();
+        // The analysis mark is the same fact as the editor's PC bar: it belonged
+        // to the session that just ended. Clearing the path and the state first
+        // is what makes this take the mark off, including a tab opened on the
+        // program that was running. The coverage notes are the same kind of
+        // leftover: they describe the run that just ended.
+        applyAnalysisExecution();
+        for (AnalysisView *view : openAnalysisViews())
+            view->setCoverage({}, 0, 0, 0);
     };
 
     DebugSessionController::Host sessionHost;
@@ -286,6 +301,14 @@ MainWindow::MainWindow(QWidget *parent)
         statusBar()->showMessage(text, milliseconds);
     };
     launcherHost.session = sessionNow;
+    launcherHost.noteLaunchedProgram = [this](const QString &path, const QString &sourceName) {
+        m_launchedProgram = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+        m_launchedName = m_launchedProgram.isEmpty() ? QString() : sourceName;
+        if (m_launchedName.isEmpty() && !m_launchedProgram.isEmpty())
+            m_launchedName = QFileInfo(m_launchedProgram).fileName();
+        setEmulatorCaption();
+        applyAnalysisExecution();
+    };
     m_launcher = new SessionLauncher(launcherHost, this);
 
     BreakpointWatchpointModel::Host breakpointHost;
@@ -1046,6 +1069,48 @@ QJsonArray MainWindow::scanFileMagic(const QString &path, QString *error)
         hits.append(object);
     }
     return hits;
+}
+
+QJsonObject MainWindow::analyzeProgram(const QString &path, QString *error)
+{
+    if (QFileInfo(path).size() > qint64(2 * 1024 * 1024)) {
+        if (error)
+            *error = QStringLiteral("file is over 2MiB");
+        return {};
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return {};
+    }
+    const QByteArray bytes = file.readAll();
+    AnalysisNotes notes;
+    if (!loadAnalysisNotes(analysisNotesPath(path), &notes, error))
+        return {};
+    const ProgramListing listing = listProgram(bytes, notes);
+    if (!listing.error.isEmpty()) {
+        if (error)
+            *error = listing.error;
+        return {};
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("summary"), listing.summary);
+    QJsonArray rows;
+    for (const ListingRow &row : listing.rows) {
+        QJsonObject object;
+        object.insert(QStringLiteral("address"),
+                      QStringLiteral("0x") + hex::hex32(row.address, hex::Case::Lower));
+        object.insert(QStringLiteral("label"), row.label);
+        object.insert(QStringLiteral("bytes"), row.bytes);
+        object.insert(QStringLiteral("text"), row.text);
+        object.insert(QStringLiteral("note"), row.note);
+        object.insert(QStringLiteral("xrefs"), row.xrefs);
+        object.insert(QStringLiteral("comment"), row.comment);
+        rows.append(object);
+    }
+    result.insert(QStringLiteral("rows"), rows);
+    return result;
 }
 
 QJsonArray MainWindow::scanDiskMagic(const QString &imagePath, QString *error)

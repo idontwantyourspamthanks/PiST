@@ -104,7 +104,7 @@ endif()
 # ---------------------------------------------------------------------------
 # One library per module of the map in docs/ARCHITECTURE.md, so the layering is
 # a build-graph fact rather than a convention. The map's build rule — image,
-# build, debug, emu, project, toolchain and git are widget-free — is enforced by
+# build, debug, emu, project, toolchain, git and analysis are widget-free — is enforced by
 # the linker now: none of those links Qt6::Widgets, so a stray <QWidget> include
 # or symbol fails the build instead of merely offending a reviewer.
 #
@@ -290,6 +290,25 @@ pist_module(pist_mcp
     src/control/mcp/McpServer.h
 )
 
+# analysis/ — TOS executable structure, a host-side 68000 disassembly, the
+# notes file beside a program, and a Motorola source export. Widget-free on
+# purpose: the listing is bytes and text, and the tests run with no display.
+# The export check runs vasm as a subprocess; this module does not link it.
+pist_module(pist_analysis
+    src/analysis/AnalysisNotes.cpp
+    src/analysis/AnalysisNotes.h
+    src/analysis/TosProgram.cpp
+    src/analysis/TosProgram.h
+    src/analysis/M68kDisasm.cpp
+    src/analysis/M68kDisasm.h
+    src/analysis/ProgramTrace.cpp
+    src/analysis/ProgramTrace.h
+    src/analysis/AssemblyExport.cpp
+    src/analysis/AssemblyExport.h
+    src/analysis/Coverage.cpp
+    src/analysis/Coverage.h
+)
+
 # hooks/ — the stop-hook subsystem: the contract the script is bound to, the Lua
 # engine, and the runner that drives both at a stop. Deliberately widget-free: it
 # links the pinned Lua, QtCore and emu/ (the typed debug intents), so a stray
@@ -360,6 +379,8 @@ pist_module(pist_ui
     src/ui/MemoryView.h
     src/ui/BinaryView.cpp
     src/ui/BinaryView.h
+    src/ui/AnalysisView.cpp
+    src/ui/AnalysisView.h
     src/ui/ConsoleInput.cpp
     src/ui/ConsoleInput.h
     src/ui/PcHistoryView.cpp
@@ -423,7 +444,7 @@ qt_add_resources(pist_ui welcome_plate
 # ---------------------------------------------------------------------------
 # The module graph — one edge per include in the sources
 # ---------------------------------------------------------------------------
-# image, build, debug, emu, model, project, toolchain and git stay widget-free:
+# image, build, debug, emu, model, project, toolchain, git and analysis stay widget-free:
 # they link Qt6::Core / Qt6::Gui / Qt6::Network and never Qt6::Widgets.
 target_link_libraries(pist_model PUBLIC Qt6::Core)                 # the machine vocabulary: QtCore only
 target_link_libraries(pist_support PUBLIC Qt6::Core Qt6::Network) # file writes, and the crash-report POST
@@ -434,6 +455,7 @@ target_link_libraries(pist_emu PUBLIC Qt6::Core Qt6::Network pist_model)   # emu
 target_link_libraries(pist_project PUBLIC Qt6::Core pist_model pist_support)    # ProjectSettings.h includes model/Machine.h, and save() is files::write
 target_link_libraries(pist_toolchain PUBLIC Qt6::Core pist_emu)    # ToolFetch.cpp includes emu/Paths.h
 target_link_libraries(pist_git PUBLIC Qt6::Core)                   # git subprocess + porcelain only
+target_link_libraries(pist_analysis PUBLIC Qt6::Core pist_support) # notes save through files::write
 
 # The graph is acyclic, and every edge is an include in the sources. ui/ is the
 # only module that reaches both ways by nature — it builds the editors and owns
@@ -457,6 +479,7 @@ target_link_libraries(pist_ui PUBLIC Qt6::Widgets Qt6::Network Qt6::Multimedia
     pist_control
     pist_hooks
     pist_support
+    pist_analysis
 )
 target_link_libraries(pist_control PUBLIC Qt6::Network pist_emu)   # its verbs reuse emu/'s typed reads (MemoryDump, MachineState)
 target_link_libraries(pist_hooks PUBLIC Qt6::Core pist_lua pist_emu)  # the hook subsystem: Lua + the typed debug intents, no widgets
@@ -740,6 +763,13 @@ function(pist_add_test name)
              -o -,txt -o "${PIST_TEST_LOG_DIR}/${name}.log,txt")
 endfunction()
 
+qt_add_executable(tst_analysis
+    tests/tst_analysis.cpp
+)
+target_link_libraries(tst_analysis PRIVATE pist_analysis Qt6::Test)
+target_compile_definitions(tst_analysis PRIVATE PIST_SOURCE_DIR="${PIST_SOURCE_DIR_CMAKE}")
+pist_add_test(analysis)
+
 qt_add_executable(tst_parsers
     tests/tst_parsers.cpp
 )
@@ -945,7 +975,7 @@ set_tests_properties(hrdb PROPERTIES TIMEOUT 300)
 # every test target - it had drifted once (tst_oscall and tst_profile missing),
 # which on Windows left those two GUI-subsystem with a detached stdout: the
 # test runs, fails, and reports nothing at all (MIN-62).
-foreach(test_target IN ITEMS tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_stophooks tst_link tst_settings tst_watcher tst_crash tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
+foreach(test_target IN ITEMS tst_analysis tst_parsers tst_image tst_oscall tst_tosrom tst_profile tst_debug tst_stophooks tst_link tst_settings tst_watcher tst_crash tst_toolfetch tst_git tst_gui tst_remotecontrol tst_mcp tst_emulatorhost tst_hrdb)
     if(TARGET ${test_target})
         set_target_properties(${test_target} PROPERTIES WIN32_EXECUTABLE FALSE)
     endif()

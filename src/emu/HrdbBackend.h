@@ -79,6 +79,8 @@ public:
     void profileOn() override;
     void profileOff() override;
     void profileSave(const QString &path) override;
+    void coverageOn() override;
+    void coverageSave(const QString &path) override;
     void writeRegister(const QString &name, quint32 value) override;
     void writeMemoryByte(quint32 address, quint8 value) override;
     void readDisassembly() override;
@@ -113,6 +115,10 @@ private:
         QString infoSubject;
         /// Set by profileSave(): the file to name on profileSaveFinished().
         QString profilePath;
+        /// Set by coverageOn(): reported on coverageReady() from the reply.
+        bool coverageProbe = false;
+        /// Set by coverageSave(): the file to name on coverageSaveFinished().
+        QString coveragePath;
         /// Set by readDisassemblyAt(): report the text it read on
         /// disassemblyReady(), for the caller that asked about that address.
         bool reportDisassembly = false;

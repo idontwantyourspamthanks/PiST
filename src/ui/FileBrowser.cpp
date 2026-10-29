@@ -569,6 +569,13 @@ void FileBrowser::openBinaryFile(const QString &path)
     emit openBinaryRequested(path);
 }
 
+void FileBrowser::openAnalysisFile(const QString &path)
+{
+    if (!QFileInfo(path).isFile())
+        return;
+    emit openAnalysisRequested(path);
+}
+
 QString FileBrowser::contextDirectory() const
 {
     const QModelIndex index = m_view->currentIndex();
@@ -1146,6 +1153,9 @@ void FileBrowser::onContextMenu(const QPoint &pos)
     QAction *openBinary = menu.addAction(tr("Open Binary"));
     openBinary->setObjectName(QStringLiteral("openBinaryContextAction"));
     openBinary->setEnabled(QFileInfo(selectedPath).isFile());
+    QAction *openAnalysis = menu.addAction(tr("Open for Analysis"));
+    openAnalysis->setObjectName(QStringLiteral("openAnalysisContextAction"));
+    openAnalysis->setEnabled(QFileInfo(selectedPath).isFile());
     menu.addSeparator();
     QAction *newFile = menu.addAction(tr("New File…"));
     QAction *newImage = menu.addAction(tr("New Image…"));
@@ -1178,6 +1188,8 @@ void FileBrowser::onContextMenu(const QPoint &pos)
     QAction *chosen = menu.exec(m_view->viewport()->mapToGlobal(pos));
     if (chosen == openBinary) {
         openBinaryFile(selectedPath);
+    } else if (chosen == openAnalysis) {
+        openAnalysisFile(selectedPath);
     } else if (chosen == newFile) {
         // The same transaction as File ▸ New File, rooted where the user
         // right-clicked: the dialog validates the name as it is typed, and the

@@ -63,6 +63,7 @@
 #include "ui/ImageEditor.h"
 #include "ui/NewImageDialog.h"
 #include "ui/NewFileDialog.h"
+#include "ui/AnalysisView.h"
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
@@ -622,6 +623,43 @@ void MainWindow::runInteractive()
 void MainWindow::runImpl(bool quiet)
 {
     crash::note("run");
+    // launch() reads this for a refusal. The build path sets it inside
+    // buildImpl; a program launched without a build must set it here, or a
+    // quiet run opens a modal nobody is there to dismiss.
+    m_quietDialogs = quiet;
+
+    // The analysis tab is the program. Assembling whatever source happens to
+    // be open (or the project file's source, once the editor is not current)
+    // either runs that other file or hands vasm a path it cannot read.
+    if (auto *analysis = qobject_cast<AnalysisView *>(m_tabs->currentWidget())) {
+        const QString program = analysis->filePath();
+        if (program.isEmpty() || !QFileInfo(program).isFile()) {
+            refuseRun(tr("Run"), tr("This analysis is not a program on disk."), false);
+            return;
+        }
+        const QString projectPath = settings::projectFileFor(program);
+        if (QFileInfo::exists(projectPath)) {
+            const bool allowed = hookMayRunFor(projectPath, quiet);
+            m_stopHookRefused = !allowed;
+            if (!allowed)
+                m_log->appendPlainText(tr("[hook] not allowed for this project; it will not run"));
+        }
+        // A line map from some other build would paint that source's PC while
+        // this program runs. Keep the map only when it was built for this file.
+        const QString source = buildSourcePath();
+        const QString built = source.isEmpty() ? QString()
+                                                : settings::outputPathsFor(source).program;
+        if (built.isEmpty() || QFileInfo(built) != QFileInfo(program)) {
+            m_programMap.clear();
+            m_symbols.clear();
+            if (m_symbolsView)
+                m_symbolsView->setSymbols(m_symbols, &m_programMap);
+            for (CodeEditor *editor : openEditors())
+                editor->clearCurrentExecutionLine();
+        }
+        m_launcher->launchProgram(program);
+        return;
+    }
 
     // The project file or its script may have changed since it was opened — a
     // `git pull` is the ordinary case. Trust is content-keyed, so ask again

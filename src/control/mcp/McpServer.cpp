@@ -641,6 +641,8 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
                            args.value(QStringLiteral("out")).toString());
     } else if (name == QLatin1String("pist_scanmagic")) {
         command = QStringLiteral("scanmagic ") + args.value(QStringLiteral("file")).toString();
+    } else if (name == QLatin1String("pist_analyze")) {
+        command = QStringLiteral("analyze ") + args.value(QStringLiteral("file")).toString();
     } else if (name == QLatin1String("pist_depack")) {
         command = QStringLiteral("depack %1 %2 %3")
                       .arg(args.value(QStringLiteral("file")).toString(),
@@ -803,6 +805,7 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_disasm")
                      || outstanding.tool == QLatin1String("pist_hook")
                      || outstanding.tool == QLatin1String("pist_scanmagic")
+                     || outstanding.tool == QLatin1String("pist_analyze")
                      || outstanding.tool == QLatin1String("pist_scandisk")
                      || outstanding.tool == QLatin1String("pist_sndhinfo"))) {
         QJsonParseError parseError;
@@ -1226,6 +1229,19 @@ QJsonArray McpServer::tools()
                            "Degas or NeoChrome."),
             scan, QJsonArray{QStringLiteral("file")}));
 
+        QJsonObject analyze;
+        analyze.insert(QStringLiteral("file"),
+                       textProp(QStringLiteral("TOS executable to read. Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_analyze"), QStringLiteral("Read a TOS program"),
+            QStringLiteral("The read-only listing of a TOS executable of at most 2 MiB: a summary "
+                           "and rows {address, label, bytes, text, note, xrefs, comment}. A "
+                           ".pistanalysis file beside the program supplies names, comments and "
+                           "code or data marks. Addresses are image-relative. Paths must not "
+                           "contain spaces. Does not open a tab and does not need the emulator. "
+                           "pist_disasm reads the stopped machine."),
+            analyze, QJsonArray{QStringLiteral("file")}));
+
         QJsonObject depack;
         depack.insert(QStringLiteral("file"),
                       textProp(QStringLiteral("File to identify. Paths must not contain spaces.")));
@@ -1501,7 +1517,7 @@ QJsonArray McpServer::tools()
         QStringLiteral("pist_breakpoints"), QStringLiteral("pist_watch"),
         QStringLiteral("pist_tabs"), QStringLiteral("pist_hook"),
         QStringLiteral("pist_builddiff"), QStringLiteral("pist_assets"),
-        QStringLiteral("pist_sndhinfo"),
+        QStringLiteral("pist_sndhinfo"), QStringLiteral("pist_analyze"),
     };
     const QStringList destructive = {
         QStringLiteral("pist_stop"), QStringLiteral("pist_setreg"),

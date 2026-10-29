@@ -88,6 +88,15 @@ public:
         std::function<void(const QString &, int)> showStatus;
         /// The session controller, whose state a launch resets.
         std::function<DebugSessionController *()> session;
+        /// The program a launch is about to run, and the source file's own
+        /// name (what the emulator dock shows). The path is empty when that
+        /// launch did not start; the name is empty with it. Called after the
+        /// session state is reset and before the emulator starts, so a stop
+        /// delivered during start still names this file; an empty path
+        /// follows a start that failed. Default no-op so a test host that
+        /// fills the other fields keeps compiling.
+        std::function<void(const QString &program, const QString &sourceName)> noteLaunchedProgram =
+            [](const QString &, const QString &) {};
     };
 
     explicit SessionLauncher(Host host, QObject *parent = nullptr);
@@ -95,10 +104,17 @@ public:
     /// Build a SessionConfig for the current project and start the session.
     /// Every refusal path reports through the window's refuseRun() (quiet:
     /// console, status bar and buildCompleted(false); interactive: the modal it
-    /// has always shown).
+    /// has always shown). The program is the build output of the current source.
     void launch();
 
+    /// Start a session on a program that already exists, such as the file an
+    /// analysis tab is showing. Nothing is assembled. The dock is titled with
+    /// this file's name.
+    void launchProgram(const QString &programPath);
+
 private:
+    void launchAt(const QString &programPath);
+
     Host m_host;
 };
 

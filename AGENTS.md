@@ -80,6 +80,7 @@ code. Use this table for a quick lookup:
 | The reference itself — the instruction and TOS-call tables, and what each entry says | `src/editor/{InstrRef,OsCallRef}.{h,cpp}`, the dock in `src/ui/InstructionRefView.{h,cpp}`, and their authoring gate `tst_reference` |
 | Find in Files, or the scan the editor's find bar shares with it | `src/ui/FindInFiles{,View}.{h,cpp}`, `src/editor/FindScan.{h,cpp}` |
 | The sprite / image editor | `src/ui/ImageEditor.{h,cpp}` + `src/image/` |
+| A TOS executable's disassembly, or the `.pistanalysis` notes beside it | `src/analysis/` and `src/ui/AnalysisView.{h,cpp}` |
 | `.pim` format, palettes, ST codecs | `src/image/{ImageDocument,Palette,StFormats,Transform}.*` |
 | Project files / Disk A / Disk B | `src/ui/FileBrowser.{h,cpp}` |
 | Git status, commit, pull, push, blame | `src/git/GitService.{h,cpp}`, `src/ui/GitPanel.{h,cpp}`, blame lane in `src/editor/CodeEditor.{h,cpp}` |
@@ -103,7 +104,7 @@ code. Use this table for a quick lookup:
 | The MCP shim (`pist-mcp`, a shipped binary) | `src/control/mcp/` |
 | The name, author and licence a software centre reports | `packaging/io.github.idontwantyourspamthanks.pist.metainfo.xml`, `packaging/copyright`, and the CPack block in `CMakeLists.txt` |
 | What the Linux installers put where (private prefix, what is pruned and why) | `.github/workflows/release.yml`, the deb/rpm step; `docs/PLAN.md` Phase 4 records the evidence |
-| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_stophooks`/`tst_find`/`tst_completion`/`tst_reference`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
+| A test | `tests/` (unit: `tst_parsers`/`tst_image`/`tst_tosrom`/`tst_debug`/`tst_link`/`tst_settings`/`tst_toolfetch`/`tst_oscall`/`tst_profile`/`tst_git`/`tst_watcher`/`tst_mcp`/`tst_stophooks`/`tst_find`/`tst_completion`/`tst_reference`/`tst_analysis`; integration: `tst_gui`/`tst_remotecontrol`/`tst_emulatorhost`/`tst_hrdb`) |
 
 ## Documentation map
 

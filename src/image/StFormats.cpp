@@ -618,6 +618,83 @@ bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
     return true;
 }
 
+bool bytesAsPicture(PictureReading reading, const QByteArray &bytes, int width, int height,
+                    PictureFile *out, QString *error)
+{
+    if (!out)
+        return false;
+    const auto fail = [error](const QString &reason) {
+        if (error)
+            *error = reason;
+        return false;
+    };
+
+    PictureFile file;
+    switch (reading) {
+    case PictureReading::Degas: {
+        if (bytes.size() < kDegasPictureBytes || be16(reinterpret_cast<const uchar *>(bytes.constData())) != 0)
+            return fail(QObject::tr("These bytes are not a low-resolution Degas picture."));
+        ImportedSheet sheet;
+        if (!importPi1(bytes.left(kDegasPictureBytes), PaletteKind::Ste, &sheet, error))
+            return false;
+        file.bytes = bytes.left(kDegasPictureBytes);
+        file.suffix = QStringLiteral("pi1");
+        file.guess = true;
+        file.note = QObject::tr(
+            "Opened as a low-resolution Degas picture. Degas has no signature, so this is a guess.");
+        break;
+    }
+    case PictureReading::Neo: {
+        if (bytes.size() < kNeoPictureBytes)
+            return fail(QObject::tr("These bytes are not a low-resolution NeoChrome picture."));
+        ImportedSheet sheet;
+        if (!importNeo(bytes.left(kNeoPictureBytes), PaletteKind::Ste, &sheet, error))
+            return false;
+        file.bytes = bytes.left(kNeoPictureBytes);
+        file.suffix = QStringLiteral("neo");
+        file.guess = true;
+        file.note = QObject::tr(
+            "Opened as a low-resolution NeoChrome picture. NeoChrome has no signature, so this is a guess.");
+        break;
+    }
+    case PictureReading::Iff: {
+        ImportedSheet sheet;
+        if (!importIff(bytes, PaletteKind::Ste, &sheet, error))
+            return false;
+        const auto *data = reinterpret_cast<const uchar *>(bytes.constData());
+        const int form = int(be32(data + 4)) + 8;
+        if (form < 12 || form > bytes.size())
+            return fail(QObject::tr("not a valid ILBM IFF file"));
+        file.bytes = bytes.left(form);
+        file.suffix = QStringLiteral("iff");
+        file.guess = false;
+        break;
+    }
+    case PictureReading::Sprite: {
+        if (width < 16 || width > 320 || (width % 16) != 0 || height < 1 || height > 200)
+            return fail(QObject::tr(
+                "A sprite is 16 to 320 pixels wide, in steps of 16, and 1 to 200 tall."));
+        const int need = (width / 16) * 8 * height;
+        if (bytes.size() < need)
+            return fail(QObject::tr("That range is outside the program."));
+        ImageDocument doc;
+        if (!imageFromLowResBitplanes(bytes.left(need), width, height, QByteArray(), &doc, error))
+            return false;
+        file.bytes = doc.toJson();
+        file.suffix = QStringLiteral("pim");
+        file.guess = true;
+        file.note = QObject::tr("Opened as a %1×%2 sprite. Nothing in these bytes names that size.")
+                        .arg(width)
+                        .arg(height);
+        break;
+    }
+    }
+    *out = file;
+    if (error)
+        error->clear();
+    return true;
+}
+
 ImageDocument spriteSafeDocument(const ImageDocument &doc, QString *error)
 {
     const QVector<int> composite = doc.pixels();

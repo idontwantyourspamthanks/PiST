@@ -46,13 +46,43 @@ SessionLauncher::SessionLauncher(Host host, QObject *parent)
 
 void SessionLauncher::launch()
 {
-    const QFileInfo info(m_host.buildSourcePath());
-    const QString prg = settings::outputPathsFor(info.absoluteFilePath()).program;
-    if (!QFileInfo::exists(prg)) {
-        m_host.refuseRun(MainWindow::tr("Run"),
-                         MainWindow::tr("The build did not produce %1.").arg(prg),
-                         /*critical=*/false);
-        return;
+    launchAt(QString());
+}
+
+
+void SessionLauncher::launchProgram(const QString &programPath)
+{
+    launchAt(programPath);
+}
+
+
+void SessionLauncher::launchAt(const QString &programPath)
+{
+    QString prg;
+    QString sourceName;
+    QString gemdosDir;
+    if (programPath.isEmpty()) {
+        const QFileInfo info(m_host.buildSourcePath());
+        prg = settings::outputPathsFor(info.absoluteFilePath()).program;
+        sourceName = info.fileName();
+        gemdosDir = info.absolutePath();
+        if (!QFileInfo::exists(prg)) {
+            m_host.refuseRun(MainWindow::tr("Run"),
+                             MainWindow::tr("The build did not produce %1.").arg(prg),
+                             /*critical=*/false);
+            return;
+        }
+    } else {
+        const QFileInfo info(programPath);
+        if (!info.isFile()) {
+            m_host.refuseRun(MainWindow::tr("Run"),
+                             MainWindow::tr("Could not open %1.").arg(info.fileName()),
+                             /*critical=*/false);
+            return;
+        }
+        prg = info.absoluteFilePath();
+        sourceName = info.fileName();
+        gemdosDir = info.absolutePath();
     }
 
     const ToolInfo emulator = toolchain::findEmulator(m_host.settings().hatariPath);
@@ -73,7 +103,7 @@ void SessionLauncher::launch()
     config.hatariPath = emulator.path;
     config.programPath = prg;
     config.sessionDir = sessionDir;
-    config.gemdosDir = info.absolutePath();
+    config.gemdosDir = gemdosDir;
 
     config.machine = machineCliName(m_host.settings().machine);
     config.monitor = m_host.settings().monitor;
@@ -359,7 +389,13 @@ void SessionLauncher::launch()
     // meaningless and arming must happen again after the next entry stop.
     m_host.session()->resetSessionState();
 
+    // Name the program before start. The entry stop can be delivered before
+    // start returns, and the analysis tab marks that PC only for this file.
+    // A start that fails takes the name back: nothing is marked for a session
+    // that never began.
+    m_host.noteLaunchedProgram(prg, sourceName);
     if (!m_host.backend()->start(config, &error)) {
+        m_host.noteLaunchedProgram(QString(), QString());
         m_host.refuseRun(MainWindow::tr("Run"), error, /*critical=*/true);
         return;
     }

@@ -97,10 +97,20 @@ HatariCapabilities probeHatari(const QString &hatariPath)
     caps.valid = !caps.version.isEmpty();
     return caps;
 #else
+    // Information-only probes must never open a window or a modal SDL error
+    // dialog. In particular, macOS SDL assertions otherwise block the caller
+    // until its timeout rather than reporting the failed probe.
+    RunOptions probeOptions;
+    probeOptions.environment = QProcessEnvironment::systemEnvironment();
+    probeOptions.environment.insert(QStringLiteral("SDL_VIDEODRIVER"),
+                                    QStringLiteral("dummy"));
+    probeOptions.environment.insert(QStringLiteral("SDL_ASSERT"),
+                                    QStringLiteral("abort"));
+
     {
         // A probe answers immediately or not at all: the two timeouts are what
         // bound "a distro's hatari may answer -h slowly", not a real workload.
-        RunOptions options;
+        RunOptions options = probeOptions;
         options.startTimeoutMs = 3000;
         options.finishTimeoutMs = 5000;
         const SyncRun version =
@@ -126,7 +136,7 @@ HatariCapabilities probeHatari(const QString &hatariPath)
     {
         // The option table is a longer answer than --version, so it gets a
         // longer budget; nothing else differs.
-        RunOptions options;
+        RunOptions options = probeOptions;
         options.startTimeoutMs = 3000;
         options.finishTimeoutMs = 8000;
         const SyncRun run = runSync(hatariPath, {QStringLiteral("-h")}, options);

@@ -53,6 +53,10 @@ private slots:
     void removeIncludePath();
     void addDefine();
     void removeDefine();
+    void addAsset();
+    void editAsset();
+    void removeAsset();
+    void refreshAssetList();
 
 private:
     void buildUi();
@@ -86,6 +90,8 @@ private:
     QListWidget *m_sources = nullptr;
     QListWidget *m_includePaths = nullptr;
     QListWidget *m_defines = nullptr;
+    QListWidget *m_assets = nullptr;
+    QList<AssetExport> m_assetExports;
     QPlainTextEdit *m_debugBuildArgs = nullptr;
     QPlainTextEdit *m_releaseBuildArgs = nullptr;
     QPlainTextEdit *m_extraEmuArgs = nullptr;

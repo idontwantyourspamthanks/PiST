@@ -9,10 +9,12 @@
 #include "ui/Appearance.h"
 
 #include <QApplication>
+#include <QBrush>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -44,9 +46,32 @@ MemoryView::MemoryView(QWidget *parent)
     m_addressEdit->setToolTip(tr("Hexadecimal address. Accepts $ or 0x prefixes too."));
     controls->addWidget(m_addressEdit);
 
-    m_status = new QLabel(this);
-    m_status->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    controls->addWidget(m_status);
+    auto *mark = new QToolButton(this);
+    mark->setObjectName(QStringLiteral("memoryMarkButton"));
+    mark->setText(tr("Mark"));
+    mark->setToolTip(tr("Remember the bytes in this window"));
+    mark->setAutoRaise(true);
+    connect(mark, &QToolButton::clicked, this, &MemoryView::setMark);
+    controls->addWidget(mark);
+
+    m_compareButton = new QToolButton(this);
+    m_compareButton->setObjectName(QStringLiteral("memoryCompareButton"));
+    m_compareButton->setText(tr("Compare"));
+    m_compareButton->setToolTip(tr("Highlight bytes that differ from the mark"));
+    m_compareButton->setCheckable(true);
+    m_compareButton->setAutoRaise(true);
+    connect(m_compareButton, &QToolButton::toggled, this, &MemoryView::onCompareToggled);
+    controls->addWidget(m_compareButton);
+
+    m_previousButton = new QToolButton(this);
+    m_previousButton->setObjectName(QStringLiteral("memoryPreviousStopButton"));
+    m_previousButton->setText(tr("Previous"));
+    m_previousButton->setToolTip(tr("Compare each stop with the previous one"));
+    m_previousButton->setCheckable(true);
+    m_previousButton->setAutoRaise(true);
+    connect(m_previousButton, &QToolButton::toggled, this, &MemoryView::onPreviousToggled);
+    controls->addWidget(m_previousButton);
+
     controls->addStretch(1);
 
     // Open another memory pane, so two regions can be watched at once.
@@ -58,6 +83,12 @@ MemoryView::MemoryView(QWidget *parent)
     controls->addWidget(addPane);
 
     layout->addLayout(controls);
+
+    m_status = new QLabel(this);
+    m_status->setObjectName(QStringLiteral("memoryStatus"));
+    m_status->setWordWrap(true);
+    m_status->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    layout->addWidget(m_status);
 
     m_table = new QTableWidget(kRows, kFirstByteColumn + kRowBytes + 1, this);
     m_table->verticalHeader()->setVisible(false);
@@ -178,11 +209,18 @@ void MemoryView::applyAppearance()
 {
     appearance::markMono(m_table);
     m_table->verticalHeader()->setDefaultSectionSize(fontMetrics().height() + 4);
+    // A theme change repaints the dump already shown. It is not a new stop,
+    // so a previous-stop mark must stay where the last real dump left it.
     if (!m_lastRows.isEmpty())
-        applyDump(m_lastRows);
+        paintDump(m_lastRows, false);
 }
 
 void MemoryView::applyDump(const QList<MemoryRow> &rows)
+{
+    paintDump(rows, true);
+}
+
+void MemoryView::paintDump(const QList<MemoryRow> &rows, bool advancePrevious)
 {
     if (rows.isEmpty()) {
         m_status->setText(tr("No memory data returned."));
@@ -214,6 +252,11 @@ void MemoryView::applyDump(const QList<MemoryRow> &rows)
 
     m_lastRows = rows;
 
+    // A previous-stop repaint keeps the highlight of the comparison already
+    // shown. The mark itself has moved on to this dump, ready for the next one.
+    const Mark compared =
+        (!advancePrevious && m_previousStop && m_haveShown) ? m_shownAgainst : m_mark;
+
     // Programmatic rewrites are not user edits: with editing enabled (the
     // stopped state), every setText would otherwise fire itemChanged →
     // onByteEdited → memoryEdited, and each of those is a debugger write plus
@@ -238,6 +281,7 @@ void MemoryView::applyDump(const QList<MemoryRow> &rows)
         }
         addressItem->setText(hex::hex32(dump.address));
         addressItem->setForeground(theme.address);
+        addressItem->setToolTip(regionName(dump.address));
 
         for (int i = 0; i < kRowBytes; ++i) {
             const int column = kFirstByteColumn + i;
@@ -246,10 +290,50 @@ void MemoryView::applyDump(const QList<MemoryRow> &rows)
                 item = new QTableWidgetItem;
                 m_table->setItem(row, column, item);
             }
+            item->setBackground(QBrush());
+            item->setToolTip(QString());
             if (i < dump.bytes.size()) {
                 const quint8 byte = dump.bytes.at(i);
+                const quint32 address = dump.address + quint32(i);
                 item->setText(QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0')).toUpper());
                 item->setForeground(byte == 0 ? theme.zero : theme.hex);
+
+                const QString region = regionName(address);
+                bool differs = false;
+                quint8 previous = 0;
+                if (m_compare && compared.valid && address >= compared.base) {
+                    const quint32 index = address - compared.base;
+                    if (index < quint32(compared.bytes.size())
+                        && quint8(compared.bytes.at(int(index))) != byte) {
+                        differs = true;
+                        previous = quint8(compared.bytes.at(int(index)));
+                    }
+                }
+                if (differs) {
+                    QColor changed = theme.changed;
+                    changed.setAlpha(96);
+                    item->setBackground(changed);
+                    item->setForeground(theme.changed);
+                    const auto byteText = [](quint8 value) {
+                        return QStringLiteral("$%1")
+                            .arg(value, 2, 16, QLatin1Char('0'))
+                            .toUpper();
+                    };
+                    item->setToolTip(tr("was %1, now %2").arg(byteText(previous), byteText(byte)));
+                } else if (!region.isEmpty()) {
+                    QColor tint = theme.muted;
+                    if (region == QLatin1String("text"))
+                        tint = theme.keyword;
+                    else if (region == QLatin1String("data"))
+                        tint = theme.number;
+                    else if (region == QLatin1String("bss"))
+                        tint = theme.comment;
+                    tint.setAlpha(48);
+                    item->setBackground(tint);
+                    item->setToolTip(region == QLatin1String("outside")
+                                         ? tr("outside the program")
+                                         : region);
+                }
             } else {
                 item->setText(QString());
             }
@@ -262,6 +346,8 @@ void MemoryView::applyDump(const QList<MemoryRow> &rows)
         }
         chars->setText(renderMemoryChars(dump.bytes));
         chars->setForeground(theme.ascii);
+        chars->setToolTip(QString());
+        chars->setBackground(QBrush());
 
         // Keep the raw bytes so a cell's pointer can be read back; only the
         // bytes actually shown count, so a short dump does not let a click read
@@ -276,15 +362,28 @@ void MemoryView::applyDump(const QList<MemoryRow> &rows)
     // from a previous address visible.
     for (; row < kRows; ++row) {
         for (int c = 0; c < m_table->columnCount(); ++c) {
-            if (auto *item = m_table->item(row, c))
+            if (auto *item = m_table->item(row, c)) {
                 item->setText(QString());
+                item->setToolTip(QString());
+                item->setBackground(QBrush());
+            }
         }
     }
 
-    // `rows.size() * kRowBytes` overstates the dump.
-    m_status->setText(tr("%1 bytes from $%2")
-                          .arg(static_cast<int>(m_bytes.size()))
-                          .arg(hex::hex32(m_base)));
+    writeComparison(compared);
+
+    // Move the previous-stop mark only after the highlight was painted against
+    // the one it replaced. A repaint then keeps that highlight via m_shownAgainst.
+    if (advancePrevious && m_previousStop && !m_bytes.isEmpty()) {
+        m_shownAgainst = compared;
+        m_haveShown = compared.valid;
+        m_mark.valid = true;
+        m_mark.base = m_base;
+        m_mark.bytes = m_bytes;
+        m_mark.pc = m_stopPc;
+        m_mark.where = m_stopWhere;
+        m_mark.hasContext = m_haveStopContext;
+    }
 }
 
 void MemoryView::setEditingEnabled(bool enabled)
@@ -325,6 +424,191 @@ void MemoryView::onByteEdited(QTableWidgetItem *item)
     m_pendingValue = static_cast<quint8>(value);
     m_staleDumps = 0;
     emit memoryEdited(address, value);
+}
+
+MemoryView::Mark MemoryView::captureMark() const
+{
+    Mark mark;
+    mark.valid = !m_bytes.isEmpty();
+    mark.base = m_base;
+    mark.bytes = m_bytes;
+    mark.pc = m_stopPc;
+    mark.where = m_stopWhere;
+    mark.hasContext = m_haveStopContext;
+    return mark;
+}
+
+void MemoryView::setStopContext(quint32 pc, const QString &where)
+{
+    m_stopPc = pc;
+    m_stopWhere = where;
+    m_haveStopContext = true;
+}
+
+void MemoryView::setProgramRegions(quint32 textBase, quint32 textEnd, quint32 dataBase,
+                                   quint32 dataEnd, quint32 bssBase, quint32 bssEnd)
+{
+    if (m_textBase == textBase && m_textEnd == textEnd && m_dataBase == dataBase
+        && m_dataEnd == dataEnd && m_bssBase == bssBase && m_bssEnd == bssEnd)
+        return;
+    m_textBase = textBase;
+    m_textEnd = textEnd;
+    m_dataBase = dataBase;
+    m_dataEnd = dataEnd;
+    m_bssBase = bssBase;
+    m_bssEnd = bssEnd;
+    if (!m_lastRows.isEmpty())
+        paintDump(m_lastRows, false);
+}
+
+QString MemoryView::regionName(quint32 address) const
+{
+    const auto inside = [](quint32 at, quint32 start, quint32 end) {
+        return end > start && at >= start && at < end;
+    };
+    if (inside(address, m_textBase, m_textEnd))
+        return QStringLiteral("text");
+    if (inside(address, m_dataBase, m_dataEnd))
+        return QStringLiteral("data");
+    if (inside(address, m_bssBase, m_bssEnd))
+        return QStringLiteral("bss");
+    const bool known = (m_textEnd > m_textBase) || (m_dataEnd > m_dataBase) || (m_bssEnd > m_bssBase);
+    return known ? QStringLiteral("outside") : QString();
+}
+
+QString MemoryView::comparisonStatus(const Mark &compared) const
+{
+    if (!m_compare || !compared.valid)
+        return {};
+
+    const quint32 curEnd = m_base + quint32(m_bytes.size());
+    const quint32 markEnd = compared.base + quint32(compared.bytes.size());
+    const quint32 lo = qMax(m_base, compared.base);
+    const quint32 hi = qMin(curEnd, markEnd);
+
+    QString place;
+    if (!compared.where.isEmpty())
+        place = compared.where;
+    else if (compared.hasContext)
+        place = QStringLiteral("$%1").arg(hex::hex32(compared.pc));
+
+    const auto at = [&place](const QString &sentence) {
+        return place.isEmpty() ? sentence : sentence + QStringLiteral(" at %1").arg(place);
+    };
+
+    if (hi <= lo) {
+        const QString address = QStringLiteral("$%1").arg(hex::hex32(compared.base));
+        if (place.isEmpty())
+            return tr("The mark at %1 does not overlap this window.").arg(address);
+        return tr("The mark at %1 (%2) does not overlap this window.").arg(place, address);
+    }
+
+    int differ = 0;
+    for (quint32 address = lo; address < hi; ++address) {
+        const int cur = int(address - m_base);
+        const int old = int(address - compared.base);
+        if (quint8(m_bytes.at(cur)) != quint8(compared.bytes.at(old)))
+            ++differ;
+    }
+
+    const bool sameWindow = compared.base == m_base && compared.bytes.size() == m_bytes.size();
+    if (!sameWindow) {
+        const QString body = differ == 0 ? tr("No bytes differ")
+                                         : (differ == 1 ? tr("1 byte differs")
+                                                        : tr("%1 bytes differ").arg(differ));
+        const QString located = place.isEmpty() ? QString() : tr(" at %1").arg(place);
+        return tr("%1 in the overlap with the mark%2 ($%3, this window $%4).")
+            .arg(body, located, hex::hex32(compared.base), hex::hex32(m_base));
+    }
+    const QString count = differ == 1 ? tr("1 byte differs from the mark")
+                                      : tr("%1 bytes differ from the mark").arg(differ);
+    if (differ == 0)
+        return at(tr("No bytes differ from the mark")) + QLatin1Char('.');
+    return at(count) + QLatin1Char('.');
+}
+
+void MemoryView::writeComparison(const Mark &compared)
+{
+    const QString comparison = comparisonStatus(compared);
+    if (!comparison.isEmpty()) {
+        m_status->setText(comparison);
+        return;
+    }
+    if (m_previousStop && !compared.valid) {
+        m_status->setText(tr("This window is the mark for the next stop."));
+        return;
+    }
+    m_status->setText(tr("%1 bytes from $%2")
+                          .arg(static_cast<int>(m_bytes.size()))
+                          .arg(hex::hex32(m_base)));
+}
+
+void MemoryView::setMark()
+{
+    if (m_bytes.isEmpty()) {
+        m_status->setText(tr("Nothing to mark."));
+        return;
+    }
+    m_previousStop = false;
+    m_haveShown = false;
+    m_compare = true;
+    m_mark = captureMark();
+    {
+        const QSignalBlocker compareBlock(m_compareButton);
+        const QSignalBlocker previousBlock(m_previousButton);
+        m_compareButton->setChecked(true);
+        m_previousButton->setChecked(false);
+    }
+    if (!m_lastRows.isEmpty())
+        paintDump(m_lastRows, false);
+}
+
+void MemoryView::onCompareToggled(bool on)
+{
+    if (on && !m_mark.valid) {
+        const QSignalBlocker blocker(m_compareButton);
+        m_compareButton->setChecked(false);
+        m_status->setText(tr("Set a mark first."));
+        return;
+    }
+    m_compare = on;
+    if (!on) {
+        m_previousStop = false;
+        const QSignalBlocker blocker(m_previousButton);
+        m_previousButton->setChecked(false);
+    }
+    if (!m_lastRows.isEmpty())
+        paintDump(m_lastRows, false);
+    else if (!on)
+        m_status->clear();
+}
+
+void MemoryView::onPreviousToggled(bool on)
+{
+    if (on && m_bytes.isEmpty()) {
+        const QSignalBlocker blocker(m_previousButton);
+        m_previousButton->setChecked(false);
+        m_status->setText(tr("Nothing to compare yet."));
+        return;
+    }
+    m_previousStop = on;
+    if (!on) {
+        if (!m_lastRows.isEmpty())
+            paintDump(m_lastRows, false);
+        return;
+    }
+    // The window on screen is the baseline. The next dump is the first
+    // comparison, and it replaces this mark afterwards.
+    m_haveShown = false;
+    m_compare = true;
+    m_mark = captureMark();
+    {
+        const QSignalBlocker blocker(m_compareButton);
+        m_compareButton->setChecked(true);
+    }
+    if (!m_lastRows.isEmpty())
+        paintDump(m_lastRows, false);
+    m_status->setText(tr("The next stop will be compared with this window."));
 }
 
 } // namespace pist

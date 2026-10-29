@@ -20,6 +20,8 @@
 #include "ui/UiText.h"
 
 #include "build/BuildService.h"
+#include "build/LinkMap.h"
+#include "build/ProgramDiff.h"
 #include "editor/CodeEditor.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
@@ -41,6 +43,7 @@
 #include "build/SymbolTable.h"
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
+#include "image/AssetBuild.h"
 #include "image/ImageDocument.h"
 #include "image/StFormats.h"
 #include "toolchain/Toolchain.h"
@@ -63,6 +66,7 @@
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
+#include "ui/ProgramDiffDialog.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
@@ -78,6 +82,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -224,16 +229,155 @@ void MainWindow::buildImpl(bool quiet, bool release)
 
     // Everything else comes from the project settings. Before this existed the
     // include/define/cpu setters were never called, so a multi-file project
-    // could not be built at all.
-    m_build->setIncludePaths(m_settings.includePaths);
+    // could not be built at all. The include path gains the build directory
+    // below, after sprite exports, and only for this build.
     m_build->setDefines(m_settings.defines);
     m_build->setCpu(m_settings.cpu);
     m_build->setAssemblerArgs(release ? m_settings.releaseAssemblerArgs
                                       : m_settings.debugAssemblerArgs);
 
+    // Keep the program this build is about to replace. The build deletes the
+    // output first, so the copy has to happen here, and a failed copy must not
+    // stop the build — the snapshot is only for the comparison dialog.
+    QString mapPath;
+    if (linking)
+        mapPath = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+                  + QStringLiteral(".map");
+    QString snapError;
+    if (!snapshotPreviousBuild(outPath, mapPath, &snapError))
+        m_log->appendPlainText(snapError);
+
+    const QString buildDir = info.absolutePath() + QStringLiteral("/build");
+    QSet<QString> outputs;
+    for (const AssetExport &asset : m_settings.assets) {
+        if (outputs.contains(asset.output)) {
+            refuseBuild(tr("Build"),
+                        tr("Two sprite assets both write %1.").arg(asset.output), true);
+            return;
+        }
+        outputs.insert(asset.output);
+        AssetBuildRequest request;
+        request.phaseName = asset.phase;
+        request.outputFileName = asset.output;
+        request.options.palette = asset.palette;
+        request.options.sprite = asset.sprite;
+        request.options.masked = asset.masked;
+        request.options.shifted = asset.shifted;
+        request.options.shiftedMasked = asset.shiftedMasked;
+        request.options.preShifts = asset.preShifts;
+        request.options.transparent = asset.transparent;
+        const AssetBuildResult exported = buildDeclaredAsset(asset.source, request, buildDir);
+        if (!exported.ok) {
+            refuseBuild(tr("Build"), exported.error, true);
+            return;
+        }
+        m_log->appendPlainText(exported.unchanged
+                                   ? tr("%1 unchanged").arg(QFileInfo(asset.source).fileName())
+                                   : tr("Exported %1").arg(exported.dataPath));
+    }
+    QStringList includes = m_settings.includePaths;
+    if (!m_settings.assets.isEmpty())
+        includes.append(buildDir);
+    m_build->setIncludePaths(includes);
+
     if (m_statusBuild)
         m_statusBuild->setText(release ? tr("Building (release)…") : tr("Building…"));
     m_build->build();
+}
+
+
+void MainWindow::compareWithLastBuild()
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
+        QMessageBox::information(this, tr("Compare with last build"),
+                                 tr("Open an assembly source file first."));
+        return;
+    }
+
+    const QFileInfo info(source);
+    const QString program = settings::outputPathsFor(info.absoluteFilePath()).program;
+    const QString previous = previousBuildProgram(program);
+    if (!QFileInfo::exists(previous)) {
+        QMessageBox::information(
+            this, tr("Compare with last build"),
+            tr("There is no previous build to compare. Build the program again "
+               "and PiST will keep a copy of this one."));
+        return;
+    }
+    if (!QFileInfo::exists(program)) {
+        QMessageBox::information(this, tr("Compare with last build"),
+                                 tr("The current program is missing. The last build did not produce one."));
+        return;
+    }
+
+    const auto readAll = [](const QString &path, QByteArray *bytes, QString *error) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error)
+                *error = file.errorString();
+            return false;
+        }
+        *bytes = file.readAll();
+        return file.error() == QFile::NoError;
+    };
+    QByteArray oldBytes;
+    QByteArray newBytes;
+    QString error;
+    if (!readAll(previous, &oldBytes, &error) || !readAll(program, &newBytes, &error)) {
+        QMessageBox::warning(this, tr("Compare with last build"), error);
+        return;
+    }
+
+    const QString mapPath = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+                            + QStringLiteral(".map");
+    LinkMap previousMap;
+    LinkMap currentMap;
+    QString mapError;
+    const bool havePreviousMap =
+        QFileInfo::exists(previousBuildLinkMap(mapPath))
+        && previousMap.parse(previousBuildLinkMap(mapPath), &mapError);
+    const bool haveCurrentMap = QFileInfo::exists(mapPath) && currentMap.parse(mapPath, &mapError);
+
+    QList<SectionAnchor> anchors;
+    for (const SymbolEntry &sym : m_symbols) {
+        if (sym.equate || sym.line <= 0 || sym.file.isEmpty() || sym.name.isEmpty())
+            continue;
+        const int line = m_programMap.nextAddressLine(sym.file, sym.line);
+        if (line <= 0)
+            continue;
+        SectionAnchor anchor;
+        if (!m_programMap.sectionOffsetFor(sym.file, line, &anchor.section, &anchor.offset))
+            continue;
+        if (anchor.section != QLatin1String("text") && anchor.section != QLatin1String("data"))
+            continue;
+        anchor.name = sym.name;
+        anchors.append(anchor);
+    }
+
+    const ProgramDiff diff =
+        diffTosPrograms(oldBytes, newBytes, anchors, havePreviousMap ? &previousMap : nullptr,
+                        haveCurrentMap ? &currentMap : nullptr);
+
+    ProgramDiffHints hints;
+    if (m_host->isStopped() && m_bases.isValid()) {
+        hints.haveBases = true;
+        hints.textBase = m_lastState.textBase;
+        hints.dataBase = m_lastState.dataBase;
+        hints.bssBase = m_lastState.bssBase;
+        hints.havePc = m_lastState.regs.valid;
+        hints.pc = m_lastState.pc;
+    }
+    if (m_stack) {
+        quint32 ret = 0;
+        if (m_stack->innermostLong(&ret)) {
+            hints.haveReturn = true;
+            hints.returnAddress = ret;
+        }
+    }
+
+    ProgramDiffDialog dialog(diff, hints, this);
+    dialog.exec();
 }
 
 

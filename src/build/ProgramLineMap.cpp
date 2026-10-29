@@ -180,20 +180,68 @@ QStringList ProgramLineMap::unplacedModules() const
     return names;
 }
 
-quint32 ProgramLineMap::textEnd() const
+quint32 ProgramLineMap::sectionEnd(const QString &section) const
 {
     quint32 end = 0;
     for (const Module &module : m_modules) {
-        if (!module.placed || module.bases.text == 0)
+        if (!module.placed)
+            continue;
+        const quint32 base = LineMap::baseForSection(section, module.bases);
+        // A base of zero is "this module has no such section", not an address:
+        // GEMDOS does not load a program at 0, and setLiveBases writes 0 for a
+        // section the linker did not place.
+        if (base == 0)
             continue;
         // A module placed by the linker starts where the map puts it, and its
         // listing's extent is relative to that start.
-        const quint32 span = module.lines.textEnd();
+        const quint32 span = module.lines.sectionEnd(section);
         if (span == 0)
             continue;
-        end = qMax(end, module.bases.text + span);
+        end = qMax(end, base + span);
     }
     return end;
+}
+
+quint32 ProgramLineMap::textEnd() const
+{
+    return sectionEnd(QStringLiteral("text"));
+}
+
+bool ProgramLineMap::sectionOffsetFor(const QString &file, int line, QString *section,
+                                      quint32 *offset) const
+{
+    const Module *module = moduleForSource(file);
+    if (!module)
+        return false;
+
+    QString localSection;
+    quint32 local = 0;
+    if (!module->lines.sectionOffsetFor(file, line, &localSection, &local))
+        return false;
+
+    // No linker map: the module is the program, so the listing offset is the
+    // section offset. A linked module's listing restarts at zero, and the map
+    // says where that zero was placed.
+    quint32 place = 0;
+    if (!m_linkMap.isEmpty()) {
+        QString type;
+        if (localSection == QLatin1String("text"))
+            type = QStringLiteral("CODE");
+        else if (localSection == QLatin1String("data"))
+            type = QStringLiteral("DATA");
+        else if (localSection == QLatin1String("bss"))
+            type = QStringLiteral("BSS");
+        else
+            return false;
+        if (!placementOffset(*module, type, &place))
+            return false;
+    }
+
+    if (section)
+        *section = localSection;
+    if (offset)
+        *offset = place + local;
+    return true;
 }
 
 bool ProgramLineMap::addressFor(const QString &file, int line, quint32 *address) const

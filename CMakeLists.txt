@@ -156,6 +156,8 @@ pist_module(pist_image
     src/image/Tools.h
     src/image/StFormats.cpp
     src/image/StFormats.h
+    src/image/AssetBuild.cpp
+    src/image/AssetBuild.h
     src/image/Transform.cpp
     src/image/Transform.h
 )
@@ -177,6 +179,8 @@ pist_module(pist_build
     src/build/LinkMap.h
     src/build/ProgramLineMap.cpp
     src/build/ProgramLineMap.h
+    src/build/ProgramDiff.cpp
+    src/build/ProgramDiff.h
 )
 
 # debug/ — the file:line breakpoint model and the watchpoints.
@@ -302,6 +306,8 @@ pist_module(pist_hooks
 pist_module(pist_ui
     src/ui/Appearance.cpp
     src/ui/Appearance.h
+    src/ui/AssetExportDialog.cpp
+    src/ui/AssetExportDialog.h
     src/ui/Icons.cpp
     src/ui/UiText.h
     src/ui/MainWindow.cpp
@@ -322,6 +328,8 @@ pist_module(pist_ui
     src/ui/BreakpointWatchpointModel.h
     src/ui/ProfilerController.cpp
     src/ui/ProfilerController.h
+    src/ui/ProgramDiffDialog.cpp
+    src/ui/ProgramDiffDialog.h
     src/ui/StopHooksDialog.cpp
     src/ui/StopHooksDialog.h
     src/ui/SymbolPaletteDialog.cpp

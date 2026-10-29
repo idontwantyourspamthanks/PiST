@@ -190,7 +190,10 @@ states the redistribution basis and a `KNOWN_LIBS` entry waits on a copy in `pac
 ## 6. Debug surface depth: editing, multiple panes, history, step-back, pause hint
 
 **Status:** mostly delivered — register/memory editing, multiple memory panes, PC history and the
-pause hint are in; only step-back is not, and the analysis below records why it is not merely
+pause hint are in. A memory pane can mark the bytes it is showing and compare a later stop
+with that mark, or with the previous stop's window, and Build → Compare With Last Build
+previews how the linked image changed. Neither writes the machine, and neither records who
+stored a byte. Step-back is still not in, and the analysis below records why it is not merely
 unbuilt.
 
 - **Register and memory editing.** Delivered. Registers and memory are editable while stopped — the
@@ -387,14 +390,23 @@ animates the frames and scrolls them across an ST low-resolution screen until a 
 The dialog picks the phase, the blocks and the pre-shift count, and prints the file map the
 assembler source's `equ`s come from.
 
+**Declared sprite export** — a project can list `.pim` files on the build settings page. Each
+row names a phase, the same block options as the export dialog, and one output file name.
+Build, before assemble, hashes the document and those options. Unchanged leaves the previous
+`.dat` and generated include alone. Changed writes both under the project's `build/` directory
+through `files::write()`: the bytes, and an include (`incbin` plus `equ`s from
+`bitplaneLayout`). The build's include path gains that directory for that build only.
+A failed export keeps the previous outputs and fails the build. The project file stays at
+version 2; an older PiST ignores the `assets` list.
+
 Still not in PiST, on purpose:
 
 - Tilemaps — regions name rectangles on a sheet; a tilemap (a grid of tile indices) is still a
   second product inside this one.
 - Other machines (C64, Spectrum, CPC, Amiga, 8-bit). This IDE is for the ST.
 - Degas PI2/PI3 (medium/high resolution). The editor is 16-colour low-res, which is the sprite path.
-- Auto-export on Build / an asset list in `.pistproject`. Regions live in the `.pim` so a sheet is
-  self-contained; export is explicit; the assembler consumes whatever `.s` or `.bin` the user wrote.
+- Sound, packing, a byte map from a memory pane back to a phase, and uploading an asset into a
+  running program. The declared list has to be how a program is built before any of those.
 
 The `.pim` format is version 2 — phases own their frames — and v1 files are rejected outright
 (decided 2026-09: no users yet, and the two models are structurally incompatible).
@@ -433,3 +445,39 @@ Not in this pass, on purpose:
 - **Merge-conflict editor.** Conflict markers in the buffer, plus `git status` unmerged
   paths. Do not invent a mergetool config — that would be writing git config, which this
   IDE does not do.
+
+---
+
+## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
+
+**Status:** not started. No product UI until the gate for that feature passes. These belong
+in `hatari-pist` (upstream 2.6.1 plus the HRDB listener and the media channel), behind a
+capability probe. Stock Hatari keeps today's debugger. The host-side memory compare, the
+last-build preview, and declared sprite export do not wait on any of them.
+
+The gates, in order, each with a pass/fail trace and no dock:
+
+1. **Replay one fixture twice.** Record one fixture's inputs and a short trace (frame, PC,
+   registers). Replay it. A second run with a different key must diverge. If this fails,
+   time travel, headless deterministic tests, and a compatibility matrix stop. A Lua file
+   that boots Hatari and hashes RAM is not this gate: TOS, the FDC, and the debugger's own
+   stops are not proven deterministic, and stop hooks must not be named record/replay.
+2. **Restore and stay stopped.** Restore one snapshot and remain at a debugger prompt, with
+   no extra guest instruction. `stateload` does not do this (see §6): it resumes the machine
+   and never returns to a prompt. If this fails, Reverse Step and patch rollback stop.
+   Forward-only memory diff, patch preview, and sprite export do not.
+3. **Targeted write events.** Instrument writes to one small range. Log PC, address, old,
+   and new. State the cost, and what happens when the ring fills. CPU writes and DMA or
+   blitter writes need different origin tags. A missing tag is an unknown writer, not the
+   current PC. Until that trace is trustworthy there is no memory-history view: guessing
+   the writer from the CPU's PC would mis-attribute a DMA or blitter store.
+4. **Palette writes against a scanline clock**, on one test pattern. Cycles are not
+   scanlines once the machine changes clocks, and the events have to be recorded at the
+   hardware write. If they do not land on the expected lines, do not draw a scanline
+   inspector. The profiler overlay is not that stream. The media channel's frames are RGB,
+   and `info video` does not carry the palette.
+
+Applying a patch stays closed until the preview has been wrong in public at least once, and
+then only for one same-length range, while stopped, with a read-back, and only when the
+preview said the section size matched. "Take snapshot and apply" waits on gate 2. Until
+then the recovery path is restart. Same length does not prove absolute references survived.

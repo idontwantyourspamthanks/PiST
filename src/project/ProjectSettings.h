@@ -38,6 +38,24 @@ QStringList defaultDebugAssemblerArgs();
 /// docs/PLAN.md §4.1.
 QStringList defaultReleaseAssemblerArgs();
 
+/// One sprite document the build exports before it assembles.
+///
+/// `output` is a file name under the project's `build` directory (`hero.dat`),
+/// not a path. The blocks are the same ones the bitplane export dialog writes.
+struct AssetExport
+{
+    QString source;
+    QString phase;
+    QString output;
+    bool palette = true;
+    bool sprite = true;
+    bool masked = false;
+    bool shifted = false;
+    bool shiftedMasked = false;
+    int preShifts = 4;
+    int transparent = 0;
+};
+
 /// Settings for one project: what to build, how, and how to run it.
 ///
 /// Kept as a plain value type so it can be persisted, copied and compared
@@ -78,6 +96,11 @@ struct ProjectSettings
     /// Assembler arguments for a release build, in order. Same contract as
     /// `debugAssemblerArgs`; defaults to `defaultReleaseAssemblerArgs()`.
     QStringList releaseAssemblerArgs = defaultReleaseAssemblerArgs();
+
+    /// Sprite documents exported into `build/` before assemble. Empty means
+    /// the build does not export anything. An older project file has no list,
+    /// which is this empty one.
+    QList<AssetExport> assets;
 
     /// Explicit tool paths from project or user settings. Empty means
     /// "discover it", which searches beside the app, the per-user tools

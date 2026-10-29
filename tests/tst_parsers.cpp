@@ -10,8 +10,10 @@
 #include "build/Diagnostic.h"
 #include "build/FloppyImage.h"
 #include "build/LineMap.h"
+#include "build/ProgramDiff.h"
 #include "build/ProgramLineMap.h"
 #include "build/SymbolTable.h"
+#include "support/FileWrite.h"
 
 #include <QDir>
 #include <QFile>
@@ -36,6 +38,8 @@ private slots:
 
     void lineMapMapsLinesToOffsets();
     void programMapTextExtent();
+    void programDiffReportsRangesAndRefusals();
+    void snapshotKeepsThePreviousProgram();
     void lineMapResolvesAgainstLiveBases();
     void lineMapRejectsUnknownLine();
     void lineMapRejectsUnparseableListing();
@@ -267,8 +271,17 @@ void TstParsers::programMapTextExtent()
     QVERIFY(program.addModule(QStringLiteral("ok.s"), QStringLiteral("ok.o"),
                               writeListing(dir), nullptr));
 
-    // No live bases: there is no address to report yet.
+    // No live bases: there is no address to report yet. The section offset does
+    // not need them — it is where the listing put the line.
     QCOMPARE(program.textEnd(), 0u);
+    QString section;
+    quint32 offset = 0;
+    QVERIFY(program.sectionOffsetFor(QStringLiteral("ok.s"), 4, &section, &offset));
+    QCOMPARE(section, QStringLiteral("text"));
+    QCOMPARE(offset, 0x08u);
+    QVERIFY(program.sectionOffsetFor(QStringLiteral("ok.s"), 8, &section, &offset));
+    QCOMPARE(section, QStringLiteral("data"));
+    QCOMPARE(offset, 0u);
 
     LineMap::SectionBases live;
     live.text = 0x12596;
@@ -280,6 +293,215 @@ void TstParsers::programMapTextExtent()
     // base (which only accidentally works when data follows text) nor the last
     // entry's offset.
     QCOMPARE(program.textEnd(), 0x12596u + 0xEu);
+    QCOMPARE(program.sectionEnd(QStringLiteral("data")), 0x125acu + 0x4u);
+    QCOMPARE(program.sectionEnd(QStringLiteral("bss")), 0x125b0u + 0x10u);
+
+    // A linked module's listing restarts at zero. The offset the diff names a
+    // symbol with is the listing offset plus where the map placed that object,
+    // and a map that does not place the object has no offset to report.
+    const QString mapPath = dir.filePath(QStringLiteral("ok.map"));
+    QFile mapFile(mapPath);
+    QVERIFY(mapFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream mapOut(&mapFile);
+    mapOut << "  00000000 .text  (size 2e, allocated 2e)\n"
+              "           00000020 - 0000002e ok.o(CODE)\n"
+              "  00000000 .data  (size 44, allocated 44)\n"
+              "           00000040 - 00000044 ok.o(DATA)\n";
+    mapFile.close();
+    LinkMap map;
+    QString mapError;
+    QVERIFY2(map.parse(mapPath, &mapError), qPrintable(mapError));
+    program.setLinkMap(map);
+    QVERIFY(program.sectionOffsetFor(QStringLiteral("ok.s"), 4, &section, &offset));
+    QCOMPARE(section, QStringLiteral("text"));
+    QCOMPARE(offset, 0x20u + 0x08u);
+    QVERIFY(program.sectionOffsetFor(QStringLiteral("ok.s"), 8, &section, &offset));
+    QCOMPARE(section, QStringLiteral("data"));
+    QCOMPARE(offset, 0x40u);
+
+    LinkMap elsewhere;
+    const QString elsewherePath = dir.filePath(QStringLiteral("other.map"));
+    QFile elsewhereFile(elsewherePath);
+    QVERIFY(elsewhereFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream elsewhereOut(&elsewhereFile);
+    elsewhereOut << "  00000000 .text  (size 4, allocated 4)\n"
+                    "           00000000 - 00000004 lib.o(CODE)\n";
+    elsewhereFile.close();
+    QVERIFY2(elsewhere.parse(elsewherePath, &mapError), qPrintable(mapError));
+    program.setLinkMap(elsewhere);
+    QVERIFY(!program.sectionOffsetFor(QStringLiteral("ok.s"), 4, &section, &offset));
+}
+
+static QByteArray tosProgram(quint32 textSize, const QByteArray &text, quint32 dataSize,
+                             const QByteArray &data, quint32 bssSize)
+{
+    QByteArray image(28 + int(textSize) + int(dataSize), '\0');
+    image[0] = char(0x60);
+    image[1] = char(0x1a);
+    const auto put = [&image](int at, quint32 value) {
+        image[at] = char((value >> 24) & 0xff);
+        image[at + 1] = char((value >> 16) & 0xff);
+        image[at + 2] = char((value >> 8) & 0xff);
+        image[at + 3] = char(value & 0xff);
+    };
+    put(2, textSize);
+    put(6, dataSize);
+    put(10, bssSize);
+    image.replace(28, text.size(), text);
+    image.replace(28 + int(textSize), data.size(), data);
+    return image;
+}
+
+void TstParsers::programDiffReportsRangesAndRefusals()
+{
+    const QByteArray text("\x70\x00\x4e\x75", 4);
+    QByteArray changed = text;
+    changed[1] = char(0x01);
+    changed[2] = char(0x00);
+    const QByteArray data("\x68\x69", 2);
+
+    SectionAnchor start;
+    start.section = QStringLiteral("text");
+    start.offset = 0;
+    start.name = QStringLiteral("start");
+    SectionAnchor later;
+    later.section = QStringLiteral("text");
+    later.offset = 3;
+    later.name = QStringLiteral("later");
+
+    const ProgramDiff ranges =
+        diffTosPrograms(tosProgram(4, text, 2, data, 0), tosProgram(4, changed, 2, data, 0),
+                        {start, later}, nullptr, nullptr);
+    QVERIFY2(ranges.ok, qPrintable(ranges.error));
+    QCOMPARE(ranges.sections.size(), 3);
+    QCOMPARE(ranges.sections.at(0).decision, SectionDecision::DifferingRanges);
+    QCOMPARE(ranges.sections.at(0).ranges.size(), 1);
+    QCOMPARE(ranges.sections.at(0).ranges.at(0).offset, 1u);
+    QCOMPARE(ranges.sections.at(0).ranges.at(0).length, 2);
+    QCOMPARE(ranges.sections.at(0).ranges.at(0).symbol, QStringLiteral("start"));
+    QCOMPARE(ranges.sections.at(1).decision, SectionDecision::Identical);
+
+    const QByteArray longText(12, '\x11');
+    const QByteArray longChanged(12, '\x22');
+    const ProgramDiff capped =
+        diffTosPrograms(tosProgram(12, longText, 0, {}, 0), tosProgram(12, longChanged, 0, {}, 0),
+                        {start, later}, nullptr, nullptr);
+    QVERIFY(capped.ok);
+    QCOMPARE(capped.sections.at(0).ranges.size(), 1);
+    QCOMPARE(capped.sections.at(0).ranges.at(0).length, 12);
+    QCOMPARE(capped.sections.at(0).ranges.at(0).oldPreview.size(), 8);
+    QCOMPARE(capped.sections.at(0).ranges.at(0).newPreview.size(), 8);
+    QCOMPARE(capped.sections.at(0).ranges.at(0).symbol, QStringLiteral("start"));
+
+    QByteArray truncated = tosProgram(100, text, 0, {}, 0);
+    truncated.resize(40);
+    const ProgramDiff shortFile =
+        diffTosPrograms(truncated, tosProgram(4, text, 0, {}, 0), {}, nullptr, nullptr);
+    QVERIFY(!shortFile.ok);
+    QVERIFY(shortFile.error.contains(QStringLiteral("shorter")));
+    QCOMPARE(ranges.sections.at(2).decision, SectionDecision::Identical);
+
+    const ProgramDiff grew =
+        diffTosPrograms(tosProgram(4, text, 0, {}, 0), tosProgram(8, text + text, 0, {}, 0), {},
+                        nullptr, nullptr);
+    QVERIFY(grew.ok);
+    QCOMPARE(grew.sections.at(0).decision, SectionDecision::RestartRequired);
+    QCOMPARE(grew.sections.at(0).reason, RestartReason::Grew);
+    QVERIFY(grew.sections.at(0).ranges.isEmpty());
+
+    const ProgramDiff shrank =
+        diffTosPrograms(tosProgram(4, text, 0, {}, 8), tosProgram(4, text, 0, {}, 2), {}, nullptr,
+                        nullptr);
+    QVERIFY(shrank.ok);
+    QCOMPARE(shrank.sections.at(2).decision, SectionDecision::RestartRequired);
+    QCOMPARE(shrank.sections.at(2).reason, RestartReason::Shrank);
+    QVERIFY(shrank.sections.at(2).ranges.isEmpty());
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto writeMap = [&dir](const QString &name, const QString &start) {
+        const QString path = dir.filePath(name);
+        QFile file(path);
+        const bool opened = file.open(QIODevice::WriteOnly | QIODevice::Text);
+        if (opened) {
+            QTextStream out(&file);
+            out << "  00000000 .text  (size 4, allocated 4)\n"
+                << "        " << start << " - 00000004 main.o(CODE)\n";
+        }
+        return opened ? path : QString();
+    };
+    LinkMap previousMap;
+    LinkMap currentMap;
+    QString error;
+    const QString oldMap = writeMap(QStringLiteral("old.map"), QStringLiteral("00000000"));
+    const QString newMap = writeMap(QStringLiteral("new.map"), QStringLiteral("00000002"));
+    QVERIFY(!oldMap.isEmpty());
+    QVERIFY(!newMap.isEmpty());
+    QVERIFY2(previousMap.parse(oldMap, &error), qPrintable(error));
+    QVERIFY2(currentMap.parse(newMap, &error), qPrintable(error));
+    const ProgramDiff moved =
+        diffTosPrograms(tosProgram(4, text, 0, {}, 0), tosProgram(4, text, 0, {}, 0), {},
+                        &previousMap, &currentMap);
+    QVERIFY(moved.ok);
+    QCOMPARE(moved.sections.at(0).decision, SectionDecision::RestartRequired);
+    QCOMPARE(moved.sections.at(0).reason, RestartReason::Moved);
+    QVERIFY(moved.sections.at(0).ranges.isEmpty());
+
+    const ProgramDiff bad = diffTosPrograms(QByteArray("nope"), tosProgram(4, text, 0, {}, 0), {},
+                                            nullptr, nullptr);
+    QVERIFY(!bad.ok);
+    QVERIFY(bad.error.contains(QStringLiteral("TOS")));
+}
+
+void TstParsers::snapshotKeepsThePreviousProgram()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString program = dir.filePath(QStringLiteral("game.prg"));
+    const QString map = dir.filePath(QStringLiteral("game.map"));
+    QString error;
+
+    // Nothing has been built yet. That is not a failure, and it must not
+    // invent a snapshot.
+    QVERIFY2(snapshotPreviousBuild(program, map, &error), qPrintable(error));
+    QVERIFY(!QFile::exists(previousBuildProgram(program)));
+    QVERIFY(!QFile::exists(previousBuildLinkMap(map)));
+
+    QVERIFY2(files::write(program, QByteArray("one"), &error), qPrintable(error));
+    QVERIFY2(files::write(map, QByteArray("map-one"), &error), qPrintable(error));
+    QVERIFY2(snapshotPreviousBuild(program, map, &error), qPrintable(error));
+
+    QFile saved(previousBuildProgram(program));
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.readAll(), QByteArray("one"));
+    saved.close();
+    QFile savedMap(previousBuildLinkMap(map));
+    QVERIFY(savedMap.open(QIODevice::ReadOnly));
+    QCOMPARE(savedMap.readAll(), QByteArray("map-one"));
+    savedMap.close();
+
+    // A build deletes the program before the assembler runs, and a failed
+    // assemble leaves it gone. Snapshotting that absence must keep the copy
+    // already taken, of both the program and its map.
+    QVERIFY(QFile::remove(program));
+    QVERIFY(QFile::remove(map));
+    QVERIFY2(snapshotPreviousBuild(program, map, &error), qPrintable(error));
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.readAll(), QByteArray("one"));
+    saved.close();
+    QVERIFY(savedMap.open(QIODevice::ReadOnly));
+    QCOMPARE(savedMap.readAll(), QByteArray("map-one"));
+    savedMap.close();
+
+    // A later build replaces the program snapshot. An empty map path leaves
+    // the map snapshot where the previous build put it.
+    QVERIFY2(files::write(program, QByteArray("two"), &error), qPrintable(error));
+    QVERIFY2(snapshotPreviousBuild(program, QString(), &error), qPrintable(error));
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.readAll(), QByteArray("two"));
+    saved.close();
+    QVERIFY(savedMap.open(QIODevice::ReadOnly));
+    QCOMPARE(savedMap.readAll(), QByteArray("map-one"));
 }
 
 void TstParsers::lineMapResolvesAgainstLiveBases()

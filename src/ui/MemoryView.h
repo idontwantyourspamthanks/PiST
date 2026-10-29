@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QTableWidget;
 class QTableWidgetItem;
+class QToolButton;
 
 namespace pist {
 
@@ -52,6 +53,17 @@ public slots:
     /// stopped — writes go through the debugger.
     void setEditingEnabled(bool enabled);
 
+    /// The stop this window was last refreshed for. A mark records it, so the
+    /// comparison can say where the earlier bytes came from. `where` is a
+    /// source location (`file.s:12`) when the line map has one, otherwise empty.
+    void setStopContext(quint32 pc, const QString &where);
+
+    /// Text, data and bss as half-open live ranges. A zero end means that
+    /// section is unknown, and then nothing is tinted: an inferred screen or
+    /// asset region is not a section the basepage named.
+    void setProgramRegions(quint32 textBase, quint32 textEnd, quint32 dataBase, quint32 dataEnd,
+                           quint32 bssBase, quint32 bssEnd);
+
     /// Re-apply the theme font and the last dump's colours.
     void applyAppearance();
 
@@ -69,9 +81,32 @@ private slots:
     void onAddressEntered();
     void onCellDoubleClicked(int row, int column);
     void onByteEdited(QTableWidgetItem *item);
+    void setMark();
+    void onCompareToggled(bool on);
+    void onPreviousToggled(bool on);
 
 private:
     void clear();
+    /// Paint `rows`. `advancePrevious` is true only for a dump the emulator
+    /// just returned: that is the moment "compare with previous stop" moves
+    /// its mark. A repaint (appearance, a region tint, toggling the mark)
+    /// must not, or the highlight of the stop just shown would vanish.
+    void paintDump(const QList<MemoryRow> &rows, bool advancePrevious);
+
+    struct Mark {
+        bool valid = false;
+        quint32 base = 0;
+        QByteArray bytes;
+        quint32 pc = 0;
+        QString where;
+        bool hasContext = false;
+    };
+
+    Mark captureMark() const;
+    void writeComparison(const Mark &compared);
+    QString comparisonStatus(const Mark &compared) const;
+    /// `text`, `data`, `bss`, `outside` or empty when no section is known.
+    QString regionName(quint32 address) const;
 
     static constexpr int kRowBytes = 16;
     static constexpr int kRows = 16;
@@ -97,6 +132,29 @@ private:
     QLineEdit *m_addressEdit = nullptr;
     QTableWidget *m_table = nullptr;
     QLabel *m_status = nullptr;
+
+    QToolButton *m_compareButton = nullptr;
+    QToolButton *m_previousButton = nullptr;
+
+    Mark m_mark;
+    /// The mark a previous-stop comparison was painted against. The stored
+    /// mark has already moved on to the dump just shown, and a later repaint
+    /// has to keep highlighting against this one.
+    Mark m_shownAgainst;
+    bool m_haveShown = false;
+    bool m_compare = false;
+    bool m_previousStop = false;
+
+    quint32 m_stopPc = 0;
+    QString m_stopWhere;
+    bool m_haveStopContext = false;
+
+    quint32 m_textBase = 0;
+    quint32 m_textEnd = 0;
+    quint32 m_dataBase = 0;
+    quint32 m_dataEnd = 0;
+    quint32 m_bssBase = 0;
+    quint32 m_bssEnd = 0;
 };
 
 } // namespace pist

@@ -538,6 +538,9 @@ private:
     /// hop, where the argument is gone. `release` picks the project's release
     /// assembler arguments over the debug ones.
     void buildImpl(bool quiet, bool release);
+    /// Compare the current program with the snapshot taken before the last
+    /// build replaced it. Preview only: the dialog does not write to the machine.
+    void compareWithLastBuild();
     void runImpl(bool quiet);
 
     /// Load the project settings that sit beside a source file, if any.
@@ -1017,6 +1020,7 @@ private:
     QAction *m_actCloseAll = nullptr;
     QAction *m_actBuild = nullptr;
     QAction *m_actBuildRelease = nullptr;
+    QAction *m_actCompareBuild = nullptr;
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
     QAction *m_actNextDiagnostic = nullptr;

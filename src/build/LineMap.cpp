@@ -158,15 +158,52 @@ quint32 LineMap::baseForSection(const QString &section, const SectionBases &base
     return 0;
 }
 
-quint32 LineMap::textEnd() const
+namespace {
+
+/// `text` and `code` are one section, under the two names vasm writes.
+QString canonicalSection(const QString &name)
 {
+    const QString lower = name.toLower();
+    if (lower == QLatin1String("text") || lower == QLatin1String("code"))
+        return QStringLiteral("text");
+    if (lower == QLatin1String("data"))
+        return QStringLiteral("data");
+    if (lower == QLatin1String("bss"))
+        return QStringLiteral("bss");
+    return lower;
+}
+
+} // namespace
+
+quint32 LineMap::sectionEnd(const QString &section) const
+{
+    const QString want = canonicalSection(section);
     quint32 end = 0;
     for (auto it = m_sectionEnds.constBegin(); it != m_sectionEnds.constEnd(); ++it) {
-        const QString name = it.key().toLower();
-        if (name == QLatin1String("text") || name == QLatin1String("code"))
+        if (canonicalSection(it.key()) == want)
             end = qMax(end, it.value());
     }
     return end;
+}
+
+quint32 LineMap::textEnd() const
+{
+    return sectionEnd(QStringLiteral("text"));
+}
+
+bool LineMap::sectionOffsetFor(const QString &file, int line, QString *section,
+                               quint32 *offset) const
+{
+    for (const Entry &e : m_entries) {
+        if (e.line != line || !sameSource(e.file, file))
+            continue;
+        if (section)
+            *section = canonicalSection(e.section);
+        if (offset)
+            *offset = e.offset;
+        return true;
+    }
+    return false;
 }
 
 bool LineMap::addressForImpl(const QString &file, int line, const SectionBases &bases,

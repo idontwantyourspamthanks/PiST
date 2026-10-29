@@ -38,6 +38,11 @@ public slots:
     /// Clear the view (no session, or registers not yet valid).
     void clear();
 
+    /// The long at the stack pointer, which is the return address a `jsr`/`bsr`
+    /// pushed. False when the view has no dump. This is the value step-out
+    /// already read; it is not a new fetch.
+    bool innermostLong(quint32 *value) const;
+
     /// Re-apply the theme font and the last dump's colours.
     void applyAppearance();
 
@@ -59,6 +64,8 @@ private:
     quint32 m_lastTextBase = 0;
     quint32 m_lastTextEnd = 0;
     bool m_haveDump = false;
+    bool m_haveInnermost = false;
+    quint32 m_innermost = 0;
 };
 
 } // namespace pist

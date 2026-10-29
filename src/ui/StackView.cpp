@@ -43,6 +43,15 @@ StackView::StackView(QWidget *parent)
 void StackView::clear()
 {
     m_table->setRowCount(0);
+    m_haveInnermost = false;
+}
+
+bool StackView::innermostLong(quint32 *value) const
+{
+    if (!m_haveInnermost || !value)
+        return false;
+    *value = m_innermost;
+    return true;
 }
 
 void StackView::setStackDump(quint32 sp, const QList<MemoryRow> &rows,
@@ -58,6 +67,8 @@ void StackView::setStackDump(quint32 sp, const QList<MemoryRow> &rows,
         return;
     }
 
+    m_haveInnermost = false;
+
     // Flatten the rows to bytes relative to the first row's address, so a long
     // can be read at any aligned offset regardless of where rows break.
     const quint32 base = rows.first().address;
@@ -72,6 +83,12 @@ void StackView::setStackDump(quint32 sp, const QList<MemoryRow> &rows,
                 bytes.resize(at + 1);
             bytes[at] = char(row.bytes[i]);
         }
+    }
+
+    const int innermostAt = int(sp - base);
+    if (innermostAt >= 0 && innermostAt + 4 <= bytes.size()) {
+        m_innermost = readLongBE(bytes, innermostAt);
+        m_haveInnermost = true;
     }
 
     m_table->setRowCount(kLongs);

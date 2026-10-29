@@ -306,6 +306,12 @@ void MainWindow::createActions()
     m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
     connect(m_actBuild, &QAction::triggered, this, &MainWindow::buildInteractive);
 
+    m_actCompareBuild = new QAction(tr("Compare With Last &Build"), this);
+    m_actCompareBuild->setObjectName(QStringLiteral("compareWithLastBuild"));
+    m_actCompareBuild->setToolTip(
+        tr("Show what the last rebuild changed. Nothing is written to the machine."));
+    connect(m_actCompareBuild, &QAction::triggered, this, &MainWindow::compareWithLastBuild);
+
     m_actBuildRelease = new QAction(tr("Build &Release"), this);
     m_actBuildRelease->setToolTip(
         tr("Build with the release assembler arguments (no debug symbols)"));
@@ -499,6 +505,7 @@ void MainWindow::createMenus()
     buildMenu->setObjectName(QStringLiteral("buildMenu"));
     buildMenu->addAction(m_actBuild);
     buildMenu->addAction(m_actBuildRelease);
+    buildMenu->addAction(m_actCompareBuild);
     buildMenu->addSeparator();
     buildMenu->addAction(m_actNextDiagnostic);
     buildMenu->addAction(m_actPrevDiagnostic);

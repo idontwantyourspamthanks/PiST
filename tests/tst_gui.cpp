@@ -43,7 +43,9 @@
 #include "debug/Watchpoint.h"
 #include "ui/DisassemblyView.h"
 #include "ui/HardwareView.h"
+#include "build/ProgramDiff.h"
 #include "ui/MemoryView.h"
+#include "ui/ProgramDiffDialog.h"
 #include "emu/MemoryDump.h"
 #include "ui/PcHistoryView.h"
 #include "ui/SetupDialog.h"
@@ -564,6 +566,25 @@ private slots:
     /// write/refresh storm was what made the value "return", and exactly one
     /// debugger write must result from one edit.
     void memoryEditSurvivesRefreshLive();
+
+    /// A mark is the bytes on screen. Compare highlights a later dump against
+    /// that mark, and a window that moved compares only the overlap.
+    void memoryMarkComparesTheVisibleWindow();
+
+    /// Previous stop replaces the mark with each dump, so the highlight is
+    /// against the dump immediately before, and a repaint does not eat it.
+    void memoryPreviousStopAdvancesOnADump();
+
+    /// Region tint names text, data, bss, or outside. Nothing is inferred.
+    void memoryRegionsFollowTheProgramSpans();
+
+    /// The build comparison is a preview: it names a changed range and the
+    /// CPU when it sits in one, and it has no way to write the machine.
+    void programDiffDialogDoesNotApply();
+
+    /// Sprite exports already stored on the project show up in settings and
+    /// come back out of the dialog without opening the editor.
+    void settingsDialogShowsSpriteAssets();
 
     /// Double-clicking a stack row whose value points into text follows the
     /// value; double-clicking a plain value follows the slot's own address.
@@ -2511,6 +2532,165 @@ void TstGui::dumpRewriteDoesNotEmitEdits()
     view.applyDump(parseMemoryDump(dump));
     QCOMPARE(edits.size(), 0);
 }
+
+void TstGui::memoryMarkComparesTheVisibleWindow()
+{
+    MemoryView view;
+    auto *mark = view.findChild<QToolButton *>(QStringLiteral("memoryMarkButton"));
+    auto *compare = view.findChild<QToolButton *>(QStringLiteral("memoryCompareButton"));
+    auto *status = view.findChild<QLabel *>(QStringLiteral("memoryStatus"));
+    auto *table = view.findChild<QTableWidget *>();
+    QVERIFY(mark && compare && status && table);
+
+    compare->click();
+    QCOMPARE(status->text(), QStringLiteral("Set a mark first."));
+
+    view.goToAddress(0x12590);
+    view.setStopContext(0x12596, QStringLiteral("hello.s:12"));
+    const QString first = QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"
+        "000125a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n");
+    view.applyDump(parseMemoryDump(first));
+    mark->click();
+
+    const QString changed = QStringLiteral(
+        "00012590: 70 ff 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n"
+        "000125a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n");
+    view.applyDump(parseMemoryDump(changed));
+    QCOMPARE(status->text(), QStringLiteral("1 byte differs from the mark at hello.s:12."));
+    QCOMPARE(table->item(0, 2)->toolTip(), QStringLiteral("was $01, now $FF"));
+
+    view.goToAddress(0x125A0);
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "000125a0: 11 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n")));
+    QCOMPARE(status->text(),
+             QStringLiteral("1 byte differs in the overlap with the mark at hello.s:12 "
+                            "($00012590, this window $000125A0)."));
+
+    view.goToAddress(0x20000);
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00020000: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n")));
+    QCOMPARE(status->text(),
+             QStringLiteral("The mark at hello.s:12 ($00012590) does not overlap this window."));
+}
+
+void TstGui::memoryPreviousStopAdvancesOnADump()
+{
+    MemoryView view;
+    auto *previous = view.findChild<QToolButton *>(QStringLiteral("memoryPreviousStopButton"));
+    auto *status = view.findChild<QLabel *>(QStringLiteral("memoryStatus"));
+    auto *table = view.findChild<QTableWidget *>();
+    QVERIFY(previous && status && table);
+
+    previous->click();
+    QCOMPARE(status->text(), QStringLiteral("Nothing to compare yet."));
+
+    view.goToAddress(0x12590);
+    view.setStopContext(0x12596, QStringLiteral("hello.s:4"));
+    const QString original = QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n");
+    const QString middle = QStringLiteral(
+        "00012590: 70 ff 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n");
+    view.applyDump(parseMemoryDump(original));
+    previous->click();
+    QCOMPARE(status->text(), QStringLiteral("The next stop will be compared with this window."));
+
+    view.setStopContext(0x12598, QStringLiteral("hello.s:8"));
+    view.applyDump(parseMemoryDump(middle));
+    QCOMPARE(status->text(), QStringLiteral("1 byte differs from the mark at hello.s:4."));
+    QCOMPARE(table->item(0, 2)->toolTip(), QStringLiteral("was $01, now $FF"));
+
+    // A theme repaint is not a new stop. The highlight stays against the mark
+    // this dump was compared with, which is the first window, not itself.
+    view.applyAppearance();
+    QCOMPARE(table->item(0, 2)->toolTip(), QStringLiteral("was $01, now $FF"));
+
+    // The next stop compares with the dump just shown (the $FF byte), so
+    // returning to the original value differs from that, not from the first mark.
+    view.setStopContext(0x12596, QStringLiteral("hello.s:4"));
+    view.applyDump(parseMemoryDump(original));
+    QCOMPARE(status->text(), QStringLiteral("1 byte differs from the mark at hello.s:8."));
+    QCOMPARE(table->item(0, 2)->toolTip(), QStringLiteral("was $FF, now $01"));
+}
+
+void TstGui::memoryRegionsFollowTheProgramSpans()
+{
+    MemoryView view;
+    auto *table = view.findChild<QTableWidget *>();
+    QVERIFY(table);
+    view.goToAddress(0x12590);
+    view.setProgramRegions(0x12590, 0x12594, 0x12594, 0x12598, 0x12598, 0x1259C);
+    view.applyDump(parseMemoryDump(QStringLiteral(
+        "00012590: 70 01 61 04 74 03 60 fe 72 02 4e 75 00 00 48 49  p.a.t.`.r.Nu..HI\n")));
+    QCOMPARE(table->item(0, 1)->toolTip(), QStringLiteral("text"));
+    QCOMPARE(table->item(0, 5)->toolTip(), QStringLiteral("data"));
+    QCOMPARE(table->item(0, 9)->toolTip(), QStringLiteral("bss"));
+    QCOMPARE(table->item(0, 13)->toolTip(), QStringLiteral("outside the program"));
+}
+
+void TstGui::programDiffDialogDoesNotApply()
+{
+    SectionChange text;
+    text.name = QStringLiteral("text");
+    text.decision = SectionDecision::DifferingRanges;
+    ByteRange range;
+    range.offset = 4;
+    range.length = 2;
+    range.symbol = QStringLiteral("start");
+    range.oldPreview = QByteArray("\x4e\x75", 2);
+    range.newPreview = QByteArray("\x4e\x71", 2);
+    text.ranges.append(range);
+    SectionChange data;
+    data.name = QStringLiteral("data");
+    SectionChange bss;
+    bss.name = QStringLiteral("bss");
+
+    ProgramDiff diff;
+    diff.ok = true;
+    diff.sections = {text, data, bss};
+
+    ProgramDiffHints hints;
+    hints.haveBases = true;
+    hints.textBase = 0x12590;
+    hints.havePc = true;
+    hints.pc = 0x12594;
+
+    ProgramDiffDialog dialog(diff, hints);
+    QCOMPARE(dialog.objectName(), QStringLiteral("programDiffDialog"));
+    auto *footer = dialog.findChild<QLabel *>(QStringLiteral("programDiffFooter"));
+    QVERIFY(footer);
+    QCOMPARE(footer->text(), QStringLiteral("Nothing was written to the machine."));
+    for (QAbstractButton *button : dialog.findChildren<QAbstractButton *>())
+        QVERIFY(!button->text().contains(QStringLiteral("Apply"), Qt::CaseInsensitive));
+
+    auto *table = dialog.findChild<QTableWidget *>(QStringLiteral("programDiffTable"));
+    QVERIFY(table);
+    QCOMPARE(table->item(0, 5)->text(), QStringLiteral("$00012594"));
+    QVERIFY(table->item(0, 7)->text().contains(QStringLiteral("The CPU is inside this range.")));
+}
+
+void TstGui::settingsDialogShowsSpriteAssets()
+{
+    ProjectSettings project;
+    AssetExport asset;
+    asset.source = QStringLiteral("/sprites/hero.pim");
+    asset.phase = QStringLiteral("walk");
+    asset.output = QStringLiteral("hero.dat");
+    asset.masked = true;
+    project.assets.append(asset);
+
+    SettingsDialog dialog(project);
+    auto *list = dialog.findChild<QListWidget *>(QStringLiteral("spriteAssets"));
+    QVERIFY(list);
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(list->item(0)->text(), QStringLiteral("hero.pim  walk  →  hero.dat"));
+    QCOMPARE(dialog.settings().assets.size(), 1);
+    QCOMPARE(dialog.settings().assets.at(0).phase, QStringLiteral("walk"));
+    QCOMPARE(dialog.settings().assets.at(0).output, QStringLiteral("hero.dat"));
+    QCOMPARE(dialog.settings().assets.at(0).masked, true);
+    QCOMPARE(dialog.settings().assets.at(0).palette, true);
+}
+
 void TstGui::memoryEditEmitsForRealEdit()
 {
     MemoryView view;

@@ -17,6 +17,8 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QtTest>
@@ -39,6 +41,7 @@ private slots:
     void lineMapMapsLinesToOffsets();
     void programMapTextExtent();
     void programDiffReportsRangesAndRefusals();
+    void programDiffJsonReportsThePreview();
     void snapshotKeepsThePreviousProgram();
     void lineMapResolvesAgainstLiveBases();
     void lineMapRejectsUnknownLine();
@@ -451,6 +454,53 @@ void TstParsers::programDiffReportsRangesAndRefusals()
                                             nullptr, nullptr);
     QVERIFY(!bad.ok);
     QVERIFY(bad.error.contains(QStringLiteral("TOS")));
+}
+
+void TstParsers::programDiffJsonReportsThePreview()
+{
+    const QByteArray text("\x70\x00\x4e\x75", 4);
+    QByteArray changed = text;
+    changed[1] = char(0x01);
+    SectionAnchor start;
+    start.section = QStringLiteral("text");
+    start.offset = 0;
+    start.name = QStringLiteral("start");
+
+    ProgramDiffHints hints;
+    hints.haveBases = true;
+    hints.textBase = 0x12590;
+    hints.havePc = true;
+    hints.pc = 0x12591;
+    hints.haveReturn = true;
+    hints.returnAddress = 0x20000;
+
+    const ProgramDiff ranges =
+        diffTosPrograms(tosProgram(4, text, 0, {}, 0), tosProgram(4, changed, 0, {}, 0), {start},
+                        nullptr, nullptr);
+    const QJsonObject json = programDiffToJson(ranges, hints);
+    QCOMPARE(json.value(QStringLiteral("ok")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("written")).toBool(), false);
+    const QJsonObject textSection = json.value(QStringLiteral("sections")).toArray().at(0).toObject();
+    QCOMPARE(textSection.value(QStringLiteral("decision")).toString(), QStringLiteral("differs"));
+    const QJsonObject range = textSection.value(QStringLiteral("ranges")).toArray().at(0).toObject();
+    QCOMPARE(range.value(QStringLiteral("symbol")).toString(), QStringLiteral("start"));
+    QCOMPARE(range.value(QStringLiteral("offset")).toString(), QStringLiteral("0x00000001"));
+    QCOMPARE(range.value(QStringLiteral("length")).toInt(), 1);
+    QCOMPARE(range.value(QStringLiteral("old")).toString(), QStringLiteral("00"));
+    QCOMPARE(range.value(QStringLiteral("new")).toString(), QStringLiteral("01"));
+    QCOMPARE(range.value(QStringLiteral("live")).toString(), QStringLiteral("0x00012591"));
+    QCOMPARE(range.value(QStringLiteral("cpu")).toBool(), true);
+    QVERIFY(!range.contains(QStringLiteral("return")));
+
+    const ProgramDiff grew =
+        diffTosPrograms(tosProgram(4, text, 0, {}, 0), tosProgram(8, text + text, 0, {}, 0), {},
+                        nullptr, nullptr);
+    const QJsonObject grewText =
+        programDiffToJson(grew, {}).value(QStringLiteral("sections")).toArray().at(0).toObject();
+    QCOMPARE(grewText.value(QStringLiteral("decision")).toString(), QStringLiteral("restart"));
+    QCOMPARE(grewText.value(QStringLiteral("reason")).toString(), QStringLiteral("grew"));
+    QVERIFY(!grewText.contains(QStringLiteral("ranges")));
+    QCOMPARE(programDiffToJson(grew, {}).value(QStringLiteral("written")).toBool(), false);
 }
 
 void TstParsers::snapshotKeepsThePreviousProgram()

@@ -708,9 +708,10 @@ be proven against a real emulator run, not a mock (see PLAN.md §11 "Definition 
   dispatch it in `RemoteControl::execute()` (blocking commands wait on a `ControlHost` event hook;
   queries return a block via `replyBlock`). The *operation* goes on `control::ControlHost`
   (`control/ControlHost.h`) and is implemented by `MainWindow` — which is what keeps `src/control/`
-  free of UI types; if the verb answers with JSON, the serialisation belongs in
-  `RemoteStateAdapter`, whose readers come in through its own `Host`. Document the verb in
-  README §Remote control.
+  free of UI types. JSON that a pane is already showing is serialised in
+  `RemoteStateAdapter`, whose readers come in through its own `Host`. JSON computed for the
+  verb (the build diff, a memory mark) is serialised beside the type that produces it.
+  Document the verb in README §Remote control.
 - **Add a scripted API function**: add the virtual to `hooks/HookApi.h`, implement it in
   `StopHookRunner` using the typed intents only (never debugger text — MAJ-21), and bind it in the
   `kApi` table in `hooks/StopHookEngine.cpp`, which is the one place the script-visible names live.

@@ -7,6 +7,7 @@
 #include "build/LinkMap.h"
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 
@@ -48,6 +49,20 @@ struct SectionChange
     QList<ByteRange> ranges;
 };
 
+/// Live addresses for a stopped session. Absent when nothing is stopped:
+/// the comparison is of the two files, and a running machine is not part of it.
+struct ProgramDiffHints
+{
+    bool haveBases = false;
+    quint32 textBase = 0;
+    quint32 dataBase = 0;
+    quint32 bssBase = 0;
+    bool havePc = false;
+    quint32 pc = 0;
+    bool haveReturn = false;
+    quint32 returnAddress = 0;
+};
+
 /// What changed between two TOS executables. A preview: nothing here writes
 /// to a machine, and a size or layout change is restart-required rather than
 /// a list of ranges that would look patchable.
@@ -79,5 +94,11 @@ QString previousBuildLinkMap(const QString &linkMapPath);
 /// the previous-build directory. A program that is not there yet is not an
 /// error. A failed copy leaves whatever snapshot was already there.
 bool snapshotPreviousBuild(const QString &programPath, const QString &linkMapPath, QString *error);
+
+/// The comparison as the `builddiff` verb answers it. `written` is false:
+/// this object describes the files and does not claim a machine was changed.
+/// `old` and `new` on a range are the first bytes of that run, at most eight;
+/// `length` is the whole run. A restart has no `ranges`.
+QJsonObject programDiffToJson(const ProgramDiff &diff, const ProgramDiffHints &hints);
 
 } // namespace pist

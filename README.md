@@ -619,6 +619,17 @@ read               the current document as a JSON object {path, text} (block rep
 build              assemble; the reply arrives when the build finishes
 buildrelease       assemble with the project's Release arguments (no debug symbols);
                    the reply arrives when the build finishes
+builddiff          how the last build changed the program, as JSON (block reply).
+                   Nothing is written to the machine. A same-length change lists
+                   ranges; old and new are at most eight bytes and length is the
+                   whole run. A section that grew, shrank or moved is "restart"
+                   and has no ranges
+assets             the project's sprite exports as a JSON array (block reply)
+asset <src> <phase> <out> [k=v...]
+                   declare a sprite export. A path inside the project is stored
+                   relative. The source, phase, output and each k=v are one word:
+                   a space would split the command. `remove` is not a source name
+asset remove <out> drop the export whose output file is named <out>
 run                build and start the emulator; the reply arrives when it is running
 stop               stop the emulator session
 step / stepover / continue
@@ -629,6 +640,13 @@ hook               the stop-hook script and what its last run did, as a JSON
 tabs               the open documents as a JSON array (block reply)
 save               save the current document
 readmem <addr> <len>  read memory as JSON rows of hex bytes (block reply, when stopped)
+memmark <addr> <len>
+                   remember 1..4096 bytes at <addr> while stopped (block reply).
+                   This checkpoint is the agent's, separate from the memory
+                   pane's Mark button
+memcompare [advance]
+                   how those marked bytes differ now, as JSON (block reply).
+                   `advance` replaces the checkpoint with the bytes just read
 disasm [addr]      disassembly as JSON rows (block reply, when stopped)
 watchpoint <a|l>  break when the value at <a> changes, or at whatever address the
                   label <l> names in this run (optional .b/.w/.l)
@@ -651,7 +669,12 @@ quit               close the IDE
 ```
 
 `build`, `buildrelease` and `run` answer only once the work is actually done, so a script does
-not have to poll: `run` returning `ok` means the emulator session is up.
+not have to poll: `run` returning `ok` means the emulator session is up. `build` keeps a
+snapshot of the program it replaced; `builddiff` compares the current program with that
+snapshot and does not write to the machine. `memmark` stores a range the caller names
+(at most 4096 bytes) for a later `memcompare`. `asset` edits the project's sprite-export
+list and saves it; keys are `palette`, `sprite`, `masked`, `shifted`, `shiftedmasked`,
+`preshifts` and `transparent`, and a key left out keeps that field's default.
 
 ### Events: not having to poll for a stop
 
@@ -774,17 +797,21 @@ or `PIST_CONTROL_PORT`, matching how `pist` itself resolves it, and the session
 token from `--token` or `PIST_CONTROL_TOKEN` — and with none of those, both
 come from the discovery file a `pist --control-port` session publishes, so a
 locally started IDE needs no configuration at all. The tools are
-`pist_run`, `pist_build`, `pist_build_release`, `pist_stop`, `pist_step`, `pist_stepover`,
+`pist_run`, `pist_build`, `pist_build_release`, `pist_builddiff`, `pist_stop`, `pist_step`, `pist_stepover`,
 `pist_continue`, `pist_state`, `pist_console`, `pist_problems`,
 `pist_breakpoints`, `pist_breakpoint`, `pist_setreg`, `pist_setmem`,
 `pist_watchpoint`, `pist_clearwatchpoint`, `pist_cmd`, `pist_screenshot`, `pist_open`,
-`pist_read`, `pist_hook`,
-`pist_symbols`, `pist_readmem`, `pist_disasm`, `pist_tabs`, `pist_save`,
+`pist_read`, `pist_hook`, `pist_assets`, `pist_asset`,
+`pist_symbols`, `pist_readmem`, `pist_memmark`, `pist_memcompare`, `pist_disasm`, `pist_tabs`, `pist_save`,
 `pist_profile_start`, `pist_profile_stop`, `pist_profile_results` and
 `pist_watch`. Read-only tools carry `readOnlyHint`, and the ones that end or
 rewrite live state (`pist_stop`, `pist_setreg`, `pist_setmem`) carry
 `destructiveHint`, so a client can decide what needs your confirmation.
-`pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`,
+`pist_builddiff` and `pist_assets` are read-only. `pist_memmark` and
+`pist_memcompare` keep the agent's own checkpoint (separate from the memory
+pane's Mark button); `pist_asset` declares or removes a sprite export.
+`pist_state`, `pist_problems`, `pist_symbols`, `pist_readmem`, `pist_memmark`,
+`pist_memcompare`, `pist_builddiff`, `pist_assets`,
 `pist_disasm`, `pist_hook`, `pist_tabs` and `pist_profile_results` answer with structured JSON (in
 `structuredContent` as well as text), so an agent consumes fields instead of
 parsing console text. `pist_watch` subscribes to

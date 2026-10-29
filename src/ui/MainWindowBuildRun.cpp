@@ -286,30 +286,20 @@ void MainWindow::buildImpl(bool quiet, bool release)
 }
 
 
-void MainWindow::compareWithLastBuild()
+MainWindow::BuildDiffMiss MainWindow::gatherBuildDiff(ProgramDiff *diff, ProgramDiffHints *hints,
+                                                       QString *detail) const
 {
     const QString source = buildSourcePath();
-    if (source.isEmpty()) {
-        QMessageBox::information(this, tr("Compare with last build"),
-                                 tr("Open an assembly source file first."));
-        return;
-    }
+    if (source.isEmpty())
+        return BuildDiffMiss::NoSource;
 
     const QFileInfo info(source);
     const QString program = settings::outputPathsFor(info.absoluteFilePath()).program;
     const QString previous = previousBuildProgram(program);
-    if (!QFileInfo::exists(previous)) {
-        QMessageBox::information(
-            this, tr("Compare with last build"),
-            tr("There is no previous build to compare. Build the program again "
-               "and PiST will keep a copy of this one."));
-        return;
-    }
-    if (!QFileInfo::exists(program)) {
-        QMessageBox::information(this, tr("Compare with last build"),
-                                 tr("The current program is missing. The last build did not produce one."));
-        return;
-    }
+    if (!QFileInfo::exists(previous))
+        return BuildDiffMiss::NoPrevious;
+    if (!QFileInfo::exists(program))
+        return BuildDiffMiss::NoCurrent;
 
     const auto readAll = [](const QString &path, QByteArray *bytes, QString *error) {
         QFile file(path);
@@ -325,8 +315,9 @@ void MainWindow::compareWithLastBuild()
     QByteArray newBytes;
     QString error;
     if (!readAll(previous, &oldBytes, &error) || !readAll(program, &newBytes, &error)) {
-        QMessageBox::warning(this, tr("Compare with last build"), error);
-        return;
+        if (detail)
+            *detail = error;
+        return BuildDiffMiss::Unreadable;
     }
 
     const QString mapPath = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
@@ -355,25 +346,100 @@ void MainWindow::compareWithLastBuild()
         anchors.append(anchor);
     }
 
-    const ProgramDiff diff =
+    ProgramDiff compared =
         diffTosPrograms(oldBytes, newBytes, anchors, havePreviousMap ? &previousMap : nullptr,
                         haveCurrentMap ? &currentMap : nullptr);
+    if (!compared.ok) {
+        if (detail)
+            *detail = compared.error;
+        return BuildDiffMiss::BadImage;
+    }
 
-    ProgramDiffHints hints;
+    ProgramDiffHints live;
     if (m_host->isStopped() && m_bases.isValid()) {
-        hints.haveBases = true;
-        hints.textBase = m_lastState.textBase;
-        hints.dataBase = m_lastState.dataBase;
-        hints.bssBase = m_lastState.bssBase;
-        hints.havePc = m_lastState.regs.valid;
-        hints.pc = m_lastState.pc;
+        live.haveBases = true;
+        live.textBase = m_lastState.textBase;
+        live.dataBase = m_lastState.dataBase;
+        live.bssBase = m_lastState.bssBase;
+        live.havePc = m_lastState.regs.valid;
+        live.pc = m_lastState.pc;
     }
     if (m_stack) {
         quint32 ret = 0;
         if (m_stack->innermostLong(&ret)) {
-            hints.haveReturn = true;
-            hints.returnAddress = ret;
+            live.haveReturn = true;
+            live.returnAddress = ret;
         }
+    }
+    if (diff)
+        *diff = compared;
+    if (hints)
+        *hints = live;
+    return BuildDiffMiss::Ok;
+}
+
+
+QJsonObject MainWindow::buildDiffJson() const
+{
+    ProgramDiff diff;
+    ProgramDiffHints hints;
+    QString detail;
+    const BuildDiffMiss miss = gatherBuildDiff(&diff, &hints, &detail);
+    if (miss == BuildDiffMiss::Ok)
+        return programDiffToJson(diff, hints);
+
+    QString error;
+    switch (miss) {
+    case BuildDiffMiss::NoSource:
+        error = QStringLiteral("open an assembly source file first");
+        break;
+    case BuildDiffMiss::NoPrevious:
+        error = QStringLiteral("no previous build");
+        break;
+    case BuildDiffMiss::NoCurrent:
+        error = QStringLiteral("the current program is missing");
+        break;
+    case BuildDiffMiss::Unreadable:
+    case BuildDiffMiss::BadImage:
+        error = detail;
+        break;
+    case BuildDiffMiss::Ok:
+        break;
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("ok"), false);
+    object.insert(QStringLiteral("written"), false);
+    object.insert(QStringLiteral("error"), error);
+    return object;
+}
+
+
+void MainWindow::compareWithLastBuild()
+{
+    ProgramDiff diff;
+    ProgramDiffHints hints;
+    QString detail;
+    switch (gatherBuildDiff(&diff, &hints, &detail)) {
+    case BuildDiffMiss::NoSource:
+        QMessageBox::information(this, tr("Compare with last build"),
+                                 tr("Open an assembly source file first."));
+        return;
+    case BuildDiffMiss::NoPrevious:
+        QMessageBox::information(
+            this, tr("Compare with last build"),
+            tr("There is no previous build to compare. Build the program again "
+               "and PiST will keep a copy of this one."));
+        return;
+    case BuildDiffMiss::NoCurrent:
+        QMessageBox::information(this, tr("Compare with last build"),
+                                 tr("The current program is missing. The last build did not produce one."));
+        return;
+    case BuildDiffMiss::Unreadable:
+    case BuildDiffMiss::BadImage:
+        QMessageBox::warning(this, tr("Compare with last build"), detail);
+        return;
+    case BuildDiffMiss::Ok:
+        break;
     }
 
     ProgramDiffDialog dialog(diff, hints, this);

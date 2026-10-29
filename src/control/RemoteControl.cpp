@@ -15,8 +15,11 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QPointer>
 #include <QTimer>
 #include <QUuid>
@@ -33,6 +36,11 @@ namespace {
 // failed rather than left waiting forever. A cold vasm build or a TOS boot is
 // seconds, not minutes.
 constexpr int kOpTimeoutMs = 120000;
+
+/// A mark is a checkpoint an agent compares later, not a dump of the machine.
+/// The stop-hook read is capped at the same size: past this the reply is a
+/// transcript, and the compare would be one too.
+constexpr int kMaxMarkBytes = 4096;
 
 /// The most a connection may buffer while it has not yet produced a complete
 /// line. A command is one line of text — the longest is a path or a debugger
@@ -399,6 +407,44 @@ bool RemoteControl::waitForDebugMemory(quint32 address, int timeoutMs, QList<Mem
     return arrived;
 }
 
+bool RemoteControl::readStoppedBytes(quint32 address, int length, QByteArray *bytes, QString *error)
+{
+    if (m_busy) {
+        if (error)
+            *error = QStringLiteral("error busy: another command is still running");
+        return false;
+    }
+    m_busy = true;
+    m_host->debugReadMemory(address, length);
+    QList<MemoryRow> dump;
+    const bool arrived = waitForDebugMemory(address, 10000, &dump);
+    m_busy = false;
+    if (!arrived) {
+        if (error)
+            *error = QStringLiteral("error no response (needs a stopped emulator session)");
+        return false;
+    }
+    if (!bytesCovering(dump, address, length, bytes)) {
+        if (error)
+            *error = QStringLiteral("error short memory read");
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+void rememberStop(control::ControlHost *host, QString *pc, QString *where)
+{
+    const QString stoppedAt = host->stateJson().value(QStringLiteral("pc")).toString();
+    if (pc)
+        *pc = stoppedAt;
+    if (where)
+        *where = host->stoppedSourceLocation();
+}
+
+} // namespace
+
 void RemoteControl::execute(QTcpSocket *client, const QString &line)
 {
     const QString cmd = line.section(QLatin1Char(' '), 0, 0);
@@ -552,6 +598,62 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         }
         replyBlock(guarded, QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact)));
 
+    } else if (cmd == QLatin1String("memmark")) {
+        // memmark <addr> <len>: store the bytes now at that span, plus the
+        // stop's PC and source line when the line map has one. The pane's own
+        // Mark button is a different checkpoint — this one is the range the
+        // agent named.
+        quint32 address = 0;
+        bool lengthOk = false;
+        const int length = arg.section(QLatin1Char(' '), 1, 1).toInt(&lengthOk);
+        if (!parseValue(arg.section(QLatin1Char(' '), 0, 0), &address) || !lengthOk || length <= 0
+            || length > kMaxMarkBytes) {
+            replyBlockError(guarded, QStringLiteral("error usage: memmark <addr> <len> (1..%1)")
+                                         .arg(kMaxMarkBytes));
+            return;
+        }
+        QByteArray bytes;
+        QString error;
+        if (!readStoppedBytes(address, length, &bytes, &error)) {
+            replyBlockError(guarded, error);
+            return;
+        }
+        m_haveMemoryMark = true;
+        m_memoryMarkBase = address;
+        m_memoryMarkBytes = bytes;
+        rememberStop(m_host, &m_memoryMarkPc, &m_memoryMarkWhere);
+        replyBlock(guarded, QString::fromUtf8(QJsonDocument(memoryMarkJson(
+                                                   address, bytes, m_memoryMarkPc, m_memoryMarkWhere))
+                                                  .toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("memcompare")) {
+        // memcompare [advance]: re-read the marked span and report the bytes
+        // that differ. `advance` then replaces the mark with what was just
+        // read, which is the pane's "previous stop" as a verb.
+        const bool advance = arg == QLatin1String("advance");
+        if (!arg.isEmpty() && !advance) {
+            replyBlockError(guarded, QStringLiteral("error usage: memcompare [advance]"));
+            return;
+        }
+        if (!m_haveMemoryMark) {
+            replyBlockError(guarded, QStringLiteral("error no memory mark"));
+            return;
+        }
+        QByteArray bytes;
+        QString error;
+        if (!readStoppedBytes(m_memoryMarkBase, int(m_memoryMarkBytes.size()), &bytes, &error)) {
+            replyBlockError(guarded, error);
+            return;
+        }
+        const QJsonObject compared =
+            memoryCompareJson(m_memoryMarkBase, m_memoryMarkBytes, bytes, m_memoryMarkPc,
+                              m_memoryMarkWhere, advance);
+        if (advance) {
+            m_memoryMarkBytes = bytes;
+            rememberStop(m_host, &m_memoryMarkPc, &m_memoryMarkWhere);
+        }
+        replyBlock(guarded, QString::fromUtf8(QJsonDocument(compared).toJson(QJsonDocument::Compact)));
+
     } else if (cmd == QLatin1String("disasm")) {
         // disasm [addr]: the debugger's disassembly as JSON rows
         // {address, bytes, text} — from the PC when no address is given. The PC
@@ -609,6 +711,85 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         // person (and translated).
         replyBlock(guarded, QString::fromUtf8(
             QJsonDocument(m_host->hookJson()).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("builddiff")) {
+        // The same comparison Build → Compare With Last Build shows. The
+        // object says `written` is false: there is no apply on this path.
+        const QJsonObject diff = m_host->buildDiffJson();
+        const QString json =
+            QString::fromUtf8(QJsonDocument(diff).toJson(QJsonDocument::Compact));
+        if (diff.value(QStringLiteral("ok")).toBool())
+            replyBlock(guarded, json);
+        else
+            replyBlockError(guarded, diff.value(QStringLiteral("error")).toString());
+
+    } else if (cmd == QLatin1String("assets")) {
+        replyBlock(guarded, QString::fromUtf8(
+            QJsonDocument(m_host->assetsJson()).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("asset")) {
+        const QStringList parts = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        QString error;
+        if (parts.isEmpty()) {
+            reply(guarded, QStringLiteral(
+                               "error usage: asset <src> <phase> <out> [k=v...] | asset remove <out>"));
+        } else if (parts.at(0) == QLatin1String("remove")) {
+            if (parts.size() != 2) {
+                reply(guarded, QStringLiteral("error usage: asset remove <out>"));
+            } else if (m_host->removeAsset(parts.at(1), &error)) {
+                reply(guarded, QStringLiteral("ok"));
+            } else {
+                reply(guarded, QStringLiteral("error ") + error);
+            }
+        } else if (parts.size() < 3) {
+            reply(guarded, QStringLiteral(
+                               "error usage: asset <src> <phase> <out> [k=v...] | asset remove <out>"));
+        } else {
+            QJsonObject spec;
+            spec.insert(QStringLiteral("source"), parts.at(0));
+            spec.insert(QStringLiteral("phase"), parts.at(1));
+            spec.insert(QStringLiteral("output"), parts.at(2));
+            bool optionsOk = true;
+            for (int i = 3; i < parts.size() && optionsOk; ++i) {
+                const int eq = parts.at(i).indexOf(QLatin1Char('='));
+                if (eq <= 0) {
+                    optionsOk = false;
+                    break;
+                }
+                const QString key = parts.at(i).left(eq);
+                const QString value = parts.at(i).mid(eq + 1);
+                const QString field = key == QLatin1String("shiftedmasked") ? QStringLiteral("shiftedMasked")
+                                     : key == QLatin1String("preshifts")    ? QStringLiteral("preShifts")
+                                                                             : key;
+                if (field == QLatin1String("palette") || field == QLatin1String("sprite")
+                    || field == QLatin1String("masked") || field == QLatin1String("shifted")
+                    || field == QLatin1String("shiftedMasked")) {
+                    if (value == QLatin1String("1") || value == QLatin1String("true"))
+                        spec.insert(field, true);
+                    else if (value == QLatin1String("0") || value == QLatin1String("false"))
+                        spec.insert(field, false);
+                    else
+                        optionsOk = false;
+                } else if (field == QLatin1String("preShifts") || field == QLatin1String("transparent")) {
+                    bool numeric = false;
+                    const int number = value.toInt(&numeric);
+                    if (!numeric)
+                        optionsOk = false;
+                    else
+                        spec.insert(field, number);
+                } else {
+                    optionsOk = false;
+                }
+            }
+            if (!optionsOk) {
+                reply(guarded, QStringLiteral(
+                                   "error usage: asset <src> <phase> <out> [k=v...] | asset remove <out>"));
+            } else if (m_host->declareAsset(spec, &error)) {
+                reply(guarded, QStringLiteral("ok"));
+            } else {
+                reply(guarded, QStringLiteral("error ") + error);
+            }
+        }
 
     } else if (cmd == QLatin1String("step")) {
         m_host->step();

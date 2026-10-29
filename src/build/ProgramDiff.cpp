@@ -4,12 +4,15 @@
 
 #include "build/ProgramDiff.h"
 
+#include "emu/HexFormat.h"
 #include "support/FileWrite.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QObject>
+#include <QStringList>
 
 #include <algorithm>
 
@@ -269,6 +272,124 @@ bool snapshotPreviousBuild(const QString &programPath, const QString &linkMapPat
     if (linkMapPath.isEmpty())
         return true;
     return copySnapshot(linkMapPath, previousBuildLinkMap(linkMapPath), error);
+}
+
+namespace {
+
+QString hexAddress(quint32 value)
+{
+    return QStringLiteral("0x") + hex::hex32(value, hex::Case::Lower);
+}
+
+QString hexPreview(const QByteArray &bytes)
+{
+    QStringList parts;
+    parts.reserve(bytes.size());
+    for (uchar byte : bytes)
+        parts.append(hex::hexByte(byte, hex::Case::Lower));
+    return parts.join(QLatin1Char(' '));
+}
+
+bool addressInside(quint32 start, quint32 length, quint32 address)
+{
+    if (length == 0)
+        return false;
+    const quint64 end = quint64(start) + length;
+    return quint64(address) >= start && quint64(address) < end;
+}
+
+quint32 liveBase(const QString &section, const ProgramDiffHints &hints, bool *known)
+{
+    *known = false;
+    if (!hints.haveBases)
+        return 0;
+    if (section == QLatin1String("text") && hints.textBase) {
+        *known = true;
+        return hints.textBase;
+    }
+    if (section == QLatin1String("data") && hints.dataBase) {
+        *known = true;
+        return hints.dataBase;
+    }
+    if (section == QLatin1String("bss") && hints.bssBase) {
+        *known = true;
+        return hints.bssBase;
+    }
+    return 0;
+}
+
+void noteWho(QJsonObject *object, quint32 start, quint32 length, const ProgramDiffHints &hints)
+{
+    if (hints.havePc && addressInside(start, length, hints.pc))
+        object->insert(QStringLiteral("cpu"), true);
+    if (hints.haveReturn && addressInside(start, length, hints.returnAddress))
+        object->insert(QStringLiteral("return"), true);
+}
+
+} // namespace
+
+QJsonObject programDiffToJson(const ProgramDiff &diff, const ProgramDiffHints &hints)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("ok"), diff.ok);
+    object.insert(QStringLiteral("written"), false);
+    if (!diff.ok) {
+        object.insert(QStringLiteral("error"), diff.error);
+        return object;
+    }
+
+    QJsonArray sections;
+    for (const SectionChange &change : diff.sections) {
+        QJsonObject section;
+        section.insert(QStringLiteral("name"), change.name);
+        section.insert(QStringLiteral("oldSize"), int(change.oldSize));
+        section.insert(QStringLiteral("newSize"), int(change.newSize));
+        if (change.decision == SectionDecision::Identical) {
+            section.insert(QStringLiteral("decision"), QStringLiteral("unchanged"));
+            sections.append(section);
+            continue;
+        }
+        bool known = false;
+        const quint32 base = liveBase(change.name, hints, &known);
+        if (change.decision == SectionDecision::RestartRequired) {
+            section.insert(QStringLiteral("decision"), QStringLiteral("restart"));
+            QString reason = QStringLiteral("moved");
+            if (change.reason == RestartReason::Grew)
+                reason = QStringLiteral("grew");
+            else if (change.reason == RestartReason::Shrank)
+                reason = QStringLiteral("shrank");
+            section.insert(QStringLiteral("reason"), reason);
+            if (known) {
+                section.insert(QStringLiteral("live"), hexAddress(base));
+                if (change.newSize > 0)
+                    noteWho(&section, base, change.newSize, hints);
+            }
+            sections.append(section);
+            continue;
+        }
+
+        section.insert(QStringLiteral("decision"), QStringLiteral("differs"));
+        QJsonArray ranges;
+        for (const ByteRange &range : change.ranges) {
+            QJsonObject one;
+            one.insert(QStringLiteral("offset"), hexAddress(range.offset));
+            one.insert(QStringLiteral("length"), range.length);
+            if (!range.symbol.isEmpty())
+                one.insert(QStringLiteral("symbol"), range.symbol);
+            one.insert(QStringLiteral("old"), hexPreview(range.oldPreview));
+            one.insert(QStringLiteral("new"), hexPreview(range.newPreview));
+            if (known) {
+                const quint32 live = base + range.offset;
+                one.insert(QStringLiteral("live"), hexAddress(live));
+                noteWho(&one, live, quint32(range.length), hints);
+            }
+            ranges.append(one);
+        }
+        section.insert(QStringLiteral("ranges"), ranges);
+        sections.append(section);
+    }
+    object.insert(QStringLiteral("sections"), sections);
+    return object;
 }
 
 } // namespace pist

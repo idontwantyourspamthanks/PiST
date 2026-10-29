@@ -7,6 +7,7 @@
 #include "control/ControlHost.h"
 #include "emu/MemoryDump.h"
 
+#include <QByteArray>
 #include <QObject>
 #include <QSet>
 #include <QString>
@@ -118,6 +119,11 @@ private:
     /// `rows` is only meaningful then if this returned true.
     bool waitForDebugMemory(quint32 address, int timeoutMs, QList<MemoryRow> *rows);
 
+    /// Read `length` bytes at `address` while stopped. False with `error` set
+    /// when another command is waiting, the session does not answer, or the
+    /// dump does not cover the span. Holds `m_busy` for the wait.
+    bool readStoppedBytes(quint32 address, int length, QByteArray *bytes, QString *error);
+
     control::ControlHost *m_host;
     QTcpServer *m_server = nullptr;
     /// What listen() wrote to the discovery file, so the destructor only
@@ -139,6 +145,15 @@ private:
     /// blocking command would wait on the same signals and be answered with
     /// the first one's result.
     bool m_busy = false;
+
+    /// The agent's memory checkpoint. Independent of the memory pane's Mark
+    /// button: the verb names the range, and the pane marks whatever it is
+    /// showing. One per IDE, shared by every connection.
+    bool m_haveMemoryMark = false;
+    quint32 m_memoryMarkBase = 0;
+    QByteArray m_memoryMarkBytes;
+    QString m_memoryMarkPc;
+    QString m_memoryMarkWhere;
 };
 
 } // namespace pist

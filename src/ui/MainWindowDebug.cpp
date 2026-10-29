@@ -614,6 +614,19 @@ void MainWindow::debugCommand(const QString &command)
 }
 
 
+QString MainWindow::stoppedSourceLocation() const
+{
+    if (!m_host->isStopped() || !m_lastState.regs.valid)
+        return {};
+    if (!m_bases.isValid() || m_programMap.isEmpty())
+        return {};
+    LineMap::Address loc;
+    if (!m_programMap.lineFor(m_lastState.pc, &loc))
+        return {};
+    return QFileInfo(loc.file).fileName() + QLatin1Char(':') + QString::number(loc.line);
+}
+
+
 void MainWindow::debugReadMemory(quint32 address, int length)
 {
     // A tagged dump that no memory pane owns, so it reaches the verb that asked

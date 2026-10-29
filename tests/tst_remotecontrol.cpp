@@ -11,9 +11,13 @@
 // emulator suites; here the focus is the protocol itself, which must work with
 // no emulator and no display.
 
+#include "build/ProgramDiff.h"
 #include "control/RemoteControl.h"
+#include "emu/MemoryDump.h"
+#include "support/FileWrite.h"
 #include "ui/MainWindow.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
@@ -56,6 +60,8 @@ private slots:
     void symbolsAfterBuildListTheLabels();
     void breakpointByLabelResolvesAndToggles();
     void readmemAndDisasmRefuseWithoutASession();
+    void memoryCompareJsonNamesTheChangedByte();
+    void buildDiffAndAssetsOverTheProtocol();
     void wrongTokenIsRejectedAndDropped();
     void pipelinedCommandAfterBadAuthNeverExecutes();
     void commandBeforeAuthIsRejected();
@@ -231,6 +237,9 @@ void TstRemoteControl::helpListsCommands()
     QVERIFY2(reply.contains(QStringLiteral("cmd <command>")), qPrintable(reply));
     QVERIFY2(reply.contains(QStringLiteral("help             this list")), qPrintable(reply));
     QVERIFY2(reply.contains(QStringLiteral("JSON {path, text}")), qPrintable(reply));
+    QVERIFY2(reply.contains(QStringLiteral("builddiff")), qPrintable(reply));
+    QVERIFY2(reply.contains(QStringLiteral("memmark")), qPrintable(reply));
+    QVERIFY2(reply.contains(QStringLiteral("asset remove")), qPrintable(reply));
     QVERIFY2(!reply.contains(QStringLiteral("'path' then its text")), qPrintable(reply));
     // A block reply is terminated so the client always knows where it ends.
     QVERIFY(reply.endsWith(QLatin1String("\n.\n")));
@@ -731,6 +740,129 @@ void TstRemoteControl::breakpointByLabelResolvesAndToggles()
 
     // An unknown name is an error, not a silent no-op.
     QVERIFY(roundTrip(s.client, "breakpoint nosuch").startsWith(QStringLiteral("error")));
+}
+
+void TstRemoteControl::memoryCompareJsonNamesTheChangedByte()
+{
+    MemoryRow shortRow;
+    shortRow.address = 0x12590;
+    shortRow.bytes = {0x01, 0x02};
+    QByteArray covered;
+    QVERIFY(!bytesCovering({shortRow}, 0x12590, 4, &covered));
+
+    MemoryRow full;
+    full.address = 0x12590;
+    full.bytes = {0x01, 0x02, 0x03, 0x04};
+    QVERIFY(bytesCovering({full}, 0x12590, 4, &covered));
+    QCOMPARE(covered, QByteArray("\x01\x02\x03\x04", 4));
+
+    const QJsonObject compared = memoryCompareJson(
+        0x12590, QByteArray("\x00\x01", 2), QByteArray("\x00\xff", 2), QStringLiteral("0x00012590"),
+        QStringLiteral("hello.s:12"), false);
+    QCOMPARE(compared.value(QStringLiteral("where")).toString(), QStringLiteral("hello.s:12"));
+    QCOMPARE(compared.value(QStringLiteral("differ")).toInt(), 1);
+    QCOMPARE(compared.value(QStringLiteral("advanced")).toBool(), false);
+    const QJsonObject change = compared.value(QStringLiteral("bytes")).toArray().at(0).toObject();
+    QCOMPARE(change.value(QStringLiteral("offset")).toInt(), 1);
+    QCOMPARE(change.value(QStringLiteral("address")).toString(), QStringLiteral("0x00012591"));
+    QCOMPARE(change.value(QStringLiteral("old")).toString(), QStringLiteral("01"));
+    QCOMPARE(change.value(QStringLiteral("new")).toString(), QStringLiteral("ff"));
+}
+
+void TstRemoteControl::buildDiffAndAssetsOverTheProtocol()
+{
+    Session s;
+    QString error;
+    QVERIFY2(s.start(&error), qPrintable(error));
+
+    // Usage and the missing checkpoint are refused before any debugger wait.
+    QVERIFY(roundTripBlock(s.client, "memmark").startsWith(QLatin1String("error\n")));
+    QVERIFY(blockBody(roundTripBlock(s.client, "memmark")).contains(QStringLiteral("usage")));
+    QVERIFY(blockBody(roundTripBlock(s.client, "memcompare"))
+                .contains(QStringLiteral("no memory mark")));
+
+    QVERIFY(blockBody(roundTripBlock(s.client, "builddiff"))
+                .contains(QStringLiteral("open an assembly source file first")));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = dir.filePath(QStringLiteral("prog.s"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("\tmoveq\t#1,d0\n\trts\n");
+    file.close();
+    QCOMPARE(roundTrip(s.client, "open " + source.toUtf8()), QStringLiteral("ok"));
+
+    QVERIFY(blockBody(roundTripBlock(s.client, "builddiff"))
+                .contains(QStringLiteral("no previous build")));
+
+    const auto tos = [](const QByteArray &text) {
+        QByteArray image(28 + text.size(), '\0');
+        image[0] = char(0x60);
+        image[1] = char(0x1a);
+        const quint32 size = quint32(text.size());
+        image[2] = char((size >> 24) & 0xff);
+        image[3] = char((size >> 16) & 0xff);
+        image[4] = char((size >> 8) & 0xff);
+        image[5] = char(size & 0xff);
+        image.replace(28, text.size(), text);
+        return image;
+    };
+    const QString program = settings::outputPathsFor(source).program;
+    const QByteArray oldText("\x70\x00\x4e\x75", 4);
+    QByteArray newText = oldText;
+    newText[1] = char(0x01);
+    QString writeError;
+    QVERIFY2(files::write(program, tos(oldText), &writeError), qPrintable(writeError));
+    QVERIFY2(snapshotPreviousBuild(program, QString(), &writeError), qPrintable(writeError));
+    QVERIFY2(files::write(program, tos(newText), &writeError), qPrintable(writeError));
+
+    const QString diffBody = blockBody(roundTripBlock(s.client, "builddiff"));
+    const QJsonObject diff = QJsonDocument::fromJson(diffBody.toUtf8()).object();
+    QVERIFY2(diff.value(QStringLiteral("ok")).toBool(), qPrintable(diffBody));
+    QCOMPARE(diff.value(QStringLiteral("written")).toBool(), false);
+    const QJsonObject textSection = diff.value(QStringLiteral("sections")).toArray().at(0).toObject();
+    QCOMPARE(textSection.value(QStringLiteral("decision")).toString(), QStringLiteral("differs"));
+    QVERIFY(!textSection.value(QStringLiteral("ranges")).toArray().isEmpty());
+
+    const QJsonDocument none = QJsonDocument::fromJson(
+        blockBody(roundTripBlock(s.client, "assets")).toUtf8());
+    QVERIFY(none.isArray());
+    QCOMPARE(none.array().size(), 0);
+
+    QCOMPARE(roundTrip(s.client, "asset hero.pim walk hero.dat masked=1 preshifts=8 transparent=-1"),
+             QStringLiteral("ok"));
+    const QJsonArray listed = QJsonDocument::fromJson(
+                                  blockBody(roundTripBlock(s.client, "assets")).toUtf8())
+                                  .array();
+    QCOMPARE(listed.size(), 1);
+    const QJsonObject row = listed.at(0).toObject();
+    QCOMPARE(row.value(QStringLiteral("source")).toString(), QStringLiteral("hero.pim"));
+    QCOMPARE(row.value(QStringLiteral("phase")).toString(), QStringLiteral("walk"));
+    QCOMPARE(row.value(QStringLiteral("output")).toString(), QStringLiteral("hero.dat"));
+    QCOMPARE(row.value(QStringLiteral("palette")).toBool(), true);
+    QCOMPARE(row.value(QStringLiteral("masked")).toBool(), true);
+    QCOMPARE(row.value(QStringLiteral("preShifts")).toInt(), 8);
+    QCOMPARE(row.value(QStringLiteral("transparent")).toInt(), -1);
+
+    // A second declaration of the same output is the whole export again: a
+    // key left out returns to its default, it does not keep the old value.
+    QCOMPARE(roundTrip(s.client, "asset hero.pim run hero.dat"), QStringLiteral("ok"));
+    const QJsonObject replaced =
+        QJsonDocument::fromJson(blockBody(roundTripBlock(s.client, "assets")).toUtf8())
+            .array()
+            .at(0)
+            .toObject();
+    QCOMPARE(replaced.value(QStringLiteral("phase")).toString(), QStringLiteral("run"));
+    QCOMPARE(replaced.value(QStringLiteral("masked")).toBool(), false);
+    QCOMPARE(replaced.value(QStringLiteral("preShifts")).toInt(), 4);
+    QCOMPARE(replaced.value(QStringLiteral("transparent")).toInt(), 0);
+    QCOMPARE(replaced.value(QStringLiteral("palette")).toBool(), true);
+
+    QCOMPARE(roundTrip(s.client, "asset remove hero.dat"), QStringLiteral("ok"));
+    QVERIFY(roundTrip(s.client, "asset remove hero.dat").startsWith(QStringLiteral("error")));
+    QVERIFY(roundTrip(s.client, "asset hero.pim walk ../nope.dat").startsWith(QStringLiteral("error")));
+    QVERIFY(roundTrip(s.client, "asset hero.pim walk hero.dat nope=1").startsWith(QStringLiteral("error")));
 }
 
 void TstRemoteControl::readmemAndDisasmRefuseWithoutASession()

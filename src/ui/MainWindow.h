@@ -6,6 +6,7 @@
 
 #include "build/Diagnostic.h"
 #include "build/LineMap.h"
+#include "build/ProgramDiff.h"
 #include "build/ProgramLineMap.h"
 #include "control/ControlHost.h"
 #include "editor/CompletionModel.h"
@@ -441,6 +442,15 @@ public:
     /// serves as structured content.
     QJsonObject hookJson() const override;
 
+    /// How the current program differs from the snapshot of the previous one.
+    /// Not a pane's text, so it is computed here rather than read through
+    /// RemoteStateAdapter: the adapter reports what a view is already showing.
+    QJsonObject buildDiffJson() const override;
+    QJsonArray assetsJson() const override;
+    bool declareAsset(const QJsonObject &spec, QString *error) override;
+    bool removeAsset(const QString &output, QString *error) override;
+    QString stoppedSourceLocation() const override;
+
     /// Parse and add a watchpoint by text: an address ("$12345", "$12345.l") or a
     /// label ("counter.l"), which the arm plan resolves again on every run.
     /// Separated from the dialog so the remote-control interface and tests can use
@@ -541,6 +551,12 @@ private:
     /// Compare the current program with the snapshot taken before the last
     /// build replaced it. Preview only: the dialog does not write to the machine.
     void compareWithLastBuild();
+
+    /// Why `gatherBuildDiff` could not produce a comparison. `Ok` means `diff`
+    /// is a successful comparison. `BadImage` means a file is not a TOS image
+    /// (`detail` is the parser's error).
+    enum class BuildDiffMiss { Ok, NoSource, NoPrevious, NoCurrent, Unreadable, BadImage };
+    BuildDiffMiss gatherBuildDiff(ProgramDiff *diff, ProgramDiffHints *hints, QString *detail) const;
     void runImpl(bool quiet);
 
     /// Load the project settings that sit beside a source file, if any.

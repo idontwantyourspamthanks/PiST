@@ -548,6 +548,43 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         command = QStringLiteral("build");
     } else if (name == QLatin1String("pist_build_release")) {
         command = QStringLiteral("buildrelease");
+    } else if (name == QLatin1String("pist_builddiff")) {
+        command = QStringLiteral("builddiff");
+    } else if (name == QLatin1String("pist_assets")) {
+        command = QStringLiteral("assets");
+    } else if (name == QLatin1String("pist_asset")) {
+        const QString remove = args.value(QStringLiteral("remove")).toString();
+        if (!remove.isEmpty()) {
+            command = QStringLiteral("asset remove %1").arg(remove);
+        } else {
+            const QString source = args.value(QStringLiteral("source")).toString();
+            const QString phase = args.value(QStringLiteral("phase")).toString();
+            const QString output = args.value(QStringLiteral("output")).toString();
+            if (source.isEmpty() || phase.isEmpty() || output.isEmpty()) {
+                sendError(id, kInvalidParams,
+                          QStringLiteral("pist_asset needs source, phase and output, or remove"));
+                return;
+            }
+            command = QStringLiteral("asset %1 %2 %3").arg(source, phase, output);
+            const auto flag = [&args, &command](const char *key, const char *wire) {
+                if (!args.contains(QLatin1String(key)))
+                    return;
+                const QJsonValue value = args.value(QLatin1String(key));
+                if (value.isBool())
+                    command += QStringLiteral(" %1=%2").arg(QLatin1String(wire),
+                                                           value.toBool() ? QStringLiteral("1")
+                                                                          : QStringLiteral("0"));
+                else
+                    command += QStringLiteral(" %1=%2").arg(QLatin1String(wire)).arg(value.toInt());
+            };
+            flag("palette", "palette");
+            flag("sprite", "sprite");
+            flag("masked", "masked");
+            flag("shifted", "shifted");
+            flag("shiftedMasked", "shiftedmasked");
+            flag("preShifts", "preshifts");
+            flag("transparent", "transparent");
+        }
     } else if (name == QLatin1String("pist_continue")) {
         command = QStringLiteral("continue");
     } else if (name == QLatin1String("pist_open")) {
@@ -568,6 +605,14 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         command = QStringLiteral("readmem %1 %2")
                       .arg(args.value(QStringLiteral("address")).toString(),
                            args.value(QStringLiteral("length")).toString());
+    } else if (name == QLatin1String("pist_memmark")) {
+        command = QStringLiteral("memmark %1 %2")
+                      .arg(args.value(QStringLiteral("address")).toString(),
+                           args.value(QStringLiteral("length")).toString());
+    } else if (name == QLatin1String("pist_memcompare")) {
+        command = args.value(QStringLiteral("advance")).toBool()
+                      ? QStringLiteral("memcompare advance")
+                      : QStringLiteral("memcompare");
     } else if (name == QLatin1String("pist_disasm")) {
         const QString address = args.value(QStringLiteral("address")).toString();
         command = address.isEmpty() ? QStringLiteral("disasm")
@@ -704,6 +749,10 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_tabs")
                      || outstanding.tool == QLatin1String("pist_read")
                      || outstanding.tool == QLatin1String("pist_readmem")
+                     || outstanding.tool == QLatin1String("pist_memmark")
+                     || outstanding.tool == QLatin1String("pist_memcompare")
+                     || outstanding.tool == QLatin1String("pist_builddiff")
+                     || outstanding.tool == QLatin1String("pist_assets")
                      || outstanding.tool == QLatin1String("pist_disasm")
                      || outstanding.tool == QLatin1String("pist_hook"))) {
         QJsonParseError parseError;
@@ -788,6 +837,79 @@ QJsonArray McpServer::tools()
         QStringLiteral("Assemble and link the current source. Answers only when the "
                        "build has finished. Call pist_problems for the diagnostics "
                        "when it fails."),
+        empty, {}));
+
+    list.append(toolObject(
+        QStringLiteral("pist_builddiff"), QStringLiteral("Compare with last build"),
+        QStringLiteral("How the current program differs from the snapshot taken "
+                       "before the last build replaced it, as JSON (also in "
+                       "structuredContent). A section that grew, shrank or moved is "
+                       "decision \"restart\" and has no ranges. A same-length change "
+                       "lists ranges; old and new are the first bytes of the run, at "
+                       "most eight, and length is the whole run. cpu or return is "
+                       "present when the stopped PC or the step-out return address "
+                       "falls in that range. written is false: nothing is written "
+                       "to the machine."),
+        empty, {}));
+
+    {
+        QJsonObject props;
+        const auto textProp = [](const QString &description) {
+            QJsonObject property;
+            property.insert(QStringLiteral("type"), QStringLiteral("string"));
+            property.insert(QStringLiteral("description"), description);
+            return property;
+        };
+        const auto boolProp = [](const QString &description) {
+            QJsonObject property;
+            property.insert(QStringLiteral("type"), QStringLiteral("boolean"));
+            property.insert(QStringLiteral("description"), description);
+            return property;
+        };
+        props.insert(QStringLiteral("source"),
+                     textProp(QStringLiteral("Path of the .pim. One word: a space splits the "
+                                            "command. A path inside the project is stored "
+                                            "relative to it. The word \"remove\" is the "
+                                            "subcommand, not a source name.")));
+        props.insert(QStringLiteral("phase"),
+                     textProp(QStringLiteral("Phase name in the .pim, one word")));
+        props.insert(QStringLiteral("output"),
+                     textProp(QStringLiteral("Output file name under the project's build "
+                                            "directory, such as hero.dat. A single file name, "
+                                            "not a path.")));
+        props.insert(QStringLiteral("remove"),
+                     textProp(QStringLiteral("Output file name of the export to drop. When "
+                                            "set, source, phase and output are ignored.")));
+        props.insert(QStringLiteral("palette"), boolProp(QStringLiteral("Export the palette")));
+        props.insert(QStringLiteral("sprite"), boolProp(QStringLiteral("Export the sprite frames")));
+        props.insert(QStringLiteral("masked"), boolProp(QStringLiteral("Export mask words")));
+        props.insert(QStringLiteral("shifted"), boolProp(QStringLiteral("Export pre-shifted copies")));
+        props.insert(QStringLiteral("shiftedMasked"),
+                     boolProp(QStringLiteral("Export pre-shifted copies with mask words")));
+        QJsonObject preShifts;
+        preShifts.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        preShifts.insert(QStringLiteral("description"),
+                         QStringLiteral("How many pre-shift copies (2, 4 or 8). Default 4"));
+        props.insert(QStringLiteral("preShifts"), preShifts);
+        QJsonObject transparent;
+        transparent.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        transparent.insert(QStringLiteral("description"),
+                           QStringLiteral("Palette index treated as transparent. Default 0"));
+        props.insert(QStringLiteral("transparent"), transparent);
+        list.append(toolObject(
+            QStringLiteral("pist_asset"), QStringLiteral("Declare a sprite export"),
+            QStringLiteral("Add or replace one sprite export and save the project, or "
+                           "pass remove to drop the export with that output name. A key "
+                           "left out keeps that field's default, including when this "
+                           "replaces an export that had set it. Answers ok, or error."),
+            props, {}));
+    }
+
+    list.append(toolObject(
+        QStringLiteral("pist_assets"), QStringLiteral("List sprite exports"),
+        QStringLiteral("The project's declared sprite exports as a JSON array (also "
+                       "in structuredContent, under items): source, phase, output, "
+                       "and the bitplane options. Empty when none are declared."),
         empty, {}));
 
     list.append(toolObject(
@@ -903,6 +1025,44 @@ QJsonArray McpServer::tools()
             QStringLiteral("Read memory as JSON rows of hex bytes (also in "
                            "structuredContent). Requires a stopped emulator session."),
             props, QJsonArray{QStringLiteral("address"), QStringLiteral("length")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject address;
+        address.insert(QStringLiteral("type"), QStringLiteral("string"));
+        address.insert(QStringLiteral("description"),
+                       QStringLiteral("Address to remember, e.g. $12596 or 0x12596"));
+        QJsonObject length;
+        length.insert(QStringLiteral("type"), QStringLiteral("string"));
+        length.insert(QStringLiteral("description"),
+                      QStringLiteral("How many bytes to remember, decimal, from 1 to 4096"));
+        props.insert(QStringLiteral("address"), address);
+        props.insert(QStringLiteral("length"), length);
+        list.append(toolObject(
+            QStringLiteral("pist_memmark"), QStringLiteral("Mark memory"),
+            QStringLiteral("Remember 1 to 4096 bytes at an address while the machine "
+                           "is stopped, as JSON (also in structuredContent). This is "
+                           "the agent's checkpoint, separate from the memory pane's "
+                           "Mark button, which marks whatever that pane is showing."),
+            props, QJsonArray{QStringLiteral("address"), QStringLiteral("length")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject advance;
+        advance.insert(QStringLiteral("type"), QStringLiteral("boolean"));
+        advance.insert(QStringLiteral("description"),
+                       QStringLiteral("Replace the checkpoint with the bytes just read"));
+        props.insert(QStringLiteral("advance"), advance);
+        list.append(toolObject(
+            QStringLiteral("pist_memcompare"), QStringLiteral("Compare marked memory"),
+            QStringLiteral("Re-read the range pist_memmark stored and report the bytes "
+                           "that differ, as JSON (also in structuredContent). advance "
+                           "replaces that checkpoint with the bytes just read — the "
+                           "memory pane's previous-stop compare, for the range the "
+                           "agent named. Requires a stopped emulator session."),
+            props, {}));
     }
 
     {
@@ -1107,6 +1267,7 @@ QJsonArray McpServer::tools()
         QStringLiteral("pist_disasm"), QStringLiteral("pist_profile_results"),
         QStringLiteral("pist_breakpoints"), QStringLiteral("pist_watch"),
         QStringLiteral("pist_tabs"), QStringLiteral("pist_hook"),
+        QStringLiteral("pist_builddiff"), QStringLiteral("pist_assets"),
     };
     const QStringList destructive = {
         QStringLiteral("pist_stop"), QStringLiteral("pist_setreg"),

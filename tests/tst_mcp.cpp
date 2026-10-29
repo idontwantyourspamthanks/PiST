@@ -279,10 +279,11 @@ private slots:
         names.sort();
         // Pin the whole set: a renamed or dropped tool is how an agent's
         // workflow breaks without anything here noticing.
-        QCOMPARE(names, QStringList({"pist_breakpoint", "pist_breakpoints", "pist_build",
-                                     "pist_build_release", "pist_clearwatchpoint", "pist_cmd",
-                                     "pist_console", "pist_continue",
-                                     "pist_disasm", "pist_hook", "pist_open", "pist_problems",
+        QCOMPARE(names, QStringList({"pist_asset", "pist_assets", "pist_breakpoint",
+                                     "pist_breakpoints", "pist_build", "pist_build_release",
+                                     "pist_builddiff", "pist_clearwatchpoint", "pist_cmd",
+                                     "pist_console", "pist_continue", "pist_disasm", "pist_hook",
+                                     "pist_memcompare", "pist_memmark", "pist_open", "pist_problems",
                                      "pist_profile_results", "pist_profile_start",
                                      "pist_profile_stop", "pist_read", "pist_readmem",
                                      "pist_run", "pist_save", "pist_screenshot",
@@ -358,7 +359,8 @@ private slots:
                 const QJsonObject tool = value.toObject();
                 const QString name = tool.value(QStringLiteral("name")).toString();
                 const QJsonObject annotations = tool.value(QStringLiteral("annotations")).toObject();
-                if (name == QLatin1String("pist_state"))
+                if (name == QLatin1String("pist_state") || name == QLatin1String("pist_builddiff")
+                    || name == QLatin1String("pist_assets"))
                     QCOMPARE(annotations.value(QStringLiteral("readOnlyHint")).toBool(), true);
                 if (name == QLatin1String("pist_setmem"))
                     QCOMPARE(annotations.value(QStringLiteral("destructiveHint")).toBool(), true);
@@ -567,6 +569,90 @@ private slots:
         send(server.get(), 7, QStringLiteral("tools/call"),
              callParams(QStringLiteral("pist_stop")));
         QCOMPARE(ide.nextLine(), QStringLiteral("stop"));
+        ide.send("ok\n");
+        reply = waitReply(7);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    void compareAndAssetToolsMapTheirArguments()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        QJsonObject args;
+        args.insert(QStringLiteral("address"), QStringLiteral("$1"));
+        args.insert(QStringLiteral("length"), QStringLiteral("4"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_memmark"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("memmark $1 4"));
+        ide.send("ok\n{\"base\":\"0x00000001\",\"length\":4}\n.\n");
+        QJsonObject reply = waitReply(1);
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("structuredContent")).toObject()
+                     .value(QStringLiteral("base")).toString(),
+                 QStringLiteral("0x00000001"));
+
+        send(server.get(), 2, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_memcompare")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("memcompare"));
+        ide.send("ok\n{\"differ\":0,\"advanced\":false}\n.\n");
+        reply = waitReply(2);
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("structuredContent")).toObject()
+                     .value(QStringLiteral("advanced")).toBool(),
+                 false);
+
+        args = {};
+        args.insert(QStringLiteral("advance"), true);
+        send(server.get(), 3, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_memcompare"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("memcompare advance"));
+        ide.send("ok\n{\"differ\":1,\"advanced\":true}\n.\n");
+        reply = waitReply(3);
+        QVERIFY(!resultIsError(reply));
+
+        send(server.get(), 4, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_builddiff")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("builddiff"));
+        ide.send("ok\n{\"ok\":true,\"written\":false}\n.\n");
+        reply = waitReply(4);
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("structuredContent")).toObject()
+                     .value(QStringLiteral("written")).toBool(),
+                 false);
+
+        send(server.get(), 5, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_assets")));
+        QCOMPARE(ide.nextLine(), QStringLiteral("assets"));
+        ide.send("ok\n[{\"output\":\"hero.dat\"}]\n.\n");
+        reply = waitReply(5);
+        QCOMPARE(reply.value(QStringLiteral("result")).toObject()
+                     .value(QStringLiteral("structuredContent")).toObject()
+                     .value(QStringLiteral("items")).toArray().at(0).toObject()
+                     .value(QStringLiteral("output")).toString(),
+                 QStringLiteral("hero.dat"));
+
+        args = {};
+        args.insert(QStringLiteral("source"), QStringLiteral("hero.pim"));
+        args.insert(QStringLiteral("phase"), QStringLiteral("walk"));
+        args.insert(QStringLiteral("output"), QStringLiteral("hero.dat"));
+        args.insert(QStringLiteral("masked"), true);
+        args.insert(QStringLiteral("preShifts"), 8);
+        args.insert(QStringLiteral("transparent"), -1);
+        send(server.get(), 6, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_asset"), args));
+        QCOMPARE(ide.nextLine(),
+                 QStringLiteral("asset hero.pim walk hero.dat masked=1 preshifts=8 transparent=-1"));
+        ide.send("ok\n");
+        reply = waitReply(6);
+        QCOMPARE(resultText(reply), QStringLiteral("ok"));
+
+        args = {};
+        args.insert(QStringLiteral("remove"), QStringLiteral("hero.dat"));
+        send(server.get(), 7, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_asset"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("asset remove hero.dat"));
         ide.send("ok\n");
         reply = waitReply(7);
         QVERIFY(!resultIsError(reply));

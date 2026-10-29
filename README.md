@@ -647,6 +647,27 @@ memmark <addr> <len>
 memcompare [advance]
                    how those marked bytes differ now, as JSON (block reply).
                    `advance` replaces the checkpoint with the bytes just read
+ripimage <file> <offset> <width> <height> <out.pim> [paletteOffset]
+                   bitplanes at a hex offset to a .pim (block reply). Width and
+                   height are decimal. A path must not contain spaces
+ripsample <file> <offset> <length> <rate> <out.wav> [signed|unsigned]
+                   8-bit PCM at a hex offset to a WAV (block reply)
+dumpmem <addr> <len> <file>
+                   copy stopped-machine memory to a file (block reply)
+capturescreen <out.pim>
+                   the stopped machine's low-resolution screen as a .pim
+capturedma <out.wav>
+                   the stopped machine's STE DMA frame as unsigned 8-bit mono WAV
+ripavr <file> <offset> <out.wav>
+                   a mono 8-bit AVR at a hex offset to a WAV (block reply)
+scanmagic <file>   AVR, IFF, Ice and Atomik offsets as JSON (block reply).
+                   Does not search for Degas or NeoChrome
+scandisk <image>   the same magics inside a FAT12 .st or .msa (block reply)
+depack <file> <offset> <out>
+                   name Ice or Atomik at a hex offset. Does not unpack and does
+                   not write <out>
+sndhinfo <file> <offset>
+                   SNDH text tags as JSON (block reply). Does not play the module
 disasm [addr]      disassembly as JSON rows (block reply, when stopped)
 watchpoint <a|l>  break when the value at <a> changes, or at whatever address the
                   label <l> names in this run (optional .b/.w/.l)

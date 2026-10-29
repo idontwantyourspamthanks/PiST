@@ -61,6 +61,7 @@
 #include "ui/NewFileDialog.h"
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
+#include "ui/BinaryView.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
@@ -144,6 +145,10 @@ void MainWindow::createActions()
     m_actOpen = new QAction(tr("&Open…"), this);
     m_actOpen->setShortcut(QKeySequence::Open);
     connect(m_actOpen, &QAction::triggered, this, &MainWindow::openFile);
+
+    m_actOpenBinary = new QAction(tr("Open &Binary…"), this);
+    m_actOpenBinary->setObjectName(QStringLiteral("openBinaryAction"));
+    connect(m_actOpenBinary, &QAction::triggered, this, &MainWindow::openBinary);
 
     m_actNewFile = new QAction(tr("&New File…"), this);
     m_actNewFile->setObjectName(QStringLiteral("newFileAction"));
@@ -442,6 +447,7 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_actNewFile);
     fileMenu->addAction(m_actNewImage);
     fileMenu->addAction(m_actOpen);
+    fileMenu->addAction(m_actOpenBinary);
     fileMenu->addAction(m_actSave);
     fileMenu->addAction(m_actCloseFile);
     fileMenu->addAction(m_actCloseAll);
@@ -818,6 +824,16 @@ void MainWindow::buildPanels()
         makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser);
     addDockWidget(Qt::LeftDockWidgetArea, projectDock);
 
+    // Hidden until a file is opened: an empty hex dump is not part of the
+    // Editing arrangement, and a second bottom strip would change that layout.
+    m_binary = new BinaryView(this);
+    auto *binaryDock = makeDock(tr("Binary"), QStringLiteral("binaryDock"), m_binary);
+    addDockWidget(Qt::BottomDockWidgetArea, binaryDock);
+    binaryDock->setVisible(false);
+    connect(m_binary, &BinaryView::previewReady, this, [this](const QString &path) {
+        openPath(path);
+    });
+
     m_findInFiles = new FindInFilesView(this);
     m_findInFiles->navigate = [this](const QString &path, int line, int column, int length) {
         if (!navigateToSourceLine(path, line))
@@ -970,6 +986,7 @@ void MainWindow::buildPanels()
 void MainWindow::wirePanels()
 {
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
+    connect(m_fileBrowser, &FileBrowser::openBinaryRequested, this, &MainWindow::openBinaryAt);
     connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
             [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });
     connect(m_fileBrowser, &FileBrowser::newImageRequested, this, &MainWindow::newImageIn);

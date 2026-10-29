@@ -57,6 +57,20 @@ void parseDisassembly(const QString &response, MachineState *state);
 /// Parse an `info <subject>` report into the summary a pane displays.
 HardwareSummary parseHardwareInfo(const QString &response);
 
+/// Parse Hatari's `info dmasnd` report. `present` stays false on an STF
+/// ("ST doesn't include DMA!") and when any of the seven frame/mode lines is
+/// missing. Addresses have the low bit cleared, matching Hatari.
+struct DmaSoundInfo
+{
+    bool present = false;
+    quint32 start = 0;
+    quint32 end = 0;
+    int rateHz = 0;
+    bool stereo = false;
+};
+
+DmaSoundInfo parseDmaSoundInfo(const QString &response);
+
 } // namespace hataritext
 
 } // namespace pist

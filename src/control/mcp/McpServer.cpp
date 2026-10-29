@@ -605,6 +605,53 @@ void McpServer::handleToolsCall(const QJsonValue &id, const QJsonObject &params)
         command = QStringLiteral("readmem %1 %2")
                       .arg(args.value(QStringLiteral("address")).toString(),
                            args.value(QStringLiteral("length")).toString());
+    } else if (name == QLatin1String("pist_ripimage")) {
+        command = QStringLiteral("ripimage %1 %2 %3 %4 %5")
+                      .arg(args.value(QStringLiteral("file")).toString(),
+                           args.value(QStringLiteral("offset")).toString(),
+                           args.value(QStringLiteral("width")).toString(),
+                           args.value(QStringLiteral("height")).toString(),
+                           args.value(QStringLiteral("out")).toString());
+        const QString paletteOffset = args.value(QStringLiteral("paletteOffset")).toString();
+        if (!paletteOffset.isEmpty())
+            command += QLatin1Char(' ') + paletteOffset;
+    } else if (name == QLatin1String("pist_ripsample")) {
+        command = QStringLiteral("ripsample %1 %2 %3 %4 %5")
+                      .arg(args.value(QStringLiteral("file")).toString(),
+                           args.value(QStringLiteral("offset")).toString(),
+                           args.value(QStringLiteral("length")).toString(),
+                           args.value(QStringLiteral("rate")).toString(),
+                           args.value(QStringLiteral("out")).toString());
+        const QString encoding = args.value(QStringLiteral("encoding")).toString();
+        if (!encoding.isEmpty())
+            command += QLatin1Char(' ') + encoding;
+    } else if (name == QLatin1String("pist_dumpmem")) {
+        command = QStringLiteral("dumpmem %1 %2 %3")
+                      .arg(args.value(QStringLiteral("address")).toString(),
+                           args.value(QStringLiteral("length")).toString(),
+                           args.value(QStringLiteral("file")).toString());
+    } else if (name == QLatin1String("pist_capturescreen")) {
+        command = QStringLiteral("capturescreen ") + args.value(QStringLiteral("file")).toString();
+    } else if (name == QLatin1String("pist_capturedma")) {
+        command = QStringLiteral("capturedma ") + args.value(QStringLiteral("file")).toString();
+    } else if (name == QLatin1String("pist_ripavr")) {
+        command = QStringLiteral("ripavr %1 %2 %3")
+                      .arg(args.value(QStringLiteral("file")).toString(),
+                           args.value(QStringLiteral("offset")).toString(),
+                           args.value(QStringLiteral("out")).toString());
+    } else if (name == QLatin1String("pist_scanmagic")) {
+        command = QStringLiteral("scanmagic ") + args.value(QStringLiteral("file")).toString();
+    } else if (name == QLatin1String("pist_depack")) {
+        command = QStringLiteral("depack %1 %2 %3")
+                      .arg(args.value(QStringLiteral("file")).toString(),
+                           args.value(QStringLiteral("offset")).toString(),
+                           args.value(QStringLiteral("out")).toString());
+    } else if (name == QLatin1String("pist_scandisk")) {
+        command = QStringLiteral("scandisk ") + args.value(QStringLiteral("file")).toString();
+    } else if (name == QLatin1String("pist_sndhinfo")) {
+        command = QStringLiteral("sndhinfo %1 %2")
+                      .arg(args.value(QStringLiteral("file")).toString(),
+                           args.value(QStringLiteral("offset")).toString());
     } else if (name == QLatin1String("pist_memmark")) {
         command = QStringLiteral("memmark %1 %2")
                       .arg(args.value(QStringLiteral("address")).toString(),
@@ -754,7 +801,10 @@ void McpServer::deliverReply(quint64 token, const QString &text)
                      || outstanding.tool == QLatin1String("pist_builddiff")
                      || outstanding.tool == QLatin1String("pist_assets")
                      || outstanding.tool == QLatin1String("pist_disasm")
-                     || outstanding.tool == QLatin1String("pist_hook"))) {
+                     || outstanding.tool == QLatin1String("pist_hook")
+                     || outstanding.tool == QLatin1String("pist_scanmagic")
+                     || outstanding.tool == QLatin1String("pist_scandisk")
+                     || outstanding.tool == QLatin1String("pist_sndhinfo"))) {
         QJsonParseError parseError;
         const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &parseError);
         if (parseError.error == QJsonParseError::NoError) {
@@ -1029,6 +1079,189 @@ QJsonArray McpServer::tools()
 
     {
         QJsonObject props;
+        const auto textProp = [](const QString &description) {
+            QJsonObject property;
+            property.insert(QStringLiteral("type"), QStringLiteral("string"));
+            property.insert(QStringLiteral("description"), description);
+            return property;
+        };
+        props.insert(QStringLiteral("file"),
+                     textProp(QStringLiteral("File to read. Paths must not contain spaces.")));
+        props.insert(QStringLiteral("offset"),
+                     textProp(QStringLiteral("Start of the bitplanes, hex ($ or 0x).")));
+        props.insert(QStringLiteral("width"),
+                     textProp(QStringLiteral("Width in pixels, decimal, a multiple of 16.")));
+        props.insert(QStringLiteral("height"),
+                     textProp(QStringLiteral("Height in pixels, decimal.")));
+        props.insert(QStringLiteral("out"),
+                     textProp(QStringLiteral(".pim to write. Paths must not contain spaces.")));
+        props.insert(QStringLiteral("paletteOffset"),
+                     textProp(QStringLiteral("Optional offset of 32 STfm colour bytes, hex. "
+                                            "Omitted uses the default palette.")));
+        list.append(toolObject(
+            QStringLiteral("pist_ripimage"), QStringLiteral("Rip a sprite"),
+            QStringLiteral("Read low-resolution ST bitplanes from a file and write a .pim. "
+                           "Paths must not contain spaces. offset and paletteOffset are hex. "
+                           "width and height are decimal. Does not need the emulator."),
+            props,
+            QJsonArray{QStringLiteral("file"), QStringLiteral("offset"), QStringLiteral("width"),
+                       QStringLiteral("height"), QStringLiteral("out")}));
+    }
+
+    {
+        QJsonObject props;
+        const auto textProp = [](const QString &description) {
+            QJsonObject property;
+            property.insert(QStringLiteral("type"), QStringLiteral("string"));
+            property.insert(QStringLiteral("description"), description);
+            return property;
+        };
+        props.insert(QStringLiteral("file"),
+                     textProp(QStringLiteral("File to read. Paths must not contain spaces.")));
+        props.insert(QStringLiteral("offset"),
+                     textProp(QStringLiteral("Start of the samples, hex ($ or 0x).")));
+        props.insert(QStringLiteral("length"),
+                     textProp(QStringLiteral("How many sample bytes, decimal, from 1 to 65536.")));
+        props.insert(QStringLiteral("rate"),
+                     textProp(QStringLiteral("Sample rate in Hz, decimal, from 4000 to 50066.")));
+        props.insert(QStringLiteral("out"),
+                     textProp(QStringLiteral(".wav to write. Paths must not contain spaces.")));
+        props.insert(QStringLiteral("encoding"),
+                     textProp(QStringLiteral(
+                         "signed or unsigned (default unsigned). Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_ripsample"), QStringLiteral("Rip a sample"),
+            QStringLiteral("Read 8-bit mono PCM from a file and write a WAV. Paths must not "
+                           "contain spaces. offset is hex. length and rate are decimal. "
+                           "Does not need the emulator."),
+            props,
+            QJsonArray{QStringLiteral("file"), QStringLiteral("offset"), QStringLiteral("length"),
+                       QStringLiteral("rate"), QStringLiteral("out")}));
+    }
+
+    {
+        QJsonObject props;
+        const auto textProp = [](const QString &description) {
+            QJsonObject property;
+            property.insert(QStringLiteral("type"), QStringLiteral("string"));
+            property.insert(QStringLiteral("description"), description);
+            return property;
+        };
+        props.insert(QStringLiteral("address"),
+                     textProp(QStringLiteral("Address to copy from, hex ($ or 0x). The machine "
+                                            "must be stopped.")));
+        props.insert(QStringLiteral("length"),
+                     textProp(QStringLiteral("How many bytes to copy, decimal, from 1 to 65536.")));
+        props.insert(QStringLiteral("file"),
+                     textProp(QStringLiteral("File to write. Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_dumpmem"), QStringLiteral("Dump memory to a file"),
+            QStringLiteral("Copy a range of stopped-machine memory to a file. The machine "
+                           "must be stopped. address is hex, length is decimal, and the path "
+                           "must not contain spaces."),
+            props,
+            QJsonArray{QStringLiteral("address"), QStringLiteral("length"), QStringLiteral("file")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject file;
+        file.insert(QStringLiteral("type"), QStringLiteral("string"));
+        file.insert(QStringLiteral("description"),
+                    QStringLiteral("Where to write the .pim. The machine must be stopped. "
+                                   "Paths must not contain spaces."));
+        props.insert(QStringLiteral("file"), file);
+        list.append(toolObject(
+            QStringLiteral("pist_capturescreen"), QStringLiteral("Capture the screen"),
+            QStringLiteral("Write the stopped machine's low-resolution screen as a .pim. "
+                           "The machine must be stopped. The path must not contain spaces."),
+            props, QJsonArray{QStringLiteral("file")}));
+    }
+
+    {
+        QJsonObject props;
+        QJsonObject file;
+        file.insert(QStringLiteral("type"), QStringLiteral("string"));
+        file.insert(QStringLiteral("description"),
+                    QStringLiteral("Where to write the WAV. The machine must be stopped. "
+                                   "Paths must not contain spaces."));
+        props.insert(QStringLiteral("file"), file);
+        list.append(toolObject(
+            QStringLiteral("pist_capturedma"), QStringLiteral("Capture DMA sound"),
+            QStringLiteral("Write the stopped machine's STE DMA frame as unsigned 8-bit "
+                           "mono WAV, or an error when the frame is stereo or longer than "
+                           "65536 bytes. The machine must be stopped. The path must not "
+                           "contain spaces."),
+            props, QJsonArray{QStringLiteral("file")}));
+    }
+
+    {
+        const auto textProp = [](const QString &description) {
+            QJsonObject property;
+            property.insert(QStringLiteral("type"), QStringLiteral("string"));
+            property.insert(QStringLiteral("description"), description);
+            return property;
+        };
+        QJsonObject avr;
+        avr.insert(QStringLiteral("file"),
+                   textProp(QStringLiteral("AVR file to read. Paths must not contain spaces.")));
+        avr.insert(QStringLiteral("offset"),
+                   textProp(QStringLiteral("Header offset, hex ($ or 0x).")));
+        avr.insert(QStringLiteral("out"),
+                   textProp(QStringLiteral("WAV to write. Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_ripavr"), QStringLiteral("Rip an AVR sample"),
+            QStringLiteral("Convert a mono 8-bit AVR at a hex offset to a WAV. Paths must "
+                           "not contain spaces. Does not need the emulator."),
+            avr,
+            QJsonArray{QStringLiteral("file"), QStringLiteral("offset"), QStringLiteral("out")}));
+
+        QJsonObject scan;
+        scan.insert(QStringLiteral("file"),
+                    textProp(QStringLiteral("File to scan. Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_scanmagic"), QStringLiteral("Scan a file for magics"),
+            QStringLiteral("List AVR, IFF, Ice and Atomik magics in a file of at most 2 MiB, "
+                           "as JSON. Paths must not contain spaces. Does not search for "
+                           "Degas or NeoChrome."),
+            scan, QJsonArray{QStringLiteral("file")}));
+
+        QJsonObject depack;
+        depack.insert(QStringLiteral("file"),
+                      textProp(QStringLiteral("File to identify. Paths must not contain spaces.")));
+        depack.insert(QStringLiteral("offset"),
+                      textProp(QStringLiteral("Offset of the four magic bytes, hex ($ or 0x).")));
+        depack.insert(QStringLiteral("out"),
+                      textProp(QStringLiteral("Unused path. Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_depack"), QStringLiteral("Identify a packer"),
+            QStringLiteral("Identify Ice and Atomik at a hex offset and does not unpack. "
+                           "Does not write the output file."),
+            depack,
+            QJsonArray{QStringLiteral("file"), QStringLiteral("offset"), QStringLiteral("out")}));
+
+        QJsonObject disk;
+        disk.insert(QStringLiteral("file"),
+                    textProp(QStringLiteral("FAT12 .st or .msa image. Paths must not contain spaces.")));
+        list.append(toolObject(
+            QStringLiteral("pist_scandisk"), QStringLiteral("Scan a floppy image"),
+            QStringLiteral("FAT12 .st / .msa only. Reports AVR, IFF, Ice and Atomik inside "
+                           "files. Does not unpack. Does not scan non-FAT disks."),
+            disk, QJsonArray{QStringLiteral("file")}));
+
+        QJsonObject sndh;
+        sndh.insert(QStringLiteral("file"),
+                    textProp(QStringLiteral("File to read. Paths must not contain spaces.")));
+        sndh.insert(QStringLiteral("offset"),
+                    textProp(QStringLiteral("Offset of the tag block, hex ($ or 0x).")));
+        list.append(toolObject(
+            QStringLiteral("pist_sndhinfo"), QStringLiteral("Read SNDH tags"),
+            QStringLiteral("Read SNDH text tags. Does not play the module. Does not unpack Ice."),
+            sndh, QJsonArray{QStringLiteral("file"), QStringLiteral("offset")}));
+    }
+
+    {
+        QJsonObject props;
         QJsonObject address;
         address.insert(QStringLiteral("type"), QStringLiteral("string"));
         address.insert(QStringLiteral("description"),
@@ -1268,6 +1501,7 @@ QJsonArray McpServer::tools()
         QStringLiteral("pist_breakpoints"), QStringLiteral("pist_watch"),
         QStringLiteral("pist_tabs"), QStringLiteral("pist_hook"),
         QStringLiteral("pist_builddiff"), QStringLiteral("pist_assets"),
+        QStringLiteral("pist_sndhinfo"),
     };
     const QStringList destructive = {
         QStringLiteral("pist_stop"), QStringLiteral("pist_setreg"),

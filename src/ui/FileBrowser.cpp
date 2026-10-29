@@ -562,6 +562,13 @@ void FileBrowser::onActivated(const QModelIndex &index)
     emit fileActivated(path);
 }
 
+void FileBrowser::openBinaryFile(const QString &path)
+{
+    if (!QFileInfo(path).isFile())
+        return;
+    emit openBinaryRequested(path);
+}
+
 QString FileBrowser::contextDirectory() const
 {
     const QModelIndex index = m_view->currentIndex();
@@ -1136,6 +1143,10 @@ void FileBrowser::onContextMenu(const QPoint &pos)
     const QString selectedPath = index.isValid() ? m_model->filePath(index) : QString();
 
     QMenu menu(this);
+    QAction *openBinary = menu.addAction(tr("Open Binary"));
+    openBinary->setObjectName(QStringLiteral("openBinaryContextAction"));
+    openBinary->setEnabled(QFileInfo(selectedPath).isFile());
+    menu.addSeparator();
     QAction *newFile = menu.addAction(tr("New File…"));
     QAction *newImage = menu.addAction(tr("New Image…"));
     QAction *newFolder = menu.addAction(tr("New Folder…"));
@@ -1160,7 +1171,9 @@ void FileBrowser::onContextMenu(const QPoint &pos)
                             && QFileInfo(contextDirectory()).isDir());
 
     QAction *chosen = menu.exec(m_view->viewport()->mapToGlobal(pos));
-    if (chosen == newFile) {
+    if (chosen == openBinary) {
+        openBinaryFile(selectedPath);
+    } else if (chosen == newFile) {
         // The same transaction as File ▸ New File, rooted where the user
         // right-clicked: the dialog validates the name as it is typed, and the
         // file it creates is opened and revealed (docs/untitled-plan.md §4).

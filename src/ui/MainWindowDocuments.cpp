@@ -25,6 +25,7 @@
 #include "emu/DebugBackend.h"
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
+#include "ui/BinaryView.h"
 #include "ui/InstructionRefView.h"
 #include "build/FloppyImage.h"
 #include "editor/CursorReference.h"
@@ -802,6 +803,36 @@ void MainWindow::openFile()
     if (path.isEmpty())
         return;
     openPath(path);
+}
+
+
+void MainWindow::openBinary()
+{
+    const QString path = QFileDialog::getOpenFileName(this, tr("Open Binary"), QString(),
+                                                      tr("All files (*)"));
+    if (path.isEmpty())
+        return;
+    openBinaryAt(path);
+}
+
+void MainWindow::openBinaryAt(const QString &path)
+{
+    constexpr int kLimit = 2 * 1024 * 1024;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Open Binary"), file.errorString());
+        return;
+    }
+    if (file.size() > kLimit) {
+        QMessageBox::warning(this, tr("Open Binary"),
+                             tr("The file is larger than %1 bytes.").arg(kLimit));
+        return;
+    }
+    m_binary->setBytes(file.readAll(), QFileInfo(path).fileName());
+    if (auto *dock = findChild<QDockWidget *>(QStringLiteral("binaryDock"))) {
+        dock->show();
+        dock->raise();
+    }
 }
 
 

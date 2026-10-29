@@ -281,16 +281,163 @@ private slots:
         // workflow breaks without anything here noticing.
         QCOMPARE(names, QStringList({"pist_asset", "pist_assets", "pist_breakpoint",
                                      "pist_breakpoints", "pist_build", "pist_build_release",
-                                     "pist_builddiff", "pist_clearwatchpoint", "pist_cmd",
-                                     "pist_console", "pist_continue", "pist_disasm", "pist_hook",
-                                     "pist_memcompare", "pist_memmark", "pist_open", "pist_problems",
-                                     "pist_profile_results", "pist_profile_start",
-                                     "pist_profile_stop", "pist_read", "pist_readmem",
-                                     "pist_run", "pist_save", "pist_screenshot",
-                                     "pist_setmem", "pist_setreg", "pist_state",
-                                     "pist_step", "pist_stepover", "pist_stop",
-                                     "pist_symbols", "pist_tabs", "pist_watch",
-                                     "pist_watchpoint"}));
+                                     "pist_builddiff", "pist_capturedma", "pist_capturescreen",
+                                     "pist_clearwatchpoint", "pist_cmd", "pist_console",
+                                     "pist_continue", "pist_depack", "pist_disasm", "pist_dumpmem",
+                                     "pist_hook", "pist_memcompare", "pist_memmark", "pist_open",
+                                     "pist_problems", "pist_profile_results", "pist_profile_start",
+                                     "pist_profile_stop", "pist_read", "pist_readmem", "pist_ripavr",
+                                     "pist_ripimage", "pist_ripsample", "pist_run", "pist_save",
+                                     "pist_scandisk", "pist_scanmagic", "pist_screenshot",
+                                     "pist_setmem", "pist_setreg", "pist_sndhinfo", "pist_state",
+                                     "pist_step", "pist_stepover", "pist_stop", "pist_symbols",
+                                     "pist_tabs", "pist_watch", "pist_watchpoint"}));
+    }
+
+    void ripimageMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("in.bin"));
+        args.insert(QStringLiteral("offset"), QStringLiteral("0"));
+        args.insert(QStringLiteral("width"), QStringLiteral("16"));
+        args.insert(QStringLiteral("height"), QStringLiteral("16"));
+        args.insert(QStringLiteral("out"), QStringLiteral("out.pim"));
+        args.insert(QStringLiteral("paletteOffset"), QStringLiteral("20"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_ripimage"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("ripimage in.bin 0 16 16 out.pim 20"));
+        ide.send("ok\n.\n");
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    void dumpmemMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        QJsonObject args;
+        args.insert(QStringLiteral("address"), QStringLiteral("$100"));
+        args.insert(QStringLiteral("length"), QStringLiteral("16"));
+        args.insert(QStringLiteral("file"), QStringLiteral("out.bin"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_dumpmem"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("dumpmem $100 16 out.bin"));
+        ide.send("ok\n.\n");
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    void capturescreenMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("out.pim"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_capturescreen"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("capturescreen out.pim"));
+        ide.send("ok\n.\n");
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    void capturedmaMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("out.wav"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_capturedma"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("capturedma out.wav"));
+        ide.send("ok\n.\n");
+        const QJsonObject reply = waitReply(1);
+        QVERIFY(!resultIsError(reply));
+    }
+
+    void ripavrMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("in.avr"));
+        args.insert(QStringLiteral("offset"), QStringLiteral("0"));
+        args.insert(QStringLiteral("out"), QStringLiteral("out.wav"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_ripavr"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("ripavr in.avr 0 out.wav"));
+        ide.send("ok\n.\n");
+        QVERIFY(!resultIsError(waitReply(1)));
+    }
+
+    void scanmagicMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("in.bin"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_scanmagic"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("scanmagic in.bin"));
+        ide.send("ok\n.\n");
+        QVERIFY(!resultIsError(waitReply(1)));
+    }
+
+    void depackMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("in.bin"));
+        args.insert(QStringLiteral("offset"), QStringLiteral("0"));
+        args.insert(QStringLiteral("out"), QStringLiteral("out.bin"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_depack"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("depack in.bin 0 out.bin"));
+        ide.send("ok\n.\n");
+        QVERIFY(!resultIsError(waitReply(1)));
+    }
+
+    void scandiskMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("disk.st"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_scandisk"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("scandisk disk.st"));
+        ide.send("ok\n.\n");
+        QVERIFY(!resultIsError(waitReply(1)));
+    }
+
+    void sndhinfoMapsToTheVerb()
+    {
+        FakeIde ide;
+        QVERIFY(ide.start());
+        auto server = makeServer(ide.port());
+        QJsonObject args;
+        args.insert(QStringLiteral("file"), QStringLiteral("tune.sndh"));
+        args.insert(QStringLiteral("offset"), QStringLiteral("0"));
+        send(server.get(), 1, QStringLiteral("tools/call"),
+             callParams(QStringLiteral("pist_sndhinfo"), args));
+        QCOMPARE(ide.nextLine(), QStringLiteral("sndhinfo tune.sndh 0"));
+        ide.send("ok\n.\n");
+        QVERIFY(!resultIsError(waitReply(1)));
     }
 
     void buildReleaseMapsToTheVerb()

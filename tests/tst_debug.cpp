@@ -11,6 +11,7 @@
 #include "build/LineMap.h"
 #include "build/LinkMap.h"
 #include "build/SymbolTable.h"
+#include "emu/HatariTextParse.h"
 #include "emu/MemoryDump.h"
 #include "project/ProjectSettings.h"
 
@@ -185,6 +186,8 @@ private slots:
     /// line above it, and an equate refused rather than answered with its
     /// neighbour's address.
     void labelAddressResolvesLabelsNotEquates();
+
+    void dmaSoundInfoParsesHatariText();
 };
 
 void TstDebug::resolvesLineToAddress()
@@ -986,6 +989,39 @@ void TstDebug::breakpointScriptPathsResolveBesideTheSource()
     const QString beside = dir.path() + QStringLiteral("/demo/hello.hooks.lua");
     QCOMPARE(resolveScriptPath(QStringLiteral("hello.hooks.lua"), source), beside);
     QCOMPARE(resolveScriptPath(QStringLiteral("./sub/../hello.hooks.lua"), source), beside);
+}
+
+void TstDebug::dmaSoundInfoParsesHatariText()
+{
+    const QString transcript = QStringLiteral(
+        "$FF8903.b : Frame Start High : 00\n"
+        "$FF8905.b : Frame Start middle : 10\n"
+        "$FF8907.b : Frame Start low : 01\n"
+        "$FF890F.b : Frame End High : 00\n"
+        "$FF8911.b : Frame End middle : 20\n"
+        "$FF8913.b : Frame End low : 00\n"
+        "$FF8921.b : Sound Mode Control : 01\n");
+    const hataritext::DmaSoundInfo info = hataritext::parseDmaSoundInfo(transcript);
+    QCOMPARE(info.present, true);
+    QCOMPARE(info.start, quint32(0x001000));
+    QCOMPARE(info.end, quint32(0x002000));
+    QCOMPARE(info.rateHz, 12517);
+    QCOMPARE(info.stereo, true);
+
+    const hataritext::DmaSoundInfo absent =
+        hataritext::parseDmaSoundInfo(QStringLiteral("ST doesn't include DMA!\n"));
+    QCOMPARE(absent.present, false);
+
+    const QString missingMode = QStringLiteral(
+        "$FF8903.b : Frame Start High : 00\n"
+        "$FF8905.b : Frame Start middle : 10\n"
+        "$FF8907.b : Frame Start low : 01\n"
+        "$FF890F.b : Frame End High : 00\n"
+        "$FF8911.b : Frame End middle : 20\n"
+        "$FF8913.b : Frame End low : 00\n");
+    const hataritext::DmaSoundInfo incomplete = hataritext::parseDmaSoundInfo(missingMode);
+    QCOMPARE(incomplete.present, false);
+    QCOMPARE(incomplete.start, quint32(0));
 }
 
 QTEST_MAIN(TstDebug)

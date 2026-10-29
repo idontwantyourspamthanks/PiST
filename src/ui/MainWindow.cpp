@@ -42,6 +42,8 @@
 #include "emu/Paths.h"
 #include "emu/TosRom.h"
 #include "image/ImageDocument.h"
+#include "build/FloppyImage.h"
+#include "image/BinaryScan.h"
 #include "image/StFormats.h"
 #include "toolchain/Toolchain.h"
 #include "debug/Breakpoint.h"
@@ -78,6 +80,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -702,6 +705,312 @@ bool MainWindow::writeMemoryByte(quint32 address, quint32 value)
     // The remote `setmem`: no view asked for it, so with no pane to refresh the
     // first one is (setMemoryByte's own rule for a null pane).
     return setMemoryByte(address, value);
+}
+
+bool MainWindow::ripImage(const QString &path, quint32 offset, int width, int height,
+                          const QString &outPath, bool hasPalette, quint32 paletteOffset,
+                          QString *error)
+{
+    const bool sizeOk = width >= 16 && width <= kStScreenWidth && width % 16 == 0 && height >= 1
+                        && height <= kStScreenHeight;
+    if (!sizeOk) {
+        ImageDocument ignored;
+        QString decodeError;
+        imageFromLowResBitplanes(QByteArray(), width, height, QByteArray(), &ignored, &decodeError);
+        if (error)
+            *error = decodeError;
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return false;
+    }
+    if (!file.seek(offset)) {
+        if (error)
+            *error = QStringLiteral("offset is past the end");
+        return false;
+    }
+    const int need = (width / 16) * 8 * height;
+    const QByteArray planes = file.read(need);
+    if (planes.size() != need) {
+        if (error)
+            *error = QStringLiteral("short read");
+        return false;
+    }
+    QByteArray palette;
+    if (hasPalette) {
+        if (!file.seek(paletteOffset)) {
+            if (error)
+                *error = QStringLiteral("palette is short");
+            return false;
+        }
+        palette = file.read(32);
+        if (palette.size() != 32) {
+            if (error)
+                *error = QStringLiteral("palette is short");
+            return false;
+        }
+    }
+    ImageDocument doc;
+    QString decodeError;
+    if (!imageFromLowResBitplanes(planes, width, height, palette, &doc, &decodeError)) {
+        if (error)
+            *error = decodeError;
+        return false;
+    }
+    const QByteArray json = doc.toJson();
+    if (json.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("the document produced no JSON");
+        return false;
+    }
+    return files::write(outPath, json, error);
+}
+
+bool MainWindow::ripSample(const QString &path, quint32 offset, int length, int rate,
+                           bool signedSamples, const QString &outPath, QString *error)
+{
+    if (length < 1) {
+        wavFromPcm8(QByteArray(), rate, signedSamples, error);
+        return false;
+    }
+    if (length > 65536) {
+        wavFromPcm8(QByteArray(65537, '\0'), rate, signedSamples, error);
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return false;
+    }
+    if (!file.seek(offset)) {
+        if (error)
+            *error = QStringLiteral("offset is past the end");
+        return false;
+    }
+    const QByteArray samples = file.read(length);
+    if (samples.size() != length) {
+        if (error)
+            *error = QStringLiteral("short read");
+        return false;
+    }
+    const QByteArray wav = wavFromPcm8(samples, rate, signedSamples, error);
+    if (wav.isEmpty())
+        return false;
+    return files::write(outPath, wav, error);
+}
+
+bool MainWindow::writeBinaryFile(const QString &path, const QByteArray &bytes, QString *error)
+{
+    if (bytes.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("nothing to write");
+        return false;
+    }
+    return files::write(path, bytes, error);
+}
+
+bool MainWindow::writeCapturedScreen(const QString &outPath, const QByteArray &resolutionByte,
+                                    const QByteArray &paletteWords, const QByteArray &planes,
+                                    QString *error)
+{
+    if (resolutionByte.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("short read");
+        return false;
+    }
+    ImageDocument doc;
+    if (!imageFromLowResScreen(planes, paletteWords, int(uchar(resolutionByte.at(0))), &doc, error))
+        return false;
+    const QByteArray json = doc.toJson();
+    if (json.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("the document produced no JSON");
+        return false;
+    }
+    return files::write(outPath, json, error);
+}
+
+bool MainWindow::writeCapturedDma(const QString &outPath, int rateHz, const QByteArray &samples,
+                                 QString *error)
+{
+    const QByteArray wav = wavFromPcm8(samples, rateHz, false, error);
+    if (wav.isEmpty())
+        return false;
+    return files::write(outPath, wav, error);
+}
+
+bool MainWindow::ripAvr(const QString &path, quint32 offset, const QString &outPath, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return false;
+    }
+    if (!file.seek(offset)) {
+        if (error)
+            *error = QStringLiteral("offset is past the end");
+        return false;
+    }
+    const QByteArray header = file.read(128);
+    AvrInfo info;
+    if (!parseAvrHeader(header, &info, error))
+        return false;
+    const QByteArray samples = file.read(int(info.length));
+    if (quint32(samples.size()) != info.length) {
+        if (error)
+            *error = QStringLiteral("short AVR");
+        return false;
+    }
+    QByteArray fileBytes = header;
+    fileBytes.append(samples);
+    const QByteArray wav = wavFromAvr(fileBytes, error);
+    if (wav.isEmpty())
+        return false;
+    return files::write(outPath, wav, error);
+}
+
+QJsonArray MainWindow::scanFileMagic(const QString &path, QString *error)
+{
+    if (QFileInfo(path).size() > qint64(2 * 1024 * 1024)) {
+        if (error)
+            *error = QStringLiteral("file is over 2MiB");
+        return {};
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return {};
+    }
+    QJsonArray hits;
+    for (const MagicHit &hit : scanMagic(file.readAll())) {
+        QJsonObject object;
+        object.insert(QStringLiteral("offset"), hit.offset);
+        object.insert(QStringLiteral("kind"), hit.kind);
+        hits.append(object);
+    }
+    return hits;
+}
+
+QJsonArray MainWindow::scanDiskMagic(const QString &imagePath, QString *error)
+{
+    QString listError;
+    const QVector<floppy::Entry> entries = floppy::listImage(imagePath, &listError);
+    if (!listError.isEmpty()) {
+        if (error)
+            *error = listError;
+        return {};
+    }
+    QByteArray raw;
+    QString rawError;
+    if (!floppy::loadRaw(imagePath, &raw, &rawError)) {
+        if (error)
+            *error = rawError;
+        return {};
+    }
+
+    QJsonArray result;
+    int hitCount = 0;
+    bool capped = false;
+    constexpr int kCap = 64;
+    for (const floppy::Entry &entry : entries) {
+        if (entry.isDirectory)
+            continue;
+        if (hitCount >= kCap) {
+            capped = true;
+            break;
+        }
+        if (entry.size > quint32(2 * 1024 * 1024)) {
+            QJsonObject row;
+            row.insert(QStringLiteral("path"), entry.path);
+            row.insert(QStringLiteral("error"), QStringLiteral("over 2MiB"));
+            result.append(row);
+            continue;
+        }
+        QByteArray data;
+        QString readError;
+        if (!floppy::readFileRaw(raw, entry.path, &data, &readError)) {
+            QJsonObject row;
+            row.insert(QStringLiteral("path"), entry.path);
+            row.insert(QStringLiteral("error"), readError);
+            result.append(row);
+            continue;
+        }
+        const QVector<MagicHit> found = scanMagic(data);
+        if (found.isEmpty())
+            continue;
+        QJsonArray hits;
+        for (const MagicHit &hit : found) {
+            if (hitCount >= kCap) {
+                capped = true;
+                break;
+            }
+            QJsonObject object;
+            object.insert(QStringLiteral("offset"), hit.offset);
+            object.insert(QStringLiteral("kind"), hit.kind);
+            hits.append(object);
+            ++hitCount;
+        }
+        if (found.size() == kCap)
+            capped = true;
+        QJsonObject row;
+        row.insert(QStringLiteral("path"), entry.path);
+        row.insert(QStringLiteral("hits"), hits);
+        result.append(row);
+        if (capped)
+            break;
+    }
+    if (capped) {
+        QJsonObject truncated;
+        truncated.insert(QStringLiteral("truncated"), true);
+        result.append(truncated);
+    }
+    return result;
+}
+
+QString MainWindow::identifyPacker(const QString &path, quint32 offset, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return {};
+    }
+    if (!file.seek(offset))
+        return {};
+    return packerMagic(file.read(4));
+}
+
+QJsonObject MainWindow::sndhInfo(const QString &path, quint32 offset, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return {};
+    }
+    if (!file.seek(offset)) {
+        if (error)
+            *error = QStringLiteral("offset is past the end");
+        return {};
+    }
+    const SndhTags tags = parseSndhTags(file.read(4096));
+    QJsonObject object;
+    object.insert(QStringLiteral("found"), tags.found);
+    object.insert(QStringLiteral("truncated"), tags.truncated);
+    object.insert(QStringLiteral("title"), tags.title);
+    object.insert(QStringLiteral("composer"), tags.composer);
+    object.insert(QStringLiteral("ripper"), tags.ripper);
+    object.insert(QStringLiteral("converter"), tags.converter);
+    object.insert(QStringLiteral("year"), tags.year);
+    return object;
 }
 
 bool MainWindow::saveScreenshot(const QString &path)

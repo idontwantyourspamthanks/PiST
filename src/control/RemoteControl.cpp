@@ -598,6 +598,277 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
         }
         replyBlock(guarded, QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact)));
 
+    } else if (cmd == QLatin1String("ripimage")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        quint32 offset = 0;
+        quint32 paletteOffset = 0;
+        bool widthOk = false;
+        bool heightOk = false;
+        const int width = fields.value(2).toInt(&widthOk, 10);
+        const int height = fields.value(3).toInt(&heightOk, 10);
+        const bool havePalette = fields.size() == 6;
+        if ((fields.size() != 5 && !havePalette) || fields.at(0).isEmpty() || fields.value(4).isEmpty()
+            || !parseValue(fields.value(1), &offset) || !widthOk || !heightOk
+            || (havePalette && !parseValue(fields.at(5), &paletteOffset))) {
+            replyBlockError(guarded, QStringLiteral(
+                "error usage: ripimage <file> <offset> <width> <height> <out.pim> [paletteOffset]"));
+            return;
+        }
+        QString error;
+        if (m_host->ripImage(fields.at(0), offset, width, height, fields.at(4), havePalette,
+                             paletteOffset, &error))
+            replyBlock(guarded, QStringLiteral("ok"));
+        else
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+
+    } else if (cmd == QLatin1String("ripsample")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        quint32 offset = 0;
+        bool lengthOk = false;
+        bool rateOk = false;
+        const int length = fields.value(2).toInt(&lengthOk, 10);
+        const int rate = fields.value(3).toInt(&rateOk, 10);
+        bool signedSamples = false;
+        bool encodingOk = fields.size() == 5;
+        if (fields.size() == 6) {
+            encodingOk = fields.at(5) == QLatin1String("signed") || fields.at(5) == QLatin1String("unsigned");
+            signedSamples = fields.at(5) == QLatin1String("signed");
+        }
+        if ((fields.size() != 5 && fields.size() != 6) || !encodingOk || fields.at(0).isEmpty()
+            || fields.value(4).isEmpty() || !parseValue(fields.value(1), &offset) || !lengthOk
+            || !rateOk) {
+            replyBlockError(guarded, QStringLiteral(
+                "error usage: ripsample <file> <offset> <length> <rate> <out.wav> [signed|unsigned]"));
+            return;
+        }
+        QString error;
+        if (m_host->ripSample(fields.at(0), offset, length, rate, signedSamples, fields.at(4), &error))
+            replyBlock(guarded, QStringLiteral("ok"));
+        else
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+
+    } else if (cmd == QLatin1String("dumpmem")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        quint32 address = 0;
+        bool lengthOk = false;
+        const int length = fields.value(1).toInt(&lengthOk, 10);
+        if (fields.size() != 3 || fields.at(2).isEmpty() || !parseValue(fields.at(0), &address)
+            || !lengthOk || length < 1 || length > 65536) {
+            replyBlockError(guarded, QStringLiteral("error usage: dumpmem <addr> <len> <file>"));
+            return;
+        }
+        if (m_busy) {
+            replyBlockError(guarded, QStringLiteral("error busy: another command is still running"));
+            return;
+        }
+        m_busy = true;
+        m_host->debugReadMemory(address, length);
+        QList<MemoryRow> dump;
+        const bool arrived = waitForDebugMemory(address, 10000, &dump);
+        m_busy = false;
+        if (!arrived) {
+            replyBlockError(guarded,
+                            QStringLiteral("error no response (needs a stopped emulator session)"));
+            return;
+        }
+        QByteArray bytes;
+        for (const MemoryRow &row : dump) {
+            for (quint8 byte : row.bytes)
+                bytes.append(char(byte));
+        }
+        if (bytes.isEmpty()) {
+            replyBlockError(guarded, QStringLiteral("error empty dump"));
+            return;
+        }
+        QString error;
+        if (m_host->writeBinaryFile(fields.at(2), bytes, &error))
+            replyBlock(guarded, QStringLiteral("ok %1").arg(bytes.size()));
+        else
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+
+    } else if (cmd == QLatin1String("capturescreen")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 1) {
+            replyBlockError(guarded, QStringLiteral("error usage: capturescreen <out.pim>"));
+            return;
+        }
+        if (!m_host->stateJson().value(QStringLiteral("stopped")).toBool()) {
+            replyBlockError(guarded, QStringLiteral("error not stopped"));
+            return;
+        }
+        if (m_busy) {
+            replyBlockError(guarded, QStringLiteral("error busy: another command is still running"));
+            return;
+        }
+        const QString video = blockingDebugCommand(QStringLiteral("info video"), 10000);
+        const HardwareSummary hardware = hataritext::parseHardwareInfo(video);
+        if (video.isEmpty() || !hardware.hasScreenBase) {
+            m_busy = false;
+            replyBlockError(guarded, QStringLiteral("error no screen base"));
+            return;
+        }
+        const auto readExact = [&](quint32 address, int length, QByteArray *out) {
+            m_busy = true;
+            m_host->debugReadMemory(address, length);
+            QList<MemoryRow> dump;
+            const bool arrived = waitForDebugMemory(address, 10000, &dump);
+            QByteArray bytes;
+            if (arrived) {
+                for (const MemoryRow &row : dump) {
+                    for (quint8 byte : row.bytes)
+                        bytes.append(char(byte));
+                }
+            }
+            if (!arrived || bytes.size() != length) {
+                m_busy = false;
+                replyBlockError(guarded, QStringLiteral("error short read %1")
+                                             .arg(address, 8, 16, QLatin1Char('0')));
+                return false;
+            }
+            *out = bytes;
+            return true;
+        };
+        QByteArray resolution;
+        QByteArray palette;
+        QByteArray planes;
+        if (!readExact(0xff8260, 1, &resolution) || !readExact(0xff8240, 32, &palette)
+            || !readExact(hardware.screenBase, 32000, &planes))
+            return;
+        m_busy = false;
+        QString error;
+        if (m_host->writeCapturedScreen(fields.at(0), resolution, palette, planes, &error))
+            replyBlock(guarded, QStringLiteral("ok"));
+        else
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+
+    } else if (cmd == QLatin1String("capturedma")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 1) {
+            replyBlockError(guarded, QStringLiteral("error usage: capturedma <out.wav>"));
+            return;
+        }
+        if (!m_host->stateJson().value(QStringLiteral("stopped")).toBool()) {
+            replyBlockError(guarded, QStringLiteral("error not stopped"));
+            return;
+        }
+        if (m_busy) {
+            replyBlockError(guarded, QStringLiteral("error busy: another command is still running"));
+            return;
+        }
+        const QString dma = blockingDebugCommand(QStringLiteral("info dmasnd"), 10000);
+        const hataritext::DmaSoundInfo sound = hataritext::parseDmaSoundInfo(dma);
+        m_busy = false;
+        if (!sound.present) {
+            replyBlockError(guarded, QStringLiteral("error no DMA sound"));
+            return;
+        }
+        if (sound.stereo) {
+            replyBlockError(guarded, QStringLiteral("error DMA frame is stereo"));
+            return;
+        }
+        const quint32 length = sound.end - sound.start;
+        if (sound.end <= sound.start || length > 65536) {
+            replyBlockError(guarded, QStringLiteral("error DMA frame is %1 bytes").arg(length));
+            return;
+        }
+        m_busy = true;
+        m_host->debugReadMemory(sound.start, int(length));
+        QList<MemoryRow> dump;
+        const bool arrived = waitForDebugMemory(sound.start, 10000, &dump);
+        QByteArray bytes;
+        if (arrived) {
+            for (const MemoryRow &row : dump) {
+                for (quint8 byte : row.bytes)
+                    bytes.append(char(byte));
+            }
+        }
+        if (!arrived || quint32(bytes.size()) != length) {
+            m_busy = false;
+            replyBlockError(guarded, QStringLiteral("error short read %1")
+                                         .arg(sound.start, 8, 16, QLatin1Char('0')));
+            return;
+        }
+        m_busy = false;
+        QString error;
+        if (m_host->writeCapturedDma(fields.at(0), sound.rateHz, bytes, &error))
+            replyBlock(guarded, QStringLiteral("ok"));
+        else
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+
+    } else if (cmd == QLatin1String("ripavr")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        quint32 offset = 0;
+        if (fields.size() != 3 || !parseValue(fields.at(1), &offset)) {
+            replyBlockError(guarded, QStringLiteral("error usage: ripavr <file> <offset> <out.wav>"));
+            return;
+        }
+        QString error;
+        if (m_host->ripAvr(fields.at(0), offset, fields.at(2), &error))
+            replyBlock(guarded, QStringLiteral("ok"));
+        else
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+
+    } else if (cmd == QLatin1String("scanmagic")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 1) {
+            replyBlockError(guarded, QStringLiteral("error usage: scanmagic <file>"));
+            return;
+        }
+        QString error;
+        const QJsonArray hits = m_host->scanFileMagic(fields.at(0), &error);
+        if (!error.isEmpty())
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+        else
+            replyBlock(guarded, QString::fromUtf8(QJsonDocument(hits).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("depack")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        quint32 offset = 0;
+        if (fields.size() != 3 || !parseValue(fields.at(1), &offset)) {
+            replyBlockError(guarded,
+                            QStringLiteral("error usage: depack <file> <offset> <out>"));
+            return;
+        }
+        QString error;
+        const QString kind = m_host->identifyPacker(fields.at(0), offset, &error);
+        if (!error.isEmpty())
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+        else if (kind == QLatin1String("ice"))
+            replyBlockError(guarded,
+                            QStringLiteral("error packed with ice; depacker not implemented"));
+        else if (kind == QLatin1String("atomik"))
+            replyBlockError(guarded,
+                            QStringLiteral("error packed with atomik; depacker not implemented"));
+        else
+            replyBlockError(guarded, QStringLiteral("error not a known packer"));
+
+    } else if (cmd == QLatin1String("scandisk")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 1) {
+            replyBlockError(guarded, QStringLiteral("error usage: scandisk <image>"));
+            return;
+        }
+        QString error;
+        const QJsonArray rows = m_host->scanDiskMagic(fields.at(0), &error);
+        if (!error.isEmpty())
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+        else
+            replyBlock(guarded, QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact)));
+
+    } else if (cmd == QLatin1String("sndhinfo")) {
+        const QStringList fields = arg.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        quint32 offset = 0;
+        if (fields.size() != 2 || !parseValue(fields.at(1), &offset)) {
+            replyBlockError(guarded, QStringLiteral("error usage: sndhinfo <file> <offset>"));
+            return;
+        }
+        QString error;
+        const QJsonObject tags = m_host->sndhInfo(fields.at(0), offset, &error);
+        if (!error.isEmpty())
+            replyBlockError(guarded, QStringLiteral("error ") + error);
+        else
+            replyBlock(guarded, QString::fromUtf8(QJsonDocument(tags).toJson(QJsonDocument::Compact)));
+
     } else if (cmd == QLatin1String("memmark")) {
         // memmark <addr> <len>: store the bytes now at that span, plus the
         // stop's PC and source line when the line map has one. The pane's own

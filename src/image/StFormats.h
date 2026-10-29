@@ -44,6 +44,42 @@ bool importNeo(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QS
 bool importIff(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QString *error);
 bool importPng(const QByteArray &bytes, PaletteKind kind, ImportedSheet *out, QString *error);
 
+/// Decode low-resolution ST bitplanes into a one-frame sprite document.
+///
+/// `planes` is screen layout: each row is (width/16) groups of four big-endian
+/// plane words, plane 0 first, bit 15 on the left. `paletteWords` is empty, or
+/// exactly 32 bytes holding 16 big-endian STfm colour words (a PI1's palette).
+/// Empty selects the default 16-colour working set.
+///
+/// `width` must be a multiple of 16 in 16..320. `height` must be in 1..200.
+/// `planes` must hold at least (width/16)*8*height bytes. Extra bytes are ignored.
+///
+/// On success `*out` is a Ste document whose active colours are the palette and
+/// whose pixels are cube indices. On failure `*out` is unchanged and `*error`
+/// (when non-null) says why.
+bool imageFromLowResBitplanes(const QByteArray &planes, int width, int height,
+                              const QByteArray &paletteWords, ImageDocument *out,
+                              QString *error);
+
+/// Encode `samples` as an 8-bit mono PCM WAV.
+///
+/// `rate` is in 4000..50066. `samples` length is in 1..65536. `signedSamples`
+/// selects the source encoding: WAV itself stores unsigned bytes, so a signed
+/// source is biased by +128. On failure the returned array is empty and
+/// `*error` (when non-null) says why.
+QByteArray wavFromPcm8(const QByteArray &samples, int rate, bool signedSamples,
+                       QString *error);
+
+/// Build a 320×200 Ste document from a low-resolution screen dump.
+///
+/// `resolution` is the shifter byte at $ff8260. Only the low two bits are
+/// read; they must be 0 (low resolution). `planes` must be exactly 32000 bytes
+/// (320/16 groups, 8 bytes each, 200 rows). `paletteWords` must be exactly 32
+/// bytes, sixteen big-endian STfm colour words, the memory image of $ff8240.
+/// STe's fourth bit in each word is ignored, the same way a PI1 palette is.
+bool imageFromLowResScreen(const QByteArray &planes, const QByteArray &paletteWords,
+                           int resolution, ImageDocument *out, QString *error);
+
 /// Compose the sheet `sheetIndex` from its placed phases: a single-frame
 /// document of the sheet's size with each phase's frames painted at
 /// [x + k*cellW, y]. Transparency stays transparent; unplaced phases and

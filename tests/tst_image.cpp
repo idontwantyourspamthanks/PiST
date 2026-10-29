@@ -3,6 +3,7 @@
 // Unit tests for the sprite document, ST palettes, paint tools and ST file
 // codecs. These always run; they do not need a display or an emulator.
 
+#include "image/BinaryScan.h"
 #include "image/ImageDocument.h"
 #include "image/Palette.h"
 #include "image/AssetBuild.h"
@@ -50,6 +51,17 @@ private slots:
     void pimReMeshesCompositeFromLayers();
     void fillAndLineIndices();
     void pi1RoundTrip();
+    void lowResBitplanesDecodeASolidRow();
+    void lowResBitplanesUseTheStfmPalette();
+    void lowResBitplanesRejectBadInput();
+    void wavFromPcm8WritesAHeader();
+    void wavFromPcm8BiasesSignedBytes();
+    void wavFromPcm8RejectsLimits();
+    void lowResScreenRejectsOtherResolutions();
+    void avrHeaderRoundTrip();
+    void scanMagicFindsTrustedMagics();
+    void packerMagicNamesIceAndAtomik();
+    void sndhTagsReadTheStringTags();
     void neoRoundTrip();
     void stfmPaletteWordsInPi1AndNeo();
     void neoHeaderRecordsTheDimensions();
@@ -525,6 +537,258 @@ void TstImage::pi1RoundTrip()
     QCOMPARE(sheet.height, 200);
     QCOMPARE(sheet.pixels.at(0), doc.active().at(1));
     QCOMPARE(sheet.pixels.at(1), doc.active().at(2));
+}
+
+void TstImage::lowResBitplanesDecodeASolidRow()
+{
+    QByteArray planes(128, '\0');
+    for (int row = 0; row < 16; ++row) {
+        planes[row * 8] = char(0xFF);
+        planes[row * 8 + 1] = char(0xFF);
+    }
+    ImageDocument doc;
+    QString error;
+    QVERIFY(imageFromLowResBitplanes(planes, 16, 16, QByteArray(), &doc, &error));
+    const QVector<int> defaults = defaultActiveIndices(PaletteKind::Ste);
+    QCOMPARE(doc.width(), 16);
+    QCOMPARE(doc.height(), 16);
+    QCOMPARE(doc.pixels().at(0), defaults.at(1));
+    QCOMPARE(doc.pixels().at(15), defaults.at(1));
+}
+
+void TstImage::lowResBitplanesUseTheStfmPalette()
+{
+    QByteArray planes(128, '\0');
+    for (int row = 0; row < 16; ++row) {
+        planes[row * 8] = char(0xFF);
+        planes[row * 8 + 1] = char(0xFF);
+    }
+    QByteArray palette(32, '\0');
+    palette[2] = char(0x07);
+    palette[3] = char(0x77);
+    ImageDocument doc;
+    QString error;
+    QVERIFY2(imageFromLowResBitplanes(planes, 16, 16, palette, &doc, &error), qPrintable(error));
+    const int white = nearestCubeIndex(PaletteKind::Ste, rgbFromStfmWord(0x0777));
+    QCOMPARE(doc.active().at(1), white);
+    QCOMPARE(doc.pixels().at(0), white);
+    QCOMPARE(doc.pixels().at(16), white);
+}
+
+void TstImage::lowResBitplanesRejectBadInput()
+{
+    const QByteArray planes(128, '\0');
+    const auto refused = [](int width, int height, const QByteArray &bytes, const QByteArray &palette,
+                            ImageDocument *out) {
+        QString error;
+        const bool ok = imageFromLowResBitplanes(bytes, width, height, palette, out, &error);
+        return !ok && !error.isEmpty();
+    };
+
+    ImageDocument created = ImageDocument::create(16, 16, PaletteKind::Ste);
+    QVERIFY(refused(15, 16, planes, {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(24, 16, planes, {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(8, 16, planes, {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(336, 1, planes, {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(16, 0, planes, {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(16, 201, planes, {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(16, 16, QByteArray(127, '\0'), {}, &created));
+    QCOMPARE(created.width(), 16);
+    QVERIFY(refused(16, 16, planes, QByteArray(31, '\0'), &created));
+    QCOMPARE(created.width(), 16);
+
+    QString error;
+    QVERIFY(!imageFromLowResBitplanes(planes, 16, 16, {}, nullptr, &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void TstImage::wavFromPcm8WritesAHeader()
+{
+    const QByteArray samples("\x00\xFF", 2);
+    QString error;
+    const QByteArray wav = wavFromPcm8(samples, 8000, false, &error);
+    QCOMPARE(wav.size(), 46);
+    QCOMPARE(wav.mid(0, 4), QByteArray("RIFF"));
+    QCOMPARE(wav.mid(8, 4), QByteArray("WAVE"));
+    QCOMPARE(wav.mid(36, 4), QByteArray("data"));
+    const auto le32 = [](const QByteArray &bytes, int at) {
+        const auto *p = reinterpret_cast<const uchar *>(bytes.constData() + at);
+        return quint32(p[0]) | (quint32(p[1]) << 8) | (quint32(p[2]) << 16) | (quint32(p[3]) << 24);
+    };
+    const auto le16 = [](const QByteArray &bytes, int at) {
+        const auto *p = reinterpret_cast<const uchar *>(bytes.constData() + at);
+        return quint16(p[0]) | quint16(p[1] << 8);
+    };
+    QCOMPARE(le32(wav, 4), quint32(38));
+    QCOMPARE(le32(wav, 24), quint32(8000));
+    QCOMPARE(le16(wav, 34), quint16(8));
+    QCOMPARE(le32(wav, 40), quint32(2));
+    QCOMPARE(uchar(wav.at(44)), uchar(0));
+    QCOMPARE(uchar(wav.at(45)), uchar(0xFF));
+}
+
+void TstImage::wavFromPcm8BiasesSignedBytes()
+{
+    const QByteArray samples("\x00\xFF", 2);
+    QString error;
+    const QByteArray wav = wavFromPcm8(samples, 8000, true, &error);
+    QCOMPARE(uchar(wav.at(44)), uchar(0x80));
+    QCOMPARE(uchar(wav.at(45)), uchar(0x7F));
+}
+
+void TstImage::wavFromPcm8RejectsLimits()
+{
+    QString error;
+    QVERIFY(wavFromPcm8({}, 8000, false, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    error.clear();
+    QVERIFY(wavFromPcm8(QByteArray(65537, '\0'), 8000, false, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    error.clear();
+    QVERIFY(wavFromPcm8(QByteArray(1, '\0'), 3999, false, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    error.clear();
+    QVERIFY(wavFromPcm8(QByteArray(1, '\0'), 50067, false, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+
+    error.clear();
+    const QByteArray fastest = wavFromPcm8(QByteArray(1, '\0'), 50066, false, &error);
+    QCOMPARE(fastest.size(), 45);
+    error.clear();
+    const QByteArray slowest = wavFromPcm8(QByteArray(1, '\0'), 4000, false, &error);
+    QCOMPARE(slowest.size(), 45);
+}
+
+void TstImage::lowResScreenRejectsOtherResolutions()
+{
+    const QByteArray planes(32000, '\0');
+    const QByteArray palette(32, '\0');
+    ImageDocument doc;
+    QString error;
+    QVERIFY2(imageFromLowResScreen(planes, palette, 0, &doc, &error), qPrintable(error));
+    QCOMPARE(doc.width(), 320);
+    QCOMPARE(doc.height(), 200);
+
+    ImageDocument created = ImageDocument::create(16, 16, PaletteKind::Ste);
+    for (int resolution : {1, 2}) {
+        error.clear();
+        QVERIFY(!imageFromLowResScreen(planes, palette, resolution, &created, &error));
+        QVERIFY(error.contains(QStringLiteral("low resolution")));
+        QVERIFY(error.contains(QString::number(resolution)));
+        QCOMPARE(created.width(), 16);
+    }
+    error.clear();
+    QVERIFY(!imageFromLowResScreen(QByteArray(31999, '\0'), palette, 0, &created, &error));
+    QVERIFY(!error.isEmpty());
+    QCOMPARE(created.width(), 16);
+    error.clear();
+    QVERIFY(!imageFromLowResScreen(planes, QByteArray(31, '\0'), 0, &created, &error));
+    QVERIFY(!error.isEmpty());
+    QCOMPARE(created.width(), 16);
+}
+
+QByteArray avrFixture()
+{
+    QByteArray header(128, '\0');
+    header.replace(0, 4, QByteArrayLiteral("2BIT"));
+    header[15] = 8;
+    header[24] = char(0x1F);
+    header[25] = char(0x40);
+    header[29] = 2;
+    header.append("\x00\xFF", 2);
+    return header;
+}
+
+void TstImage::avrHeaderRoundTrip()
+{
+    const QByteArray file = avrFixture();
+    QString error;
+    const QByteArray wav = wavFromAvr(file, &error);
+    QCOMPARE(wav.size(), 46);
+    QCOMPARE(uchar(wav.at(44)), uchar(0));
+    QCOMPARE(uchar(wav.at(45)), uchar(0xFF));
+
+    QByteArray stereo = file;
+    stereo[12] = char(0xFF);
+    stereo[13] = char(0xFF);
+    error.clear();
+    QVERIFY(wavFromAvr(stereo, &error).isEmpty());
+    QVERIFY(error.contains(QStringLiteral("stereo")));
+
+    QByteArray wrong = file;
+    wrong[0] = 'X';
+    error.clear();
+    QVERIFY(wavFromAvr(wrong, &error).isEmpty());
+    QVERIFY(error.contains(QStringLiteral("2BIT")));
+}
+
+void TstImage::scanMagicFindsTrustedMagics()
+{
+    QCOMPARE(scanMagic(QByteArrayLiteral("xxxx2BITrest")).size(), 0);
+
+    QByteArray both = avrFixture();
+    const int formAt = both.size();
+    both.append(QByteArrayLiteral("FORM"));
+    both.append(QByteArray(4, '\0'));
+    both.append(QByteArrayLiteral("ILBM"));
+    const QVector<MagicHit> hits = scanMagic(both);
+    QCOMPARE(hits.size(), 2);
+    QCOMPARE(hits.at(0).offset, 0);
+    QCOMPARE(hits.at(0).kind, QStringLiteral("avr"));
+    QCOMPARE(hits.at(1).offset, formAt);
+    QCOMPARE(hits.at(1).kind, QStringLiteral("iff"));
+
+    QCOMPARE(scanMagic(QByteArrayLiteral("ICE!")).at(0).kind, QStringLiteral("ice"));
+    QCOMPARE(scanMagic(QByteArrayLiteral("Ice!")).at(0).kind, QStringLiteral("ice"));
+    QCOMPARE(scanMagic(QByteArrayLiteral("ATM5")).at(0).kind, QStringLiteral("atomik"));
+
+    QByteArray many;
+    for (int i = 0; i < 65; ++i) {
+        if (i)
+            many.append('Y');
+        many.append(QByteArrayLiteral("ATM5"));
+    }
+    QCOMPARE(scanMagic(many).size(), 64);
+}
+
+void TstImage::packerMagicNamesIceAndAtomik()
+{
+    QCOMPARE(packerMagic(QByteArrayLiteral("ICE!")), QStringLiteral("ice"));
+    QCOMPARE(packerMagic(QByteArrayLiteral("Ice!")), QStringLiteral("ice"));
+    QCOMPARE(packerMagic(QByteArrayLiteral("ATM5")), QStringLiteral("atomik"));
+    QVERIFY(packerMagic(QByteArrayLiteral("PI1!")).isEmpty());
+}
+
+void TstImage::sndhTagsReadTheStringTags()
+{
+    QByteArray helloBytes("SNDHTITLhello");
+    helloBytes.append('\0');
+    helloBytes.append("HDNS");
+    const SndhTags hello = parseSndhTags(helloBytes);
+    QVERIFY(hello.found);
+    QVERIFY(!hello.truncated);
+    QCOMPARE(hello.title, QStringLiteral("hello"));
+    QVERIFY(hello.composer.isEmpty());
+
+    QByteArray cutBytes("SNDHTITLHi");
+    cutBytes.append('\0');
+    cutBytes.append("XXXX");
+    const SndhTags cut = parseSndhTags(cutBytes);
+    QVERIFY(cut.found);
+    QVERIFY(cut.truncated);
+    QCOMPARE(cut.title, QStringLiteral("Hi"));
+
+    QVERIFY(!parseSndhTags(QByteArrayLiteral("xxxx")).found);
+
+    QByteArray late(700, 'Y');
+    late.replace(600, 4, QByteArrayLiteral("SNDH"));
+    QVERIFY(!parseSndhTags(late).found);
 }
 
 void TstImage::neoRoundTrip()

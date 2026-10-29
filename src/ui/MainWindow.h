@@ -63,6 +63,7 @@ class GitPanel;
 class IDebugBackend;
 class ImageEditor;
 class MemoryView;
+class BinaryView;
 class RegistersView;
 class StackView;
 class HardwareView;
@@ -179,6 +180,22 @@ public:
     /// window) and save it to `path`. False when the capture or the write
     /// failed.
     bool saveScreenshot(const QString &path) override;
+    bool ripImage(const QString &path, quint32 offset, int width, int height,
+                  const QString &outPath, bool hasPalette, quint32 paletteOffset,
+                  QString *error) override;
+    bool ripSample(const QString &path, quint32 offset, int length, int rate,
+                   bool signedSamples, const QString &outPath, QString *error) override;
+    bool writeBinaryFile(const QString &path, const QByteArray &bytes, QString *error) override;
+    bool writeCapturedScreen(const QString &outPath, const QByteArray &resolutionByte,
+                             const QByteArray &paletteWords, const QByteArray &planes,
+                             QString *error) override;
+    bool writeCapturedDma(const QString &outPath, int rateHz, const QByteArray &samples,
+                          QString *error) override;
+    bool ripAvr(const QString &path, quint32 offset, const QString &outPath, QString *error) override;
+    QJsonArray scanFileMagic(const QString &path, QString *error) override;
+    QJsonArray scanDiskMagic(const QString &imagePath, QString *error) override;
+    QString identifyPacker(const QString &path, quint32 offset, QString *error) override;
+    QJsonObject sndhInfo(const QString &path, quint32 offset, QString *error) override;
 
     // The control layer's event subscriptions (control/ControlHost.h): each is
     // the QObject::connect MainWindow's own signal would take, with `context`
@@ -251,6 +268,8 @@ private:
 
 private slots:
     void openFile();
+    void openBinary();
+    void openBinaryAt(const QString &path);
     void saveFile();
     /// File ▸ New File: name, directory, template, then a real file on disk
     /// (docs/untitled-plan.md §4). There is no untitled buffer to fall back on,
@@ -926,6 +945,7 @@ private:
     /// stopped. The Registers dock keeps the full editable table.
     QLabel *m_registerStrip = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
+    BinaryView *m_binary = nullptr;
     GitPanel *m_gitPanel = nullptr;
     QDockWidget *m_gitDock = nullptr;
     QAction *m_actGitBlame = nullptr;
@@ -1011,6 +1031,7 @@ private:
     bool m_stopHookRefused = false;
 
     QAction *m_actOpen = nullptr;
+    QAction *m_actOpenBinary = nullptr;
     QAction *m_actNewFile = nullptr;
     QAction *m_actNewImage = nullptr;
     QAction *m_actImportImage = nullptr;

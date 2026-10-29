@@ -44,6 +44,7 @@
 #include "ui/DisassemblyView.h"
 #include "ui/HardwareView.h"
 #include "build/ProgramDiff.h"
+#include "ui/BinaryView.h"
 #include "ui/MemoryView.h"
 #include "ui/ProgramDiffDialog.h"
 #include "emu/MemoryDump.h"
@@ -490,6 +491,8 @@ private slots:
     void diagnosticKeyboardFlowToursProblems();
     void navigationOpensTheOtherFile();
     void fileMenuAndToolbarMatchTheJobs();
+    void binaryPreviewOpensAPim();
+    void projectFilesOpenBinaryLoadsTheFile();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -3842,6 +3845,76 @@ void TstGui::navigationOpensTheOtherFile()
     current = qobject_cast<CodeEditor *>(tabs->currentWidget());
     QCOMPARE(QFileInfo(current->filePath()).fileName(), QStringLiteral("b.s"));
     QCOMPARE(current->textCursor().blockNumber() + 1, 4);
+}
+
+void TstGui::binaryPreviewOpensAPim()
+{
+    MainWindow window;
+    QVERIFY(window.findChild<QAction *>(QStringLiteral("openBinaryAction")));
+    auto *view = window.findChild<BinaryView *>(QStringLiteral("binaryView"));
+    QVERIFY(view);
+
+    QByteArray fixture(128, '\0');
+    for (int row = 0; row < 16; ++row) {
+        fixture[row * 8] = char(0xFF);
+        fixture[row * 8 + 1] = char(0xFF);
+    }
+    view->setBytes(fixture, QStringLiteral("sprite.bin"));
+    window.findChild<QSpinBox *>(QStringLiteral("binaryWidth"))->setValue(16);
+    window.findChild<QSpinBox *>(QStringLiteral("binaryHeight"))->setValue(16);
+    window.findChild<QLineEdit *>(QStringLiteral("binaryOffset"))->setText(QStringLiteral("0"));
+    window.findChild<QLineEdit *>(QStringLiteral("binaryPalette"))->clear();
+
+    QSignalSpy spy(view, &BinaryView::previewReady);
+    view->preview();
+    QCOMPARE(spy.count(), 1);
+    const QString path = spy.takeFirst().at(0).toString();
+    ImageDocument loaded;
+    QString error;
+    QVERIFY2(loaded.load(path, &error), qPrintable(error));
+    QCOMPARE(loaded.pixels().at(0), defaultActiveIndices(PaletteKind::Ste).at(1));
+
+    view->preview();
+    QCOMPARE(spy.count(), 1);
+    const QString second = spy.takeFirst().at(0).toString();
+    QVERIFY(second != path);
+    QVERIFY(path.contains(QStringLiteral("pist-preview-1.pim")));
+    QVERIFY(second.contains(QStringLiteral("pist-preview-2.pim")));
+}
+
+void TstGui::projectFilesOpenBinaryLoadsTheFile()
+{
+    const QString dir = m_work->path() + QStringLiteral("/bins");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = dir + QStringLiteral("/sprite.bin");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("\xAB\xCD\xEF", 3);
+    file.close();
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("binaryDock"));
+    QVERIFY(dock);
+    QVERIFY(dock->isHidden());
+
+    browser->openBinaryFile(path);
+    QVERIFY(!dock->isHidden());
+    QCOMPARE(window.findChild<QLabel *>(QStringLiteral("binaryName"))->text(),
+             QStringLiteral("sprite.bin"));
+    QCOMPARE(window.findChild<QLabel *>(QStringLiteral("binaryStatus"))->text(),
+             QStringLiteral("3 bytes"));
+    auto *hex = window.findChild<QTableWidget *>(QStringLiteral("binaryHex"));
+    QVERIFY(hex);
+    QCOMPARE(hex->item(0, 0)->text(), QStringLiteral("ab"));
+
+    // A directory is not a binary file: the dock keeps the file it already has.
+    browser->openBinaryFile(dir);
+    QCOMPARE(window.findChild<QLabel *>(QStringLiteral("binaryName"))->text(),
+             QStringLiteral("sprite.bin"));
 }
 
 void TstGui::fileMenuAndToolbarMatchTheJobs()

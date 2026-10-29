@@ -8,6 +8,7 @@
 
 #include "analysis/AnalysisNotes.h"
 #include "analysis/AssemblyExport.h"
+#include "analysis/Coverage.h"
 #include "analysis/M68kDisasm.h"
 #include "analysis/ProgramTrace.h"
 #include "analysis/TosProgram.h"
@@ -113,6 +114,7 @@ private slots:
     void aStoppedPcTranslatesThroughTheBasepage();
     void exportNamesTargetsSectionsAndEquates();
     void assembledExportMatchesTheImage();
+    void coverageFileListsExecutedAddresses();
 };
 
 void tst_analysis::rejectsAFileThatIsNotTos()
@@ -654,6 +656,51 @@ void tst_analysis::assembledExportMatchesTheImage()
     const QString leaSource = exportAssembly(lea, notes, &error);
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QVERIFY2(assembledImageMatches(vasm, leaSource, lea, &error), qPrintable(error));
+}
+
+void tst_analysis::coverageFileListsExecutedAddresses()
+{
+    QVector<CoverageSample> samples;
+    QString error;
+    QVERIFY(parseCoverage(QStringLiteral("Hatari CPU coverage\nAddresses: 0\n"), &samples, &error));
+    QVERIFY(error.isEmpty());
+    QCOMPARE(samples.size(), 0);
+
+    const QString report = QStringLiteral("Hatari CPU coverage\n"
+                                          "Addresses: 3\n"
+                                          "$020000 1\n"
+                                          "$020004 3\n"
+                                          "$030002 2\n");
+    QVERIFY2(parseCoverage(report, &samples, &error), qPrintable(error));
+    QCOMPARE(samples.size(), 3);
+    QCOMPARE(samples.at(0).address, 0x20000u);
+    QCOMPARE(samples.at(0).count, 1u);
+    QCOMPARE(samples.at(1).address, 0x20004u);
+    QCOMPARE(samples.at(2).count, 2u);
+
+    // Text at $10000 for 4 bytes, data at $20000 for 2, bss at $30000 for 4.
+    // $20004 is past the end of that data, so it is not an image address.
+    const QVector<quint32> image = coverageImageAddresses(samples, 0x10000, 0x20000, 0x30000, 4, 2, 4);
+    QCOMPARE(image, QVector<quint32>({4, 8}));
+
+    samples = {{0x10000, 1}, {0x10002, 4}, {0x18000, 1}, {0x20000, 2}, {0x30002, 1}};
+    QCOMPARE(coverageImageAddresses(samples, 0x10000, 0x20000, 0x30000, 4, 2, 4),
+             QVector<quint32>({0, 2, 4, 8}));
+    QCOMPARE(coverageImageAddresses(samples, 0, 0x20000, 0x30000, 4, 2, 4), QVector<quint32>());
+
+    QVERIFY(!parseCoverage(QStringLiteral("profile\n"), &samples, &error));
+    QCOMPARE(error, QStringLiteral("not a Hatari CPU coverage file"));
+    QVERIFY(!parseCoverage(QStringLiteral("Hatari CPU coverage\nAddresses: 1\n"), &samples, &error));
+    QCOMPARE(error, QStringLiteral("the coverage file's address count does not match its lines"));
+    QVERIFY(!parseCoverage(QStringLiteral("Hatari CPU coverage\nAddresses: 1\n$020001 1\n"), &samples,
+                           &error));
+    QCOMPARE(error, QStringLiteral("the coverage file has an address that is not an even ST RAM word"));
+    QVERIFY(!parseCoverage(QStringLiteral("Hatari CPU coverage\n"
+                                          "Addresses: 2\n"
+                                          "$020004 1\n"
+                                          "$020000 1\n"),
+                           &samples, &error));
+    QCOMPARE(error, QStringLiteral("the coverage file's addresses are not in ascending order"));
 }
 
 QTEST_MAIN(tst_analysis)

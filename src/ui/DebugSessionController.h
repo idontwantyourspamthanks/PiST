@@ -210,6 +210,9 @@ private:
     /// The boot's fast-forward was dropped (or never needed dropping) this
     /// session; guards doing it exactly once, at the first stop of any kind.
     bool m_bootTurboDropped = false;
+    /// `coverage on` was queued this session. Once: the recorder stays on for
+    /// the run, and a Hatari without the command is asked only once.
+    bool m_coverageStarted = false;
 };
 
 } // namespace pist

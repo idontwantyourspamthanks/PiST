@@ -26,6 +26,7 @@
 #include "emu/MemoryDump.h"
 #include "ui/Appearance.h"
 #include "analysis/AnalysisNotes.h"
+#include "analysis/Coverage.h"
 #include "analysis/ProgramTrace.h"
 #include "ui/AnalysisView.h"
 #include "ui/BinaryView.h"
@@ -82,6 +83,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -223,6 +225,9 @@ AnalysisView *MainWindow::addAnalysisTab(const QByteArray &bytes, const QString 
     // A tab opened after the entry stop still has a PC to mark: the state
     // update that carried it has already been and gone.
     applyAnalysisExecution();
+    // The stops that ran before this tab existed are already in the recorder.
+    // A save now is what puts them on the listing.
+    requestCoverageSave();
     return view;
 }
 
@@ -1345,6 +1350,48 @@ void MainWindow::applyAnalysisExecution()
         }
         view->setExecutionPc(m_lastState.pc, m_lastState.textBase, m_lastState.dataBase,
                              m_lastState.bssBase);
+    }
+}
+
+void MainWindow::requestCoverageSave()
+{
+    if (!m_coverageRecording || !m_host || !m_host->isRunning() || m_currentSessionDir.isEmpty())
+        return;
+    if (!m_lastState.regs.valid || !m_lastState.hasBases() || m_launchedProgram.isEmpty())
+        return;
+    const QFileInfo launched(m_launchedProgram);
+    bool watching = false;
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == launched) {
+            watching = true;
+            break;
+        }
+    }
+    if (!watching)
+        return;
+    m_host->coverageSave(m_currentSessionDir + QStringLiteral("/coverage.txt"));
+}
+
+void MainWindow::applyCoverageFile(const QString &path)
+{
+    if (!m_lastState.regs.valid || !m_lastState.hasBases() || m_launchedProgram.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_log->appendPlainText(tr("Could not read the coverage file."));
+        return;
+    }
+    QString error;
+    QVector<CoverageSample> samples;
+    if (!parseCoverage(QString::fromUtf8(file.readAll()), &samples, &error)) {
+        m_log->appendPlainText(error);
+        return;
+    }
+    const QFileInfo launched(m_launchedProgram);
+    for (AnalysisView *view : openAnalysisViews()) {
+        if (view->filePath().isEmpty() || QFileInfo(view->filePath()) != launched)
+            continue;
+        view->setCoverage(samples, m_lastState.textBase, m_lastState.dataBase, m_lastState.bssBase);
     }
 }
 

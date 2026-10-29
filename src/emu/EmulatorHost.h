@@ -125,6 +125,8 @@ public:
     void profileOn() override;                              // `profile on`
     void profileOff() override;                             // `profile off`
     void profileSave(const QString &path) override;         // `profile save <path>`
+    void coverageOn() override;                             // `coverage on`
+    void coverageSave(const QString &path) override;        // `coverage save <path>`
     void writeRegister(const QString &name, quint32 value) override;      // `r <reg>=$<val>`
     void writeMemoryByte(quint32 address, quint8 value) override;         // `w b $<addr> $<val>`
     void readDisassembly() override;                        // `d`
@@ -162,6 +164,12 @@ private:
         /// Set by profileSave(): the file to name on profileSaveFinished() when
         /// this command completes.
         QString profilePath;
+
+        /// Set by coverageOn(): the reply says whether this Hatari records
+        /// coverage. Reported on coverageReady().
+        bool coverageProbe = false;
+        /// Set by coverageSave(): the file to name on coverageSaveFinished().
+        QString coveragePath;
 
         /// Set by readDisassemblyAt(): report the text it read on
         /// disassemblyReady(), for the caller that asked about that one address.

@@ -95,6 +95,7 @@ void DebugSessionController::resetSessionState()
     m_stopEventPending = false;
     m_stepEventPending = false;
     m_bootTurboDropped = false;
+    m_coverageStarted = false;
 }
 
 void DebugSessionController::onDebuggerStopped()
@@ -116,6 +117,14 @@ void DebugSessionController::onDebuggerStopped()
         m_bootTurboDropped = true;
         m_host.backend()->dropBootTurbo();
         m_host.bootTurboDropped();
+    }
+    // Ahead of any Continue at this stop, and kept if Continue wins the race:
+    // recording has to be on before the first instruction of the program runs.
+    // A Hatari that has no `coverage` command answers "not found" and the
+    // session carries on; the window simply never reads a coverage file.
+    if (!m_coverageStarted) {
+        m_coverageStarted = true;
+        m_host.backend()->coverageOn();
     }
     if (m_sessionArmed) {
         m_host.backend()->refresh();

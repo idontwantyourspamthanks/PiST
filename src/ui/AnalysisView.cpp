@@ -335,6 +335,10 @@ void AnalysisView::reload()
             if (column == 0) {
                 item->setData(Qt::UserRole, source.address);
                 item->setData(Qt::UserRole + 1, source.length);
+            } else if (column == 4) {
+                // The listing's own note, kept so a coverage prefix can be
+                // added and taken off without rebuilding the row.
+                item->setData(Qt::UserRole, source.note);
             }
             m_listing->setItem(row, column, item);
         }
@@ -342,6 +346,7 @@ void AnalysisView::reload()
     m_listing->resizeColumnsToContents();
     m_listing->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_ready = listing.error.isEmpty();
+    paintObserved();
     paintExecution();
     updateActions();
 }
@@ -358,6 +363,44 @@ void AnalysisView::updateActions()
     m_markData->setEnabled(bytes);
     m_clearMark->setEnabled(bytes);
     m_export->setEnabled(m_ready);
+}
+
+void AnalysisView::setCoverage(const QVector<CoverageSample> &samples, quint32 textBase,
+                               quint32 dataBase, quint32 bssBase)
+{
+    const QVector<quint32> image = coverageImageAddresses(samples, textBase, dataBase, bssBase,
+                                                          m_textSize, m_dataSize, m_bssSize);
+    m_observed.clear();
+    for (quint32 address : image)
+        m_observed.insert(address);
+    paintObserved();
+}
+
+void AnalysisView::paintObserved()
+{
+    for (int row = 0; row < m_listing->rowCount(); ++row) {
+        QTableWidgetItem *address = m_listing->item(row, 0);
+        QTableWidgetItem *note = m_listing->item(row, 4);
+        if (!address || !note)
+            continue;
+        const quint32 start = address->data(Qt::UserRole).toUInt();
+        const quint32 length = address->data(Qt::UserRole + 1).toUInt();
+        bool ran = m_observed.contains(start);
+        if (!ran && length > 1) {
+            const quint32 end = start + length;
+            for (quint32 at = start + 1; at < end; ++at) {
+                if (m_observed.contains(at)) {
+                    ran = true;
+                    break;
+                }
+            }
+        }
+        const QString source = note->data(Qt::UserRole).toString();
+        if (ran)
+            note->setText(source.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + source);
+        else
+            note->setText(source);
+    }
 }
 
 void AnalysisView::setExecutionPc(quint32 pc, quint32 textBase, quint32 dataBase, quint32 bssBase)

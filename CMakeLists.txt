@@ -305,6 +305,8 @@ pist_module(pist_analysis
     src/analysis/ProgramTrace.h
     src/analysis/AssemblyExport.cpp
     src/analysis/AssemblyExport.h
+    src/analysis/Coverage.cpp
+    src/analysis/Coverage.h
 )
 
 # hooks/ — the stop-hook subsystem: the contract the script is bound to, the Lua

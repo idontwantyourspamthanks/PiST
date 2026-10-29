@@ -511,6 +511,8 @@ private slots:
     void analysisHighlightsTheStoppedPc();
     void analysisExportWritesAssembly();
     void analysisMarksTheRunningProgram();
+    void analysisNotesAnExecutedAddress();
+    void analysisShowsWhatRan();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -4641,6 +4643,152 @@ void TstGui::analysisMarksTheRunningProgram()
     QCOMPARE(listing->item(entry, 0)->background().style(), Qt::NoBrush);
     QCOMPARE(listing->currentRow(), away);
     QVERIFY(!bystander->executionAddress().has_value());
+
+    auto *host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+    host->stop();
+}
+
+void TstGui::analysisNotesAnExecutedAddress()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-ran");
+    QVERIFY(QDir().mkpath(dir));
+    const QString path = QFileInfo(dir + QStringLiteral("/bra.prg")).absoluteFilePath();
+    const QByteArray program = guiTos(QByteArray::fromHex("60024E714E71"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(program), qint64(program.size()));
+    file.close();
+
+    MainWindow window;
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(path);
+    auto *view = qobject_cast<AnalysisView *>(
+        window.findChild<QTabWidget *>(QStringLiteral("documentTabs"))->currentWidget());
+    QVERIFY(view);
+    auto *listing = view->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int branch = imageRow(listing, 0);
+    const int skipped = imageRow(listing, 2);
+    const int landed = imageRow(listing, 4);
+    QVERIFY(branch >= 0 && skipped >= 0 && landed >= 0);
+    const QString branchNote = listing->item(branch, 4)->text();
+    const QString skippedNote = listing->item(skipped, 4)->text();
+    listing->selectRow(landed);
+
+    // $10002 is image address 2, the bytes the walk left as data. Recording
+    // that they executed notes the row; it does not mark them as code.
+    view->setCoverage({CoverageSample{0x10002, 3}}, 0x10000, 0, 0);
+    QCOMPARE(listing->item(branch, 4)->text(), branchNote);
+    QCOMPARE(listing->item(skipped, 4)->text(),
+             skippedNote.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + skippedNote);
+    QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("dc.b $4e,$71"));
+    QCOMPARE(listing->currentRow(), landed);
+    QVERIFY(!QFileInfo(path + QStringLiteral(".pistanalysis")).exists());
+
+    QString error;
+    QVERIFY2(view->setAddressComment(2, QStringLiteral("seen"), &error), qPrintable(error));
+    QCOMPARE(listing->item(skipped, 4)->text(),
+             skippedNote.isEmpty() ? QStringLiteral("ran") : QStringLiteral("ran, ") + skippedNote);
+    QCOMPARE(listing->item(skipped, 6)->text(), QStringLiteral("seen"));
+
+    view->setCoverage({}, 0x10000, 0, 0);
+    QCOMPARE(listing->item(skipped, 4)->text(), skippedNote);
+    QCOMPARE(listing->currentRow(), landed);
+}
+
+void TstGui::analysisShowsWhatRan()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/ran.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"
+              "start:\tnop\n" // image address 0, the instruction coverage on is stopped on
+              "\trts\n"       // image address 2, counted once it finishes
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'coverage' not found")))
+        QSKIP("this Hatari has no coverage command");
+    QVERIFY2(window.debugConsoleText().contains(QLatin1String("Coverage recording on")),
+             qPrintable(window.debugConsoleText()));
+
+    const QString prg = settings::outputPathsFor(source).program;
+    QVERIFY(QFileInfo(prg).isFile());
+    const QString other = m_work->path() + QStringLiteral("/other-ran.prg");
+    QFile decoy(other);
+    QVERIFY(decoy.open(QIODevice::WriteOnly));
+    const QByteArray decoyBytes = guiTos(QByteArray::fromHex("4E75"));
+    QCOMPARE(decoy.write(decoyBytes), qint64(decoyBytes.size()));
+    decoy.close();
+
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+    browser->openAnalysisFile(prg);
+    browser->openAnalysisFile(other);
+    AnalysisView *running = nullptr;
+    AnalysisView *bystander = nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *view = qobject_cast<AnalysisView *>(tabs->widget(i));
+        if (!view)
+            continue;
+        if (QFileInfo(view->filePath()) == QFileInfo(prg))
+            running = view;
+        else if (QFileInfo(view->filePath()) == QFileInfo(other))
+            bystander = view;
+    }
+    QVERIFY(running && bystander);
+    auto *listing = running->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int ret = imageRow(listing, 2);
+    QVERIFY(entry >= 0 && ret >= 0);
+    auto *bystanderListing = bystander->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(bystanderListing);
+    const QString bystanderNote = bystanderListing->item(0, 4)->text();
+
+    // The instruction coverage was turned on at is discarded, so one step
+    // leaves the nop uncounted. The rts is counted when it finishes.
+    listing->selectRow(entry);
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QVERIFY(QTest::qWaitFor(
+        [&] { return running->executionAddress().has_value() && *running->executionAddress() == 2u; },
+        30000));
+    QCOMPARE(listing->item(entry, 4)->text().contains(QLatin1String("ran")), false);
+    QCOMPARE(listing->item(ret, 4)->text().contains(QLatin1String("ran")), false);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return listing->item(ret, 4)->text().contains(QLatin1String("ran")); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listing->item(ret, 4)->text().contains(QLatin1String("ran")));
+    QVERIFY(!listing->item(entry, 4)->text().contains(QLatin1String("ran")));
+    QCOMPARE(listing->item(ret, 3)->text(), QStringLiteral("rts"));
+    QCOMPARE(listing->currentRow(), entry);
+    QCOMPARE(bystanderListing->item(0, 4)->text(), bystanderNote);
+    QVERIFY(!QFileInfo(prg + QStringLiteral(".pistanalysis")).exists());
 
     auto *host = window.findChild<IDebugBackend *>();
     QVERIFY(host);

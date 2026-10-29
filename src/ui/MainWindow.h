@@ -773,6 +773,12 @@ private:
     /// comes from the live basepage and this file's own section sizes, and it
     /// is not written into the notes.
     void applyAnalysisExecution();
+    /// Ask the emulator for the coverage file when this session is recording
+    /// and an analysis tab of the launched program is open.
+    void requestCoverageSave();
+    /// Read a coverage file and note its addresses on that tab. A file that
+    /// cannot be read leaves the previous notes in place.
+    void applyCoverageFile(const QString &path);
 
     /// Hand the caret to the program counter, returning false when there is
     /// nothing to hand it to (no session, or a machine that is running rather
@@ -906,6 +912,9 @@ private:
     /// tab of this file can mark the stopped PC; any other analysis is left
     /// alone. Empty once the session ends. Never written into the notes file.
     QString m_launchedProgram;
+    /// The running Hatari accepted `coverage on`. A stock Hatari does not, and
+    /// then no coverage file is read.
+    bool m_coverageRecording = false;
     /// The dock and widget that host the emulator's display (the media panel).
     /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;

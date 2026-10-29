@@ -746,6 +746,10 @@ void EmulatorHost::completeCurrent()
     // there rather than a silent "Saving…".
     if (!m_current.profilePath.isEmpty())
         emit profileSaveFinished(m_current.profilePath);
+    if (m_current.coverageProbe)
+        emit coverageReady(response.contains(QLatin1String("Coverage recording on")));
+    if (!m_current.coveragePath.isEmpty())
+        emit coverageSaveFinished(m_current.coveragePath);
 
     // A typed `info <subject>` report is not part of MachineState: it is
     // parsed into its summary here and goes to the caller that asked, named by
@@ -1007,6 +1011,27 @@ void EmulatorHost::profileSave(const QString &path)
     Pending p;
     p.text = QStringLiteral("profile save %1").arg(path);
     p.profilePath = path;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::coverageOn()
+{
+    // Kept across a resume(): recording starts at the continue itself, so a
+    // pruned `coverage on` collects nothing. The reply is how a Hatari without
+    // the command is told apart from one that is recording.
+    Pending p;
+    p.text = QStringLiteral("coverage on");
+    p.coverageProbe = true;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::coverageSave(const QString &path)
+{
+    Pending p;
+    p.text = QStringLiteral("coverage save %1").arg(path);
+    p.coveragePath = path;
     p.keepOnResume = true;
     enqueue(p);
 }

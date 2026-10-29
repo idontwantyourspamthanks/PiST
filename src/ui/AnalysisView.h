@@ -5,7 +5,9 @@
 #pragma once
 
 #include "analysis/AnalysisNotes.h"
+#include "analysis/Coverage.h"
 
+#include <QSet>
 #include <QWidget>
 
 #include <optional>
@@ -51,6 +53,14 @@ public:
     /// The image address currently marked, or none.
     std::optional<quint32> executionAddress() const;
 
+    /// Note which of this file's bytes the coverage file says have executed.
+    /// The samples are absolute PCs; the bases are the live basepage. A row
+    /// that contains one is prefixed `ran`. Nothing is written to the notes,
+    /// and the selection stays where it is. An empty sample list clears the
+    /// notes.
+    void setCoverage(const QVector<CoverageSample> &samples, quint32 textBase, quint32 dataBase,
+                     quint32 bssBase);
+
     /// Write Motorola source for this listing. Does not assemble it, and does
     /// not create or change the notes file.
     bool exportAssemblyTo(const QString &path, QString *error);
@@ -70,6 +80,7 @@ private:
     void reload();
     void updateActions();
     void paintExecution();
+    void paintObserved();
     int rowForImage(quint32 address) const;
 
     QString m_path;
@@ -81,6 +92,7 @@ private:
     quint32 m_textSize = 0;
     quint32 m_dataSize = 0;
     quint32 m_bssSize = 0;
+    QSet<quint32> m_observed;
     bool m_havePc = false;
     quint32 m_pc = 0;
     quint32 m_textBase = 0;

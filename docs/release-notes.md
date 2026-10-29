@@ -16,24 +16,30 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.10.5
+## What's new in 0.10.6
 
-### New
+### Fixed
 
-- **The entry stop explains itself, and resumes with one click.** Run stops at
-  the program's first instruction so you can step through it from the start.
-  The emulator panel now says so: a **Program loaded** card appears over the
-  last frame instead of leaving a still screen that reads as a hang. Its
-  **Continue** button names the current shortcut, and the card is the button —
-  clicking it resumes. The button pulses briefly when the card first appears,
-  then settles.
-- **Every stop names the way out.** The small badge at later stops reads
-  "Paused — *key* continues", following the shortcut scheme in use.
-- **The hint is there even without the display panel.** A session driven by a
-  stock Hatari, or one whose panel is hidden, gets the same message in the
-  status bar: the program is loaded and paused, and the Continue key runs it.
-- **An entry stop that beats the first frame still explains itself.** The card
-  is drawn even when no media frame has arrived yet.
+- **macOS: a failing emulator no longer hangs the app.** SDL's default
+  assertion handler on macOS is a modal dialog; inside a background emulator
+  nobody could see it, so a probe or session just blocked forever. Capability
+  probes now run with no SDL window and `SDL_ASSERT=abort`, sessions set
+  `SDL_ASSERT=abort`, and media sessions (which have no SDL window of their
+  own) use the dummy video driver — a failure is reported, not waited on.
+- **A crashed emulator is reported with the right number.** On Unix the
+  message said "killed by signal -11" instead of signal 11; on Windows the
+  exit code is a crash code, not a signal, and now says so.
+- **Stop-hook scripts could swallow an error budget.** `pcall`/`xpcall`
+  and Lua's `longjmp` paths no longer escape the runaway-script budget.
+
+### Improved
+
+- **MainWindow is split** into focused translation units (chrome, documents,
+  image, project, build/run, debug, reference) — no behaviour change, faster
+  compiles, easier navigation.
+- **Hook and demo trust tightened.** Demo provenance is recorded and
+  source-checkout demos are trusted; refused hook settings are preserved
+  rather than silently dropped.
 
 ### Linux
 

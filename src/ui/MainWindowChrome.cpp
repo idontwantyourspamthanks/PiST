@@ -61,7 +61,6 @@
 #include "ui/NewFileDialog.h"
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
-#include "ui/BinaryView.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
@@ -332,6 +331,16 @@ void MainWindow::createActions()
     m_actStop->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F5));
     connect(m_actStop, &QAction::triggered, this, &MainWindow::stopSession);
 
+    m_actCaptureScreen = new QAction(tr("Capture &Screen…"), this);
+    m_actCaptureScreen->setObjectName(QStringLiteral("captureScreenAction"));
+    m_actCaptureScreen->setEnabled(false);
+    connect(m_actCaptureScreen, &QAction::triggered, this, &MainWindow::captureScreen);
+
+    m_actCaptureDma = new QAction(tr("Capture &DMA Sound…"), this);
+    m_actCaptureDma->setObjectName(QStringLiteral("captureDmaAction"));
+    m_actCaptureDma->setEnabled(false);
+    connect(m_actCaptureDma, &QAction::triggered, this, &MainWindow::captureDma);
+
     m_actPause = new QAction(tr("&Pause"), this);
     m_actPause->setShortcut(QKeySequence(Qt::Key_F6));
     m_actPause->setEnabled(false);
@@ -520,6 +529,8 @@ void MainWindow::createMenus()
     runMenu->setObjectName(QStringLiteral("runMenu"));
     runMenu->addAction(m_actRun);
     runMenu->addAction(m_actStop);
+    runMenu->addAction(m_actCaptureScreen);
+    runMenu->addAction(m_actCaptureDma);
     runMenu->addAction(m_actPause);
     runMenu->addAction(m_actReleaseInput);
     runMenu->addSeparator();
@@ -824,16 +835,6 @@ void MainWindow::buildPanels()
         makeDock(tr("Project files"), QStringLiteral("projectFilesDock"), m_fileBrowser);
     addDockWidget(Qt::LeftDockWidgetArea, projectDock);
 
-    // Hidden until a file is opened: an empty hex dump is not part of the
-    // Editing arrangement, and a second bottom strip would change that layout.
-    m_binary = new BinaryView(this);
-    auto *binaryDock = makeDock(tr("Binary"), QStringLiteral("binaryDock"), m_binary);
-    addDockWidget(Qt::BottomDockWidgetArea, binaryDock);
-    binaryDock->setVisible(false);
-    connect(m_binary, &BinaryView::previewReady, this, [this](const QString &path) {
-        openPath(path);
-    });
-
     m_findInFiles = new FindInFilesView(this);
     m_findInFiles->navigate = [this](const QString &path, int line, int column, int length) {
         if (!navigateToSourceLine(path, line))
@@ -987,6 +988,7 @@ void MainWindow::wirePanels()
 {
     connect(m_fileBrowser, &FileBrowser::fileActivated, this, &MainWindow::openPath);
     connect(m_fileBrowser, &FileBrowser::openBinaryRequested, this, &MainWindow::openBinaryAt);
+    connect(m_fileBrowser, &FileBrowser::diskScanRequested, this, &MainWindow::scanDiskImage);
     connect(m_fileBrowser, &FileBrowser::floppyEntryActivated, this,
             [this](int drive, const QString &entryPath) { openFloppyEntry(drive, entryPath); });
     connect(m_fileBrowser, &FileBrowser::newImageRequested, this, &MainWindow::newImageIn);
@@ -1251,6 +1253,8 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
             [this, tag](quint32 address, int length) {
                 m_host->requestMemoryDump(address, length, tag);
             });
+    connect(view, &MemoryView::saveBytesRequested, this,
+            [this](quint32 address) { saveMemoryBytes(address); });
     connect(view, &MemoryView::memoryEdited, this,
             [this, view](quint32 address, quint32 value) { setMemoryByte(address, value, view); });
     connect(view, &MemoryView::addPaneRequested, this, [this] { addMemoryPane(); });

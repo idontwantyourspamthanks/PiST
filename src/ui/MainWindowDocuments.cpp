@@ -194,6 +194,53 @@ CodeEditor *MainWindow::addEditorTab(const QString &path, bool quiet)
 }
 
 
+BinaryView *MainWindow::addBinaryTab(const QByteArray &bytes, const QString &name,
+                                     const QString &path, const QString &originKey)
+{
+    auto *view = new BinaryView(this);
+    wireBinary(view);
+    view->setIdentity(path, originKey, name);
+    view->setBytes(bytes, name);
+    const int index = m_tabs->addTab(view, name);
+    m_tabs->setCurrentIndex(index);
+    updateTabTitle(view);
+    return view;
+}
+
+
+void MainWindow::wireBinary(BinaryView *view)
+{
+    connect(view, &BinaryView::previewReady, this, [this](const QString &path) {
+        openPath(path);
+    });
+    connect(view, &BinaryView::iffHitReady, this, &MainWindow::openIffBytes);
+}
+
+
+QList<BinaryView *> MainWindow::openBinaryViews() const
+{
+    QList<BinaryView *> views;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto *view = qobject_cast<BinaryView *>(m_tabs->widget(i)))
+            views.append(view);
+    return views;
+}
+
+
+BinaryView *MainWindow::binaryForKey(const QString &originKey) const
+{
+    if (originKey.isEmpty())
+        return nullptr;
+    for (BinaryView *view : openBinaryViews()) {
+        if (view->originKey() == originKey)
+            return view;
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == QFileInfo(originKey))
+            return view;
+    }
+    return nullptr;
+}
+
+
 void MainWindow::wireEditor(CodeEditor *editor)
 {
     // The title carries the modified marker, so the user can always tell
@@ -298,6 +345,8 @@ void MainWindow::updateTabTitle(QWidget *widget)
     } else if (auto *image = qobject_cast<ImageEditor *>(widget)) {
         name = image->displayName();
         modified = image->isModifiedSinceLoad();
+    } else if (auto *binary = qobject_cast<BinaryView *>(widget)) {
+        name = binary->displayName();
     }
     m_tabs->setTabText(index, name + (modified ? QStringLiteral(" *") : QString()));
 }
@@ -330,8 +379,13 @@ void MainWindow::onTabChanged(int index)
             m_actGotoLine->setEnabled(m_editor != nullptr);
     }
 
-    const QString path = m_editor ? m_editor->filePath()
-                                  : (m_image ? m_image->filePath() : QString());
+    QString path;
+    if (m_editor)
+        path = m_editor->filePath();
+    else if (m_image)
+        path = m_image->filePath();
+    else if (auto *binary = qobject_cast<BinaryView *>(widget))
+        path = binary->filePath();
     if (!path.isEmpty() && m_fileBrowser)
         m_fileBrowser->showFor(path);
     if (m_editor)
@@ -580,6 +634,10 @@ void MainWindow::documentVanished(const QString &path, bool deliberate)
         if (QFileInfo(image->filePath()) == QFileInfo(path))
             documents.append(image);
     }
+    for (BinaryView *view : openBinaryViews()) {
+        if (!view->filePath().isEmpty() && QFileInfo(view->filePath()) == QFileInfo(path))
+            documents.append(view);
+    }
 
     for (QWidget *document : documents) {
         bool modified = false;
@@ -667,6 +725,13 @@ void MainWindow::followRenamedFile(const QString &oldPath, const QString &newPat
         image->setFilePath(newPath);
         updateTabTitle(image);
     }
+    for (BinaryView *view : openBinaryViews()) {
+        if (view->filePath().isEmpty() || QFileInfo(view->filePath()) != QFileInfo(oldPath))
+            continue;
+        const QString absolute = QFileInfo(newPath).absoluteFilePath();
+        view->setIdentity(absolute, absolute, QFileInfo(newPath).fileName());
+        updateTabTitle(view);
+    }
 
     // The breakpoint store, keyed by base name: renaming a file would otherwise
     // strand its breakpoints under a name that no longer exists
@@ -715,6 +780,9 @@ void MainWindow::updateModifiedState()
     } else if (m_image) {
         name = m_image->displayName();
         modified = m_image->isModifiedSinceLoad();
+    } else if (m_tabs) {
+        if (auto *binary = qobject_cast<BinaryView *>(m_tabs->currentWidget()))
+            name = binary->displayName();
     }
 
     // The "[*]" placeholder is replaced by Qt when windowModified is set, which
@@ -817,6 +885,14 @@ void MainWindow::openBinary()
 
 void MainWindow::openBinaryAt(const QString &path)
 {
+    if (!QFileInfo(path).isFile())
+        return;
+    const QString key = QFileInfo(path).absoluteFilePath();
+    if (BinaryView *open = binaryForKey(key)) {
+        m_tabs->setCurrentWidget(open);
+        return;
+    }
+
     constexpr int kLimit = 2 * 1024 * 1024;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -828,11 +904,24 @@ void MainWindow::openBinaryAt(const QString &path)
                              tr("The file is larger than %1 bytes.").arg(kLimit));
         return;
     }
-    m_binary->setBytes(file.readAll(), QFileInfo(path).fileName());
-    if (auto *dock = findChild<QDockWidget *>(QStringLiteral("binaryDock"))) {
-        dock->show();
-        dock->raise();
+    addBinaryTab(file.readAll(), QFileInfo(path).fileName(), key, key);
+    settings::noteFileOpened();
+}
+
+void MainWindow::openIffBytes(const QByteArray &bytes)
+{
+    ImportedSheet sheet;
+    QString error;
+    if (!importStImage(bytes, StImageFormat::Iff, PaletteKind::Ste, &sheet, &error)) {
+        statusBar()->showMessage(error, 4000);
+        return;
     }
+    const QString path = QDir::temp().filePath(QStringLiteral("pist-iff-%1.iff").arg(++m_iffSerial));
+    if (!files::write(path, bytes, &error)) {
+        statusBar()->showMessage(error, 4000);
+        return;
+    }
+    openPath(path);
 }
 
 

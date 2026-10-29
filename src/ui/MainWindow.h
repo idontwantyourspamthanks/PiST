@@ -99,11 +99,16 @@ public:
     /// to one: the dump is answered to the verb that asked instead of being
     /// applied to a view.
     static constexpr int kRemoteReadTag = -1;
+    /// A memory-dock "Save bytes…" dump. Like kRemoteReadTag it belongs to no
+    /// pane: the bytes are written to the path the user chose.
+    static constexpr int kSaveBytesTag = -2;
 
 public slots:
     /// Open a source file by path, without a dialog. Used for the command line
     /// and for anything that already knows what it wants to open.
     bool openPath(const QString &path);
+    bool openDiskHit(const QString &imagePath, const QString &entryPath, int offset,
+                     const QString &kind, QString *error);
 
     /// openPath without the failure modal: the remote `open` verb drives this,
     /// because a modal offscreen (or against an agent with nobody to dismiss
@@ -191,6 +196,8 @@ public:
                              QString *error) override;
     bool writeCapturedDma(const QString &outPath, int rateHz, const QByteArray &samples,
                           QString *error) override;
+    bool captureScreenTo(const QString &outPath, QString *error) override;
+    bool captureDmaTo(const QString &outPath, QString *error) override;
     bool ripAvr(const QString &path, quint32 offset, const QString &outPath, QString *error) override;
     QJsonArray scanFileMagic(const QString &path, QString *error) override;
     QJsonArray scanDiskMagic(const QString &imagePath, QString *error) override;
@@ -270,6 +277,12 @@ private slots:
     void openFile();
     void openBinary();
     void openBinaryAt(const QString &path);
+    void openIffBytes(const QByteArray &bytes);
+    void captureScreen();
+    void captureDma();
+    void scanDiskImage(const QString &imagePath);
+    void saveMemoryBytes(quint32 address);
+    void requestSaveBytes(quint32 address, int length, const QString &path);
     void saveFile();
     /// File ▸ New File: name, directory, template, then a real file on disk
     /// (docs/untitled-plan.md §4). There is no untitled buffer to fall back on,
@@ -637,6 +650,13 @@ private:
     /// that way.
     ImageEditor *addImageTab(const QString &path, bool quiet = false);
 
+    /// A read-only hex tab. `path` is the host file, empty for bytes taken from
+    /// a disk image. `originKey` raises this tab instead of opening a second
+    /// one: the absolute path, or the disk image plus the entry.
+    BinaryView *addBinaryTab(const QByteArray &bytes, const QString &name,
+                             const QString &path, const QString &originKey);
+    void wireBinary(BinaryView *view);
+
     /// Shared body of openPath (interactive) and openPathQuiet (remote): the
     /// quiet form returns false where the interactive one shows a modal.
     bool openPathImpl(const QString &path, bool quiet);
@@ -694,10 +714,12 @@ private:
     /// Every open text editor, in tab order.
     QList<CodeEditor *> openEditors() const;
     QList<ImageEditor *> openImages() const;
+    QList<BinaryView *> openBinaryViews() const;
 
     /// The open editor showing `path`, or null.
     CodeEditor *editorForPath(const QString &path) const;
     ImageEditor *imageForPath(const QString &path) const;
+    BinaryView *binaryForKey(const QString &originKey) const;
 
     /// Sync a tab's label with its document's name and modified state.
     void updateTabTitle(QWidget *widget);
@@ -930,6 +952,8 @@ private:
     /// pane (tag 0) and drives the auto-refresh / first-stop navigation.
     QHash<int, MemoryView *> m_memoryPanes;
     QDockWidget *m_memoryDock = nullptr;
+    QString m_saveBytesPath;
+    quint32 m_saveBytesAddress = 0;
     int m_nextMemoryTag = 0;
 
     StackView *m_stack = nullptr;
@@ -945,7 +969,7 @@ private:
     /// stopped. The Registers dock keeps the full editable table.
     QLabel *m_registerStrip = nullptr;
     FileBrowser *m_fileBrowser = nullptr;
-    BinaryView *m_binary = nullptr;
+    int m_iffSerial = 0;
     GitPanel *m_gitPanel = nullptr;
     QDockWidget *m_gitDock = nullptr;
     QAction *m_actGitBlame = nullptr;
@@ -1060,6 +1084,8 @@ private:
     QAction *m_actCompareBuild = nullptr;
     QAction *m_actRun = nullptr;
     QAction *m_actStop = nullptr;
+    QAction *m_actCaptureScreen = nullptr;
+    QAction *m_actCaptureDma = nullptr;
     QAction *m_actNextDiagnostic = nullptr;
     QAction *m_actPrevDiagnostic = nullptr;
     QAction *m_actStep = nullptr;

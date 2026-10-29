@@ -1160,6 +1160,11 @@ void FileBrowser::onContextMenu(const QPoint &pos)
     menu.addSeparator();
     QAction *exportFloppy = menu.addAction(tr("Export to Floppy Image…"));
     exportFloppy->setEnabled(!selectedHardDrivePaths().isEmpty() || index.isValid());
+    const QString diskSuffix = QFileInfo(selectedPath).suffix().toLower();
+    QAction *scanDisk = nullptr;
+    if (diskSuffix == QLatin1String("st") || diskSuffix == QLatin1String("msa")
+        || diskSuffix == QLatin1String("img"))
+        scanDisk = menu.addAction(tr("Scan for resources…"));
     menu.addSeparator();
     QAction *rename = menu.addAction(tr("Rename…"));
     QAction *remove = menu.addAction(tr("Delete…"));
@@ -1199,6 +1204,8 @@ void FileBrowser::onContextMenu(const QPoint &pos)
         pasteIntoDirectory(contextDirectory());
     } else if (chosen == exportFloppy) {
         onExportFloppy();
+    } else if (scanDisk && chosen == scanDisk) {
+        emit diskScanRequested(selectedPath);
     } else if (chosen == rename) {
         // The model is read-write, so the inline editor commits the rename.
         m_view->edit(index);

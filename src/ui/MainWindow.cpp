@@ -3,6 +3,7 @@
 // PiST - an IDE for Atari ST assembly development
 
 #include "ui/MainWindow.h"
+#include "ui/BinaryView.h"
 #include "ui/MainWindowPrivate.h"
 #include "emu/HexFormat.h"
 #include "support/CrashReport.h"
@@ -21,6 +22,7 @@
 
 #include "build/BuildService.h"
 #include "editor/CodeEditor.h"
+#include "emu/HatariTextParse.h"
 #include "emu/EmulatorHost.h"
 #include "emu/DebugBackend.h"
 #include "emu/MemoryDump.h"
@@ -78,8 +80,11 @@
 #include <QCloseEvent>
 #include <QShowEvent>
 #include <QCryptographicHash>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -90,6 +95,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QTextBlock>
 #include <QMenu>
 #include <QMenuBar>
@@ -387,10 +393,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_remoteState = new RemoteStateAdapter(stateHost, this);
 
     // Documents live in tabs. openPath() dispatches `.pim` / ST still-images
-    // to addImageTab() and everything else to addEditorTab(). m_editor tracks
-    // the current *text* editor and is null on an image tab; m_image is the
-    // reverse. Build/Run use buildSourcePath() so a focused image does not
-    // strand the assembler.
+    // to addImageTab() and everything else to addEditorTab(). A binary file
+    // opened for hex is a BinaryView tab, read-only. m_editor tracks the
+    // current *text* editor and is null on an image or binary tab; m_image is
+    // the reverse. Build/Run use buildSourcePath() so a focused image or hex
+    // tab does not strand the assembler.
     m_tabs = new QTabWidget(this);
     m_tabs->setObjectName(QStringLiteral("documentTabs"));
     m_tabs->setDocumentMode(true);
@@ -845,6 +852,148 @@ bool MainWindow::writeCapturedDma(const QString &outPath, int rateHz, const QByt
     return files::write(outPath, wav, error);
 }
 
+namespace {
+
+QString waitForInfo(MainWindow *window, const QString &command)
+{
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QString response;
+    QMetaObject::Connection connection = window->onDebugCommandFinished(
+        &loop, [&](const QString &finished, const QString &text) {
+            if (finished != command)
+                return;
+            response = text;
+            loop.quit();
+        });
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(10000);
+    window->debugCommand(command);
+    loop.exec();
+    QObject::disconnect(connection);
+    return response;
+}
+
+bool readExactMemory(MainWindow *window, quint32 address, int length, QByteArray *out, QString *error)
+{
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QList<MemoryRow> rows;
+    bool arrived = false;
+    QMetaObject::Connection connection = window->onDebugReadMemoryFinished(
+        &loop, [&](quint32 at, const QList<MemoryRow> &got) {
+            if (at != address)
+                return;
+            rows = got;
+            arrived = true;
+            loop.quit();
+        });
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(10000);
+    window->debugReadMemory(address, length);
+    loop.exec();
+    QObject::disconnect(connection);
+    QByteArray bytes;
+    if (arrived) {
+        for (const MemoryRow &row : rows) {
+            for (quint8 byte : row.bytes)
+                bytes.append(char(byte));
+        }
+    }
+    if (!arrived || bytes.size() != length) {
+        if (error)
+            *error = QStringLiteral("short read %1").arg(address, 8, 16, QLatin1Char('0'));
+        return false;
+    }
+    *out = bytes;
+    return true;
+}
+
+} // namespace
+
+bool MainWindow::captureScreenTo(const QString &outPath, QString *error)
+{
+    const QString video = waitForInfo(this, QStringLiteral("info video"));
+    const HardwareSummary hardware = hataritext::parseHardwareInfo(video);
+    if (video.isEmpty() || !hardware.hasScreenBase) {
+        if (error)
+            *error = QStringLiteral("no screen base");
+        return false;
+    }
+    QByteArray resolution;
+    QByteArray palette;
+    QByteArray planes;
+    if (!readExactMemory(this, 0xff8260, 1, &resolution, error)
+        || !readExactMemory(this, 0xff8240, 32, &palette, error)
+        || !readExactMemory(this, hardware.screenBase, 32000, &planes, error))
+        return false;
+    return writeCapturedScreen(outPath, resolution, palette, planes, error);
+}
+
+bool MainWindow::captureDmaTo(const QString &outPath, QString *error)
+{
+    const QString dma = waitForInfo(this, QStringLiteral("info dmasnd"));
+    const hataritext::DmaSoundInfo sound = hataritext::parseDmaSoundInfo(dma);
+    if (!sound.present) {
+        if (error)
+            *error = QStringLiteral("no DMA sound");
+        return false;
+    }
+    if (sound.stereo) {
+        if (error)
+            *error = QStringLiteral("DMA frame is stereo");
+        return false;
+    }
+    const quint32 length = sound.end - sound.start;
+    if (sound.end <= sound.start || length > 65536) {
+        if (error)
+            *error = QStringLiteral("DMA frame is %1 bytes").arg(length);
+        return false;
+    }
+    QByteArray samples;
+    if (!readExactMemory(this, sound.start, int(length), &samples, error))
+        return false;
+    return writeCapturedDma(outPath, sound.rateHz, samples, error);
+}
+
+void MainWindow::captureScreen()
+{
+    if (!m_host->isStopped()) {
+        QMessageBox::warning(this, tr("Capture Screen"), tr("The machine is not stopped."));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(this, tr("Capture Screen"), QString(),
+                                                      tr("PiST sprite document (*.pim)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    if (!captureScreenTo(path, &error)) {
+        QMessageBox::warning(this, tr("Capture Screen"), error);
+        return;
+    }
+    openPath(path);
+}
+
+void MainWindow::captureDma()
+{
+    if (!m_host->isStopped()) {
+        QMessageBox::warning(this, tr("Capture DMA Sound"), tr("The machine is not stopped."));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(this, tr("Capture DMA Sound"), QString(),
+                                                      tr("WAV audio (*.wav)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    if (!captureDmaTo(path, &error)) {
+        QMessageBox::warning(this, tr("Capture DMA Sound"), error);
+        return;
+    }
+    statusBar()->showMessage(tr("WAV written"), 4000);
+}
+
 bool MainWindow::ripAvr(const QString &path, quint32 offset, const QString &outPath, QString *error)
 {
     QFile file(path);
@@ -973,6 +1122,112 @@ QJsonArray MainWindow::scanDiskMagic(const QString &imagePath, QString *error)
         result.append(truncated);
     }
     return result;
+}
+
+bool MainWindow::openDiskHit(const QString &imagePath, const QString &entryPath, int offset,
+                             const QString &kind, QString *error)
+{
+    QByteArray raw;
+    QString loadError;
+    if (!floppy::loadRaw(imagePath, &raw, &loadError)) {
+        if (error)
+            *error = loadError;
+        return false;
+    }
+    QByteArray data;
+    QString readError;
+    if (!floppy::readFileRaw(raw, entryPath, &data, &readError)) {
+        if (error)
+            *error = readError;
+        return false;
+    }
+    if (data.size() > 2 * 1024 * 1024) {
+        if (error)
+            *error = tr("The file is larger than the 2 MiB limit.");
+        return false;
+    }
+    if (kind == QLatin1String("iff")) {
+        ImportedSheet sheet;
+        QString importError;
+        if (importStImage(data.mid(offset), StImageFormat::Iff, PaletteKind::Ste, &sheet,
+                          &importError)) {
+            const QString path =
+                QDir::temp().filePath(QStringLiteral("pist-iff-%1.iff").arg(++m_iffSerial));
+            if (!files::write(path, data.mid(offset), error))
+                return false;
+            openPath(path);
+            return true;
+        }
+    }
+    const QString key = QFileInfo(imagePath).absoluteFilePath() + QLatin1Char('\n') + entryPath;
+    const QString name = QFileInfo(entryPath).fileName();
+    if (BinaryView *open = binaryForKey(key)) {
+        m_tabs->setCurrentWidget(open);
+        open->showHit(offset, kind);
+        return true;
+    }
+    BinaryView *view = addBinaryTab(data, name, QString(), key);
+    view->showHit(offset, kind);
+    return true;
+}
+
+void MainWindow::scanDiskImage(const QString &imagePath)
+{
+    QString error;
+    const QJsonArray rows = scanDiskMagic(imagePath, &error);
+    if (!error.isEmpty()) {
+        QMessageBox::warning(this, tr("Scan for resources"), error);
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Scan for resources"));
+    dialog.setObjectName(QStringLiteral("diskScanDialog"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *hits = new QListWidget(&dialog);
+    hits->setObjectName(QStringLiteral("diskScanHits"));
+    auto *status = new QLabel(&dialog);
+    status->setObjectName(QStringLiteral("diskScanStatus"));
+    bool truncated = false;
+    for (const QJsonValue &value : rows) {
+        const QJsonObject object = value.toObject();
+        if (object.value(QStringLiteral("truncated")).toBool()) {
+            truncated = true;
+            continue;
+        }
+        if (!object.contains(QStringLiteral("hits")))
+            continue;
+        const QString path = object.value(QStringLiteral("path")).toString();
+        for (const QJsonValue &hitValue : object.value(QStringLiteral("hits")).toArray()) {
+            const QJsonObject hit = hitValue.toObject();
+            const int hitOffset = hit.value(QStringLiteral("offset")).toInt();
+            const QString kind = hit.value(QStringLiteral("kind")).toString();
+            auto *item = new QListWidgetItem(
+                tr("%1  %2  %3").arg(path).arg(hitOffset, 8, 16, QLatin1Char('0')).arg(kind), hits);
+            item->setData(Qt::UserRole, path);
+            item->setData(Qt::UserRole + 1, hitOffset);
+            item->setData(Qt::UserRole + 2, kind);
+        }
+    }
+    if (truncated)
+        status->setText(tr("Stopped after 64 hits"));
+    else if (hits->count() == 0)
+        status->setText(tr("No AVR, IFF, Ice, or Atomik"));
+    layout->addWidget(hits);
+    layout->addWidget(status);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    connect(hits, &QListWidget::itemDoubleClicked, &dialog,
+            [this, &dialog, imagePath](QListWidgetItem *item) {
+                QString hitError;
+                if (!openDiskHit(imagePath, item->data(Qt::UserRole).toString(),
+                                 item->data(Qt::UserRole + 1).toInt(),
+                                 item->data(Qt::UserRole + 2).toString(), &hitError))
+                    QMessageBox::warning(&dialog, tr("Scan for resources"), hitError);
+                dialog.accept();
+            });
+    dialog.exec();
 }
 
 QString MainWindow::identifyPacker(const QString &path, quint32 offset, QString *error)

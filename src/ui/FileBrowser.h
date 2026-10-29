@@ -91,6 +91,7 @@ signals:
     /// A file was activated (double-clicked or Enter). The receiver decides
     /// what to do with the path.
     void fileActivated(const QString &path);
+    void diskScanRequested(const QString &imagePath);
 
     /// The hard-drive context menu's Open Binary. `path` is a host file.
     void openBinaryRequested(const QString &path);

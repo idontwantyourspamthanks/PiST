@@ -277,6 +277,28 @@ void MainWindow::wireBackend()
                     emit debugReadMemoryFinished(address, rows);
                     return;
                 }
+                if (tag == kSaveBytesTag) {
+                    if (m_saveBytesPath.isEmpty() || address != m_saveBytesAddress)
+                        return;
+                    const QString path = m_saveBytesPath;
+                    m_saveBytesPath.clear();
+                    QByteArray bytes;
+                    for (const MemoryRow &row : rows) {
+                        for (quint8 byte : row.bytes)
+                            bytes.append(char(byte));
+                    }
+                    if (bytes.isEmpty()) {
+                        statusBar()->showMessage(tr("Empty dump"));
+                        return;
+                    }
+                    QString error;
+                    if (!files::write(path, bytes, &error)) {
+                        statusBar()->showMessage(error);
+                        return;
+                    }
+                    statusBar()->showMessage(tr("Wrote %1 bytes").arg(bytes.size()), 4000);
+                    return;
+                }
                 if (auto *view = m_memoryPanes.value(tag, nullptr))
                     view->applyDump(rows);
             });
@@ -394,6 +416,10 @@ void MainWindow::wireBackend()
             m_registers->setEditingEnabled(stopped);
         if (m_memory)
             m_memory->setEditingEnabled(stopped);
+        if (m_actCaptureScreen)
+            m_actCaptureScreen->setEnabled(stopped);
+        if (m_actCaptureDma)
+            m_actCaptureDma->setEnabled(stopped);
         m_profiling->syncActions();
         if (stopped) {
             m_session->onDebuggerStopped();
@@ -1157,6 +1183,35 @@ void MainWindow::followExecution()
     // arrived — has nowhere to go, and locationFromPc says so; following is
     // armed all the same, and the caret moves at the next mapped stop.
     locationFromPc(m_lastState.pc);
+}
+
+void MainWindow::saveMemoryBytes(quint32 address)
+{
+    if (!m_host->isStopped()) {
+        QMessageBox::warning(this, tr("Save bytes"), tr("The machine is not stopped."));
+        return;
+    }
+    bool ok = false;
+    const int length = QInputDialog::getInt(this, tr("Save bytes"), tr("Length"), 256, 1, 65536, 1,
+                                            &ok);
+    if (!ok)
+        return;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Save bytes"), QString(),
+                                                      tr("All files (*)"));
+    if (path.isEmpty())
+        return;
+    requestSaveBytes(address, length, path);
+}
+
+void MainWindow::requestSaveBytes(quint32 address, int length, const QString &path)
+{
+    if (!m_saveBytesPath.isEmpty()) {
+        statusBar()->showMessage(tr("A memory save is already waiting."));
+        return;
+    }
+    m_saveBytesPath = path;
+    m_saveBytesAddress = address;
+    m_host->requestMemoryDump(address, length, kSaveBytesTag);
 }
 
 } // namespace pist

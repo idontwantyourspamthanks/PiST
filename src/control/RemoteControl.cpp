@@ -700,43 +700,11 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             replyBlockError(guarded, QStringLiteral("error busy: another command is still running"));
             return;
         }
-        const QString video = blockingDebugCommand(QStringLiteral("info video"), 10000);
-        const HardwareSummary hardware = hataritext::parseHardwareInfo(video);
-        if (video.isEmpty() || !hardware.hasScreenBase) {
-            m_busy = false;
-            replyBlockError(guarded, QStringLiteral("error no screen base"));
-            return;
-        }
-        const auto readExact = [&](quint32 address, int length, QByteArray *out) {
-            m_busy = true;
-            m_host->debugReadMemory(address, length);
-            QList<MemoryRow> dump;
-            const bool arrived = waitForDebugMemory(address, 10000, &dump);
-            QByteArray bytes;
-            if (arrived) {
-                for (const MemoryRow &row : dump) {
-                    for (quint8 byte : row.bytes)
-                        bytes.append(char(byte));
-                }
-            }
-            if (!arrived || bytes.size() != length) {
-                m_busy = false;
-                replyBlockError(guarded, QStringLiteral("error short read %1")
-                                             .arg(address, 8, 16, QLatin1Char('0')));
-                return false;
-            }
-            *out = bytes;
-            return true;
-        };
-        QByteArray resolution;
-        QByteArray palette;
-        QByteArray planes;
-        if (!readExact(0xff8260, 1, &resolution) || !readExact(0xff8240, 32, &palette)
-            || !readExact(hardware.screenBase, 32000, &planes))
-            return;
-        m_busy = false;
+        m_busy = true;
         QString error;
-        if (m_host->writeCapturedScreen(fields.at(0), resolution, palette, planes, &error))
+        const bool wrote = m_host->captureScreenTo(fields.at(0), &error);
+        m_busy = false;
+        if (wrote)
             replyBlock(guarded, QStringLiteral("ok"));
         else
             replyBlockError(guarded, QStringLiteral("error ") + error);
@@ -755,42 +723,11 @@ void RemoteControl::execute(QTcpSocket *client, const QString &line)
             replyBlockError(guarded, QStringLiteral("error busy: another command is still running"));
             return;
         }
-        const QString dma = blockingDebugCommand(QStringLiteral("info dmasnd"), 10000);
-        const hataritext::DmaSoundInfo sound = hataritext::parseDmaSoundInfo(dma);
-        m_busy = false;
-        if (!sound.present) {
-            replyBlockError(guarded, QStringLiteral("error no DMA sound"));
-            return;
-        }
-        if (sound.stereo) {
-            replyBlockError(guarded, QStringLiteral("error DMA frame is stereo"));
-            return;
-        }
-        const quint32 length = sound.end - sound.start;
-        if (sound.end <= sound.start || length > 65536) {
-            replyBlockError(guarded, QStringLiteral("error DMA frame is %1 bytes").arg(length));
-            return;
-        }
         m_busy = true;
-        m_host->debugReadMemory(sound.start, int(length));
-        QList<MemoryRow> dump;
-        const bool arrived = waitForDebugMemory(sound.start, 10000, &dump);
-        QByteArray bytes;
-        if (arrived) {
-            for (const MemoryRow &row : dump) {
-                for (quint8 byte : row.bytes)
-                    bytes.append(char(byte));
-            }
-        }
-        if (!arrived || quint32(bytes.size()) != length) {
-            m_busy = false;
-            replyBlockError(guarded, QStringLiteral("error short read %1")
-                                         .arg(sound.start, 8, 16, QLatin1Char('0')));
-            return;
-        }
-        m_busy = false;
         QString error;
-        if (m_host->writeCapturedDma(fields.at(0), sound.rateHz, bytes, &error))
+        const bool wrote = m_host->captureDmaTo(fields.at(0), &error);
+        m_busy = false;
+        if (wrote)
             replyBlock(guarded, QStringLiteral("ok"));
         else
             replyBlockError(guarded, QStringLiteral("error ") + error);

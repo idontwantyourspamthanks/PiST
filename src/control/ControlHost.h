@@ -204,6 +204,15 @@ public:
     virtual bool writeCapturedDma(const QString &outPath, int rateHz, const QByteArray &samples,
                                  QString *error) = 0;
 
+    /// Read the stopped machine and write a low-resolution .pim. The caller has
+    /// already checked that the machine is stopped. False, with `*error` set.
+    virtual bool captureScreenTo(const QString &outPath, QString *error) = 0;
+
+    /// Read the stopped machine's STE DMA frame and write an 8-bit mono WAV.
+    /// Stereo and a frame longer than 65536 bytes fail with the same sentences the
+    /// verb already returns. The caller has already checked that the machine is stopped.
+    virtual bool captureDmaTo(const QString &outPath, QString *error) = 0;
+
     /// Read an AVR header at `offset` and the samples it names, and write a WAV.
     /// Does not read past the declared length. No emulator.
     virtual bool ripAvr(const QString &path, quint32 offset, const QString &outPath,

@@ -508,6 +508,9 @@ private slots:
     void projectFilesOpenBinaryLoadsTheFile();
     void openAnalysisLoadsATosProgram();
     void analysisNotesRenameAndMark();
+    void analysisHighlightsTheStoppedPc();
+    void analysisExportWritesAssembly();
+    void analysisMarksTheRunningProgram();
     void symbolsPanelListsLabelsAfterBuild();
     void profilerCollectsAndMapsHotLines();
     void profileToCursorCollectsAndShowsResults();
@@ -4417,6 +4420,231 @@ void TstGui::analysisNotesRenameAndMark()
     }
     QVERIFY(skipped >= 0);
     QCOMPARE(listing->item(skipped, 3)->text(), QStringLiteral("dc.b $4e,$71"));
+}
+
+namespace {
+
+QByteArray guiTos(const QByteArray &text, const QByteArray &data = {}, quint32 bss = 0)
+{
+    const auto be16 = [](quint16 value) {
+        const char bytes[2] = {char(value >> 8), char(value)};
+        return QByteArray(bytes, 2);
+    };
+    const auto be32 = [](quint32 value) {
+        const char bytes[4] = {char(value >> 24), char(value >> 16), char(value >> 8), char(value)};
+        return QByteArray(bytes, 4);
+    };
+    QByteArray bytes;
+    bytes += be16(0x601A);
+    bytes += be32(quint32(text.size()));
+    bytes += be32(quint32(data.size()));
+    bytes += be32(bss);
+    bytes += be32(0);
+    bytes += be32(0);
+    bytes += be32(0);
+    bytes += be16(0);
+    bytes += text;
+    bytes += data;
+    bytes += be32(0);
+    return bytes;
+}
+
+int imageRow(const QTableWidget *listing, quint32 address)
+{
+    int spanning = -1;
+    for (int row = 0; row < listing->rowCount(); ++row) {
+        const QTableWidgetItem *item = listing->item(row, 0);
+        if (!item)
+            continue;
+        const quint32 start = item->data(Qt::UserRole).toUInt();
+        const quint32 length = item->data(Qt::UserRole + 1).toUInt();
+        if (length == 0 && start == address)
+            return row;
+        if (length > 0 && address >= start && (address - start) < length)
+            spanning = row;
+    }
+    return spanning;
+}
+
+} // namespace
+
+void TstGui::analysisHighlightsTheStoppedPc()
+{
+    // lea (4) to the nop, rts, then two data bytes. The bases below leave a gap
+    // between text and data, so the mark cannot be a plain subtraction from the
+    // text base.
+    const QByteArray program = guiTos(QByteArray::fromHex("41FA00024E714E75"),
+                                      QByteArray::fromHex("1100"), 4);
+    AnalysisView view;
+    view.setBytes(program);
+    auto *listing = view.findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int nop = imageRow(listing, 4);
+    const int data = imageRow(listing, 8);
+    QVERIFY(nop >= 0);
+    QVERIFY(data >= 0);
+    listing->selectRow(nop);
+    const QColor pc = appearance::colors().pcRow;
+
+    // The PC is two bytes into the lea, so the lea's row is the one marked,
+    // and the selection stays on the nop.
+    view.setExecutionPc(0x10002, 0x10000, 0x20000, 0x30000);
+    const int lea = imageRow(listing, 0);
+    QVERIFY(lea >= 0);
+    QCOMPARE(view.executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->currentRow(), nop);
+    QCOMPARE(listing->item(lea, 0)->background().color(), pc);
+    QVERIFY(listing->item(lea, 3)->font().bold());
+    QCOMPARE(listing->item(nop, 0)->background().style(), Qt::NoBrush);
+
+    // Data lives at its own base, not at textBase + textSize.
+    view.setExecutionPc(0x20000, 0x10000, 0x20000, 0x30000);
+    QCOMPARE(view.executionAddress(), std::optional<quint32>(8));
+    QCOMPARE(listing->currentRow(), nop);
+    QCOMPARE(listing->item(data, 0)->background().color(), pc);
+    QCOMPARE(listing->item(lea, 0)->background().style(), Qt::NoBrush);
+
+    // Just past text, still short of the data base: nothing is marked.
+    view.setExecutionPc(0x10008, 0x10000, 0x20000, 0x30000);
+    QVERIFY(!view.executionAddress().has_value());
+    QCOMPARE(listing->item(data, 0)->background().style(), Qt::NoBrush);
+    QCOMPARE(listing->currentRow(), nop);
+
+    view.setExecutionPc(0x10000, 0, 0, 0);
+    QVERIFY(!view.executionAddress().has_value());
+    view.clearExecutionPc();
+    QVERIFY(!view.executionAddress().has_value());
+}
+
+void TstGui::analysisExportWritesAssembly()
+{
+    const QString dir = m_work->path() + QStringLiteral("/analysis-export");
+    QVERIFY(QDir().mkpath(dir));
+    const QString programPath = QFileInfo(dir + QStringLiteral("/bra.prg")).absoluteFilePath();
+    const QByteArray program = guiTos(QByteArray::fromHex("60024E714E71"));
+    QFile programFile(programPath);
+    QVERIFY(programFile.open(QIODevice::WriteOnly));
+    QCOMPARE(programFile.write(program), qint64(program.size()));
+    programFile.close();
+
+    AnalysisView view;
+    view.setIdentity(programPath, QStringLiteral("bra.prg"));
+    view.setBytes(program);
+    auto *action = view.findChild<QAction *>(QStringLiteral("analysisExportAction"));
+    QVERIFY(action);
+    QCOMPARE(action->text(), QStringLiteral("Export assembly…"));
+    QVERIFY(action->isEnabled());
+
+    const QString out = dir + QStringLiteral("/bra.s");
+    QString error;
+    QVERIFY2(view.exportAssemblyTo(out, &error), qPrintable(error));
+    QFile written(out);
+    QVERIFY(written.open(QIODevice::ReadOnly));
+    const QString source = QString::fromUtf8(written.readAll());
+    QVERIFY(source.contains(QStringLiteral("\tbra.s loc_4\n")));
+    QVERIFY(source.contains(QStringLiteral("loc_4:\n")));
+    QVERIFY(!QFileInfo(programPath + QStringLiteral(".pistanalysis")).exists());
+
+    AnalysisView bad;
+    bad.setBytes(QByteArrayLiteral("nope"));
+    auto *disabled = bad.findChild<QAction *>(QStringLiteral("analysisExportAction"));
+    QVERIFY(disabled);
+    QVERIFY(!disabled->isEnabled());
+    QVERIFY(!bad.exportAssemblyTo(dir + QStringLiteral("/nope.s"), &error));
+    QCOMPARE(error, QStringLiteral("This file has no analysis listing."));
+    QVERIFY(!QFileInfo(dir + QStringLiteral("/nope.s")).exists());
+}
+
+void TstGui::analysisMarksTheRunningProgram()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/pc.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"      // line 1
+              "start:\tnop\n" // line 2, image address 0
+              "\trts\n"       // line 3, image address 2
+              "\teven\n"
+              "\tend\n");
+    src.close();
+
+    const QString other = m_work->path() + QStringLiteral("/other.prg");
+    QFile decoy(other);
+    QVERIFY(decoy.open(QIODevice::WriteOnly));
+    const QByteArray decoyBytes = guiTos(QByteArray::fromHex("4E75"));
+    QCOMPARE(decoy.write(decoyBytes), qint64(decoyBytes.size()));
+    decoy.close();
+
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(editor->currentExecutionLine(), 2);
+
+    const QString prg = settings::outputPathsFor(source).program;
+    QVERIFY(QFileInfo(prg).isFile());
+    auto *browser = window.findChild<FileBrowser *>();
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(browser && tabs);
+    browser->openAnalysisFile(prg);
+    browser->openAnalysisFile(other);
+
+    AnalysisView *running = nullptr;
+    AnalysisView *bystander = nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *view = qobject_cast<AnalysisView *>(tabs->widget(i));
+        if (!view)
+            continue;
+        if (QFileInfo(view->filePath()) == QFileInfo(prg))
+            running = view;
+        else if (QFileInfo(view->filePath()) == QFileInfo(other))
+            bystander = view;
+    }
+    QVERIFY(running);
+    QVERIFY(bystander);
+    QCOMPARE(running->executionAddress(), std::optional<quint32>(0));
+    QVERIFY(!bystander->executionAddress().has_value());
+    auto *listing = running->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    QVERIFY(entry >= 0);
+    QCOMPARE(listing->item(entry, 3)->text(), QStringLiteral("nop"));
+    QCOMPARE(listing->item(entry, 0)->background().color(), appearance::colors().pcRow);
+
+    const int away = imageRow(listing, 2);
+    QVERIFY(away >= 0);
+    listing->selectRow(away);
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                const std::optional<quint32> at = running->executionAddress();
+                return at.has_value() && *at == 2u;
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(running->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->item(away, 3)->text(), QStringLiteral("rts"));
+    QCOMPARE(listing->item(away, 0)->background().color(), appearance::colors().pcRow);
+    QCOMPARE(listing->item(entry, 0)->background().style(), Qt::NoBrush);
+    QCOMPARE(listing->currentRow(), away);
+    QVERIFY(!bystander->executionAddress().has_value());
+
+    auto *host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+    host->stop();
 }
 
 void TstGui::fileMenuAndToolbarMatchTheJobs()

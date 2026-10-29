@@ -7,12 +7,14 @@
 // display, or an emulator.
 
 #include "analysis/AnalysisNotes.h"
+#include "analysis/AssemblyExport.h"
 #include "analysis/M68kDisasm.h"
 #include "analysis/ProgramTrace.h"
 #include "analysis/TosProgram.h"
 
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -108,6 +110,9 @@ private slots:
     void aDataMarkStopsFallThrough();
     void aCodeMarkReachesSkippedBytesAndTheDataSegment();
     void aBranchAndARelocationNameTheirTarget();
+    void aStoppedPcTranslatesThroughTheBasepage();
+    void exportNamesTargetsSectionsAndEquates();
+    void assembledExportMatchesTheImage();
 };
 
 void tst_analysis::rejectsAFileThatIsNotTos()
@@ -523,6 +528,132 @@ void tst_analysis::aBranchAndARelocationNameTheirTarget()
         }
     }
     QVERIFY(saw);
+}
+
+void tst_analysis::aStoppedPcTranslatesThroughTheBasepage()
+{
+    // Text 8, data 4, bss 16. The bases are deliberately not contiguous, so a
+    // PC just past the end of text is not data.
+    const auto at = [](quint32 pc, quint32 textBase, quint32 dataBase, quint32 bssBase) {
+        return imageAddressForPc(pc, textBase, dataBase, bssBase, 8, 4, 16);
+    };
+    const std::optional<quint32> textStart = at(0x20000, 0x20000, 0x30000, 0x40000);
+    const std::optional<quint32> textEnd = at(0x20007, 0x20000, 0x30000, 0x40000);
+    const std::optional<quint32> dataStart = at(0x30000, 0x20000, 0x30000, 0x40000);
+    const std::optional<quint32> dataEnd = at(0x30003, 0x20000, 0x30000, 0x40000);
+    const std::optional<quint32> bssStart = at(0x40000, 0x20000, 0x30000, 0x40000);
+    const std::optional<quint32> bssEnd = at(0x4000F, 0x20000, 0x30000, 0x40000);
+    QVERIFY(textStart.has_value());
+    QCOMPARE(*textStart, 0u);
+    QVERIFY(textEnd.has_value());
+    QCOMPARE(*textEnd, 7u);
+    QVERIFY(!at(0x20008, 0x20000, 0x30000, 0x40000).has_value());
+    QVERIFY(dataStart.has_value());
+    QCOMPARE(*dataStart, 8u);
+    QVERIFY(dataEnd.has_value());
+    QCOMPARE(*dataEnd, 11u);
+    QVERIFY(!at(0x30004, 0x20000, 0x30000, 0x40000).has_value());
+    QVERIFY(bssStart.has_value());
+    QCOMPARE(*bssStart, 12u);
+    QVERIFY(bssEnd.has_value());
+    QCOMPARE(*bssEnd, 27u);
+    QVERIFY(!at(0x40010, 0x20000, 0x30000, 0x40000).has_value());
+    QVERIFY(!at(0x20004, 0, 0x30000, 0x40000).has_value());
+
+    // The layout GEMDOS actually uses: data follows text, bss follows data.
+    const std::optional<quint32> contiguous =
+        imageAddressForPc(0x2000A, 0x20000, 0x20008, 0x2000C, 8, 4, 16);
+    QVERIFY(contiguous.has_value());
+    QCOMPARE(*contiguous, 10u);
+}
+
+void tst_analysis::exportNamesTargetsSectionsAndEquates()
+{
+    QString error;
+    QVERIFY(exportAssembly(QByteArrayLiteral("nope"), {}, &error).isEmpty());
+    QCOMPARE(error, QStringLiteral("not a TOS executable"));
+
+    // bra.s over a nop the walk does not reach, onto a nop that has no name.
+    // The skipped bytes stay dc.b. The target gains loc_4, which is not stored.
+    const QByteArray branch = tos(QByteArray::fromHex("60024E714E71"));
+    const QString branchSource = exportAssembly(branch, {}, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    const char branchText[] = "; PiST analysis export\n"
+                              "\ttext\n"
+                              "\tbra.s loc_4\n"
+                              "\tdc.b $4e,$71\n"
+                              "loc_4:\n"
+                              "\tnop\n";
+    QCOMPARE(branchSource, QString::fromLatin1(branchText));
+    QVERIFY(!assembledImageMatches(QString(), branchSource, branch, &error));
+    QCOMPARE(error, QStringLiteral("The assembler was not found."));
+
+    // lea to a named nop, then rts, two data bytes, and a name two bytes into bss.
+    AnalysisNotes notes;
+    QVERIFY2(setAnalysisName(&notes, 4, QStringLiteral("there"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisComment(&notes, 4, QStringLiteral("landed"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisName(&notes, 12, QStringLiteral("space"), &error), qPrintable(error));
+    const QByteArray lea =
+        tos(QByteArray::fromHex("41FA00024E714E75"), QByteArray::fromHex("1100"), 4);
+    const ProgramListing listing = listProgram(lea, notes);
+    QCOMPARE(listing.textSize, 8u);
+    QCOMPARE(listing.dataSize, 2u);
+    QCOMPARE(listing.bssSize, 4u);
+    const QString leaSource = exportAssembly(lea, notes, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    const char leaText[] = "; PiST analysis export\n"
+                           "\ttext\n"
+                           "\tlea there(pc),a0\n"
+                           "there:\n"
+                           "\tnop ; landed\n"
+                           "\trts\n"
+                           "\tdata\n"
+                           "\tdc.b $11,$00\n"
+                           "\tbss\n"
+                           "\tds.b 2\n"
+                           "space:\n"
+                           "\tds.b 2\n";
+    QCOMPARE(leaSource, QString::fromLatin1(leaText));
+
+    QFile hello(QStringLiteral(PIST_SOURCE_DIR "/demo/hello.prg"));
+    QVERIFY(hello.open(QIODevice::ReadOnly));
+    const QString helloSource = exportAssembly(hello.readAll(), {}, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(helloSource.contains(QStringLiteral("\ttext\n")));
+    QVERIFY(helloSource.contains(QStringLiteral("rounds equ $3\n")));
+    QVERIFY(helloSource.contains(QStringLiteral("\tmove.l #banner,-(sp)\n")));
+    QVERIFY(helloSource.contains(QStringLiteral("banner:\n")));
+}
+
+void tst_analysis::assembledExportMatchesTheImage()
+{
+    const QString vasm = QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot"));
+    if (vasm.isEmpty()) {
+        if (!qEnvironmentVariableIsEmpty("PIST_REQUIRE_EMULATOR"))
+            QFAIL("PIST_REQUIRE_EMULATOR is set but vasmm68k_mot is not on PATH");
+        QSKIP("needs vasmm68k_mot");
+    }
+
+    QString error;
+    const QByteArray branch = tos(QByteArray::fromHex("60024E714E71"));
+    const QString branchSource = exportAssembly(branch, {}, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(assembledImageMatches(vasm, branchSource, branch, &error), qPrintable(error));
+
+    // A program that assembles, and is not this one, must not count as a match.
+    QString mismatch;
+    QVERIFY(!assembledImageMatches(vasm, QStringLiteral("\ttext\n\trts\n"), branch, &mismatch));
+    QVERIFY(!mismatch.isEmpty());
+
+    AnalysisNotes notes;
+    QVERIFY2(setAnalysisName(&notes, 4, QStringLiteral("there"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisComment(&notes, 4, QStringLiteral("landed"), &error), qPrintable(error));
+    QVERIFY2(setAnalysisName(&notes, 12, QStringLiteral("space"), &error), qPrintable(error));
+    const QByteArray lea =
+        tos(QByteArray::fromHex("41FA00024E714E75"), QByteArray::fromHex("1100"), 4);
+    const QString leaSource = exportAssembly(lea, notes, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(assembledImageMatches(vasm, leaSource, lea, &error), qPrintable(error));
 }
 
 QTEST_MAIN(tst_analysis)

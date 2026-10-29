@@ -1047,6 +1047,7 @@ void MainWindow::onStateUpdated(const MachineState &state)
 
     locationFromPc(state.pc);
     updateRegisterStrip();
+    applyAnalysisExecution();
 }
 
 

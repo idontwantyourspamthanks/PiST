@@ -220,6 +220,9 @@ AnalysisView *MainWindow::addAnalysisTab(const QByteArray &bytes, const QString 
     const int index = m_tabs->addTab(view, name);
     m_tabs->setCurrentIndex(index);
     updateTabTitle(view);
+    // A tab opened after the entry stop still has a PC to mark: the state
+    // update that carried it has already been and gone.
+    applyAnalysisExecution();
     return view;
 }
 
@@ -1327,6 +1330,22 @@ void MainWindow::saveFile()
     if (m_gitPanel)
         m_gitPanel->refresh();
     refreshBlame();
+}
+
+
+void MainWindow::applyAnalysisExecution()
+{
+    const bool live = m_lastState.regs.valid && m_lastState.hasBases() && !m_launchedProgram.isEmpty();
+    const QFileInfo launched(m_launchedProgram);
+    for (AnalysisView *view : openAnalysisViews()) {
+        const bool mine = live && !view->filePath().isEmpty() && QFileInfo(view->filePath()) == launched;
+        if (!mine) {
+            view->clearExecutionPc();
+            continue;
+        }
+        view->setExecutionPc(m_lastState.pc, m_lastState.textBase, m_lastState.dataBase,
+                             m_lastState.bssBase);
+    }
 }
 
 

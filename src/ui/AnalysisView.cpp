@@ -4,10 +4,16 @@
 
 #include "ui/AnalysisView.h"
 
+#include "analysis/AssemblyExport.h"
 #include "analysis/ProgramTrace.h"
+#include "support/FileWrite.h"
+#include "toolchain/Toolchain.h"
 #include "ui/Appearance.h"
+#include "ui/MainWindow.h"
 
 #include <QAction>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
@@ -59,6 +65,8 @@ AnalysisView::AnalysisView(QWidget *parent)
     m_markData->setObjectName(QStringLiteral("analysisMarkDataAction"));
     m_clearMark = new QAction(tr("Clear mark"), this);
     m_clearMark->setObjectName(QStringLiteral("analysisClearMarkAction"));
+    m_export = new QAction(tr("Export assembly…"), this);
+    m_export->setObjectName(QStringLiteral("analysisExportAction"));
     updateActions();
 
     connect(m_listing, &QWidget::customContextMenuRequested, this, &AnalysisView::showMenu);
@@ -68,6 +76,7 @@ AnalysisView::AnalysisView(QWidget *parent)
     connect(m_markCode, &QAction::triggered, this, &AnalysisView::markSelectedCode);
     connect(m_markData, &QAction::triggered, this, &AnalysisView::markSelectedData);
     connect(m_clearMark, &QAction::triggered, this, &AnalysisView::clearSelectedMark);
+    connect(m_export, &QAction::triggered, this, &AnalysisView::exportSelected);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
@@ -159,6 +168,8 @@ void AnalysisView::showMenu(const QPoint &pos)
     menu.addAction(m_markCode);
     menu.addAction(m_markData);
     menu.addAction(m_clearMark);
+    menu.addSeparator();
+    menu.addAction(m_export);
     menu.exec(m_listing->viewport()->mapToGlobal(pos));
 }
 
@@ -284,6 +295,9 @@ void AnalysisView::reload()
     m_ready = false;
     m_imageSize = 0;
     m_endAddress = 0;
+    m_textSize = 0;
+    m_dataSize = 0;
+    m_bssSize = 0;
     if (!m_path.isEmpty()) {
         QString error;
         AnalysisNotes notes;
@@ -299,6 +313,9 @@ void AnalysisView::reload()
     const ProgramListing listing = listProgram(m_bytes, m_notes);
     m_imageSize = listing.imageSize;
     m_endAddress = listing.endAddress;
+    m_textSize = listing.textSize;
+    m_dataSize = listing.dataSize;
+    m_bssSize = listing.bssSize;
     m_summary->setText(listing.error.isEmpty() ? listing.summary : listing.error);
     m_listing->setRowCount(listing.rows.size());
     for (int row = 0; row < listing.rows.size(); ++row) {
@@ -325,6 +342,7 @@ void AnalysisView::reload()
     m_listing->resizeColumnsToContents();
     m_listing->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_ready = listing.error.isEmpty();
+    paintExecution();
     updateActions();
 }
 
@@ -339,6 +357,134 @@ void AnalysisView::updateActions()
     m_markCode->setEnabled(bytes && (address % 2u) == 0);
     m_markData->setEnabled(bytes);
     m_clearMark->setEnabled(bytes);
+    m_export->setEnabled(m_ready);
+}
+
+void AnalysisView::setExecutionPc(quint32 pc, quint32 textBase, quint32 dataBase, quint32 bssBase)
+{
+    m_havePc = true;
+    m_pc = pc;
+    m_textBase = textBase;
+    m_dataBase = dataBase;
+    m_bssBase = bssBase;
+    paintExecution();
+}
+
+void AnalysisView::clearExecutionPc()
+{
+    if (!m_havePc)
+        return;
+    m_havePc = false;
+    paintExecution();
+}
+
+std::optional<quint32> AnalysisView::executionAddress() const
+{
+    if (!m_havePc)
+        return std::nullopt;
+    const std::optional<quint32> image = imageAddressForPc(m_pc, m_textBase, m_dataBase, m_bssBase,
+                                                           m_textSize, m_dataSize, m_bssSize);
+    if (!image || rowForImage(*image) < 0)
+        return std::nullopt;
+    return image;
+}
+
+bool AnalysisView::exportAssemblyTo(const QString &path, QString *error)
+{
+    if (!m_ready) {
+        if (error)
+            *error = tr("This file has no analysis listing.");
+        return false;
+    }
+    const QString source = exportAssembly(m_bytes, m_notes, error);
+    if (source.isEmpty())
+        return false;
+    return files::write(path, source.toUtf8(), error);
+}
+
+void AnalysisView::exportSelected()
+{
+    if (!m_ready)
+        return;
+    QString suggested;
+    if (!m_path.isEmpty()) {
+        const QFileInfo info(m_path);
+        suggested = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
+                    + QStringLiteral(".s");
+    }
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export assembly"), suggested,
+                                                      tr("Assembly source (*.s)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    if (!exportAssemblyTo(path, &error)) {
+        QMessageBox::warning(this, tr("Export assembly"), error);
+        return;
+    }
+
+    QString overridePath;
+    if (auto *ide = qobject_cast<MainWindow *>(window()))
+        overridePath = ide->assemblerPath();
+    const ToolInfo vasm = toolchain::findAssembler(overridePath);
+    const QString fileName = QFileInfo(path).fileName();
+    if (!vasm.found()) {
+        QMessageBox::information(this, tr("Export assembly"),
+                                 tr("Wrote %1.\n\nThe assembler was not found, so the bytes were not checked.")
+                                     .arg(fileName));
+        return;
+    }
+    QString mismatch;
+    const QString source = exportAssembly(m_bytes, m_notes, &error);
+    if (source.isEmpty() || !assembledImageMatches(vasm.path, source, m_bytes, &mismatch)) {
+        QMessageBox::warning(this, tr("Export assembly"),
+                             tr("Wrote %1, but assembling it does not reproduce the original program.\n\n%2")
+                                 .arg(fileName, source.isEmpty() ? error : mismatch));
+        return;
+    }
+    QMessageBox::information(this, tr("Export assembly"),
+                             tr("Wrote %1. The assembled program matches the original.").arg(fileName));
+}
+
+int AnalysisView::rowForImage(quint32 address) const
+{
+    int spanning = -1;
+    for (int row = 0; row < m_listing->rowCount(); ++row) {
+        const QTableWidgetItem *item = m_listing->item(row, 0);
+        if (!item)
+            continue;
+        const quint32 start = item->data(Qt::UserRole).toUInt();
+        const quint32 length = item->data(Qt::UserRole + 1).toUInt();
+        if (length == 0 && start == address)
+            return row;
+        if (length > 0 && address >= start && (address - start) < length)
+            spanning = row;
+    }
+    return spanning;
+}
+
+void AnalysisView::paintExecution()
+{
+    const std::optional<quint32> image =
+        m_havePc ? imageAddressForPc(m_pc, m_textBase, m_dataBase, m_bssBase, m_textSize, m_dataSize,
+                                     m_bssSize)
+                 : std::nullopt;
+    const int hit = image ? rowForImage(*image) : -1;
+    const QColor pc = appearance::colors().pcRow;
+    for (int row = 0; row < m_listing->rowCount(); ++row) {
+        const bool here = row == hit;
+        for (int column = 0; column < m_listing->columnCount(); ++column) {
+            QTableWidgetItem *item = m_listing->item(row, column);
+            if (!item)
+                continue;
+            if (here)
+                item->setBackground(pc);
+            else
+                item->setData(Qt::BackgroundRole, QVariant());
+            QFont font = item->font();
+            font.setBold(here);
+            item->setFont(font);
+        }
+    }
 }
 
 } // namespace pist

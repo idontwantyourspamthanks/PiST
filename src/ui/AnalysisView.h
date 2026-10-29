@@ -8,6 +8,8 @@
 
 #include <QWidget>
 
+#include <optional>
+
 class QAction;
 class QLabel;
 class QTableWidget;
@@ -40,6 +42,19 @@ public:
     bool markBytes(quint32 address, quint32 length, AnalysisOverride::Kind kind, QString *error);
     bool clearMark(quint32 address, quint32 length, QString *error);
 
+    /// Mark the instruction that contains this live PC. The bases are the
+    /// ones `info basepage` reported; the section sizes are this file's.
+    /// The row is painted, and the user's selection is left where it is.
+    /// A PC that is not in this image marks nothing.
+    void setExecutionPc(quint32 pc, quint32 textBase, quint32 dataBase, quint32 bssBase);
+    void clearExecutionPc();
+    /// The image address currently marked, or none.
+    std::optional<quint32> executionAddress() const;
+
+    /// Write Motorola source for this listing. Does not assemble it, and does
+    /// not create or change the notes file.
+    bool exportAssemblyTo(const QString &path, QString *error);
+
 private slots:
     void showMenu(const QPoint &pos);
     void renameSelected();
@@ -47,12 +62,15 @@ private slots:
     void markSelectedCode();
     void markSelectedData();
     void clearSelectedMark();
+    void exportSelected();
 
 private:
     bool selectedSpan(quint32 *address, quint32 *length) const;
     bool apply(const AnalysisNotes &next, QString *error);
     void reload();
     void updateActions();
+    void paintExecution();
+    int rowForImage(quint32 address) const;
 
     QString m_path;
     QString m_name;
@@ -60,6 +78,14 @@ private:
     AnalysisNotes m_notes;
     quint32 m_imageSize = 0;
     quint32 m_endAddress = 0;
+    quint32 m_textSize = 0;
+    quint32 m_dataSize = 0;
+    quint32 m_bssSize = 0;
+    bool m_havePc = false;
+    quint32 m_pc = 0;
+    quint32 m_textBase = 0;
+    quint32 m_dataBase = 0;
+    quint32 m_bssBase = 0;
     bool m_ready = false;
     QLabel *m_summary = nullptr;
     QTableWidget *m_listing = nullptr;
@@ -68,6 +94,7 @@ private:
     QAction *m_markCode = nullptr;
     QAction *m_markData = nullptr;
     QAction *m_clearMark = nullptr;
+    QAction *m_export = nullptr;
 };
 
 } // namespace pist

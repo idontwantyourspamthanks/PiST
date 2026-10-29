@@ -10,6 +10,8 @@
 #include <QString>
 #include <QVector>
 
+#include <optional>
+
 namespace pist {
 
 /// One row of the listing. Code rows are instructions the walk reached.
@@ -37,6 +39,12 @@ struct ProgramListing
     quint32 imageSize = 0;
     /// The first address past bss. A name may sit anywhere below this.
     quint32 endAddress = 0;
+    quint32 textSize = 0;
+    quint32 dataSize = 0;
+    quint32 bssSize = 0;
+    /// Addresses an instruction names: a branch or call target, an absolute or
+    /// pc-relative effective address, or a relocated immediate. Image-relative.
+    QVector<quint32> referenced;
     QVector<ListingRow> rows;
 };
 
@@ -46,5 +54,14 @@ struct ProgramListing
 /// as data, including a string that merely follows a call that returns. Names
 /// and comments in `notes` are applied on top of the executable's symbols.
 ProgramListing listProgram(const QByteArray &bytes, const AnalysisNotes &notes = {});
+
+/// Where `pc` sits in the image, given the live bases from `info basepage` and
+/// this program's own section sizes. Text, data and bss are not assumed to be
+/// contiguous: a PC in the gap between them is not an image address. A text
+/// base of 0 means no program is loaded. The result is not a relocated address
+/// and is never written into the notes file.
+std::optional<quint32> imageAddressForPc(quint32 pc, quint32 textBase, quint32 dataBase,
+                                         quint32 bssBase, quint32 textSize, quint32 dataSize,
+                                         quint32 bssSize);
 
 } // namespace pist

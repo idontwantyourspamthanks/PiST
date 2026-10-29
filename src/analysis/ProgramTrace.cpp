@@ -183,6 +183,9 @@ ProgramListing listProgram(const QByteArray &bytes, const AnalysisNotes &notes)
     const quint32 imageSize = program.textSize + program.dataSize;
     listing.imageSize = imageSize;
     listing.endAddress = imageSize + program.bssSize;
+    listing.textSize = program.textSize;
+    listing.dataSize = program.dataSize;
+    listing.bssSize = program.bssSize;
 
     QHash<quint32, QStringList> labels;
     QHash<quint32, int> equateCount;
@@ -312,6 +315,10 @@ ProgramListing listProgram(const QByteArray &bytes, const AnalysisNotes &notes)
         }
     }
     attachXrefs(&listing.rows, inbound, labels);
+    listing.referenced.reserve(inbound.size());
+    for (auto it = inbound.cbegin(); it != inbound.cend(); ++it)
+        listing.referenced.append(it.key());
+    std::sort(listing.referenced.begin(), listing.referenced.end());
 
     listing.summary = QObject::tr("%1 bytes of code, %2 bytes of data, %3 bytes of bss, "
                                   "%4 symbols, %5 relocations")
@@ -322,6 +329,24 @@ ProgramListing listProgram(const QByteArray &bytes, const AnalysisNotes &notes)
                           .arg(program.relocations.size());
     listing.error.clear();
     return listing;
+}
+
+std::optional<quint32> imageAddressForPc(quint32 pc, quint32 textBase, quint32 dataBase,
+                                         quint32 bssBase, quint32 textSize, quint32 dataSize,
+                                         quint32 bssSize)
+{
+    // textBase 0 is "no basepage yet", the same fact MachineState::hasBases uses.
+    // Subtracting it from the PC would mark address 0 for a machine that has
+    // not loaded a program.
+    if (textBase == 0)
+        return std::nullopt;
+    if (textSize > 0 && pc >= textBase && (pc - textBase) < textSize)
+        return pc - textBase;
+    if (dataBase != 0 && dataSize > 0 && pc >= dataBase && (pc - dataBase) < dataSize)
+        return textSize + (pc - dataBase);
+    if (bssBase != 0 && bssSize > 0 && pc >= bssBase && (pc - bssBase) < bssSize)
+        return textSize + dataSize + (pc - bssBase);
+    return std::nullopt;
 }
 
 } // namespace pist

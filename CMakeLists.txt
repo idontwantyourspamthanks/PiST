@@ -290,9 +290,10 @@ pist_module(pist_mcp
     src/control/mcp/McpServer.h
 )
 
-# analysis/ — TOS executable structure, a host-side 68000 disassembly, and the
-# notes file beside a program. Widget-free on purpose: the listing is bytes and
-# text, and the tests run with no display.
+# analysis/ — TOS executable structure, a host-side 68000 disassembly, the
+# notes file beside a program, and a Motorola source export. Widget-free on
+# purpose: the listing is bytes and text, and the tests run with no display.
+# The export check runs vasm as a subprocess; this module does not link it.
 pist_module(pist_analysis
     src/analysis/AnalysisNotes.cpp
     src/analysis/AnalysisNotes.h
@@ -302,6 +303,8 @@ pist_module(pist_analysis
     src/analysis/M68kDisasm.h
     src/analysis/ProgramTrace.cpp
     src/analysis/ProgramTrace.h
+    src/analysis/AssemblyExport.cpp
+    src/analysis/AssemblyExport.h
 )
 
 # hooks/ — the stop-hook subsystem: the contract the script is bound to, the Lua

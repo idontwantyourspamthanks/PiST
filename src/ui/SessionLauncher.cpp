@@ -359,7 +359,13 @@ void SessionLauncher::launch()
     // meaningless and arming must happen again after the next entry stop.
     m_host.session()->resetSessionState();
 
+    // Name the program before start. The entry stop can be delivered before
+    // start returns, and the analysis tab marks that PC only for this file.
+    // A start that fails takes the name back: nothing is marked for a session
+    // that never began.
+    m_host.noteLaunchedProgram(prg);
     if (!m_host.backend()->start(config, &error)) {
+        m_host.noteLaunchedProgram(QString());
         m_host.refuseRun(MainWindow::tr("Run"), error, /*critical=*/true);
         return;
     }

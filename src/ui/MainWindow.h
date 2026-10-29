@@ -768,6 +768,11 @@ private:
     void onBuildFinished(bool success, const QList<pist::Diagnostic> &diagnostics);
     void onStateUpdated(const pist::MachineState &state);
     void locationFromPc(quint32 pc);
+    /// Mark the stopped instruction on an analysis tab of the program this
+    /// session launched. Any other analysis tab is left unmarked. The address
+    /// comes from the live basepage and this file's own section sizes, and it
+    /// is not written into the notes.
+    void applyAnalysisExecution();
 
     /// Hand the caret to the program counter, returning false when there is
     /// nothing to hand it to (no session, or a machine that is running rather
@@ -897,6 +902,10 @@ private:
     /// The most recent machine state, kept so the remote-control interface can
     /// answer `state` without touching the emulator.
     MachineState m_lastState;
+    /// Absolute path of the program the current session launched. An analysis
+    /// tab of this file can mark the stopped PC; any other analysis is left
+    /// alone. Empty once the session ends. Never written into the notes file.
+    QString m_launchedProgram;
     /// The dock and widget that host the emulator's display (the media panel).
     /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;

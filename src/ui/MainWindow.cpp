@@ -210,9 +210,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_pcFollowInProgress = false;
         m_bases = LineMap::SectionBases();
         m_lastState = MachineState();
+        m_launchedProgram.clear();
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())
             editor->clearCurrentExecutionLine();
+        // The analysis mark is the same fact as the editor's PC bar: it belonged
+        // to the session that just ended. Clearing the path and the state first
+        // is what makes this take the mark off, including a tab opened on the
+        // program that was running.
+        applyAnalysisExecution();
     };
 
     DebugSessionController::Host sessionHost;
@@ -288,6 +294,10 @@ MainWindow::MainWindow(QWidget *parent)
         statusBar()->showMessage(text, milliseconds);
     };
     launcherHost.session = sessionNow;
+    launcherHost.noteLaunchedProgram = [this](const QString &path) {
+        m_launchedProgram = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+        applyAnalysisExecution();
+    };
     m_launcher = new SessionLauncher(launcherHost, this);
 
     BreakpointWatchpointModel::Host breakpointHost;

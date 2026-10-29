@@ -88,6 +88,12 @@ public:
         std::function<void(const QString &, int)> showStatus;
         /// The session controller, whose state a launch resets.
         std::function<DebugSessionController *()> session;
+        /// The program a launch is about to run, or empty when that launch
+        /// did not start. Called after the session state is reset and before
+        /// the emulator starts, so a stop delivered during start still names
+        /// this file; an empty path follows a start that failed. Default
+        /// no-op so a test host that fills the other fields keeps compiling.
+        std::function<void(const QString &)> noteLaunchedProgram = [](const QString &) {};
     };
 
     explicit SessionLauncher(Host host, QObject *parent = nullptr);

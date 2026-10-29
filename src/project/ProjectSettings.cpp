@@ -215,6 +215,35 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     build[QStringLiteral("releaseArgs")] = toArray(s.releaseAssemblerArgs);
     root[QStringLiteral("build")] = build;
 
+    // Sprite exports. An older PiST ignores an array it does not know, the
+    // same way it ignores the hooks object, so the project version stays put:
+    // a missing list is "no exports", and writing one does not make an older
+    // build refuse the file. A path inside the project is stored relative, so
+    // the file still finds the sprite after the project moves.
+    const QString projectDir = QFileInfo(path).absolutePath();
+    QJsonArray assets;
+    for (const AssetExport &asset : s.assets) {
+        QJsonObject obj;
+        QString source = asset.source;
+        if (!source.isEmpty() && QFileInfo(source).isAbsolute()) {
+            const QString relative = QDir(projectDir).relativeFilePath(source);
+            if (!relative.startsWith(QLatin1String("../")) && relative != QLatin1String(".."))
+                source = relative;
+        }
+        obj[QStringLiteral("source")] = source;
+        obj[QStringLiteral("phase")] = asset.phase;
+        obj[QStringLiteral("output")] = asset.output;
+        obj[QStringLiteral("palette")] = asset.palette;
+        obj[QStringLiteral("sprite")] = asset.sprite;
+        obj[QStringLiteral("masked")] = asset.masked;
+        obj[QStringLiteral("shifted")] = asset.shifted;
+        obj[QStringLiteral("shiftedMasked")] = asset.shiftedMasked;
+        obj[QStringLiteral("preShifts")] = asset.preShifts;
+        obj[QStringLiteral("transparent")] = asset.transparent;
+        assets.append(obj);
+    }
+    root[QStringLiteral("assets")] = assets;
+
     QJsonObject emu;
     emu[QStringLiteral("hatariPath")] = s.hatariPath;
     emu[QStringLiteral("machine")] = machineCliName(s.machine);
@@ -239,7 +268,6 @@ bool save(const ProjectSettings &s, const QString &path, QString *error)
     // every other relative path is rebased (`load()`), which is what makes the
     // round-trip a no-op. An absolute path outside the project stays absolute:
     // there is no relative spelling for it that would mean the same thing.
-    const QString projectDir = QFileInfo(path).absolutePath();
     QString hookPath = s.stopHookPath;
     if (!hookPath.isEmpty() && QFileInfo(hookPath).isAbsolute()) {
         const QString relative = QDir(projectDir).relativeFilePath(hookPath);
@@ -400,6 +428,11 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
             *error = invalidEntry(path, QStringLiteral("'hooks' must be an object"));
         return false;
     }
+    if (root.contains(QStringLiteral("assets")) && !root.value(QStringLiteral("assets")).isArray()) {
+        if (error)
+            *error = invalidEntry(path, QStringLiteral("'assets' must be a list"));
+        return false;
+    }
 
     // Relative paths in the file are read against the file's own directory, not
     // the process's, so a project resolves the same wherever PiST was started.
@@ -518,6 +551,45 @@ bool load(ProjectSettings *s, const QString &path, QString *error)
         return false;
     if (!s->stopHookPath.isEmpty() && !QDir::isAbsolutePath(s->stopHookPath))
         s->stopHookPath = QDir::cleanPath(projectDir + QLatin1Char('/') + s->stopHookPath);
+
+    // An absent list is every project written before sprite exports: no assets.
+    const QJsonArray assets = root.value(QStringLiteral("assets")).toArray();
+    s->assets.clear();
+    for (int i = 0; i < assets.size(); ++i) {
+        if (!assets.at(i).isObject()) {
+            if (error)
+                *error = invalidEntry(path, QStringLiteral("'assets[%1]' must be an object").arg(i));
+            return false;
+        }
+        const QJsonObject obj = assets.at(i).toObject();
+        const QString prefix = QStringLiteral("assets[%1]").arg(i);
+        AssetExport asset;
+        if (!readString(obj.value(QStringLiteral("source")), prefix + QStringLiteral(".source"), path,
+                        QString(), &asset.source, error)
+            || !readString(obj.value(QStringLiteral("phase")), prefix + QStringLiteral(".phase"), path,
+                           QString(), &asset.phase, error)
+            || !readString(obj.value(QStringLiteral("output")), prefix + QStringLiteral(".output"),
+                           path, QString(), &asset.output, error)
+            || !readBool(obj.value(QStringLiteral("palette")), prefix + QStringLiteral(".palette"),
+                         path, true, &asset.palette, error)
+            || !readBool(obj.value(QStringLiteral("sprite")), prefix + QStringLiteral(".sprite"), path,
+                         true, &asset.sprite, error)
+            || !readBool(obj.value(QStringLiteral("masked")), prefix + QStringLiteral(".masked"), path,
+                         false, &asset.masked, error)
+            || !readBool(obj.value(QStringLiteral("shifted")), prefix + QStringLiteral(".shifted"),
+                         path, false, &asset.shifted, error)
+            || !readBool(obj.value(QStringLiteral("shiftedMasked")),
+                         prefix + QStringLiteral(".shiftedMasked"), path, false, &asset.shiftedMasked,
+                         error)
+            || !readInt(obj.value(QStringLiteral("preShifts")), prefix + QStringLiteral(".preShifts"),
+                        path, 4, &asset.preShifts, error)
+            || !readInt(obj.value(QStringLiteral("transparent")),
+                        prefix + QStringLiteral(".transparent"), path, 0, &asset.transparent, error))
+            return false;
+        if (!asset.source.isEmpty() && !QDir::isAbsolutePath(asset.source))
+            asset.source = QDir::cleanPath(projectDir + QLatin1Char('/') + asset.source);
+        s->assets.append(asset);
+    }
 
     return true;
 }

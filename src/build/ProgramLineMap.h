@@ -102,10 +102,22 @@ public:
     /// path instead so a diagnostic can tell the user which files collided.
     QStringList unplacedModules() const;
 
+    /// Exclusive end address of one section (`text`, `data` or `bss`), across
+    /// every placed module, once the live bases are known. Zero until then, or
+    /// when no listing recorded an extent for it.
+    quint32 sectionEnd(const QString &section) const;
+
     /// Exclusive end address of the program's text, across every placed module,
     /// once the live bases are known. Zero until then, or when no listing
     /// recorded a text extent.
     quint32 textEnd() const;
+
+    /// Where a source line sits in its output section, as an offset from the
+    /// start of that section. Works before a session supplies live bases: a
+    /// single module's offset is the listing's, and a linked module's is that
+    /// plus the linker's placement. The section name is `text`, `data` or `bss`.
+    bool sectionOffsetFor(const QString &file, int line, QString *section,
+                          quint32 *offset) const;
 
     /// Resolve a module and section offset to a source line.
     ///

@@ -4,6 +4,8 @@
 
 #include "ui/SettingsDialog.h"
 
+#include "ui/AssetExportDialog.h"
+
 #include "emu/TosRom.h"
 #include "support/CrashReport.h"
 #include "ui/Appearance.h"
@@ -19,6 +21,7 @@
 #include <QDialogButtonBox>
 #include <QMediaDevices>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFormLayout>
@@ -311,6 +314,39 @@ void SettingsDialog::buildUi()
     defLayout->addWidget(m_defines);
     defLayout->addLayout(defButtons);
     modulesForm->addRow(tr("Defines:"), defBox);
+
+    QFormLayout *assetForm = nullptr;
+    buildPage->addWidget(formSection(tr("Sprite assets"), buildTab, &assetForm));
+    m_assets = new QListWidget(buildTab);
+    m_assets->setObjectName(QStringLiteral("spriteAssets"));
+    m_assets->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_assets->setMaximumHeight(kBuildListMaxHeight);
+    auto *assetButtons = new QHBoxLayout;
+    auto *addAsset = new QPushButton(tr("Add…"), buildTab);
+    auto *editAssetButton = new QPushButton(tr("Edit…"), buildTab);
+    auto *removeAsset = new QPushButton(tr("Remove"), buildTab);
+    assetButtons->addWidget(addAsset);
+    assetButtons->addWidget(editAssetButton);
+    assetButtons->addWidget(removeAsset);
+    assetButtons->addStretch(1);
+    connect(addAsset, &QPushButton::clicked, this, &SettingsDialog::addAsset);
+    connect(editAssetButton, &QPushButton::clicked, this, &SettingsDialog::editAsset);
+    connect(removeAsset, &QPushButton::clicked, this, &SettingsDialog::removeAsset);
+    connect(m_assets, &QListWidget::itemDoubleClicked, this, [this] { editAsset(); });
+    auto *assetBox = new QWidget(buildTab);
+    auto *assetLayout = new QVBoxLayout(assetBox);
+    assetLayout->setContentsMargins(0, 0, 0, 0);
+    assetLayout->addWidget(m_assets);
+    assetLayout->addLayout(assetButtons);
+    auto *assetNote = new QLabel(
+        tr("Each row is exported into the project's build directory before assemble, "
+           "as a .dat and an include of the same name. Add include \"name.i\" to a "
+           "source. That directory is on the include path for the build only, and a "
+           "failed export keeps the previous files."),
+        buildTab);
+    quietNote(assetNote);
+    assetLayout->addWidget(assetNote);
+    assetForm->addRow(tr("On build:"), assetBox);
 
     QFormLayout *argsForm = nullptr;
     buildPage->addWidget(formSection(tr("Arguments"), buildTab, &argsForm));
@@ -639,6 +675,8 @@ void SettingsDialog::loadValues(const ProjectSettings &settings)
         m_includePaths->addItem(path);
     for (const QString &define : settings.defines)
         m_defines->addItem(define);
+    m_assetExports = settings.assets;
+    refreshAssetList();
 
     m_debugBuildArgs->setPlainText(settings.debugAssemblerArgs.join(QLatin1Char('\n')));
     m_releaseBuildArgs->setPlainText(settings.releaseAssemblerArgs.join(QLatin1Char('\n')));
@@ -846,6 +884,47 @@ void SettingsDialog::removeDefine()
     delete m_defines->takeItem(m_defines->currentRow());
 }
 
+void SettingsDialog::refreshAssetList()
+{
+    m_assets->clear();
+    for (const AssetExport &asset : m_assetExports) {
+        const QString file = QFileInfo(asset.source).fileName();
+        m_assets->addItem(tr("%1  %2  →  %3").arg(file, asset.phase, asset.output));
+    }
+}
+
+void SettingsDialog::addAsset()
+{
+    AssetExport asset;
+    if (!editAssetExport(this, &asset))
+        return;
+    m_assetExports.append(asset);
+    refreshAssetList();
+    m_assets->setCurrentRow(m_assets->count() - 1);
+}
+
+void SettingsDialog::editAsset()
+{
+    const int row = m_assets->currentRow();
+    if (row < 0 || row >= m_assetExports.size())
+        return;
+    AssetExport asset = m_assetExports.at(row);
+    if (!editAssetExport(this, &asset))
+        return;
+    m_assetExports[row] = asset;
+    refreshAssetList();
+    m_assets->setCurrentRow(row);
+}
+
+void SettingsDialog::removeAsset()
+{
+    const int row = m_assets->currentRow();
+    if (row < 0 || row >= m_assetExports.size())
+        return;
+    m_assetExports.removeAt(row);
+    refreshAssetList();
+}
+
 ProjectSettings SettingsDialog::settings() const
 {
     ProjectSettings s = m_settings;
@@ -865,6 +944,7 @@ ProjectSettings SettingsDialog::settings() const
     s.defines.clear();
     for (int i = 0; i < m_defines->count(); ++i)
         s.defines.append(m_defines->item(i)->text());
+    s.assets = m_assetExports;
 
     s.debugAssemblerArgs = linesToArgs(m_debugBuildArgs->toPlainText());
     s.releaseAssemblerArgs = linesToArgs(m_releaseBuildArgs->toPlainText());

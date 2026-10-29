@@ -5,6 +5,7 @@
 
 #include "image/ImageDocument.h"
 #include "image/Palette.h"
+#include "image/AssetBuild.h"
 #include "image/StFormats.h"
 #include "image/Tools.h"
 #include "image/Transform.h"
@@ -77,6 +78,7 @@ private slots:
     void bitplaneScrollDemo();
     void bitplaneScrollDemoAnimatesFrames();
     void bitplaneDataExportsTheChosenPhase();
+    void declaredAssetExportsAndSkipsUnchanged();
     void bitplaneScrollDemoAssembles();
     void scrollDemoHandlesAnOversizeFrameStride();
     void indicesToImageEmptyStyles();
@@ -1654,6 +1656,83 @@ void TstImage::bitplaneDataExportsTheChosenPhase()
     error.clear();
     QVERIFY(exportBitplaneData(doc, 2, opt, &error).isEmpty());
     QVERIFY(!error.isEmpty());
+}
+
+void TstImage::declaredAssetExportsAndSkipsUnchanged()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    ImageDocument doc = ImageDocument::create(16, 16, PaletteKind::Ste);
+    doc.setPixel(0, doc.active().at(1));
+    const QString pim = dir.filePath(QStringLiteral("hero.pim"));
+    QString error;
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+
+    AssetBuildRequest request;
+    request.phaseName = QStringLiteral("Phase 1");
+    request.outputFileName = QStringLiteral("hero.dat");
+    request.options.palette = true;
+    request.options.sprite = true;
+
+    const QString buildDir = dir.filePath(QStringLiteral("build"));
+    const AssetBuildResult first = buildDeclaredAsset(pim, request, buildDir);
+    QVERIFY2(first.ok, qPrintable(first.error));
+    QVERIFY(!first.unchanged);
+
+    QFile dat(first.dataPath);
+    QVERIFY(dat.open(QIODevice::ReadOnly));
+    const QByteArray bytes = dat.readAll();
+    dat.close();
+    const QByteArray expected = exportBitplaneData(doc, 0, request.options, &error);
+    QCOMPARE(bytes, expected);
+
+    QFile include(first.includePath);
+    QVERIFY(include.open(QIODevice::ReadOnly));
+    const QString text = QString::fromUtf8(include.readAll());
+    include.close();
+    QVERIFY(text.contains(QStringLiteral("\tincbin\t\"hero.dat\"")));
+    QVERIFY(text.contains(QStringLiteral("HERO_BYTES")));
+    QVERIFY(text.contains(QStringLiteral("HERO_FRAMES")));
+    QVERIFY(text.contains(QStringLiteral("HERO_FRAME_STRIDE")));
+    QVERIFY(text.contains(QStringLiteral("HERO_PALETTE")));
+
+    QFile::setPermissions(first.dataPath, QFile::ReadOwner | QFile::ReadUser);
+    QFile::setPermissions(first.includePath, QFile::ReadOwner | QFile::ReadUser);
+    const AssetBuildResult held = buildDeclaredAsset(pim, request, buildDir);
+    QVERIFY2(held.ok && held.unchanged, qPrintable(held.error));
+
+    request.phaseName = QStringLiteral("nope");
+    const AssetBuildResult missing = buildDeclaredAsset(pim, request, buildDir);
+    QVERIFY(!missing.ok);
+    QFile still(first.dataPath);
+    QVERIFY(still.open(QIODevice::ReadOnly));
+    QCOMPARE(still.readAll(), bytes);
+    still.close();
+
+    QFile::setPermissions(first.dataPath, QFile::ReadOwner | QFile::WriteOwner);
+    QFile::setPermissions(first.includePath, QFile::ReadOwner | QFile::WriteOwner);
+    request.phaseName = QStringLiteral("Phase 1");
+    doc.setPixel(1, doc.active().at(2));
+    QVERIFY2(doc.save(pim, &error), qPrintable(error));
+    const AssetBuildResult edited = buildDeclaredAsset(pim, request, buildDir);
+    QVERIFY2(edited.ok && !edited.unchanged, qPrintable(edited.error));
+    QFile rewritten(edited.dataPath);
+    QVERIFY(rewritten.open(QIODevice::ReadOnly));
+    QVERIFY(rewritten.readAll() != bytes);
+
+    const QString vasm = QStandardPaths::findExecutable(QStringLiteral("vasmm68k_mot"));
+    if (vasm.isEmpty())
+        return;
+    const QString source = dir.filePath(QStringLiteral("main.s"));
+    QFile main(source);
+    QVERIFY(main.open(QIODevice::WriteOnly));
+    main.write("\ttext\n\tinclude\t\"hero.i\"\n\trts\n");
+    main.close();
+    QProcess assembler;
+    assembler.start(vasm, {QStringLiteral("-Ftos"), QStringLiteral("-I"), buildDir,
+                           QStringLiteral("-o"), dir.filePath(QStringLiteral("main.prg")), source});
+    QVERIFY(assembler.waitForFinished(30000));
+    QVERIFY2(assembler.exitCode() == 0, assembler.readAllStandardError().constData());
 }
 
 // One helper renders every cube-index grid the sprite editor shows. It used to

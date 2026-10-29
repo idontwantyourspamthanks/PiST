@@ -148,6 +148,30 @@ public:
     /// learn what a hook it never sees ran.
     virtual QJsonObject hookJson() const = 0;
 
+    /// How the program on disk differs from the snapshot taken before the last
+    /// build replaced it. `{ok, written, sections?}` or `{ok:false, error}`.
+    /// `written` is false: the verb does not change the machine. For `builddiff`.
+    virtual QJsonObject buildDiffJson() const = 0;
+
+    /// The project's declared sprite exports, as JSON objects
+    /// {source, phase, output, palette, sprite, masked, shifted, shiftedMasked,
+    /// preShifts, transparent}. Empty when none are declared. For `assets`.
+    virtual QJsonArray assetsJson() const = 0;
+
+    /// Add or replace the export whose `output` `spec` names, and save the
+    /// project. False, with `error` set, when there is no source to save beside
+    /// or the spec cannot be stored.
+    virtual bool declareAsset(const QJsonObject &spec, QString *error) = 0;
+
+    /// Remove the export whose output file name is `output`, and save the
+    /// project. False, with `error` set, when that name is not in the list.
+    virtual bool removeAsset(const QString &output, QString *error) = 0;
+
+    /// "file.s:line" for the stopped PC when the line map has one, else empty.
+    /// A memory mark records it so a later compare can say where the checkpoint
+    /// was taken.
+    virtual QString stoppedSourceLocation() const = 0;
+
     /// Capture the IDE's window into `path` (the `screenshot` verb). False
     /// when the capture or the write failed. The capturing itself is the UI's:
     /// it needs the window handle and, under X11, the XGetImage path the

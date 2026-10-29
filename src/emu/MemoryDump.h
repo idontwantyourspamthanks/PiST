@@ -5,6 +5,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QList>
 #include <QMetaType>
 #include <QString>
@@ -57,6 +58,21 @@ quint32 readLongBE(const QVector<quint8> &bytes, int offset);
 /// The emulator's own state uses 32-bit registers, so pointers routinely carry
 /// junk in the top byte; those cannot be dereferenced and are rejected.
 bool looksLikeAddress(quint32 value);
+
+/// The bytes of `rows` that cover `[base, base + length)`. False when any
+/// byte of that span is missing, so a short dump is not stored as zeros.
+bool bytesCovering(const QList<MemoryRow> &rows, quint32 base, int length, QByteArray *bytes);
+
+/// The `memmark` reply: where the checkpoint sits, and the stop it was taken
+/// at when that is known. `pc` and `where` are omitted when empty.
+QJsonObject memoryMarkJson(quint32 base, const QByteArray &bytes, const QString &pc,
+                           const QString &where);
+
+/// The `memcompare` reply. `marked` and `current` are the same span. Each
+/// changed byte is `{offset, address, old, new}`. `where` and `pc` name the
+/// checkpoint, not the stop being compared against it.
+QJsonObject memoryCompareJson(quint32 base, const QByteArray &marked, const QByteArray &current,
+                              const QString &pc, const QString &where, bool advanced);
 
 } // namespace pist
 

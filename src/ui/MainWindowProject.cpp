@@ -341,6 +341,135 @@ void MainWindow::saveProject()
 }
 
 
+namespace {
+
+bool singleAssetOutput(const QString &name)
+{
+    if (name.isEmpty() || name == QLatin1String(".") || name == QLatin1String(".."))
+        return false;
+    return !name.contains(QLatin1Char('/')) && !name.contains(QLatin1Char('\\'))
+           && QFileInfo(name).fileName() == name;
+}
+
+AssetExport assetFromSpec(const QJsonObject &spec)
+{
+    AssetExport asset;
+    asset.source = spec.value(QStringLiteral("source")).toString();
+    asset.phase = spec.value(QStringLiteral("phase")).toString();
+    asset.output = spec.value(QStringLiteral("output")).toString();
+    if (spec.contains(QStringLiteral("palette")))
+        asset.palette = spec.value(QStringLiteral("palette")).toBool();
+    if (spec.contains(QStringLiteral("sprite")))
+        asset.sprite = spec.value(QStringLiteral("sprite")).toBool();
+    if (spec.contains(QStringLiteral("masked")))
+        asset.masked = spec.value(QStringLiteral("masked")).toBool();
+    if (spec.contains(QStringLiteral("shifted")))
+        asset.shifted = spec.value(QStringLiteral("shifted")).toBool();
+    if (spec.contains(QStringLiteral("shiftedMasked")))
+        asset.shiftedMasked = spec.value(QStringLiteral("shiftedMasked")).toBool();
+    if (spec.contains(QStringLiteral("preShifts")))
+        asset.preShifts = spec.value(QStringLiteral("preShifts")).toInt();
+    if (spec.contains(QStringLiteral("transparent")))
+        asset.transparent = spec.value(QStringLiteral("transparent")).toInt();
+    return asset;
+}
+
+} // namespace
+
+QJsonArray MainWindow::assetsJson() const
+{
+    QJsonArray list;
+    for (const AssetExport &asset : m_settings.assets) {
+        QJsonObject object;
+        object.insert(QStringLiteral("source"), asset.source);
+        object.insert(QStringLiteral("phase"), asset.phase);
+        object.insert(QStringLiteral("output"), asset.output);
+        object.insert(QStringLiteral("palette"), asset.palette);
+        object.insert(QStringLiteral("sprite"), asset.sprite);
+        object.insert(QStringLiteral("masked"), asset.masked);
+        object.insert(QStringLiteral("shifted"), asset.shifted);
+        object.insert(QStringLiteral("shiftedMasked"), asset.shiftedMasked);
+        object.insert(QStringLiteral("preShifts"), asset.preShifts);
+        object.insert(QStringLiteral("transparent"), asset.transparent);
+        list.append(object);
+    }
+    return list;
+}
+
+bool MainWindow::declareAsset(const QJsonObject &spec, QString *error)
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("open an assembly source file first");
+        return false;
+    }
+    const AssetExport asset = assetFromSpec(spec);
+    if (asset.source.isEmpty() || asset.phase.isEmpty() || !singleAssetOutput(asset.output)) {
+        if (error)
+            *error = QStringLiteral(
+                "a sprite export needs a source, a phase, and a single output file name");
+        return false;
+    }
+
+    bool replaced = false;
+    for (AssetExport &existing : m_settings.assets) {
+        if (existing.output == asset.output) {
+            existing = asset;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced)
+        m_settings.assets.append(asset);
+
+    m_settings.sourceFile = source;
+    QString saveError;
+    if (!settings::save(m_settings, settings::projectFileFor(source), &saveError)) {
+        if (error)
+            *error = saveError;
+        return false;
+    }
+    settings::rememberLastSource(source);
+    if (m_log)
+        m_log->appendPlainText(tr("[project] sprite export %1").arg(asset.output));
+    return true;
+}
+
+bool MainWindow::removeAsset(const QString &output, QString *error)
+{
+    const QString source = buildSourcePath();
+    if (source.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("open an assembly source file first");
+        return false;
+    }
+    const int index = [this, &output] {
+        for (int i = 0; i < m_settings.assets.size(); ++i) {
+            if (m_settings.assets.at(i).output == output)
+                return i;
+        }
+        return -1;
+    }();
+    if (index < 0) {
+        if (error)
+            *error = QStringLiteral("no sprite export named %1").arg(output);
+        return false;
+    }
+    m_settings.assets.removeAt(index);
+    m_settings.sourceFile = source;
+    QString saveError;
+    if (!settings::save(m_settings, settings::projectFileFor(source), &saveError)) {
+        if (error)
+            *error = saveError;
+        return false;
+    }
+    settings::rememberLastSource(source);
+    if (m_log)
+        m_log->appendPlainText(tr("[project] removed sprite export %1").arg(output));
+    return true;
+}
+
 void MainWindow::persistSettings()
 {
     const QString source = buildSourcePath();

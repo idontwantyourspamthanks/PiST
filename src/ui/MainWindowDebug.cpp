@@ -4,6 +4,8 @@
 
 #include "ui/MainWindow.h"
 #include "ui/MainWindowPrivate.h"
+
+#include <QFileInfo>
 #include "emu/HexFormat.h"
 #include "support/CrashReport.h"
 #include "support/DocumentWatcher.h"
@@ -612,6 +614,19 @@ void MainWindow::debugCommand(const QString &command)
 }
 
 
+QString MainWindow::stoppedSourceLocation() const
+{
+    if (!m_host->isStopped() || !m_lastState.regs.valid)
+        return {};
+    if (!m_bases.isValid() || m_programMap.isEmpty())
+        return {};
+    LineMap::Address loc;
+    if (!m_programMap.lineFor(m_lastState.pc, &loc))
+        return {};
+    return QFileInfo(loc.file).fileName() + QLatin1Char(':') + QString::number(loc.line);
+}
+
+
 void MainWindow::debugReadMemory(quint32 address, int length)
 {
     // A tagged dump that no memory pane owns, so it reaches the verb that asked
@@ -963,6 +978,24 @@ void MainWindow::onStateUpdated(const MachineState &state)
         if (firstBases && m_memory) {
             m_memory->goToAddress(state.dataBase ? state.dataBase : state.textBase);
             navigated = true;
+        }
+    }
+
+    // The mark's "at file.s:12" and the text/data/bss tint both come from this
+    // stop. Every pane gets them; only the first pane is refreshed below,
+    // because the others are watching an address the user chose.
+    if (state.regs.valid) {
+        QString where;
+        LineMap::Address loc;
+        if (m_bases.isValid() && !m_programMap.isEmpty() && m_programMap.lineFor(state.pc, &loc))
+            where = QFileInfo(loc.file).fileName() + QLatin1Char(':') + QString::number(loc.line);
+        const quint32 textEnd = m_programMap.textEnd();
+        const quint32 dataEnd = m_programMap.sectionEnd(QStringLiteral("data"));
+        const quint32 bssEnd = m_programMap.sectionEnd(QStringLiteral("bss"));
+        for (MemoryView *view : m_memoryPanes) {
+            view->setStopContext(state.pc, where);
+            view->setProgramRegions(state.textBase, textEnd, state.dataBase, dataEnd,
+                                    state.bssBase, bssEnd);
         }
     }
 

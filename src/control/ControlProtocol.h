@@ -52,6 +52,7 @@ inline constexpr Verb kVerbs[] = {
     {"build", "build            assemble, answering when the build finishes", false},
     {"buildrelease", "buildrelease     assemble with the release arguments, answering when "
                      "the build finishes", false},
+    {"builddiff", "builddiff        how the last build changed the program, as JSON", true},
     {"run", "run              build and start the emulator, answering when running", false},
     {"stop", "stop             stop the emulator session", false},
     {"cmd", "cmd <command>    run a debugger command, replying with its output", true},
@@ -63,7 +64,12 @@ inline constexpr Verb kVerbs[] = {
     {"symbols", "symbols [filter] the build's symbols as a JSON array", true},
     {"hook", "hook             the stop-hook script and what its last run did, as a JSON object",
      true},
+    {"assets", "assets           the project's sprite exports as a JSON array", true},
+    {"asset", "asset <src> <phase> <out> [k=v...]  declare a sprite export\n"
+              "                 asset remove <out>  drop the export named <out>", false},
     {"readmem", "readmem <a> <n>  read <n> bytes at <a> as JSON rows (when stopped)", true},
+    {"memmark", "memmark <a> <n>  remember <n> bytes at <a> (when stopped)", true},
+    {"memcompare", "memcompare [advance]  how those bytes differ now, as JSON", true},
     {"disasm", "disasm [a]       disassembly as JSON rows (when stopped)", true},
     {"setreg", "setreg <n> <v>   write register <n> to <v> (when stopped)", false},
     {"setmem", "setmem <a> <v>   write memory byte at <a> to <v> (when stopped)", false},

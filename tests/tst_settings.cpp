@@ -133,6 +133,8 @@ private slots:
     // path rebases like every other relative path, and a wrong-typed `hooks`
     // value is refused by name rather than read as "off".
     void stopHookSettingsRoundTrip();
+    void spriteAssetsRoundTrip();
+    void rejectsAssetsThatAreNotAList();
     /// A project that brought a hook is not trusted until it is allowed, and a
     /// refusal is per project file; the demo shipped with PiST is trusted by
     /// provenance.
@@ -294,6 +296,7 @@ void TstSettings::appliesDefaultsForMissingKeys()
     // list would strip -quiet (and -devpac) from every project without them.
     QCOMPARE(settings.debugAssemblerArgs, defaultDebugAssemblerArgs());
     QCOMPARE(settings.releaseAssemblerArgs, defaultReleaseAssemblerArgs());
+    QVERIFY(settings.assets.isEmpty());
 }
 
 // A version-1 project stored a single trailing "extraArgs" list. There was no
@@ -374,6 +377,61 @@ void TstSettings::resolvesRelativePathsAgainstProjectFile()
              QStringLiteral("inc"));
     QCOMPARE(build.value(QStringLiteral("additionalSources")).toArray().at(0).toString(),
              QStringLiteral("src/extra.s"));
+}
+
+void TstSettings::spriteAssetsRoundTrip()
+{
+    QTemporaryDir projectDir;
+    QVERIFY(projectDir.isValid());
+    const QString path = projectDir.filePath(QStringLiteral("proj.pistproject"));
+
+    ProjectSettings original;
+    original.sourceFile = projectDir.filePath(QStringLiteral("game.s"));
+    AssetExport asset;
+    asset.source = projectDir.filePath(QStringLiteral("sprites/hero.pim"));
+    asset.phase = QStringLiteral("walk");
+    asset.output = QStringLiteral("hero.dat");
+    asset.masked = true;
+    asset.preShifts = 8;
+    asset.transparent = -1;
+    original.assets.append(asset);
+
+    QString error;
+    QVERIFY2(settings::save(original, path, &error), qPrintable(error));
+
+    QFile written(path);
+    QVERIFY(written.open(QIODevice::ReadOnly));
+    const QString json = QString::fromUtf8(written.readAll());
+    written.close();
+    QVERIFY(json.contains(QStringLiteral("sprites/hero.pim")));
+
+    ProjectSettings loaded;
+    QVERIFY2(settings::load(&loaded, path, &error), qPrintable(error));
+    QCOMPARE(loaded.assets.size(), 1);
+    QCOMPARE(loaded.assets.at(0).source, asset.source);
+    QCOMPARE(loaded.assets.at(0).phase, QStringLiteral("walk"));
+    QCOMPARE(loaded.assets.at(0).output, QStringLiteral("hero.dat"));
+    QCOMPARE(loaded.assets.at(0).palette, true);
+    QCOMPARE(loaded.assets.at(0).sprite, true);
+    QCOMPARE(loaded.assets.at(0).masked, true);
+    QCOMPARE(loaded.assets.at(0).preShifts, 8);
+    QCOMPARE(loaded.assets.at(0).transparent, -1);
+}
+
+void TstSettings::rejectsAssetsThatAreNotAList()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("broken.pistproject"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QByteArrayLiteral("{\"version\":2,\"assets\":\"hero.pim\"}"));
+    file.close();
+
+    ProjectSettings settings;
+    QString error;
+    QVERIFY(!settings::load(&settings, path, &error));
+    QVERIFY(error.contains(QStringLiteral("assets")));
 }
 
 void TstSettings::stopHookSettingsRoundTrip()

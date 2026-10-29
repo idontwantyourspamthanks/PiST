@@ -6,6 +6,7 @@
 
 #include "emu/HexFormat.h"
 
+#include <QJsonArray>
 #include <QRegularExpression>
 
 namespace pist {
@@ -132,6 +133,67 @@ quint32 readLongBE(const QVector<quint8> &bytes, int offset)
 
     return (quint32(bytes[offset]) << 24) | (quint32(bytes[offset + 1]) << 16)
            | (quint32(bytes[offset + 2]) << 8) | quint32(bytes[offset + 3]);
+}
+
+bool bytesCovering(const QList<MemoryRow> &rows, quint32 base, int length, QByteArray *bytes)
+{
+    if (!bytes || length <= 0)
+        return false;
+    QByteArray covered(length, '\0');
+    QByteArray seen(length, '\0');
+    for (const MemoryRow &row : rows) {
+        for (int i = 0; i < row.bytes.size(); ++i) {
+            const quint32 address = row.address + quint32(i);
+            if (address < base)
+                continue;
+            const quint32 index = address - base;
+            if (index >= quint32(length))
+                continue;
+            covered[int(index)] = char(row.bytes.at(i));
+            seen[int(index)] = 1;
+        }
+    }
+    if (seen.contains('\0'))
+        return false;
+    *bytes = covered;
+    return true;
+}
+
+QJsonObject memoryMarkJson(quint32 base, const QByteArray &bytes, const QString &pc,
+                           const QString &where)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("base"),
+                  QStringLiteral("0x") + hex::hex32(base, hex::Case::Lower));
+    object.insert(QStringLiteral("length"), int(bytes.size()));
+    if (!pc.isEmpty())
+        object.insert(QStringLiteral("pc"), pc);
+    if (!where.isEmpty())
+        object.insert(QStringLiteral("where"), where);
+    return object;
+}
+
+QJsonObject memoryCompareJson(quint32 base, const QByteArray &marked, const QByteArray &current,
+                              const QString &pc, const QString &where, bool advanced)
+{
+    QJsonObject object = memoryMarkJson(base, marked, pc, where);
+    const int length = qMin(marked.size(), current.size());
+    QJsonArray changes;
+    for (int i = 0; i < length; ++i) {
+        if (quint8(marked.at(i)) == quint8(current.at(i)))
+            continue;
+        QJsonObject change;
+        change.insert(QStringLiteral("offset"), i);
+        change.insert(QStringLiteral("address"),
+                      QStringLiteral("0x") + hex::hex32(base + quint32(i), hex::Case::Lower));
+        change.insert(QStringLiteral("old"), hex::hexByte(quint8(marked.at(i)), hex::Case::Lower));
+        change.insert(QStringLiteral("new"), hex::hexByte(quint8(current.at(i)), hex::Case::Lower));
+        changes.append(change);
+    }
+    object.insert(QStringLiteral("differ"), int(changes.size()));
+    object.insert(QStringLiteral("bytes"), changes);
+    object.insert(QStringLiteral("advanced"), advanced);
+    return object;
 }
 
 bool looksLikeAddress(quint32 value)

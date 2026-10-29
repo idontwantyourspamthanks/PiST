@@ -94,10 +94,21 @@ public:
     /// Section base for a listing section name ("text", "data", "bss").
     static quint32 baseForSection(const QString &section, const SectionBases &bases);
 
-    /// Exclusive end offset of the listing's text section, from the `(start-end)`
-    /// header — zero when the listing recorded no extent for it. The offset is
-    /// relative to the section base, like every other offset in the listing.
+    /// Exclusive end offset of one section, from the `(start-end)` header — zero
+    /// when the listing recorded no extent for it. `text` and `code` are the
+    /// same section (the two names vasm uses), and so are the data and bss
+    /// spellings. The offset is relative to the section base.
+    quint32 sectionEnd(const QString &section) const;
+
+    /// Exclusive end offset of the listing's text section. Zero when the
+    /// listing recorded no extent for it.
     quint32 textEnd() const;
+
+    /// Section and offset of the bytes a source line emitted, without live
+    /// bases. The section name is `text`, `data` or `bss`. False when that
+    /// line emitted nothing.
+    bool sectionOffsetFor(const QString &file, int line, QString *section,
+                          quint32 *offset) const;
 
     /// Whether a source path recorded in a listing refers to `queried`.
     ///

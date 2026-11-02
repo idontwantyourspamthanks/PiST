@@ -210,8 +210,15 @@ unbuilt.
   incompatible with this IDE's prompt-framed debug transport. The fork's `reststop` does return
   to the prompt with that instruction unexecuted, and PiST uses it (§14). What is in the product
   is Save Stop, Restore Stop, and a short read-only list of those stops. Reverse Step — restore
-  an earlier snapshot, then replay up to the instruction before the one on screen — still needs
-  a recording made with the debugger attached, and the replay gate required the debugger off.
+  an earlier snapshot, then replay up to the instruction before the one on screen — has a
+  mechanism on the fork and is not in PiST. `--replay-snapshot` writes one statesave during
+  the recording, after that frame's keys. `reststop` restores it. `replaykeys` applies the
+  recording's later keys, and a breakpoint on a later instruction returns to the prompt
+  before that instruction executes. The proof stops on the replay fixture's spin, with the
+  add that the key selects still unexecuted, and a different key stops on the other spin
+  the same way. A stop during the recording itself is not part of that result. The per-instruction
+  debugger can also stay on for a recording that never stops: one breakpoint that cannot match
+  leaves it on, the debugger is never entered, and the trace matches the run with the flag clear.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
   the debugger is stopped, so a frozen frame is not mistaken for a crash. The badge is placed in
   widget coordinates, so on a dock small enough for the fitted video to reach the widget's top-right
@@ -450,7 +457,9 @@ Not in this pass, on purpose:
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
 **Status:** passed, on `hatari-pist`, pinned in PiST at `623747d`
-(`623747d0d9decab28a9bf0badd09305bf8a6c033`). Each gate was a pass/fail trace and no dock.
+(`623747d0d9decab28a9bf0badd09305bf8a6c033`). The debugger-on replay and
+`replaykeys` are on the fork after that pin; the pinned build does not have them.
+Each gate was a pass/fail trace and no dock.
 Stock Hatari still has none of these commands. PiST probes by command name and treats
 `Command '<name>' not found.` as a skip, not a failure. The host-side memory compare, the
 last-build preview, and declared sprite export never waited on them.
@@ -460,8 +469,14 @@ What each gate proved, and where the proof stops:
 1. **Replay one fixture twice.** Passed. `--replay-record` / `--replay` record one program's
    inputs and a per-vertical-blank trace (format `HPISTREPLAY 1`) and play it back. The
    matching run agreed for all 40 frames. Changing one key made the traces diverge at frame
-   16. The recording is narrow: `--tos none`, no floppy, and the debugger line has to be
-   `debugger no`. TOS, the FDC, and a session with the debugger attached are not proven.
+   16. The same fixture also matches with the per-instruction debugger left on: one breakpoint
+   at `pc = $1` never fires, the file says `debugger yes`, and all 40 frames are identical to
+   the run with the flag clear. A change in that flag during the run is still refused. A stop
+   in the middle of the recording is not proven. From a snapshot taken at vertical blank 10,
+   `reststop` then `replaykeys` applies the later keys and a breakpoint stops on the spin the
+   key selects, with that add still unexecuted. A different key stops on the other spin the
+   same way. The recording is otherwise narrow: `--tos none`,
+   no floppy. TOS and the FDC are not proven.
    A Lua file that boots Hatari and hashes RAM is not this result, and stop hooks are not
    record/replay.
 2. **Restore and stay stopped.** Passed. `reststop` restores one `statesave` file and returns
@@ -493,9 +508,11 @@ What each gate proved, and where the proof stops:
 Still not built:
 
 - **Reverse Step** restores an earlier snapshot and replays to just before the instruction on
-  screen. Replay still requires the debugger off, so that step has no proven mechanism. The
-  saved-stop list is the navigation that does not need it. Breakpoint seeking, branches, and a
-  recording browser wait with it.
+  screen. The fork can do that for the replay fixture: a snapshot taken during the recording,
+  `reststop`, then `replaykeys`, then a breakpoint on the later instruction. PiST does not call
+  it. The saved-stop list is still the navigation in the product. A stop during the recording
+  itself is not part of the proof. Breakpoint seeking, branches, and a recording browser wait
+  with a PiST command for this.
 - **Reads, and where a value came from,** are the rest of memory history. The Writes list
   is the forward-only view of gate 3. The Palette list is the forward-only view of gate 4.
   Interrupts, video-base changes, the blitter, and a known-good frame are not that list.

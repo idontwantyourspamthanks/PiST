@@ -4807,16 +4807,26 @@ void TstGui::restoreStopReturnsToTheSavedInstruction()
     const quint32 entryD0 = strip->text().mid(d0At + 3, 8).toUInt(&d0Ok, 16);
     QVERIFY(d0Ok);
 
+    const auto savedPaths = [&window] {
+        QStringList paths;
+        const QString mark = QStringLiteral("[stop] saved ");
+        int at = 0;
+        const QString text = window.debugConsoleText();
+        while ((at = text.indexOf(mark, at)) >= 0) {
+            at += mark.size();
+            paths << text.mid(at).section(QLatin1Char('\n'), 0, 0).trimmed();
+        }
+        return paths;
+    };
+
     QVERIFY(QMetaObject::invokeMethod(&window, "saveStop", Qt::DirectConnection));
-    const QString savedMark = QStringLiteral("[stop] saved ");
-    QVERIFY(window.debugConsoleText().contains(savedMark));
-    const QString savedPath = window.debugConsoleText()
-                                  .mid(window.debugConsoleText().lastIndexOf(savedMark) + savedMark.size())
-                                  .section(QLatin1Char('\n'), 0, 0)
-                                  .trimmed();
-    if (!QTest::qWaitFor([&] { return QFileInfo::exists(savedPath); }, 30000))
+    if (!QTest::qWaitFor(
+            [&] {
+                const QStringList paths = savedPaths();
+                return paths.size() == 1 && QFileInfo::exists(paths.at(0));
+            },
+            30000))
         qDebug().noquote() << window.debugConsoleText();
-    QVERIFY2(QFileInfo::exists(savedPath), qPrintable(savedPath));
     QVERIFY(restore->isEnabled());
 
     QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
@@ -4831,11 +4841,57 @@ void TstGui::restoreStopReturnsToTheSavedInstruction()
     QVERIFY(steppedOk);
     QCOMPARE(steppedD0, entryD0 + 1u);
 
+    QVERIFY(QMetaObject::invokeMethod(&window, "saveStop", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                const QStringList paths = savedPaths();
+                return paths.size() == 2 && paths.at(0) != paths.at(1)
+                       && QFileInfo::exists(paths.at(0)) && QFileInfo::exists(paths.at(1));
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    auto *stops = window.findChild<QMenu *>(QStringLiteral("savedStopsMenu"));
+    QVERIFY(stops && run->actions().contains(stops->menuAction()));
+    QCOMPARE(stops->actions().size(), 3);
+
+    const QString consoleBeforeHistory = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showSavedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QString());
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    const int historyAt = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(historyAt >= 0);
+    bool historyOk = false;
+    const quint32 historyD0 = strip->text().mid(historyAt + 3, 8).toUInt(&historyOk, 16);
+    QVERIFY(historyOk);
+    QCOMPARE(historyD0, entryD0);
+    QCOMPARE(window.debugConsoleText(), consoleBeforeHistory);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "showLiveStop", Qt::DirectConnection));
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
+    QVERIFY(!strip->text().contains(QStringLiteral("History")));
+    const int liveAt = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(liveAt >= 0);
+    bool liveOk = false;
+    const quint32 liveD0 = strip->text().mid(liveAt + 3, 8).toUInt(&liveOk, 16);
+    QVERIFY(liveOk);
+    QCOMPARE(liveD0, entryD0 + 1u);
+
+    // Restore the earlier stop, the one on screen, rather than the latest.
+    QVERIFY(QMetaObject::invokeMethod(&window, "showSavedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
     QVERIFY(QMetaObject::invokeMethod(&window, "restoreStop", Qt::DirectConnection));
     const bool back = QTest::qWaitFor(
         [&] {
             if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
                 return true;
+            // History already paints this address and D0. The line comes off
+            // when the restored machine arrives, so the wait is that arrival.
+            if (strip->text().contains(QLatin1String("History")))
+                return false;
             if (analysis->executionAddress() != std::optional<quint32>(0))
                 return false;
             const int at = strip->text().indexOf(QLatin1String("D0 "));

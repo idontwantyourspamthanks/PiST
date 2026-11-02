@@ -119,9 +119,11 @@ Everything else in this document is a consequence of that rule. The debug transp
   The card answers the "the emulator is hung" reading of a loaded screen that never moves; it
   pulses once when it first appears. While a session is running the dock is titled
   `Emulator — <source>` (the file that was built, `keyred.s`); it returns to `Emulator` when
-  the session ends or the start fails. Run ▸ Save Stop writes that stopped machine
-  with `statesave`; Run ▸ Restore Stop runs `reststop` on the file, and the register
-  view and the analysis gutter follow the stop that comes back. The X11-reparenting and Windows-adoption embedding paths that
+  the session ends or the start fails. Run ▸ Save Stop remembers that stopped
+  machine, up to a few of them. Choosing one shows its registers and analysis
+  mark without calling the debugger. Run ▸ Restore Stop runs `reststop` on the
+  one being shown, or the latest, and those views follow the stop that comes
+  back. The X11-reparenting and Windows-adoption embedding paths that
   used to live here were deleted in the phase-4 cutover — the media channel is the only embedded
   display.
 - **Debug panels** (`ui/`): `RegistersView` (editable D0–D7/A0–A7, PC, SR, USP/ISP, flags),

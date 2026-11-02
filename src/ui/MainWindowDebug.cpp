@@ -5,7 +5,9 @@
 #include "ui/MainWindow.h"
 #include "ui/MainWindowPrivate.h"
 
+#include <QFile>
 #include <QFileInfo>
+#include <QMenu>
 #include "emu/HexFormat.h"
 #include "support/CrashReport.h"
 #include "support/DocumentWatcher.h"
@@ -234,6 +236,7 @@ void MainWindow::wireBackend()
             if (m_actStepOut) m_actStepOut->setEnabled(false);
             if (m_actSaveStop) m_actSaveStop->setEnabled(false);
             if (m_actRestoreStop) m_actRestoreStop->setEnabled(false);
+            if (m_savedStopsMenu) m_savedStopsMenu->setEnabled(false);
             if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actFollow) m_actFollow->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
@@ -406,7 +409,7 @@ void MainWindow::wireBackend()
         if (m_actSaveStop)
             m_actSaveStop->setEnabled(stopped);
         if (m_actRestoreStop)
-            m_actRestoreStop->setEnabled(stopped && !m_savedStopPath.isEmpty());
+            m_actRestoreStop->setEnabled(stopped && !m_savedStops.isEmpty());
         m_actRunToCursor->setEnabled(stopped);
         m_actFollow->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
@@ -492,27 +495,110 @@ void MainWindow::wireBackend()
 }
 
 
+void MainWindow::dismissHistory()
+{
+    m_historyIndex = -1;
+}
+
+
+void MainWindow::rebuildSavedStopsMenu()
+{
+    if (!m_savedStopsMenu)
+        return;
+    m_savedStopsMenu->clear();
+    auto *live = m_savedStopsMenu->addAction(tr("Live"));
+    live->setObjectName(QStringLiteral("showLiveStopAction"));
+    live->setCheckable(true);
+    live->setChecked(m_historyIndex < 0);
+    connect(live, &QAction::triggered, this, &MainWindow::showLiveStop);
+    for (int i = m_savedStops.size() - 1; i >= 0; --i) {
+        const MachineState &state = m_savedStops.at(i).state;
+        auto *action = m_savedStopsMenu->addAction(
+            tr("PC %1  D0 %2").arg(hex::hex32(state.pc), hex::hex32(state.regs.d[0])));
+        action->setObjectName(QStringLiteral("savedStopAction%1").arg(i));
+        action->setCheckable(true);
+        action->setChecked(i == m_historyIndex);
+        connect(action, &QAction::triggered, this, [this, i] { showSavedStop(i); });
+    }
+    m_savedStopsMenu->setEnabled(!m_savedStops.isEmpty());
+}
+
+
 void MainWindow::saveStop()
 {
-    if (!m_host || !m_host->isStopped() || m_currentSessionDir.isEmpty())
+    if (!m_host || !m_host->isStopped() || m_currentSessionDir.isEmpty()
+        || !m_lastState.regs.valid)
         return;
-    m_savedStopPath = m_currentSessionDir + QStringLiteral("/stop.sav");
-    m_host->command(QStringLiteral("statesave %1").arg(m_savedStopPath));
-    m_log->appendPlainText(tr("[stop] saved %1").arg(m_savedStopPath));
+    // Eight is enough to look back through a short stretch of stepping.
+    // Older snapshots are files in the session directory, which goes away
+    // with the session.
+    constexpr int kMaxSavedStops = 8;
+    while (m_savedStops.size() >= kMaxSavedStops) {
+        QFile::remove(m_savedStops.first().path);
+        m_savedStops.removeFirst();
+        if (m_historyIndex == 0)
+            showLiveStop();
+        else if (m_historyIndex > 0)
+            --m_historyIndex;
+    }
+    SavedStop stop;
+    stop.path = m_currentSessionDir + QStringLiteral("/stop-%1.sav").arg(++m_savedStopSerial);
+    stop.state = m_lastState;
+    m_savedStops.append(stop);
+    m_host->command(QStringLiteral("statesave %1").arg(stop.path));
+    m_log->appendPlainText(tr("[stop] saved %1").arg(stop.path));
     if (m_actRestoreStop)
         m_actRestoreStop->setEnabled(true);
+    rebuildSavedStopsMenu();
+}
+
+
+void MainWindow::showSavedStop(int index)
+{
+    if (index < 0 || index >= m_savedStops.size())
+        return;
+    m_historyIndex = index;
+    const MachineState &state = m_savedStops.at(index).state;
+    if (m_registers) {
+        m_registers->setState(state);
+        m_registers->setEditingEnabled(false);
+    }
+    updateRegisterStrip();
+    applyAnalysisFrom(state);
+    rebuildSavedStopsMenu();
+}
+
+
+void MainWindow::showLiveStop()
+{
+    m_restorePending = false;
+    dismissHistory();
+    if (m_registers) {
+        if (m_lastState.regs.valid)
+            m_registers->setState(m_lastState);
+        m_registers->setEditingEnabled(m_host && m_host->isStopped());
+    }
+    updateRegisterStrip();
+    applyAnalysisExecution();
+    rebuildSavedStopsMenu();
 }
 
 
 void MainWindow::restoreStop()
 {
-    if (!m_host || !m_host->isStopped() || m_savedStopPath.isEmpty())
+    if (!m_host || !m_host->isStopped() || m_savedStops.isEmpty())
         return;
+    const int index = m_historyIndex >= 0 ? m_historyIndex : m_savedStops.size() - 1;
+    const QString path = m_savedStops.at(index).path;
+    // Leave the saved registers on screen until the restored state arrives.
+    // Clearing the history index here would let the resume's refresh paint
+    // the pre-restore machine over them.
+    m_restorePending = true;
     // reststop answers DEBUGGER_END, so the transport sees a resume and then
     // the stop that comes back. The views follow that stop the same way they
     // follow any other one.
-    m_host->command(QStringLiteral("reststop %1").arg(m_savedStopPath));
-    m_log->appendPlainText(tr("[stop] restoring %1").arg(m_savedStopPath));
+    m_host->command(QStringLiteral("reststop %1").arg(path));
+    m_log->appendPlainText(tr("[stop] restoring %1").arg(path));
 }
 
 
@@ -524,6 +610,8 @@ void MainWindow::step()
     // step-back snapshot all depend on it). The same fact is why the stop hook
     // needs the step flag: the state batch that follows is the only report of
     // the movement (docs/stop-hooks-plan.md §6).
+    if (m_historyIndex >= 0)
+        showLiveStop();
     m_session->setStepEventPending(true);
     m_host->step();
     m_host->refresh();
@@ -532,6 +620,8 @@ void MainWindow::step()
 
 void MainWindow::stepOver()
 {
+    if (m_historyIndex >= 0)
+        showLiveStop();
     m_session->setStepEventPending(true);
     m_host->stepOver();
     m_host->refresh();
@@ -540,6 +630,8 @@ void MainWindow::stepOver()
 
 void MainWindow::stepOut()
 {
+    if (m_historyIndex >= 0)
+        showLiveStop();
     m_session->stepOut();
 }
 
@@ -566,6 +658,8 @@ void MainWindow::runToCursor()
                                .arg(line)
                                .arg(address, 0, 16));
     m_host->breakAtAddressOnce(address);
+    if (m_historyIndex >= 0)
+        showLiveStop();
     m_host->resume();
 }
 
@@ -578,6 +672,8 @@ void MainWindow::pauseSession()
 
 void MainWindow::resume()
 {
+    if (m_historyIndex >= 0)
+        showLiveStop();
     m_host->resume();
 }
 
@@ -979,6 +1075,19 @@ void MainWindow::clearAllDebugTargets()
 void MainWindow::onStateUpdated(const MachineState &state)
 {
     m_lastState = state;
+    if (m_restorePending) {
+        // The machine is back at the snapshot. This state is that stop, so it
+        // is the live one from here.
+        m_restorePending = false;
+        m_historyIndex = -1;
+        if (m_registers)
+            m_registers->setEditingEnabled(m_host && m_host->isStopped());
+        rebuildSavedStopsMenu();
+    } else if (m_historyIndex >= 0) {
+        // A refresh already in flight must not replace the saved stop on
+        // screen, and looking at one does not ask the debugger for anything.
+        return;
+    }
     m_registers->setState(state);
     // Publish the stop only once a register batch has landed: the entry
     // attach's standalone `info basepage` emits a state update with pc still

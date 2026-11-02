@@ -558,6 +558,10 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStepOut);
     runMenu->addAction(m_actSaveStop);
     runMenu->addAction(m_actRestoreStop);
+    m_savedStopsMenu = new QMenu(tr("Saved Stops"), this);
+    m_savedStopsMenu->setObjectName(QStringLiteral("savedStopsMenu"));
+    m_savedStopsMenu->setEnabled(false);
+    runMenu->addMenu(m_savedStopsMenu);
     runMenu->addAction(m_actRunToCursor);
     // Next to Run to Cursor: both are about where the caret is relative to the
     // executing program, one of them for a single stop and one for the session.
@@ -1710,14 +1714,23 @@ void MainWindow::updateCaretChip()
 
 void MainWindow::updateRegisterStrip()
 {
+    if (m_historyIndex >= 0 && m_historyIndex < m_savedStops.size()) {
+        paintRegisterStrip(m_savedStops.at(m_historyIndex).state, true);
+        return;
+    }
+    paintRegisterStrip(m_lastState, false);
+}
+
+void MainWindow::paintRegisterStrip(const MachineState &state, bool history)
+{
     if (!m_registerStrip)
         return;
     const bool show = m_host && m_host->isRunning() && m_host->isStopped()
-                      && m_lastState.regs.valid;
+                      && state.regs.valid;
     m_registerStrip->setVisible(show);
     if (!show)
         return;
-    const Registers &r = m_lastState.regs;
+    const Registers &r = state.regs;
     auto word = [](quint32 value) {
         return hex::hex32(value);
     };
@@ -1734,9 +1747,11 @@ void MainWindow::updateRegisterStrip()
                               .arg(mark(r.flagZ))
                               .arg(mark(r.flagV))
                               .arg(mark(r.flagC));
-    const QString text = data.trimmed() + QLatin1Char('\n')
-                       + addr.trimmed()
-                       + QStringLiteral("   PC %1  %2").arg(word(m_lastState.pc), flags);
+    QString text = data.trimmed() + QLatin1Char('\n')
+                 + addr.trimmed()
+                 + QStringLiteral("   PC %1  %2").arg(word(state.pc), flags);
+    if (history)
+        text = tr("History") + QLatin1Char('\n') + text;
     m_registerStrip->setText(text);
     m_registerStrip->setToolTip(text);
 }

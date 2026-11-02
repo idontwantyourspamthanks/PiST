@@ -337,10 +337,16 @@ private slots:
     /// Step out of the current subroutine: one-shot breakpoint at the return
     /// address read from the stack, then resume (no Hatari primitive exists).
     void stepOut();
-    /// Write a snapshot of the stopped machine. Restore Stop returns to it.
+    /// Remember the stopped machine. A few are kept; the oldest is dropped.
     void saveStop();
-    /// Restore the snapshot from Save Stop and stay stopped on its instruction.
-    /// A Hatari without `reststop` reports that on the console and stays where it is.
+    /// Show a saved stop's registers and analysis mark. Does not call the debugger.
+    /// `index` counts from the oldest.
+    void showSavedStop(int index);
+    /// Show the live machine again. Does not call the debugger.
+    void showLiveStop();
+    /// Restore the saved stop on screen, or the latest one, and stay stopped
+    /// on its instruction. A Hatari without `reststop` reports that on the
+    /// console and stays where it is.
     void restoreStop();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
@@ -537,6 +543,7 @@ private:
     /// the execution line shows both ("caret 22 · PC 18").
     void updateCaretChip();
     void updateRegisterStrip();
+    void paintRegisterStrip(const pist::MachineState &state, bool history);
 
     /// Point the instruction reference, and the one-line strip under the
     /// editor, at the word under the caret. Runs whether or not the
@@ -778,6 +785,7 @@ private:
     /// comes from the live basepage and this file's own section sizes, and it
     /// is not written into the notes.
     void applyAnalysisExecution();
+    void applyAnalysisFrom(const pist::MachineState &state);
     /// Title the emulator dock with the source this session is running, or
     /// restore "Emulator" when nothing is.
     void setEmulatorCaption();
@@ -1137,9 +1145,24 @@ private:
     QAction *m_actStepOut = nullptr;
     QAction *m_actSaveStop = nullptr;
     QAction *m_actRestoreStop = nullptr;
-    /// Snapshot written by Save Stop, in the session directory. Empty until then,
-    /// and cleared when the session ends.
-    QString m_savedStopPath;
+    QMenu *m_savedStopsMenu = nullptr;
+    /// One stopped machine: the snapshot Hatari wrote, and the registers and
+    /// PC that were on screen then. `showSavedStop` paints those without
+    /// reading the live machine.
+    struct SavedStop {
+        QString path;
+        MachineState state;
+    };
+    QList<SavedStop> m_savedStops;
+    /// Index into `m_savedStops` of the stop on screen, or -1 for the live machine.
+    int m_historyIndex = -1;
+    /// Restore Stop has been sent. The next state is that machine, so it is
+    /// painted even if a saved stop is still on screen.
+    bool m_restorePending = false;
+    int m_savedStopSerial = 0;
+    void rebuildSavedStopsMenu();
+    /// The next live stop should paint. Does not itself repaint.
+    void dismissHistory();
     QAction *m_actRunToCursor = nullptr;
     /// Run ▸ Follow execution. Checkable, and the state it shows *is*
     /// m_pcFollow: the menu is where the caret's ownership is visible and can be

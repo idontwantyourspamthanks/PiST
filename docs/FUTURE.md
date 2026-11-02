@@ -230,6 +230,10 @@ unbuilt.
   Motion in the first vertical blanks is not logged. The per-instruction
   debugger can also stay on for a recording that never stops: one breakpoint that cannot match
   leaves it on, the debugger is never entered, and the trace matches the run with the flag clear.
+  A from-reset recording of the TOS image PiST finds still does not fit: at frame 256 the
+  guest is in the floppy timeout. From the entry stop it does. `replayrecord` snapshots
+  that unexecuted first instruction and records the vertical blanks after it, and
+  `replayplay` after `reststop` matches (§14). PiST does not call either command.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
   the debugger is stopped, so a frozen frame is not mistaken for a crash. The badge is placed in
   widget coordinates, so on a dock small enough for the fitted video to reach the widget's top-right
@@ -468,8 +472,9 @@ Not in this pass, on purpose:
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
 **Status:** passed, on `hatari-pist`, pinned in PiST at `623747d`
-(`623747d0d9decab28a9bf0badd09305bf8a6c033`). The debugger-on replay and
-`replaykeys` are on the fork after that pin; the pinned build does not have them.
+(`623747d0d9decab28a9bf0badd09305bf8a6c033`). The debugger-on replay,
+`replaykeys`, and the entry-stop commands `replayrecord` and `replayplay` are on the
+fork after that pin; the pinned build does not have them.
 Each gate was a pass/fail trace and no dock.
 Stock Hatari still has none of these commands. PiST probes by command name and treats
 `Command '<name>' not found.` as a skip, not a failure. The host-side memory compare, the
@@ -498,8 +503,19 @@ What each gate proved, and where the proof stops:
    key selects, with that add still unexecuted. A different key stops on the other spin the
    same way. A `statesave` from the debugger prompt, on the fixture's first instruction
    at vertical blank 0, restores through `reststop` and reaches that same unexecuted add.
-   The recording is otherwise narrow: `--tos none`,
-   no floppy. TOS and the FDC are not proven.
+   The recording is otherwise narrow: `--tos none`, no floppy. A from-reset recording
+   of a TOS image is still refused. The image PiST selects for an ST is TOS 1.04, and
+   with no floppy, GEMDOS host time off, and fast boot left off, that boot is still in
+   the floppy timeout at vertical blank 1500 (`btst.b #5,$FFFFFA01` at `$FC156A`). The
+   cap stays 256, so those blanks are not the recording. The entry stop is. The same
+   launch breakpoint PiST uses, `pc = TEXT && pc < $e00000`, with one breakpoint that
+   cannot match left armed, stops on the program's first instruction before it has
+   executed: `moveq #1,d1` at `$12596`, user mode, vertical blank 1544. `replayrecord`
+   writes the snapshot there and records the next 40 vertical blanks. They are the
+   spin, D1 stays 1, D2 stays 2, D3 increases, and the PC stays in RAM. `reststop`
+   returns to that same unexecuted `moveq`. `replayplay` matches all 40. The file names
+   the ROM by SHA-256, and a different hash is refused. PiST does not call these
+   commands.
    A Lua file that boots Hatari and hashes RAM is not this result, and stop hooks are not
    record/replay.
 2. **Restore and stay stopped.** Passed. `reststop` restores one `statesave` file and returns
@@ -535,7 +551,9 @@ Still not built:
   `reststop`, then `replaykeys`, then a breakpoint on the later instruction. The snapshot
   can be the one `--replay-snapshot` writes while the recording runs, or a `statesave`
   from the debugger prompt at the fixture's first instruction, or a `statesave` from the
-  one stop in the middle of the recording. PiST does not call
+  one stop in the middle of the recording. The same restore-and-replay also reaches
+  the entry stop of a TOS 1.04 boot: the snapshot is the program's first instruction,
+  and the blanks after it replay (§14). PiST does not call
   it. The saved-stop list is still the navigation in the product. Breakpoint seeking, branches, and a recording browser wait
   with a PiST command for this.
 - **Reads, and where a value came from,** are the rest of memory history. The Writes list

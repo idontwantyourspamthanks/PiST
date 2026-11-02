@@ -222,7 +222,10 @@ unbuilt.
   executes, then continuing, still matches the run that never entered the debugger.
   A statesave from that stop, with the breakpoint left armed, restores through
   reststop to the same unexecuted addq, and the recording's trace still matches.
-  The per-instruction
+  A key from the media channel is logged on the vertical blank that polls it:
+  sent while stopped at vertical blank 5, it is frame 6 in the file, and that
+  trace matches `--replay-key` at the same frame. A media mouse event is not
+  in the log. The per-instruction
   debugger can also stay on for a recording that never stops: one breakpoint that cannot match
   leaves it on, the debugger is never entered, and the trace matches the run with the flag clear.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
@@ -482,7 +485,10 @@ What each gate proved, and where the proof stops:
    space spin, the addq has not executed, continue finishes the 40 frames, and that trace matches
    the run that never entered the debugger. A changed key still diverges at frame 16.
    A statesave from that stop, breakpoint left armed, restores through `reststop` to the
-   same unexecuted addq, and the recording's trace still matches. From a snapshot taken at vertical blank 10,
+   same unexecuted addq, and the recording's trace still matches. A key from the
+   media channel, sent while that recording is stopped at vertical blank 5, is logged
+   as frame 6 and matches a `--replay-key` of the same scancode at that frame. A different
+   scancode diverges after it. A media mouse event is not in the log. From a snapshot taken at vertical blank 10,
    `reststop` then `replaykeys` applies the later keys and a breakpoint stops on the spin the
    key selects, with that add still unexecuted. A different key stops on the other spin the
    same way. A `statesave` from the debugger prompt, on the fixture's first instruction

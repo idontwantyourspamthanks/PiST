@@ -9,6 +9,7 @@
 #include "analysis/AnalysisNotes.h"
 #include "analysis/AssemblyExport.h"
 #include "analysis/Coverage.h"
+#include "analysis/PalTrace.h"
 #include "analysis/WriteTrace.h"
 #include "analysis/M68kDisasm.h"
 #include "analysis/ProgramTrace.h"
@@ -117,6 +118,7 @@ private slots:
     void assembledExportMatchesTheImage();
     void coverageFileListsExecutedAddresses();
     void writeTraceFileListsWhoStored();
+    void palTraceFileListsTheScanline();
 };
 
 void tst_analysis::rejectsAFileThatIsNotTos()
@@ -762,6 +764,42 @@ void tst_analysis::writeTraceFileListsWhoStored()
                                             "cost off 0 on 0 writes 0\n"),
                              &log, &error));
     QCOMPARE(error, QStringLiteral("the writetrace file has a pc on a write that has no writer"));
+}
+
+void tst_analysis::palTraceFileListsTheScanline()
+{
+    // The two writes from the palette-clock gate: same frame-cycle count, different
+    // lines, because 60 Hz is not 512 cycles per line.
+    const QString report = QStringLiteral(
+        "HPISTPAL 1\n"
+        "event 1 pc 0000110e reg ff8240 value 0700 vbl 1 hbl 153 pos 260 frame 78596\n"
+        "event 2 pc 00001122 reg ff8240 value 0070 vbl 2 hbl 154 pos 364 frame 78596\n");
+    PaletteLog log;
+    QString error;
+    QVERIFY2(parsePalTrace(report, &log, &error), qPrintable(error));
+    QCOMPARE(log.events.size(), 2);
+    QCOMPARE(log.events.at(0).pc, 0x110eu);
+    QCOMPARE(log.events.at(0).reg, 0xff8240u);
+    QCOMPARE(log.events.at(0).color, 0x0700u);
+    QCOMPARE(log.events.at(0).vbl, 1);
+    QCOMPARE(log.events.at(0).hbl, 153);
+    QCOMPARE(log.events.at(0).pos, 260);
+    QCOMPARE(log.events.at(0).frame, 78596);
+    QCOMPARE(log.events.at(1).color, 0x0070u);
+    QCOMPARE(log.events.at(1).hbl, 154);
+    QCOMPARE(log.events.at(1).pos, 364);
+    QCOMPARE(log.events.at(1).frame, 78596);
+
+    QVERIFY(parsePalTrace(QStringLiteral("HPISTPAL 1\n"), &log, &error));
+    QCOMPARE(log.events.size(), 0);
+
+    QVERIFY(!parsePalTrace(QStringLiteral("HPISTWRITE 1\n"), &log, &error));
+    QCOMPARE(error, QStringLiteral("not a paltrace file"));
+    QVERIFY(!parsePalTrace(QStringLiteral(
+                               "HPISTPAL 1\n"
+                               "event 1 pc 0000110e reg ff8240 value 0700 vbl 1 hbl 153 pos 260\n"),
+                           &log, &error));
+    QCOMPARE(error, QStringLiteral("the paltrace file has a line that is not a palette write"));
 }
 
 QTEST_MAIN(tst_analysis)

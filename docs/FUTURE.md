@@ -484,8 +484,10 @@ What each gate proved, and where the proof stops:
    where the hardware writes it (format `HPISTPAL 1`), with the vertical blank, the line, and
    the position on that line. The same two writes landed on different lines at 50 Hz (512
    cycles per line) and 60 Hz (508), because the position is the shifter's own line clock and
-   not a frame-cycle count divided by 512. PiST does not call the command yet, so there is
-   still no scanline list. The profiler overlay is not that stream. The media channel's frames
+   not a frame-cycle count divided by 512. PiST's Palette dock Trace button runs `paltrace
+   on`, and the list reads the file at each later stop. A row opens that instruction's
+   source line when the program map knows it. The list does not move the machine, and it
+   is not a scanline inspector. The profiler overlay is not that stream. The media channel's frames
    are RGB, and `info video` does not carry the palette.
 
 Still not built:
@@ -495,8 +497,8 @@ Still not built:
   saved-stop list is the navigation that does not need it. Breakpoint seeking, branches, and a
   recording browser wait with it.
 - **Reads, and where a value came from,** are the rest of memory history. The Writes list
-  is the forward-only view of gate 3. A **scanline list** is the forward-only view of gate 4.
-  `paltrace` is trustworthy enough to show. Nothing in PiST reads it yet.
+  is the forward-only view of gate 3. The Palette list is the forward-only view of gate 4.
+  Interrupts, video-base changes, the blitter, and a known-good frame are not that list.
 - **Applying a patch** stays closed until the preview has been wrong in public at least once,
   and then only for one same-length range, while stopped, with a read-back, and only when the
   preview said the section size matched. Gate 2 has passed, so a snapshot to roll back to is

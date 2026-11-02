@@ -5,7 +5,9 @@
 #include "ui/MainWindow.h"
 #include "ui/MainWindowPrivate.h"
 
+#include "analysis/PalTrace.h"
 #include "analysis/WriteTrace.h"
+#include "ui/PalTraceView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/WriteTraceView.h"
 
@@ -379,6 +381,32 @@ void MainWindow::wireBackend()
                     return;
                 applyWriteTraceFile(path);
             });
+    connect(m_host, &IDebugBackend::palTraceReady, this, [this](bool accepted) {
+        if (!m_host->isRunning() || m_currentSessionDir.isEmpty() || !m_palTraceWanted)
+            return;
+        if (!accepted) {
+            m_palTraceWanted = false;
+            m_palTraceRecording = false;
+            if (m_palTrace)
+                m_palTrace->setTraceArmed(false);
+            m_log->appendPlainText(tr("[palette] this Hatari has no paltrace command"));
+            return;
+        }
+        m_palTraceRecording = true;
+        if (m_palTrace)
+            m_palTrace->setTraceArmed(true);
+        if (m_palTraceDock) {
+            m_palTraceDock->show();
+            m_palTraceDock->raise();
+        }
+        m_log->appendPlainText(tr("[palette] recording"));
+    });
+    connect(m_host, &IDebugBackend::palTraceSaveFinished, this,
+            [this](const QString &path) {
+                if (!m_palTraceRecording || m_currentSessionDir.isEmpty())
+                    return;
+                applyPalTraceFile(path);
+            });
     connect(m_host, &IDebugBackend::commandFinished, this,
             [this](const QString &command, const QString &response) {
                 // Only the remote `cmd` verb's own text is matched here: it is
@@ -609,6 +637,7 @@ void MainWindow::showLiveStop()
     applyAnalysisExecution();
     rebuildSavedStopsMenu();
     requestWriteTraceSave();
+    requestPalTraceSave();
 }
 
 
@@ -1115,6 +1144,8 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // the same range again drops the writes from the path just abandoned.
         if (m_writeTraceRecording)
             m_writeTraceRearm = true;
+        if (m_palTraceRecording)
+            m_palTraceRearm = true;
     } else if (m_historyIndex >= 0) {
         // A refresh already in flight must not replace the saved stop on
         // screen, and looking at one does not ask the debugger for anything.
@@ -1243,9 +1274,79 @@ void MainWindow::onStateUpdated(const MachineState &state)
     } else {
         requestWriteTraceSave();
     }
+    if (m_palTraceRearm) {
+        m_palTraceRearm = false;
+        m_host->palTraceOn();
+        if (m_palTrace)
+            m_palTrace->clear();
+    } else {
+        requestPalTraceSave();
+    }
 }
 
 
+
+void MainWindow::tracePalette()
+{
+    if (!m_host || !m_host->isStopped() || m_currentSessionDir.isEmpty()) {
+        if (m_palTrace)
+            m_palTrace->setTraceArmed(false);
+        if (m_log)
+            m_log->appendPlainText(tr("[palette] palette writes can only be traced while stopped"));
+        return;
+    }
+    m_palTraceWanted = true;
+    m_palTraceRecording = false;
+    m_palTraceRearm = false;
+    m_host->palTraceOn();
+}
+
+void MainWindow::stopPaletteTrace()
+{
+    m_palTraceWanted = false;
+    m_palTraceRecording = false;
+    m_palTraceRearm = false;
+    if (m_palTrace) {
+        m_palTrace->setTraceArmed(false);
+        m_palTrace->clear();
+    }
+    if (m_host && m_host->isRunning())
+        m_host->palTraceOff();
+}
+
+void MainWindow::requestPalTraceSave()
+{
+    if (!m_palTraceRecording || !m_host || !m_host->isRunning() || m_currentSessionDir.isEmpty())
+        return;
+    m_host->palTraceSave(m_currentSessionDir + QStringLiteral("/paltrace.txt"));
+}
+
+void MainWindow::applyPalTraceFile(const QString &path)
+{
+    if (!m_palTrace)
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_log->appendPlainText(tr("Could not read the palette trace."));
+        return;
+    }
+    QString error;
+    PaletteLog log;
+    if (!parsePalTrace(QString::fromUtf8(file.readAll()), &log, &error)) {
+        m_log->appendPlainText(error);
+        return;
+    }
+    QStringList where;
+    where.reserve(log.events.size());
+    for (const PaletteEvent &event : log.events) {
+        LineMap::Address loc;
+        if (m_bases.isValid() && !m_programMap.isEmpty() && m_programMap.lineFor(event.pc, &loc))
+            where.append(QFileInfo(loc.file).fileName() + QLatin1Char(':') + QString::number(loc.line));
+        else
+            where.append(QString());
+    }
+    m_palTrace->setTrace(log, where);
+}
 
 void MainWindow::traceWrites(quint32 address, int length)
 {

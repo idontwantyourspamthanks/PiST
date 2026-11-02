@@ -191,6 +191,9 @@ public:
     }
     void writeTraceSave(const QString &path) override { Q_UNUSED(path); }
     void writeTraceOff() override {}
+    void palTraceOn() override {}
+    void palTraceSave(const QString &path) override { Q_UNUSED(path); }
+    void palTraceOff() override {}
     void breakAtAddressOnce(quint32 address) override { Q_UNUSED(address); }
 
     void writeMemoryByte(quint32 address, quint8 value) override

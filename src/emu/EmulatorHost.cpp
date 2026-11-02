@@ -757,6 +757,13 @@ void EmulatorHost::completeCurrent()
     }
     if (!m_current.writeTracePath.isEmpty())
         emit writeTraceSaveFinished(m_current.writeTracePath);
+    if (m_current.palTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'paltrace' not found"))
+                              || response.contains(QLatin1String("paltrace:"));
+        emit palTraceReady(!rejected);
+    }
+    if (!m_current.palTracePath.isEmpty())
+        emit palTraceSaveFinished(m_current.palTracePath);
 
     // A typed `info <subject>` report is not part of MachineState: it is
     // parsed into its summary here and goes to the caller that asked, named by
@@ -1066,6 +1073,30 @@ void EmulatorHost::writeTraceSave(const QString &path)
 void EmulatorHost::writeTraceOff()
 {
     enqueueIntent(QStringLiteral("writetrace off"), ResponseKind::None, true);
+}
+
+void EmulatorHost::palTraceOn()
+{
+    // Kept across a resume(): recording starts at the continue itself.
+    Pending p;
+    p.text = QStringLiteral("paltrace on");
+    p.palTraceProbe = true;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::palTraceSave(const QString &path)
+{
+    Pending p;
+    p.text = QStringLiteral("paltrace save %1").arg(path);
+    p.palTracePath = path;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::palTraceOff()
+{
+    enqueueIntent(QStringLiteral("paltrace off"), ResponseKind::None, true);
 }
 
 void EmulatorHost::writeRegister(const QString &name, quint32 value)

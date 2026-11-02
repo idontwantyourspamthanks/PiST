@@ -64,6 +64,7 @@
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/WriteTraceView.h"
+#include "ui/PalTraceView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
 #include "ui/SetupDialog.h"
@@ -132,6 +133,7 @@ bool isDebugDockName(const QString &name)
         || name == QLatin1String("hardwareDock")
         || name == QLatin1String("pcHistoryDock")
         || name == QLatin1String("writeTraceDock")
+        || name == QLatin1String("paletteDock")
         || name == QLatin1String("breakpointsDock")
         || name == QLatin1String("instructionRefDock")
         || name == QLatin1String("symbolsDock")
@@ -930,6 +932,7 @@ void MainWindow::buildPanels()
 
     m_pcHistory = new PcHistoryView(this);
     m_writeTrace = new WriteTraceView(this);
+    m_palTrace = new PalTraceView(this);
     m_instrRef = new InstructionRefView(this);
     m_symbolsView = new SymbolsView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
@@ -939,6 +942,8 @@ void MainWindow::buildPanels()
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
               << (m_writeTraceDock = makeDock(tr("Writes"), QStringLiteral("writeTraceDock"),
                                               m_writeTrace))
+              << (m_palTraceDock = makeDock(tr("Palette"), QStringLiteral("paletteDock"),
+                                            m_palTrace))
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
               << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
               << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
@@ -1145,6 +1150,20 @@ void MainWindow::wirePanels()
                     return;
                 openMemory(hasPc ? pc : address);
             });
+    // A palette row opens the writer's source line. The line and position in
+    // the list were taken when the color was stored; opening the row does not
+    // move the machine back there.
+    connect(m_palTrace, &PalTraceView::eventActivated, this,
+            [openMappedSource, openMemory](quint32 pc) {
+                if (!openMappedSource(pc))
+                    openMemory(pc);
+            });
+    connect(m_palTrace, &PalTraceView::traceToggled, this, [this](bool on) {
+        if (on)
+            tracePalette();
+        else
+            stopPaletteTrace();
+    });
     connect(m_hardware, &HardwareView::subjectChanged, this,
             [this](const QString &subject) {
                 if (m_host->isRunning())
@@ -1227,6 +1246,7 @@ void MainWindow::buildViewMenu()
             QStringLiteral("hardwareDock"),
             QStringLiteral("pcHistoryDock"),
             QStringLiteral("writeTraceDock"),
+            QStringLiteral("paletteDock"),
             QStringLiteral("breakpointsDock"),
             QStringLiteral("instructionRefDock"),
             QStringLiteral("symbolsDock"),

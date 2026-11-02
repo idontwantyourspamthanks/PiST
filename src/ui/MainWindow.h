@@ -353,6 +353,11 @@ private slots:
     /// on the console and records nothing.
     void traceWrites(quint32 address, int length);
     void stopWriteTrace();
+    /// Record shifter palette writes. The Palette list fills at each later
+    /// stop, with the scanline taken when the color was stored. A Hatari
+    /// without `paltrace` reports that on the console and records nothing.
+    void tracePalette();
+    void stopPaletteTrace();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
     /// Run ▸ Follow execution: hand the caret to the program counter — it goes
@@ -800,6 +805,8 @@ private:
     void requestWriteTraceSave();
     void applyWriteTraceFile(const QString &path);
     void setWriteTraceArmed(bool armed);
+    void requestPalTraceSave();
+    void applyPalTraceFile(const QString &path);
     /// Read a coverage file and note its addresses on that tab. A file that
     /// cannot be read leaves the previous notes in place.
     void applyCoverageFile(const QString &path);
@@ -955,6 +962,12 @@ private:
     bool m_writeTraceRearm = false;
     quint32 m_writeTraceLo = 0;
     quint32 m_writeTraceHi = 0;
+    /// Same shape as the write trace: wanted until the emulator accepts
+    /// `paltrace on`, then recording, and a re-arm after restore because the
+    /// log is not rewound with the machine.
+    bool m_palTraceWanted = false;
+    bool m_palTraceRecording = false;
+    bool m_palTraceRearm = false;
     /// The dock and widget that host the emulator's display (the media panel).
     /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;
@@ -1030,6 +1043,8 @@ private:
     class PcHistoryView *m_pcHistory = nullptr;
     class WriteTraceView *m_writeTrace = nullptr;
     QDockWidget *m_writeTraceDock = nullptr;
+    class PalTraceView *m_palTrace = nullptr;
+    QDockWidget *m_palTraceDock = nullptr;
     HardwareView *m_hardware = nullptr;
     class SymbolsView *m_symbolsView = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;

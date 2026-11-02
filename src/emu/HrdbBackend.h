@@ -84,6 +84,9 @@ public:
     void writeTraceRange(quint32 start, quint32 end) override;
     void writeTraceSave(const QString &path) override;
     void writeTraceOff() override;
+    void palTraceOn() override;
+    void palTraceSave(const QString &path) override;
+    void palTraceOff() override;
     void writeRegister(const QString &name, quint32 value) override;
     void writeMemoryByte(quint32 address, quint8 value) override;
     void readDisassembly() override;
@@ -126,6 +129,10 @@ private:
         bool writeTraceProbe = false;
         /// Set by writeTraceSave(): the file to name on writeTraceSaveFinished().
         QString writeTracePath;
+        /// Set by palTraceOn(): reported on palTraceReady() from the reply.
+        bool palTraceProbe = false;
+        /// Set by palTraceSave(): the file to name on palTraceSaveFinished().
+        QString palTracePath;
         /// Set by readDisassemblyAt(): report the text it read on
         /// disassemblyReady(), for the caller that asked about that address.
         bool reportDisassembly = false;

@@ -70,6 +70,7 @@
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
+#include "ui/PalTraceView.h"
 #include "ui/WriteTraceView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
@@ -222,6 +223,13 @@ MainWindow::MainWindow(QWidget *parent)
         setWriteTraceArmed(false);
         if (m_writeTrace)
             m_writeTrace->clear();
+        m_palTraceWanted = false;
+        m_palTraceRecording = false;
+        m_palTraceRearm = false;
+        if (m_palTrace) {
+            m_palTrace->setTraceArmed(false);
+            m_palTrace->clear();
+        }
         m_savedStops.clear();
         m_historyIndex = -1;
         m_restorePending = false;

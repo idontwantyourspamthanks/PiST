@@ -514,6 +514,7 @@ private slots:
     void analysisRunLaunchesThatProgram();
     void restoreStopReturnsToTheSavedInstruction();
     void traceWritesListsTheStore();
+    void tracePaletteListsTheScanline();
     void analysisNotesAnExecutedAddress();
     void analysisOpensAGuessedPicture();
     void analysisShowsWhatRan();
@@ -5010,6 +5011,108 @@ void TstGui::traceWritesListsTheStore()
         qDebug().noquote() << window.debugConsoleText();
     QVERIFY(listed);
     QCOMPARE(analysis->executionAddress(), std::optional<quint32>(8));
+    QVERIFY(!window.debugConsoleText().contains(QLatin1String("[stop] restoring")));
+}
+
+void TstGui::tracePaletteListsTheScanline()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/palette.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.w #$0700, $ffff8240.w / bra.s to itself. One step stores one color.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("31fc0700824060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    // The default session is a mono monitor, and a mono ST bus-errors a write
+    // to the colour palette. The colour shifter is what paltrace records.
+    const QString source = m_work->path() + QStringLiteral("/palette.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly));
+    src.write("\ttext\n\tnop\n");
+    src.close();
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("rgb");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *traceButton = window.findChild<QToolButton *>(QStringLiteral("paletteTraceButton"));
+    QVERIFY(traceButton);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("paletteListing"));
+    QVERIFY(listing);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    // $FF8240 is a supervisor register. A user-mode write bus-errors and
+    // paltrace never sees it. The colour was chosen above so the shifter exists.
+    QVERIFY(window.setRegister(QStringLiteral("sr"), 0x2300u));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "tracePalette", Qt::DirectConnection));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[palette] recording"))
+                   || text.contains(QLatin1String("no paltrace command"))
+                   || text.contains(QLatin1String("Command 'paltrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[palette] recording")))
+        QSKIP("this Hatari has no paltrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString writer = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(6))
+                return false;
+            if (listing->rowCount() != 1)
+                return false;
+            const QTableWidgetItem *pc = listing->item(0, 1);
+            const QTableWidgetItem *reg = listing->item(0, 2);
+            const QTableWidgetItem *color = listing->item(0, 3);
+            const QTableWidgetItem *line = listing->item(0, 5);
+            const QTableWidgetItem *pos = listing->item(0, 6);
+            if (!pc || !reg || !color || !line || !pos)
+                return false;
+            return pc->text() == writer && reg->text() == QLatin1String("FF8240")
+                   && color->text() == QLatin1String("0700") && !line->text().isEmpty()
+                   && !pos->text().isEmpty();
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(6));
     QVERIFY(!window.debugConsoleText().contains(QLatin1String("[stop] restoring")));
 }
 

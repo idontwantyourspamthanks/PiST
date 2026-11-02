@@ -273,6 +273,16 @@ public:
     virtual void writeTraceSave(const QString &path) = 0;
     virtual void writeTraceOff() = 0;
 
+    /// Shifter palette writes, the hatari-pist `paltrace` command. `palTraceOn`
+    /// clears the log and starts recording; it must survive a resume(). A
+    /// Hatari without the command answers "not found"; that is
+    /// palTraceReady(false), not a failed session. `palTraceSave` reports
+    /// completion on palTraceSaveFinished(path) — the file is what the caller
+    /// reads. The line and the position on it are already in that file.
+    virtual void palTraceOn() = 0;
+    virtual void palTraceSave(const QString &path) = 0;
+    virtual void palTraceOff() = 0;
+
     /// Arm a breakpoint that fires once at `address` — the debugger's
     /// `b pc = $<addr> :once` — the form every "stop there once" gesture uses:
     /// run to cursor, step-out's return address, and the guided profile run.
@@ -370,6 +380,11 @@ signals:
     void writeTraceReady(bool accepted);
     /// A writeTraceSave() completed; `path` is the file it wrote.
     void writeTraceSaveFinished(const QString &path);
+
+    /// palTraceOn() was answered. `accepted` is true only when recording started.
+    void palTraceReady(bool accepted);
+    /// A palTraceSave() completed; `path` is the file it wrote.
+    void palTraceSaveFinished(const QString &path);
 
     /// The text a readHistory() answered with.
     void historyReady(const QString &response);

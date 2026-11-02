@@ -617,6 +617,13 @@ void HrdbBackend::completeCurrent(const QByteArray &message)
     }
     if (!done.writeTracePath.isEmpty())
         emit writeTraceSaveFinished(done.writeTracePath);
+    if (done.palTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'paltrace' not found"))
+                              || response.contains(QLatin1String("paltrace:"));
+        emit palTraceReady(!rejected);
+    }
+    if (!done.palTracePath.isEmpty())
+        emit palTraceSaveFinished(done.palTracePath);
 
     // The execution-path read's text, for the pane that asked (a typed request
     // reports its own answer rather than a caller matching command text).
@@ -965,6 +972,30 @@ void HrdbBackend::writeTraceSave(const QString &path)
 void HrdbBackend::writeTraceOff()
 {
     enqueue(consoleRequest(QStringLiteral("writetrace off"), QStringLiteral("writetrace off"),
+                           ResponseKind::None, true));
+}
+
+void HrdbBackend::palTraceOn()
+{
+    // Kept across a resume(), same as coverage: the arm has to be in force
+    // for the continue that follows it.
+    Pending p = consoleRequest(QStringLiteral("paltrace on"), QStringLiteral("paltrace on"),
+                               ResponseKind::None, true);
+    p.palTraceProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::palTraceSave(const QString &path)
+{
+    const QString command = QStringLiteral("paltrace save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.palTracePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::palTraceOff()
+{
+    enqueue(consoleRequest(QStringLiteral("paltrace off"), QStringLiteral("paltrace off"),
                            ResponseKind::None, true));
 }
 

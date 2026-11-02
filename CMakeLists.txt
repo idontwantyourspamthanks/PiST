@@ -309,6 +309,8 @@ pist_module(pist_analysis
     src/analysis/Coverage.h
     src/analysis/WriteTrace.cpp
     src/analysis/WriteTrace.h
+    src/analysis/PalTrace.cpp
+    src/analysis/PalTrace.h
 )
 
 # hooks/ — the stop-hook subsystem: the contract the script is bound to, the Lua
@@ -389,6 +391,8 @@ pist_module(pist_ui
     src/ui/PcHistoryView.h
     src/ui/WriteTraceView.cpp
     src/ui/WriteTraceView.h
+    src/ui/PalTraceView.cpp
+    src/ui/PalTraceView.h
     src/ui/InstructionRefView.cpp
     src/ui/InstructionRefView.h
     src/ui/SymbolsView.cpp

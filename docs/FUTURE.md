@@ -216,7 +216,9 @@ unbuilt.
   recording's later keys, and a breakpoint on a later instruction returns to the prompt
   before that instruction executes. The proof stops on the replay fixture's spin, with the
   add that the key selects still unexecuted, and a different key stops on the other spin
-  the same way. A stop during the recording itself is not part of that result. The per-instruction
+  the same way. A statesave from the debugger prompt does too: the fixture's first
+  instruction, vertical blank 0, supervisor set from that prompt, then the same
+  replay. A stop during the recording itself is not part of that result. The per-instruction
   debugger can also stay on for a recording that never stops: one breakpoint that cannot match
   leaves it on, the debugger is never entered, and the trace matches the run with the flag clear.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
@@ -475,7 +477,9 @@ What each gate proved, and where the proof stops:
    in the middle of the recording is not proven. From a snapshot taken at vertical blank 10,
    `reststop` then `replaykeys` applies the later keys and a breakpoint stops on the spin the
    key selects, with that add still unexecuted. A different key stops on the other spin the
-   same way. The recording is otherwise narrow: `--tos none`,
+   same way. A `statesave` from the debugger prompt, on the fixture's first instruction
+   at vertical blank 0, restores through `reststop` and reaches that same unexecuted add.
+   The recording is otherwise narrow: `--tos none`,
    no floppy. TOS and the FDC are not proven.
    A Lua file that boots Hatari and hashes RAM is not this result, and stop hooks are not
    record/replay.
@@ -509,7 +513,9 @@ Still not built:
 
 - **Reverse Step** restores an earlier snapshot and replays to just before the instruction on
   screen. The fork can do that for the replay fixture: a snapshot taken during the recording,
-  `reststop`, then `replaykeys`, then a breakpoint on the later instruction. PiST does not call
+  `reststop`, then `replaykeys`, then a breakpoint on the later instruction. The snapshot
+  can be the one `--replay-snapshot` writes while the recording runs, or a `statesave`
+  from the debugger prompt at the fixture's first instruction. PiST does not call
   it. The saved-stop list is still the navigation in the product. A stop during the recording
   itself is not part of the proof. Breakpoint seeking, branches, and a recording browser wait
   with a PiST command for this.

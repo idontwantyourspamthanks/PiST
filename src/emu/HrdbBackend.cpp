@@ -610,6 +610,13 @@ void HrdbBackend::completeCurrent(const QByteArray &message)
         emit coverageReady(response.contains(QLatin1String("Coverage recording on")));
     if (!done.coveragePath.isEmpty())
         emit coverageSaveFinished(done.coveragePath);
+    if (done.writeTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'writetrace' not found"))
+                              || response.contains(QLatin1String("writetrace:"));
+        emit writeTraceReady(!rejected);
+    }
+    if (!done.writeTracePath.isEmpty())
+        emit writeTraceSaveFinished(done.writeTracePath);
 
     // The execution-path read's text, for the pane that asked (a typed request
     // reports its own answer rather than a caller matching command text).
@@ -935,6 +942,30 @@ void HrdbBackend::coverageSave(const QString &path)
     Pending p = consoleRequest(command, command, ResponseKind::None, true);
     p.coveragePath = path;
     enqueue(p);
+}
+
+void HrdbBackend::writeTraceRange(quint32 start, quint32 end)
+{
+    // Kept across a resume(), same as coverage: the arm has to be in force
+    // for the continue that follows it.
+    const QString command = QStringLiteral("writetrace $%1 $%2").arg(start, 0, 16).arg(end, 0, 16);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.writeTraceProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::writeTraceSave(const QString &path)
+{
+    const QString command = QStringLiteral("writetrace save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.writeTracePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::writeTraceOff()
+{
+    enqueue(consoleRequest(QStringLiteral("writetrace off"), QStringLiteral("writetrace off"),
+                           ResponseKind::None, true));
 }
 
 void HrdbBackend::writeRegister(const QString &name, quint32 value)

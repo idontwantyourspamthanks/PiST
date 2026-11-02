@@ -63,6 +63,7 @@
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
+#include "ui/WriteTraceView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
 #include "ui/SetupDialog.h"
@@ -130,6 +131,7 @@ bool isDebugDockName(const QString &name)
         || name == QLatin1String("stackDock")
         || name == QLatin1String("hardwareDock")
         || name == QLatin1String("pcHistoryDock")
+        || name == QLatin1String("writeTraceDock")
         || name == QLatin1String("breakpointsDock")
         || name == QLatin1String("instructionRefDock")
         || name == QLatin1String("symbolsDock")
@@ -927,6 +929,7 @@ void MainWindow::buildPanels()
     m_breakpointPanel = new BreakpointPanel(this);
 
     m_pcHistory = new PcHistoryView(this);
+    m_writeTrace = new WriteTraceView(this);
     m_instrRef = new InstructionRefView(this);
     m_symbolsView = new SymbolsView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
@@ -934,6 +937,8 @@ void MainWindow::buildPanels()
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
+              << (m_writeTraceDock = makeDock(tr("Writes"), QStringLiteral("writeTraceDock"),
+                                              m_writeTrace))
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
               << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
               << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
@@ -1130,6 +1135,16 @@ void MainWindow::wirePanels()
                 if (!openMappedSource(address))
                     openMemory(address);
             });
+    // A write row opens the writer's source line. It does not restore the
+    // machine: the list is a record of stores, and the bytes on screen now
+    // are the live ones. A blitter or unknown store has no PC, so it opens
+    // the address that was written.
+    connect(m_writeTrace, &WriteTraceView::eventActivated, this,
+            [openMappedSource, openMemory](quint32 pc, bool hasPc, quint32 address) {
+                if (hasPc && openMappedSource(pc))
+                    return;
+                openMemory(hasPc ? pc : address);
+            });
     connect(m_hardware, &HardwareView::subjectChanged, this,
             [this](const QString &subject) {
                 if (m_host->isRunning())
@@ -1211,6 +1226,7 @@ void MainWindow::buildViewMenu()
             QStringLiteral("stackDock"),
             QStringLiteral("hardwareDock"),
             QStringLiteral("pcHistoryDock"),
+            QStringLiteral("writeTraceDock"),
             QStringLiteral("breakpointsDock"),
             QStringLiteral("instructionRefDock"),
             QStringLiteral("symbolsDock"),
@@ -1283,6 +1299,15 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
     connect(view, &MemoryView::memoryEdited, this,
             [this, view](quint32 address, quint32 value) { setMemoryByte(address, value, view); });
     connect(view, &MemoryView::addPaneRequested, this, [this] { addMemoryPane(); });
+    connect(view, &MemoryView::traceWritesRequested, this,
+            [this, view](quint32 address, int length) {
+                for (MemoryView *other : m_memoryPanes) {
+                    if (other != view)
+                        other->setTraceArmed(false);
+                }
+                traceWrites(address, length);
+            });
+    connect(view, &MemoryView::traceWritesStopRequested, this, [this] { stopWriteTrace(); });
 
     // Later panes tab onto the base memory dock.
     if (!first)

@@ -348,6 +348,11 @@ private slots:
     /// on its instruction. A Hatari without `reststop` reports that on the
     /// console and stays where it is.
     void restoreStop();
+    /// Record writes in `length` bytes starting at `address`. The Writes list
+    /// fills at each later stop. A Hatari without `writetrace` reports that
+    /// on the console and records nothing.
+    void traceWrites(quint32 address, int length);
+    void stopWriteTrace();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
     /// Run ▸ Follow execution: hand the caret to the program counter — it goes
@@ -792,6 +797,9 @@ private:
     /// Ask the emulator for the coverage file when this session is recording
     /// and an analysis tab of the launched program is open.
     void requestCoverageSave();
+    void requestWriteTraceSave();
+    void applyWriteTraceFile(const QString &path);
+    void setWriteTraceArmed(bool armed);
     /// Read a coverage file and note its addresses on that tab. A file that
     /// cannot be read leaves the previous notes in place.
     void applyCoverageFile(const QString &path);
@@ -936,6 +944,17 @@ private:
     /// The running Hatari accepted `coverage on`. A stock Hatari does not, and
     /// then no coverage file is read.
     bool m_coverageRecording = false;
+    /// The user asked to trace, and the emulator accepted `writetrace`. Saves
+    /// happen at later stops. `m_writeTraceWanted` is the request still in
+    /// flight or accepted; a rejection clears both.
+    bool m_writeTraceWanted = false;
+    bool m_writeTraceRecording = false;
+    /// The next stop should arm the same range again, which clears the ring.
+    /// A restore does not rewind it, so the abandoned path's writes would
+    /// otherwise stay in the list.
+    bool m_writeTraceRearm = false;
+    quint32 m_writeTraceLo = 0;
+    quint32 m_writeTraceHi = 0;
     /// The dock and widget that host the emulator's display (the media panel).
     /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;
@@ -1009,6 +1028,8 @@ private:
 
     StackView *m_stack = nullptr;
     class PcHistoryView *m_pcHistory = nullptr;
+    class WriteTraceView *m_writeTrace = nullptr;
+    QDockWidget *m_writeTraceDock = nullptr;
     HardwareView *m_hardware = nullptr;
     class SymbolsView *m_symbolsView = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;

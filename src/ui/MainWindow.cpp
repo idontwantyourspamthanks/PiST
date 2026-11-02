@@ -70,6 +70,7 @@
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
+#include "ui/WriteTraceView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
@@ -215,6 +216,12 @@ MainWindow::MainWindow(QWidget *parent)
         m_launchedName.clear();
         setEmulatorCaption();
         m_coverageRecording = false;
+        m_writeTraceWanted = false;
+        m_writeTraceRecording = false;
+        m_writeTraceRearm = false;
+        setWriteTraceArmed(false);
+        if (m_writeTrace)
+            m_writeTrace->clear();
         m_savedStops.clear();
         m_historyIndex = -1;
         m_restorePending = false;

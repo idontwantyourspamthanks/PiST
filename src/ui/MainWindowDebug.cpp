@@ -5,6 +5,10 @@
 #include "ui/MainWindow.h"
 #include "ui/MainWindowPrivate.h"
 
+#include "analysis/WriteTrace.h"
+#include "ui/PcHistoryView.h"
+#include "ui/WriteTraceView.h"
+
 #include <QFile>
 #include <QFileInfo>
 #include <QMenu>
@@ -67,7 +71,6 @@
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
-#include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
 #include "ui/SetupDialog.h"
@@ -352,6 +355,30 @@ void MainWindow::wireBackend()
                     return;
                 applyCoverageFile(path);
             });
+    connect(m_host, &IDebugBackend::writeTraceReady, this, [this](bool accepted) {
+        if (!m_host->isRunning() || m_currentSessionDir.isEmpty() || !m_writeTraceWanted)
+            return;
+        if (!accepted) {
+            m_writeTraceWanted = false;
+            m_writeTraceRecording = false;
+            setWriteTraceArmed(false);
+            m_log->appendPlainText(tr("[trace] this Hatari has no writetrace command"));
+            return;
+        }
+        m_writeTraceRecording = true;
+        if (m_writeTraceDock) {
+            m_writeTraceDock->show();
+            m_writeTraceDock->raise();
+        }
+        m_log->appendPlainText(tr("[trace] watching $%1–$%2")
+                                   .arg(hex::hex32(m_writeTraceLo), hex::hex32(m_writeTraceHi)));
+    });
+    connect(m_host, &IDebugBackend::writeTraceSaveFinished, this,
+            [this](const QString &path) {
+                if (!m_writeTraceRecording || m_currentSessionDir.isEmpty())
+                    return;
+                applyWriteTraceFile(path);
+            });
     connect(m_host, &IDebugBackend::commandFinished, this,
             [this](const QString &command, const QString &response) {
                 // Only the remote `cmd` verb's own text is matched here: it is
@@ -581,6 +608,7 @@ void MainWindow::showLiveStop()
     updateRegisterStrip();
     applyAnalysisExecution();
     rebuildSavedStopsMenu();
+    requestWriteTraceSave();
 }
 
 
@@ -1083,6 +1111,10 @@ void MainWindow::onStateUpdated(const MachineState &state)
         if (m_registers)
             m_registers->setEditingEnabled(m_host && m_host->isStopped());
         rebuildSavedStopsMenu();
+        // The ring is the emulator's, and a restore does not rewind it. Arming
+        // the same range again drops the writes from the path just abandoned.
+        if (m_writeTraceRecording)
+            m_writeTraceRearm = true;
     } else if (m_historyIndex >= 0) {
         // A refresh already in flight must not replace the saved stop on
         // screen, and looking at one does not ask the debugger for anything.
@@ -1203,9 +1235,91 @@ void MainWindow::onStateUpdated(const MachineState &state)
     updateRegisterStrip();
     applyAnalysisExecution();
     requestCoverageSave();
+    if (m_writeTraceRearm) {
+        m_writeTraceRearm = false;
+        m_host->writeTraceRange(m_writeTraceLo, m_writeTraceHi);
+        if (m_writeTrace)
+            m_writeTrace->clear();
+    } else {
+        requestWriteTraceSave();
+    }
 }
 
 
+
+void MainWindow::traceWrites(quint32 address, int length)
+{
+    if (!m_host || !m_host->isStopped() || m_currentSessionDir.isEmpty() || length < 1) {
+        setWriteTraceArmed(false);
+        if (m_log)
+            m_log->appendPlainText(tr("[trace] writes can only be traced while stopped"));
+        return;
+    }
+    const quint64 last = quint64(address) + quint64(length) - 1;
+    if (last > 0xffffffffull) {
+        setWriteTraceArmed(false);
+        return;
+    }
+    m_writeTraceLo = address;
+    m_writeTraceHi = quint32(last);
+    m_writeTraceWanted = true;
+    m_writeTraceRecording = false;
+    m_writeTraceRearm = false;
+    m_host->writeTraceRange(address, quint32(last));
+}
+
+void MainWindow::stopWriteTrace()
+{
+    m_writeTraceWanted = false;
+    m_writeTraceRecording = false;
+    m_writeTraceRearm = false;
+    setWriteTraceArmed(false);
+    if (m_writeTrace)
+        m_writeTrace->clear();
+    if (m_host && m_host->isRunning())
+        m_host->writeTraceOff();
+}
+
+void MainWindow::setWriteTraceArmed(bool armed)
+{
+    for (MemoryView *view : m_memoryPanes)
+        view->setTraceArmed(armed);
+}
+
+void MainWindow::requestWriteTraceSave()
+{
+    if (!m_writeTraceRecording || !m_host || !m_host->isRunning() || m_currentSessionDir.isEmpty())
+        return;
+    m_host->writeTraceSave(m_currentSessionDir + QStringLiteral("/writetrace.txt"));
+}
+
+void MainWindow::applyWriteTraceFile(const QString &path)
+{
+    if (!m_writeTrace)
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_log->appendPlainText(tr("Could not read the write trace."));
+        return;
+    }
+    QString error;
+    WriteTraceLog log;
+    if (!parseWriteTrace(QString::fromUtf8(file.readAll()), &log, &error)) {
+        m_log->appendPlainText(error);
+        return;
+    }
+    QStringList where;
+    where.reserve(log.events.size());
+    for (const WriteEvent &event : log.events) {
+        LineMap::Address loc;
+        if (event.origin == WriteOrigin::Cpu && m_bases.isValid() && !m_programMap.isEmpty()
+            && m_programMap.lineFor(event.pc, &loc))
+            where.append(QFileInfo(loc.file).fileName() + QLatin1Char(':') + QString::number(loc.line));
+        else
+            where.append(QString());
+    }
+    m_writeTrace->setTrace(log, where);
+}
 
 void MainWindow::locationFromPc(quint32 pc)
 {

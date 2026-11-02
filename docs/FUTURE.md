@@ -203,16 +203,15 @@ unbuilt.
 - **Multiple memory panes.** Delivered. `MainWindow::addMemoryPane()` adds panes, each routed by an
   integer tag so concurrent dumps reach the right pane rather than sharing one `memoryDumpReady`.
 - **PC history and step-back.** The PC-history view is delivered (Hatari's `history` command,
-  refreshed on each stop). True step-back was attempted and is documented here because it is *not*
-  simply unbuilt: the only mechanism Hatari offers, `statesave`/`stateload`, restores by resetting
+  refreshed on each stop). Stock `stateload` is still not a step back: it restores by resetting
   the machine into a *running* state and completing the restore on the next CPU instruction
   (`m68k_go`, `UAE_Set_State_Restore` + `SPCFLAG_MODE_CHANGE`). Verified against 2.6.1: after a
   `stateload` the machine runs forward and never returns to a debugger prompt, which is
-  fundamentally incompatible with this IDE's prompt-framed debug transport — the whole debugger is
-  built on "stopped at a prompt". So a clean "stop at the previous state" cannot be built on
-  stateload. Real step-back would need either upstream Hatari support for a non-destructive
-  restore, or a record/replay mechanism (relaunch + step forward N times), the latter being slow
-  and state-lossy.
+  incompatible with this IDE's prompt-framed debug transport. The fork's `reststop` does return
+  to the prompt with that instruction unexecuted, and PiST uses it (§14). What is in the product
+  is Save Stop, Restore Stop, and a short read-only list of those stops. Reverse Step — restore
+  an earlier snapshot, then replay up to the instruction before the one on screen — still needs
+  a recording made with the debugger attached, and the replay gate required the debugger off.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
   the debugger is stopped, so a frozen frame is not mistaken for a crash. The badge is placed in
   widget coordinates, so on a dock small enough for the fitted video to reach the widget's top-right
@@ -450,34 +449,56 @@ Not in this pass, on purpose:
 
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
-**Status:** not started. No product UI until the gate for that feature passes. These belong
-in `hatari-pist` (upstream 2.6.1 plus the HRDB listener and the media channel), behind a
-capability probe. Stock Hatari keeps today's debugger. The host-side memory compare, the
-last-build preview, and declared sprite export do not wait on any of them.
+**Status:** passed, on `hatari-pist`, pinned in PiST at `623747d`
+(`623747d0d9decab28a9bf0badd09305bf8a6c033`). Each gate was a pass/fail trace and no dock.
+Stock Hatari still has none of these commands. PiST probes by command name and treats
+`Command '<name>' not found.` as a skip, not a failure. The host-side memory compare, the
+last-build preview, and declared sprite export never waited on them.
 
-The gates, in order, each with a pass/fail trace and no dock:
+What each gate proved, and where the proof stops:
 
-1. **Replay one fixture twice.** Record one fixture's inputs and a short trace (frame, PC,
-   registers). Replay it. A second run with a different key must diverge. If this fails,
-   time travel, headless deterministic tests, and a compatibility matrix stop. A Lua file
-   that boots Hatari and hashes RAM is not this gate: TOS, the FDC, and the debugger's own
-   stops are not proven deterministic, and stop hooks must not be named record/replay.
-2. **Restore and stay stopped.** Restore one snapshot and remain at a debugger prompt, with
-   no extra guest instruction. `stateload` does not do this (see §6): it resumes the machine
-   and never returns to a prompt. If this fails, Reverse Step and patch rollback stop.
-   Forward-only memory diff, patch preview, and sprite export do not.
-3. **Targeted write events.** Instrument writes to one small range. Log PC, address, old,
-   and new. State the cost, and what happens when the ring fills. CPU writes and DMA or
-   blitter writes need different origin tags. A missing tag is an unknown writer, not the
-   current PC. Until that trace is trustworthy there is no memory-history view: guessing
-   the writer from the CPU's PC would mis-attribute a DMA or blitter store.
-4. **Palette writes against a scanline clock**, on one test pattern. Cycles are not
-   scanlines once the machine changes clocks, and the events have to be recorded at the
-   hardware write. If they do not land on the expected lines, do not draw a scanline
-   inspector. The profiler overlay is not that stream. The media channel's frames are RGB,
-   and `info video` does not carry the palette.
+1. **Replay one fixture twice.** Passed. `--replay-record` / `--replay` record one program's
+   inputs and a per-vertical-blank trace (format `HPISTREPLAY 1`) and play it back. The
+   matching run agreed for all 40 frames. Changing one key made the traces diverge at frame
+   16. The recording is narrow: `--tos none`, no floppy, and the debugger line has to be
+   `debugger no`. TOS, the FDC, and a session with the debugger attached are not proven.
+   A Lua file that boots Hatari and hashes RAM is not this result, and stop hooks are not
+   record/replay.
+2. **Restore and stay stopped.** Passed. `reststop` restores one `statesave` file and returns
+   to the debugger prompt with that instruction unexecuted. `stateload` is unchanged (§6): it
+   resumes the machine and never returns to a prompt. Restoring that stop and executing the
+   same steps again matched, including one vertical blank. PiST drives this from a real HRDB
+   session: Run ▸ Save Stop writes the stopped machine, Run ▸ Restore Stop runs `reststop`,
+   and Run ▸ Saved Stops shows an earlier stop's registers and analysis mark without calling
+   the debugger. That session stopped on the entry breakpoint and on steps. A restore from a
+   stop that arrived via pause was not part of the proof.
+3. **Targeted write events.** Passed. `writetrace` records writes in one range as they happen
+   (format `HPISTWRITE 1`). A CPU store carries its PC. A blitter store does not. A debugger
+   poke is `unknown`, not whichever instruction the CPU is stopped on. The ring keeps the
+   oldest events and counts the rest as `dropped`. It does not stop the CPU. The host-time
+   comparison around 64 writes was clock noise, not a measured overhead. PiST's memory pane
+   Trace button arms the window it is showing, and the Writes list reads the file at each
+   later stop. A CPU row opens that instruction's source line when the program map knows
+   it. The list does not move the machine.
+4. **Palette writes against a scanline clock.** Passed. `paltrace` records each palette write
+   where the hardware writes it (format `HPISTPAL 1`), with the vertical blank, the line, and
+   the position on that line. The same two writes landed on different lines at 50 Hz (512
+   cycles per line) and 60 Hz (508), because the position is the shifter's own line clock and
+   not a frame-cycle count divided by 512. PiST does not call the command yet, so there is
+   still no scanline list. The profiler overlay is not that stream. The media channel's frames
+   are RGB, and `info video` does not carry the palette.
 
-Applying a patch stays closed until the preview has been wrong in public at least once, and
-then only for one same-length range, while stopped, with a read-back, and only when the
-preview said the section size matched. "Take snapshot and apply" waits on gate 2. Until
-then the recovery path is restart. Same length does not prove absolute references survived.
+Still not built:
+
+- **Reverse Step** restores an earlier snapshot and replays to just before the instruction on
+  screen. Replay still requires the debugger off, so that step has no proven mechanism. The
+  saved-stop list is the navigation that does not need it. Breakpoint seeking, branches, and a
+  recording browser wait with it.
+- **Reads, and where a value came from,** are the rest of memory history. The Writes list
+  is the forward-only view of gate 3. A **scanline list** is the forward-only view of gate 4.
+  `paltrace` is trustworthy enough to show. Nothing in PiST reads it yet.
+- **Applying a patch** stays closed until the preview has been wrong in public at least once,
+  and then only for one same-length range, while stopped, with a read-back, and only when the
+  preview said the section size matched. Gate 2 has passed, so a snapshot to roll back to is
+  available. Until a preview has been wrong in public, the recovery path is still restart.
+  Same length does not prove absolute references survived.

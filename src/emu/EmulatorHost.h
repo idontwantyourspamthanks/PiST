@@ -127,6 +127,9 @@ public:
     void profileSave(const QString &path) override;         // `profile save <path>`
     void coverageOn() override;                             // `coverage on`
     void coverageSave(const QString &path) override;        // `coverage save <path>`
+    void writeTraceRange(quint32 start, quint32 end) override;
+    void writeTraceSave(const QString &path) override;
+    void writeTraceOff() override;
     void writeRegister(const QString &name, quint32 value) override;      // `r <reg>=$<val>`
     void writeMemoryByte(quint32 address, quint8 value) override;         // `w b $<addr> $<val>`
     void readDisassembly() override;                        // `d`
@@ -170,6 +173,12 @@ private:
         bool coverageProbe = false;
         /// Set by coverageSave(): the file to name on coverageSaveFinished().
         QString coveragePath;
+
+        /// Set by writeTraceRange(): the reply says whether this Hatari armed
+        /// the range. Reported on writeTraceReady().
+        bool writeTraceProbe = false;
+        /// Set by writeTraceSave(): the file to name on writeTraceSaveFinished().
+        QString writeTracePath;
 
         /// Set by readDisassemblyAt(): report the text it read on
         /// disassemblyReady(), for the caller that asked about that one address.

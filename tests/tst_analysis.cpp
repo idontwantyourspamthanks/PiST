@@ -9,6 +9,7 @@
 #include "analysis/AnalysisNotes.h"
 #include "analysis/AssemblyExport.h"
 #include "analysis/Coverage.h"
+#include "analysis/WriteTrace.h"
 #include "analysis/M68kDisasm.h"
 #include "analysis/ProgramTrace.h"
 #include "analysis/TosProgram.h"
@@ -115,6 +116,7 @@ private slots:
     void exportNamesTargetsSectionsAndEquates();
     void assembledExportMatchesTheImage();
     void coverageFileListsExecutedAddresses();
+    void writeTraceFileListsWhoStored();
 };
 
 void tst_analysis::rejectsAFileThatIsNotTos()
@@ -701,6 +703,65 @@ void tst_analysis::coverageFileListsExecutedAddresses()
                                           "$020000 1\n"),
                            &samples, &error));
     QCOMPARE(error, QStringLiteral("the coverage file's addresses are not in ascending order"));
+}
+
+void tst_analysis::writeTraceFileListsWhoStored()
+{
+    const QString report = QStringLiteral("HPISTWRITE 1\n"
+                                          "range 00030000 0003000f\n"
+                                          "capacity 4\n"
+                                          "dropped 2\n"
+                                          "event 1 unknown 1 00030004 00 5a\n"
+                                          "event 2 cpu 1 00030000 00 a5 pc 00001100\n"
+                                          "event 3 blitter 2 00030008 0000 beef\n"
+                                          "cost off 54 on 53 writes 64\n");
+    WriteTraceLog log;
+    QString error;
+    QVERIFY2(parseWriteTrace(report, &log, &error), qPrintable(error));
+    QCOMPARE(log.rangeLo, 0x30000u);
+    QCOMPARE(log.rangeHi, 0x3000fu);
+    QCOMPARE(log.capacity, 4u);
+    QCOMPARE(log.dropped, 2u);
+    QCOMPARE(log.events.size(), 3);
+    QCOMPARE(log.events.at(0).origin, WriteOrigin::Unknown);
+    QCOMPARE(log.events.at(0).address, 0x30004u);
+    QCOMPARE(log.events.at(0).newValue, 0x5au);
+    QCOMPARE(log.events.at(0).pc, 0u);
+    QCOMPARE(log.events.at(1).origin, WriteOrigin::Cpu);
+    QCOMPARE(log.events.at(1).newValue, 0xa5u);
+    QCOMPARE(log.events.at(1).pc, 0x1100u);
+    QCOMPARE(log.events.at(2).origin, WriteOrigin::Blitter);
+    QCOMPARE(log.events.at(2).width, 2);
+    QCOMPARE(log.events.at(2).oldValue, 0u);
+    QCOMPARE(log.events.at(2).newValue, 0xbeefu);
+    QCOMPARE(log.events.at(2).pc, 0u);
+
+    QVERIFY(parseWriteTrace(QStringLiteral("HPISTWRITE 1\n"
+                                           "range 00030000 00030000\n"
+                                           "capacity 256\n"
+                                           "dropped 0\n"
+                                           "cost off 0 on 0 writes 0\n"),
+                            &log, &error));
+    QCOMPARE(log.events.size(), 0);
+
+    QVERIFY(!parseWriteTrace(QStringLiteral("Hatari CPU coverage\n"), &log, &error));
+    QCOMPARE(error, QStringLiteral("not a writetrace file"));
+    QVERIFY(!parseWriteTrace(QStringLiteral("HPISTWRITE 1\n"
+                                            "range 00030000 0003000f\n"
+                                            "capacity 4\n"
+                                            "dropped 0\n"
+                                            "event 1 cpu 1 00030000 00 a5\n"
+                                            "cost off 0 on 0 writes 0\n"),
+                             &log, &error));
+    QCOMPARE(error, QStringLiteral("the writetrace file has a cpu event with no pc"));
+    QVERIFY(!parseWriteTrace(QStringLiteral("HPISTWRITE 1\n"
+                                            "range 00030000 0003000f\n"
+                                            "capacity 4\n"
+                                            "dropped 0\n"
+                                            "event 1 blitter 2 00030008 0000 beef pc 00001100\n"
+                                            "cost off 0 on 0 writes 0\n"),
+                             &log, &error));
+    QCOMPARE(error, QStringLiteral("the writetrace file has a pc on a write that has no writer"));
 }
 
 QTEST_MAIN(tst_analysis)

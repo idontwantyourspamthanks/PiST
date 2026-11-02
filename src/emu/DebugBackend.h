@@ -262,6 +262,17 @@ public:
     virtual void coverageOn() = 0;
     virtual void coverageSave(const QString &path) = 0;
 
+    /// Who wrote one inclusive range, the hatari-pist `writetrace` command.
+    /// `writeTraceRange` clears the ring and starts recording; it must survive
+    /// a resume() so a continue in the same turn does not drop it. A Hatari
+    /// without the command answers "not found"; that is writeTraceReady(false),
+    /// not a failed session. `writeTraceSave` reports completion on
+    /// writeTraceSaveFinished(path) — the file is what the caller reads.
+    /// `writeTraceOff` stops recording and leaves the ring to be read.
+    virtual void writeTraceRange(quint32 start, quint32 end) = 0;
+    virtual void writeTraceSave(const QString &path) = 0;
+    virtual void writeTraceOff() = 0;
+
     /// Arm a breakpoint that fires once at `address` — the debugger's
     /// `b pc = $<addr> :once` — the form every "stop there once" gesture uses:
     /// run to cursor, step-out's return address, and the guided profile run.
@@ -353,6 +364,12 @@ signals:
     void coverageReady(bool recording);
     /// A coverageSave() completed; `path` is the file it wrote.
     void coverageSaveFinished(const QString &path);
+
+    /// writeTraceRange() was answered. `accepted` is true only when the
+    /// emulator armed the range. A missing command or a rejected range is false.
+    void writeTraceReady(bool accepted);
+    /// A writeTraceSave() completed; `path` is the file it wrote.
+    void writeTraceSaveFinished(const QString &path);
 
     /// The text a readHistory() answered with.
     void historyReady(const QString &response);

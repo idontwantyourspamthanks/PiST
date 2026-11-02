@@ -750,6 +750,13 @@ void EmulatorHost::completeCurrent()
         emit coverageReady(response.contains(QLatin1String("Coverage recording on")));
     if (!m_current.coveragePath.isEmpty())
         emit coverageSaveFinished(m_current.coveragePath);
+    if (m_current.writeTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'writetrace' not found"))
+                              || response.contains(QLatin1String("writetrace:"));
+        emit writeTraceReady(!rejected);
+    }
+    if (!m_current.writeTracePath.isEmpty())
+        emit writeTraceSaveFinished(m_current.writeTracePath);
 
     // A typed `info <subject>` report is not part of MachineState: it is
     // parsed into its summary here and goes to the caller that asked, named by
@@ -1034,6 +1041,31 @@ void EmulatorHost::coverageSave(const QString &path)
     p.coveragePath = path;
     p.keepOnResume = true;
     enqueue(p);
+}
+
+void EmulatorHost::writeTraceRange(quint32 start, quint32 end)
+{
+    // Kept across a resume(): the arm has to land before the continue records
+    // anything, and a pruned command would leave the button on with no trace.
+    Pending p;
+    p.text = QStringLiteral("writetrace $%1 $%2").arg(start, 0, 16).arg(end, 0, 16);
+    p.writeTraceProbe = true;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::writeTraceSave(const QString &path)
+{
+    Pending p;
+    p.text = QStringLiteral("writetrace save %1").arg(path);
+    p.writeTracePath = path;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::writeTraceOff()
+{
+    enqueueIntent(QStringLiteral("writetrace off"), ResponseKind::None, true);
 }
 
 void EmulatorHost::writeRegister(const QString &name, quint32 value)

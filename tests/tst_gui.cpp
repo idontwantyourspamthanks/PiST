@@ -512,6 +512,7 @@ private slots:
     void analysisExportWritesAssembly();
     void analysisMarksTheRunningProgram();
     void analysisRunLaunchesThatProgram();
+    void restoreStopReturnsToTheSavedInstruction();
     void analysisNotesAnExecutedAddress();
     void analysisOpensAGuessedPicture();
     void analysisShowsWhatRan();
@@ -4752,6 +4753,124 @@ void TstGui::analysisRunLaunchesThatProgram()
         qDebug().noquote() << window.debugConsoleText();
     QCOMPARE(listing->verticalHeaderItem(ret)->text(), QStringLiteral("ran"));
     QVERIFY(listing->item(ret, 4)->text().contains(QLatin1String("ran")));
+}
+
+void TstGui::restoreStopReturnsToTheSavedInstruction()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/count.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // addq.l #1,d0 / bra.s back to it. One step changes D0 by one.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("528060FC"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = analysis->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int branch = imageRow(listing, 2);
+    QVERIFY(entry >= 0 && branch >= 0);
+
+    auto *save = window.findChild<QAction *>(QStringLiteral("saveStopAction"));
+    auto *restore = window.findChild<QAction *>(QStringLiteral("restoreStopAction"));
+    QVERIFY(save && restore);
+    auto *run = window.findChild<QMenu *>(QStringLiteral("runMenu"));
+    QVERIFY(run && run->actions().contains(save) && run->actions().contains(restore));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+    QVERIFY(save->isEnabled());
+
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("D0 ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int d0At = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(d0At >= 0);
+    bool d0Ok = false;
+    const quint32 entryD0 = strip->text().mid(d0At + 3, 8).toUInt(&d0Ok, 16);
+    QVERIFY(d0Ok);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "saveStop", Qt::DirectConnection));
+    const QString savedMark = QStringLiteral("[stop] saved ");
+    QVERIFY(window.debugConsoleText().contains(savedMark));
+    const QString savedPath = window.debugConsoleText()
+                                  .mid(window.debugConsoleText().lastIndexOf(savedMark) + savedMark.size())
+                                  .section(QLatin1Char('\n'), 0, 0)
+                                  .trimmed();
+    if (!QTest::qWaitFor([&] { return QFileInfo::exists(savedPath); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY2(QFileInfo::exists(savedPath), qPrintable(savedPath));
+    QVERIFY(restore->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
+    const int steppedAt = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(steppedAt >= 0);
+    bool steppedOk = false;
+    const quint32 steppedD0 = strip->text().mid(steppedAt + 3, 8).toUInt(&steppedOk, 16);
+    QVERIFY(steppedOk);
+    QCOMPARE(steppedD0, entryD0 + 1u);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreStop", Qt::DirectConnection));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (analysis->executionAddress() != std::optional<quint32>(0))
+                return false;
+            const int at = strip->text().indexOf(QLatin1String("D0 "));
+            if (at < 0)
+                return false;
+            bool ok = false;
+            const quint32 d0 = strip->text().mid(at + 3, 8).toUInt(&ok, 16);
+            return ok && d0 == entryD0;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(back);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QString());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (analysis->executionAddress() != std::optional<quint32>(2))
+                    return false;
+                const int at = strip->text().indexOf(QLatin1String("D0 "));
+                if (at < 0)
+                    return false;
+                bool ok = false;
+                const quint32 d0 = strip->text().mid(at + 3, 8).toUInt(&ok, 16);
+                return ok && d0 == entryD0 + 1u;
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
 }
 
 void TstGui::analysisNotesAnExecutedAddress()

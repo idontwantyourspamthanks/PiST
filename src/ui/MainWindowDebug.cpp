@@ -232,6 +232,8 @@ void MainWindow::wireBackend()
             if (m_actStep) m_actStep->setEnabled(false);
             if (m_actStepOver) m_actStepOver->setEnabled(false);
             if (m_actStepOut) m_actStepOut->setEnabled(false);
+            if (m_actSaveStop) m_actSaveStop->setEnabled(false);
+            if (m_actRestoreStop) m_actRestoreStop->setEnabled(false);
             if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actFollow) m_actFollow->setEnabled(false);
             if (m_actResume) m_actResume->setEnabled(false);
@@ -401,6 +403,10 @@ void MainWindow::wireBackend()
         m_actStep->setEnabled(stopped);
         m_actStepOver->setEnabled(stopped);
         m_actStepOut->setEnabled(stopped);
+        if (m_actSaveStop)
+            m_actSaveStop->setEnabled(stopped);
+        if (m_actRestoreStop)
+            m_actRestoreStop->setEnabled(stopped && !m_savedStopPath.isEmpty());
         m_actRunToCursor->setEnabled(stopped);
         m_actFollow->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
@@ -483,6 +489,30 @@ void MainWindow::wireBackend()
                 m_stack->setStackDump(sp, rows, m_lastState.textBase,
                                       textEnd ? textEnd : m_lastState.dataBase);
             });
+}
+
+
+void MainWindow::saveStop()
+{
+    if (!m_host || !m_host->isStopped() || m_currentSessionDir.isEmpty())
+        return;
+    m_savedStopPath = m_currentSessionDir + QStringLiteral("/stop.sav");
+    m_host->command(QStringLiteral("statesave %1").arg(m_savedStopPath));
+    m_log->appendPlainText(tr("[stop] saved %1").arg(m_savedStopPath));
+    if (m_actRestoreStop)
+        m_actRestoreStop->setEnabled(true);
+}
+
+
+void MainWindow::restoreStop()
+{
+    if (!m_host || !m_host->isStopped() || m_savedStopPath.isEmpty())
+        return;
+    // reststop answers DEBUGGER_END, so the transport sees a resume and then
+    // the stop that comes back. The views follow that stop the same way they
+    // follow any other one.
+    m_host->command(QStringLiteral("reststop %1").arg(m_savedStopPath));
+    m_log->appendPlainText(tr("[stop] restoring %1").arg(m_savedStopPath));
 }
 
 

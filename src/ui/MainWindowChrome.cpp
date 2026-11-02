@@ -377,6 +377,19 @@ void MainWindow::createActions()
     m_actStepOut->setEnabled(false);
     connect(m_actStepOut, &QAction::triggered, this, &MainWindow::stepOut);
 
+    m_actSaveStop = new QAction(tr("Save Stop"), this);
+    m_actSaveStop->setObjectName(QStringLiteral("saveStopAction"));
+    m_actSaveStop->setEnabled(false);
+    m_actSaveStop->setToolTip(tr("Remember this stopped machine. Restore Stop returns to it."));
+    connect(m_actSaveStop, &QAction::triggered, this, &MainWindow::saveStop);
+
+    m_actRestoreStop = new QAction(tr("Restore Stop"), this);
+    m_actRestoreStop->setObjectName(QStringLiteral("restoreStopAction"));
+    m_actRestoreStop->setEnabled(false);
+    m_actRestoreStop->setToolTip(
+        tr("Return to the machine Save Stop remembered, still stopped on that instruction."));
+    connect(m_actRestoreStop, &QAction::triggered, this, &MainWindow::restoreStop);
+
     m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actRunToCursor->setEnabled(false);
@@ -543,6 +556,8 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStep);
     runMenu->addAction(m_actStepOver);
     runMenu->addAction(m_actStepOut);
+    runMenu->addAction(m_actSaveStop);
+    runMenu->addAction(m_actRestoreStop);
     runMenu->addAction(m_actRunToCursor);
     // Next to Run to Cursor: both are about where the caret is relative to the
     // executing program, one of them for a single stop and one for the session.

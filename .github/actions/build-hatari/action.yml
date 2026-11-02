@@ -63,11 +63,11 @@ inputs:
       variant; the fetch fails loudly on an empty pin rather than silently
       building something else.
     required: false
-    default: '41fc91d1cdae16149fa15fcc7cd568c03790f913'
+    default: '623747d0d9decab28a9bf0badd09305bf8a6c033'
   pist-sha256:
     description: 'SHA-256 of the pinned hatari-pist tarball at pist-commit.'
     required: false
-    default: '7d80ed6c17f397451fb76249f0c284d687a35bcdfe6182eda0fe48c5faaef04e'
+    default: '760e532fe165945a5810bfa1958baa9ea5ede8c3e60c4979891d1eb7d98ea33f'
 outputs:
   path:
     description: Absolute path to the built `hatari` binary.
@@ -334,6 +334,10 @@ runs:
         # predates it would build, and the suite would skip the check.
         grep -aq "Hatari CPU coverage" "$BIN" \
           || { echo "::error::$BIN lacks the coverage command (file header not found)"; exit 1; }
+        # Save Stop / Restore Stop send this command. A pin that predates it
+        # would build, and the suite would skip the check.
+        grep -aq "Hatari reststop.c" "$BIN" \
+          || { echo "::error::$BIN lacks the reststop command (file id not found)"; exit 1; }
 
     - name: Report the fork pin
       id: pin

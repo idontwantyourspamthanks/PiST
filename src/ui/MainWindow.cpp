@@ -215,6 +215,9 @@ MainWindow::MainWindow(QWidget *parent)
         m_launchedName.clear();
         setEmulatorCaption();
         m_coverageRecording = false;
+        m_savedStopPath.clear();
+        if (m_actRestoreStop)
+            m_actRestoreStop->setEnabled(false);
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())
             editor->clearCurrentExecutionLine();

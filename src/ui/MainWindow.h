@@ -337,6 +337,11 @@ private slots:
     /// Step out of the current subroutine: one-shot breakpoint at the return
     /// address read from the stack, then resume (no Hatari primitive exists).
     void stepOut();
+    /// Write a snapshot of the stopped machine. Restore Stop returns to it.
+    void saveStop();
+    /// Restore the snapshot from Save Stop and stay stopped on its instruction.
+    /// A Hatari without `reststop` reports that on the console and stays where it is.
+    void restoreStop();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
     /// Run ▸ Follow execution: hand the caret to the program counter — it goes
@@ -1130,6 +1135,11 @@ private:
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
     QAction *m_actStepOut = nullptr;
+    QAction *m_actSaveStop = nullptr;
+    QAction *m_actRestoreStop = nullptr;
+    /// Snapshot written by Save Stop, in the session directory. Empty until then,
+    /// and cleared when the session ends.
+    QString m_savedStopPath;
     QAction *m_actRunToCursor = nullptr;
     /// Run ▸ Follow execution. Checkable, and the state it shows *is*
     /// m_pcFollow: the menu is where the caret's ownership is visible and can be

@@ -220,7 +220,9 @@ unbuilt.
   instruction, vertical blank 0, supervisor set from that prompt, then the same
   replay. Stopping the recording itself once, on that spin before its addq
   executes, then continuing, still matches the run that never entered the debugger.
-  A statesave taken at that stop is not part of that result. The per-instruction
+  A statesave from that stop, with the breakpoint left armed, restores through
+  reststop to the same unexecuted addq, and the recording's trace still matches.
+  The per-instruction
   debugger can also stay on for a recording that never stops: one breakpoint that cannot match
   leaves it on, the debugger is never entered, and the trace matches the run with the flag clear.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
@@ -478,8 +480,9 @@ What each gate proved, and where the proof stops:
    the run with the flag clear. A change in that flag during the run is still refused. A stop
    in the middle of the recording is proven for this fixture: the breakpoint fires once on the
    space spin, the addq has not executed, continue finishes the 40 frames, and that trace matches
-   the run that never entered the debugger. A changed key still diverges at frame 16. A statesave
-   taken at that stop is not part of the proof. From a snapshot taken at vertical blank 10,
+   the run that never entered the debugger. A changed key still diverges at frame 16.
+   A statesave from that stop, breakpoint left armed, restores through `reststop` to the
+   same unexecuted addq, and the recording's trace still matches. From a snapshot taken at vertical blank 10,
    `reststop` then `replaykeys` applies the later keys and a breakpoint stops on the spin the
    key selects, with that add still unexecuted. A different key stops on the other spin the
    same way. A `statesave` from the debugger prompt, on the fixture's first instruction
@@ -520,10 +523,9 @@ Still not built:
   screen. The fork can do that for the replay fixture: a snapshot taken during the recording,
   `reststop`, then `replaykeys`, then a breakpoint on the later instruction. The snapshot
   can be the one `--replay-snapshot` writes while the recording runs, or a `statesave`
-  from the debugger prompt at the fixture's first instruction. PiST does not call
-  it. The saved-stop list is still the navigation in the product. A stop during the recording
-  itself matches the run that never entered the debugger, but a statesave taken at that stop
-  is not part of the proof. Breakpoint seeking, branches, and a recording browser wait
+  from the debugger prompt at the fixture's first instruction, or a `statesave` from the
+  one stop in the middle of the recording. PiST does not call
+  it. The saved-stop list is still the navigation in the product. Breakpoint seeking, branches, and a recording browser wait
   with a PiST command for this.
 - **Reads, and where a value came from,** are the rest of memory history. The Writes list
   is the forward-only view of gate 3. The Palette list is the forward-only view of gate 4.

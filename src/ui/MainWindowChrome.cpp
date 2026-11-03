@@ -420,6 +420,13 @@ void MainWindow::createActions()
            "previous stop stops at the first time."));
     connect(m_actRunBack, &QAction::triggered, this, &MainWindow::runBackToCursor);
 
+    m_actRestoreRecorded = new QAction(tr("Restore &Recorded Stop"), this);
+    m_actRestoreRecorded->setObjectName(QStringLiteral("restoreRecordedStopAction"));
+    m_actRestoreRecorded->setEnabled(false);
+    m_actRestoreRecorded->setToolTip(
+        tr("Return the machine to the recorded stop on screen. Later stops stay listed."));
+    connect(m_actRestoreRecorded, &QAction::triggered, this, &MainWindow::restoreRecordedStop);
+
     m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actRunToCursor->setEnabled(false);
@@ -589,6 +596,11 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actReverseStep);
     runMenu->addAction(m_actReverseContinue);
     runMenu->addAction(m_actRunBack);
+    m_recordedStopsMenu = new QMenu(tr("Recorded Stops"), this);
+    m_recordedStopsMenu->setObjectName(QStringLiteral("recordedStopsMenu"));
+    m_recordedStopsMenu->setEnabled(false);
+    runMenu->addMenu(m_recordedStopsMenu);
+    runMenu->addAction(m_actRestoreRecorded);
     runMenu->addAction(m_actSaveStop);
     runMenu->addAction(m_actRestoreStop);
     m_savedStopsMenu = new QMenu(tr("Saved Stops"), this);
@@ -1796,6 +1808,10 @@ void MainWindow::updateRegisterStrip()
 {
     if (m_historyIndex >= 0 && m_historyIndex < m_savedStops.size()) {
         paintRegisterStrip(m_savedStops.at(m_historyIndex).state, true);
+        return;
+    }
+    if (m_reverseViewIndex >= 0 && m_reverseViewIndex < m_reverseAnchors.size()) {
+        paintRegisterStrip(m_reverseAnchors.at(m_reverseViewIndex).state, true);
         return;
     }
     paintRegisterStrip(m_lastState, false);

@@ -363,6 +363,12 @@ private slots:
     /// line. A line that never executes after the previous stop does not
     /// return here.
     void runBackToCursor();
+    /// Show one automatic snapshot's registers and analysis mark. Does not
+    /// call the debugger. `index` counts from the oldest.
+    void showRecordedStop(int index);
+    /// Restore the recorded stop on screen and stay stopped on its
+    /// instruction. Later snapshots stay listed until execution leaves them.
+    void restoreRecordedStop();
     /// Record writes in `length` bytes starting at `address`. The Writes list
     /// fills at each later stop. A Hatari without `writetrace` reports that
     /// on the console and records nothing.
@@ -1199,6 +1205,8 @@ private:
     QAction *m_actReverseStep = nullptr;
     QAction *m_actReverseContinue = nullptr;
     QAction *m_actRunBack = nullptr;
+    QAction *m_actRestoreRecorded = nullptr;
+    QMenu *m_recordedStopsMenu = nullptr;
     QMenu *m_savedStopsMenu = nullptr;
     /// One stopped machine: the snapshot Hatari wrote, and the registers and
     /// PC that were on screen then. `showSavedStop` paints those without
@@ -1215,10 +1223,12 @@ private:
     bool m_restorePending = false;
     int m_savedStopSerial = 0;
     /// One automatic snapshot per stop, separate from the stops the user
-    /// saved. The last entry is the stop on screen. Reverse Step restores
-    /// the one before it.
+    /// saved. The machine is at `m_reverseIndex`, or at the last entry when
+    /// that index is -1. Later entries stay until execution leaves them, so
+    /// Recorded Stops can restore one again.
     struct ReverseAnchor {
         QString path;
+        MachineState state;
         quint32 pc = 0;
         /// A stop the machine reached on its own (entry, a breakpoint), as
         /// opposed to a single step. Reverse Continue walks back to one.
@@ -1226,6 +1236,11 @@ private:
     };
     QList<ReverseAnchor> m_reverseAnchors;
     int m_reverseSerial = 0;
+    /// Which recorded stop the machine is at, or -1 for the latest one.
+    int m_reverseIndex = -1;
+    /// Which recorded stop is painted, or -1 for the live machine. Looking
+    /// does not restore.
+    int m_reverseViewIndex = -1;
     /// Reverse Step restored the previous stop and still has to run forward
     /// to `m_reverseSeekPc`, the instruction history says executed last.
     bool m_reverseSeeking = false;
@@ -1254,6 +1269,9 @@ private:
     bool m_inputLogRestart = false;
     void rememberReverseAnchor(const MachineState &state);
     void updateReverseStepAction();
+    int currentReverseIndex() const;
+    void discardReverseFuture();
+    void rebuildRecordedStopsMenu();
     void startInputLog();
     void armReplayKeys();
     void rebuildSavedStopsMenu();

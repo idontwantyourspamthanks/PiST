@@ -580,9 +580,12 @@ three-instruction loop in §6. Keys pressed after the restored stop are replayed
 session runs `replaylog`, and the seek runs `replaykeys` on that file before `reststop`.
 A log with input lines and no trace line is accepted; a recording that has a trace and
 no frame count is still refused. PiST does not call `replayrecord` or `replayplay`.
-The saved-stop list is still the user's own snapshots. Branches and a recording browser
-are not this. Stock Hatari has no `replaylog`; that build skips the key proof and the
-reverses still restore the machine.
+The saved-stop list is still the user's own snapshots. Run ▸ Recorded Stops lists the
+automatic snapshots (eight at most) and shows one's registers without moving the machine.
+Restore Recorded Stop runs `reststop` on the one on screen, and the later snapshots stay
+listed until the next new instruction leaves them. An explicit branch is not this. Stock
+Hatari has no `replaylog`; that build skips the key proof and the reverses still restore
+the machine.
 
 Still not built:
 

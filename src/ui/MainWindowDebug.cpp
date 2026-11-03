@@ -646,6 +646,8 @@ void MainWindow::showSavedStop(int index)
     if (index < 0 || index >= m_savedStops.size())
         return;
     m_historyIndex = index;
+    m_reverseViewIndex = -1;
+    rebuildRecordedStopsMenu();
     const MachineState &state = m_savedStops.at(index).state;
     if (m_registers) {
         m_registers->setState(state);
@@ -661,6 +663,8 @@ void MainWindow::showLiveStop()
 {
     m_restorePending = false;
     dismissHistory();
+    m_reverseViewIndex = -1;
+    rebuildRecordedStopsMenu();
     if (m_registers) {
         if (m_lastState.regs.valid)
             m_registers->setState(m_lastState);
@@ -688,6 +692,9 @@ void MainWindow::restoreStop()
     // restore can land somewhere else, and the history ring is not rewound
     // either, so reverse starts again from the machine that comes back.
     m_reverseAnchors.clear();
+    m_reverseIndex = -1;
+    m_reverseViewIndex = -1;
+    rebuildRecordedStopsMenu();
     m_reverseSeeking = false;
     m_reverseSeekSent = false;
     m_reverseRestore = false;
@@ -707,25 +714,65 @@ void MainWindow::rememberReverseAnchor(const MachineState &state)
         return;
     // A second register batch for the stop already being saved is the same
     // machine. Another file would become the "previous" stop and a reverse
-    // would return to the instruction on screen.
-    if (!m_reverseAnchors.isEmpty() && m_reverseAnchors.last().pc == state.pc)
+    // would return to the instruction on screen. A new program counter leaves
+    // the stops that came after the one we restored; they stay listed until
+    // then, which is what lets Recorded Stops go back.
+    const int current = currentReverseIndex();
+    if (current >= 0 && m_reverseAnchors.at(current).pc == state.pc)
         return;
+    discardReverseFuture();
     // The same bound as Save Stop. These files are the session's, and the
     // session directory goes away with the session.
     constexpr int kMaxReverseAnchors = 8;
     while (m_reverseAnchors.size() >= kMaxReverseAnchors) {
         QFile::remove(m_reverseAnchors.first().path);
         m_reverseAnchors.removeFirst();
+        if (m_reverseIndex == 0)
+            m_reverseIndex = -1;
+        else if (m_reverseIndex > 0)
+            --m_reverseIndex;
+        if (m_reverseViewIndex == 0)
+            m_reverseViewIndex = -1;
+        else if (m_reverseViewIndex > 0)
+            --m_reverseViewIndex;
     }
     ReverseAnchor anchor;
     anchor.path = m_currentSessionDir + QStringLiteral("/reverse-%1.sav").arg(++m_reverseSerial);
+    anchor.state = state;
     anchor.pc = state.pc;
     // A step is the user moving one instruction. Everything else — the entry
     // stop, a breakpoint, a pause — is a place Reverse Continue can return to.
     anchor.breakpoint = !(m_session && m_session->stepEventPending());
     m_reverseAnchors.append(anchor);
+    m_reverseIndex = -1;
     m_reverseSaveCommand = QStringLiteral("statesave %1").arg(anchor.path);
     m_host->command(m_reverseSaveCommand);
+    rebuildRecordedStopsMenu();
+}
+
+
+int MainWindow::currentReverseIndex() const
+{
+    if (m_reverseAnchors.isEmpty())
+        return -1;
+    if (m_reverseIndex >= 0 && m_reverseIndex < m_reverseAnchors.size())
+        return m_reverseIndex;
+    return m_reverseAnchors.size() - 1;
+}
+
+
+void MainWindow::discardReverseFuture()
+{
+    const int current = currentReverseIndex();
+    if (current < 0)
+        return;
+    while (m_reverseAnchors.size() > current + 1) {
+        QFile::remove(m_reverseAnchors.last().path);
+        m_reverseAnchors.removeLast();
+    }
+    m_reverseIndex = -1;
+    if (m_reverseViewIndex >= m_reverseAnchors.size())
+        m_reverseViewIndex = -1;
 }
 
 
@@ -737,41 +784,45 @@ void MainWindow::updateReverseStepAction()
     // so the anchor chain is the record. Fresh history has to be the read for
     // this stop: the pane still holds the previous stop until that read lands.
     const bool historyOk = m_reverseHistoryStale || m_reverseHistoryReady;
-    const bool stopped = m_host && m_host->isStopped() && !m_reverseSeeking
-                         && m_reverseAnchors.size() >= 2;
-    m_actReverseStep->setEnabled(stopped && historyOk);
+    const int current = currentReverseIndex();
+    const bool canReverse = m_host && m_host->isStopped() && !m_reverseSeeking && current >= 1;
+    m_actReverseStep->setEnabled(canReverse && historyOk);
     bool earlierBreakpoint = false;
-    for (int i = 0; i + 1 < m_reverseAnchors.size(); ++i) {
+    for (int i = 0; i < current; ++i) {
         if (m_reverseAnchors.at(i).breakpoint)
             earlierBreakpoint = true;
     }
     if (m_actReverseContinue)
-        m_actReverseContinue->setEnabled(stopped && earlierBreakpoint);
+        m_actReverseContinue->setEnabled(canReverse && earlierBreakpoint);
     if (m_actRunBack)
-        m_actRunBack->setEnabled(stopped && m_editor);
+        m_actRunBack->setEnabled(canReverse && m_editor);
+    if (m_actRestoreRecorded)
+        m_actRestoreRecorded->setEnabled(m_host && m_host->isStopped() && !m_reverseSeeking
+                                         && m_reverseViewIndex >= 0
+                                         && m_reverseViewIndex < m_reverseAnchors.size());
 }
 
 
 void MainWindow::reverseStep()
 {
-    if (!m_host || !m_host->isStopped() || m_reverseAnchors.size() < 2 || m_reverseSeeking)
+    const int current = currentReverseIndex();
+    if (!m_host || !m_host->isStopped() || current < 1 || m_reverseSeeking)
         return;
     quint32 previous = 0;
     if (m_reverseHistoryStale) {
         // The ring's newest entry is the instruction this restore un-did, which
         // is the stop on screen. The anchor before it is the one to return to.
-        previous = m_reverseAnchors.at(m_reverseAnchors.size() - 2).pc;
+        previous = m_reverseAnchors.at(current - 1).pc;
     } else if (!m_pcHistory || !m_pcHistory->lastExecutedAddress(&previous)) {
         m_log->appendPlainText(tr("[reverse] the earlier instruction is not in the history yet"));
         return;
     }
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
-    // The last anchor is the stop on screen. The one before it is where this
-    // movement started. Drop the one we are leaving so the next reverse walks
-    // further back; its file can stay, the session directory removes it.
-    m_reverseAnchors.removeLast();
-    const ReverseAnchor origin = m_reverseAnchors.last();
+    // The stop on screen stays in the list. Recorded Stops can restore it.
+    // The index is what the next reverse walks back from.
+    m_reverseIndex = current - 1;
+    const ReverseAnchor origin = m_reverseAnchors.at(m_reverseIndex);
     m_restorePending = true;
     m_reverseRestore = true;
     m_reverseSeeking = false;
@@ -792,6 +843,7 @@ void MainWindow::reverseStep()
     // restore runs forward, while the debugger is still stopped: resume()
     // would drop the command.
     armReplayKeys();
+    rebuildRecordedStopsMenu();
     m_host->command(QStringLiteral("reststop %1").arg(origin.path));
     m_log->appendPlainText(tr("[reverse] restoring %1").arg(origin.path));
 }
@@ -799,10 +851,11 @@ void MainWindow::reverseStep()
 
 void MainWindow::reverseContinue()
 {
-    if (!m_host || !m_host->isStopped() || m_reverseSeeking || m_reverseAnchors.size() < 2)
+    const int current = currentReverseIndex();
+    if (!m_host || !m_host->isStopped() || m_reverseSeeking || current < 1)
         return;
     int target = -1;
-    for (int i = m_reverseAnchors.size() - 2; i >= 0; --i) {
+    for (int i = current - 1; i >= 0; --i) {
         if (m_reverseAnchors.at(i).breakpoint) {
             target = i;
             break;
@@ -812,11 +865,10 @@ void MainWindow::reverseContinue()
         m_log->appendPlainText(tr("[reverse] no earlier breakpoint stop"));
         return;
     }
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
-    while (m_reverseAnchors.size() > target + 1)
-        m_reverseAnchors.removeLast();
-    const ReverseAnchor origin = m_reverseAnchors.last();
+    m_reverseIndex = target;
+    const ReverseAnchor origin = m_reverseAnchors.at(m_reverseIndex);
     m_restorePending = true;
     m_reverseRestore = true;
     m_reverseSeeking = false;
@@ -824,6 +876,7 @@ void MainWindow::reverseContinue()
     m_reverseHistoryStale = true;
     updateReverseStepAction();
     armReplayKeys();
+    rebuildRecordedStopsMenu();
     m_host->command(QStringLiteral("reststop %1").arg(origin.path));
     m_log->appendPlainText(tr("[reverse] restoring %1").arg(origin.path));
 }
@@ -842,26 +895,26 @@ void MainWindow::runBackToCursor()
                                    .arg(line));
         return;
     }
-    if (m_reverseAnchors.size() < 2) {
+    const int current = currentReverseIndex();
+    if (current < 1) {
         m_log->appendPlainText(tr("[reverse] no earlier stop to run back from"));
         return;
     }
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
     // A stop we already took at this instruction is that instruction. Replay
     // from the previous snapshot would stop at the first reach, which can be
     // an earlier visit than the stop the cursor is naming.
     int exact = -1;
-    for (int i = m_reverseAnchors.size() - 2; i >= 0; --i) {
+    for (int i = current - 1; i >= 0; --i) {
         if (m_reverseAnchors.at(i).pc == address) {
             exact = i;
             break;
         }
     }
     if (exact >= 0) {
-        while (m_reverseAnchors.size() > exact + 1)
-            m_reverseAnchors.removeLast();
-        const ReverseAnchor origin = m_reverseAnchors.last();
+        m_reverseIndex = exact;
+        const ReverseAnchor origin = m_reverseAnchors.at(m_reverseIndex);
         m_restorePending = true;
         m_reverseRestore = true;
         m_reverseSeeking = false;
@@ -869,12 +922,13 @@ void MainWindow::runBackToCursor()
         m_reverseHistoryStale = true;
         updateReverseStepAction();
         armReplayKeys();
+        rebuildRecordedStopsMenu();
         m_host->command(QStringLiteral("reststop %1").arg(origin.path));
         m_log->appendPlainText(tr("[reverse] restoring %1").arg(origin.path));
         return;
     }
-    m_reverseAnchors.removeLast();
-    const ReverseAnchor origin = m_reverseAnchors.last();
+    m_reverseIndex = current - 1;
+    const ReverseAnchor origin = m_reverseAnchors.at(m_reverseIndex);
     m_restorePending = true;
     m_reverseRestore = true;
     m_reverseSeeking = false;
@@ -886,8 +940,87 @@ void MainWindow::runBackToCursor()
     }
     updateReverseStepAction();
     armReplayKeys();
+    rebuildRecordedStopsMenu();
     m_host->command(QStringLiteral("reststop %1").arg(origin.path));
     m_log->appendPlainText(tr("[reverse] restoring %1").arg(origin.path));
+}
+
+
+void MainWindow::showRecordedStop(int index)
+{
+    if (index < 0 || index >= m_reverseAnchors.size())
+        return;
+    m_reverseViewIndex = index;
+    if (m_historyIndex >= 0) {
+        m_historyIndex = -1;
+        rebuildSavedStopsMenu();
+    }
+    const MachineState &state = m_reverseAnchors.at(index).state;
+    if (m_registers) {
+        m_registers->setState(state);
+        m_registers->setEditingEnabled(false);
+    }
+    updateRegisterStrip();
+    applyAnalysisFrom(state);
+    rebuildRecordedStopsMenu();
+    updateReverseStepAction();
+}
+
+
+void MainWindow::restoreRecordedStop()
+{
+    if (!m_host || !m_host->isStopped() || m_reverseSeeking
+        || m_reverseViewIndex < 0 || m_reverseViewIndex >= m_reverseAnchors.size())
+        return;
+    const int index = m_reverseViewIndex;
+    if (index == currentReverseIndex()) {
+        showLiveStop();
+        return;
+    }
+    m_reverseIndex = index;
+    m_reverseViewIndex = -1;
+    // The preview's mark is already the address we are about to restore. Paint
+    // the live machine first, so the arrival is the thing that moves it.
+    if (m_registers) {
+        m_registers->setState(m_lastState);
+        m_registers->setEditingEnabled(true);
+    }
+    updateRegisterStrip();
+    applyAnalysisFrom(m_lastState);
+    const ReverseAnchor origin = m_reverseAnchors.at(index);
+    m_restorePending = true;
+    m_reverseRestore = true;
+    m_reverseSeeking = false;
+    m_reverseSeekSent = false;
+    m_reverseHistoryStale = true;
+    updateReverseStepAction();
+    armReplayKeys();
+    rebuildRecordedStopsMenu();
+    m_host->command(QStringLiteral("reststop %1").arg(origin.path));
+    m_log->appendPlainText(tr("[reverse] restoring %1").arg(origin.path));
+}
+
+
+void MainWindow::rebuildRecordedStopsMenu()
+{
+    if (!m_recordedStopsMenu)
+        return;
+    m_recordedStopsMenu->clear();
+    auto *live = m_recordedStopsMenu->addAction(tr("Live"));
+    live->setObjectName(QStringLiteral("showLiveRecordedStopAction"));
+    live->setCheckable(true);
+    live->setChecked(m_reverseViewIndex < 0);
+    connect(live, &QAction::triggered, this, &MainWindow::showLiveStop);
+    for (int i = m_reverseAnchors.size() - 1; i >= 0; --i) {
+        const MachineState &state = m_reverseAnchors.at(i).state;
+        auto *action = m_recordedStopsMenu->addAction(
+            tr("PC %1  D0 %2").arg(hex::hex32(state.pc), hex::hex32(state.regs.d[0])));
+        action->setObjectName(QStringLiteral("recordedStopAction%1").arg(i));
+        action->setCheckable(true);
+        action->setChecked(i == m_reverseViewIndex);
+        connect(action, &QAction::triggered, this, [this, i] { showRecordedStop(i); });
+    }
+    m_recordedStopsMenu->setEnabled(!m_reverseAnchors.isEmpty());
 }
 
 
@@ -925,7 +1058,7 @@ void MainWindow::step()
     // step-back snapshot all depend on it). The same fact is why the stop hook
     // needs the step flag: the state batch that follows is the only report of
     // the movement (docs/stop-hooks-plan.md §6).
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
     m_session->setStepEventPending(true);
     m_host->step();
@@ -939,7 +1072,7 @@ void MainWindow::stepOver()
         m_reverseAfterAnchor = ReverseAfterAnchor::StepOver;
         return;
     }
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
     m_session->setStepEventPending(true);
     m_host->stepOver();
@@ -953,7 +1086,7 @@ void MainWindow::stepOut()
         m_reverseAfterAnchor = ReverseAfterAnchor::StepOut;
         return;
     }
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
     m_session->stepOut();
 }
@@ -981,7 +1114,7 @@ void MainWindow::runToCursor()
                                .arg(line)
                                .arg(address, 0, 16));
     m_host->breakAtAddressOnce(address);
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
     m_host->resume();
 }
@@ -1001,7 +1134,7 @@ void MainWindow::resume()
         m_reverseAfterAnchor = ReverseAfterAnchor::Resume;
         return;
     }
-    if (m_historyIndex >= 0)
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
         showLiveStop();
     m_host->resume();
 }
@@ -1410,6 +1543,8 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // is the live one from here.
         m_restorePending = false;
         m_historyIndex = -1;
+        m_reverseViewIndex = -1;
+        rebuildRecordedStopsMenu();
         if (m_registers)
             m_registers->setEditingEnabled(m_host && m_host->isStopped());
         rebuildSavedStopsMenu();
@@ -1419,7 +1554,7 @@ void MainWindow::onStateUpdated(const MachineState &state)
             m_writeTraceRearm = true;
         if (m_palTraceRecording)
             m_palTraceRearm = true;
-    } else if (m_historyIndex >= 0) {
+    } else if (m_historyIndex >= 0 || m_reverseViewIndex >= 0) {
         // A refresh already in flight must not replace the saved stop on
         // screen, and looking at one does not ask the debugger for anything.
         return;
@@ -1452,7 +1587,10 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // painted from that batch. A new program counter is a new stop either
         // way, so the history ring is the record of how we got here. A later
         // batch for the same program counter is the same stop.
-        if (m_reverseAnchors.isEmpty() || m_reverseAnchors.last().pc != state.pc) {
+        // Compare with the stop the machine is at. A later snapshot can name
+        // this program counter and still be one we have not returned to.
+        const int current = currentReverseIndex();
+        if (current < 0 || m_reverseAnchors.at(current).pc != state.pc) {
             m_reverseHistoryStale = false;
             m_reverseHistoryReady = false;
         }

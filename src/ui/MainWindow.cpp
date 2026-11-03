@@ -236,6 +236,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_savedStopSerial = 0;
         m_reverseAnchors.clear();
         m_reverseSerial = 0;
+        m_reverseIndex = -1;
+        m_reverseViewIndex = -1;
         m_reverseSeeking = false;
         m_reverseSeekSent = false;
         m_reverseRestore = false;
@@ -250,6 +252,7 @@ MainWindow::MainWindow(QWidget *parent)
             m_actRestoreStop->setEnabled(false);
         updateReverseStepAction();
         rebuildSavedStopsMenu();
+        rebuildRecordedStopsMenu();
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())
             editor->clearCurrentExecutionLine();

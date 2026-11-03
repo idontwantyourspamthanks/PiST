@@ -583,9 +583,10 @@ no frame count is still refused. PiST does not call `replayrecord` or `replaypla
 The saved-stop list is still the user's own snapshots. Run ▸ Recorded Stops lists the
 automatic snapshots (eight at most) and shows one's registers without moving the machine.
 Restore Recorded Stop runs `reststop` on the one on screen, and the later snapshots stay
-listed until the next new instruction leaves them. An explicit branch is not this. Stock
-Hatari has no `replaylog`; that build skips the key proof and the reverses still restore
-the machine.
+listed. Stepping or continuing from a stop that already has a later one asks first, then
+records the new run as a branch and leaves the other run in Recorded Stops, so that stop
+can be restored again. Stock Hatari has no `replaylog`; that build skips the key proof
+and the reverses still restore the machine.
 
 Still not built:
 

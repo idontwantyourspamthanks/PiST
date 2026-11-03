@@ -1223,13 +1223,13 @@ private:
     bool m_restorePending = false;
     int m_savedStopSerial = 0;
     /// One automatic snapshot per stop, separate from the stops the user
-    /// saved. The machine is at `m_reverseIndex`, or at the last entry when
-    /// that index is -1. Later entries stay until execution leaves them, so
-    /// Recorded Stops can restore one again.
+    /// saved. `parent` is the stop this one ran on from, or -1 for the first.
+    /// A stop with two children is a branch: both runs stay in the list.
     struct ReverseAnchor {
         QString path;
         MachineState state;
         quint32 pc = 0;
+        int parent = -1;
         /// A stop the machine reached on its own (entry, a breakpoint), as
         /// opposed to a single step. Reverse Continue walks back to one.
         bool breakpoint = false;
@@ -1238,6 +1238,9 @@ private:
     int m_reverseSerial = 0;
     /// Which recorded stop the machine is at, or -1 for the latest one.
     int m_reverseIndex = -1;
+    /// The user already agreed to branch, and the step that follows is still
+    /// waiting for this stop's snapshot. The deferred step does not ask again.
+    bool m_reverseBranchConfirmed = false;
     /// Which recorded stop is painted, or -1 for the live machine. Looking
     /// does not restore.
     int m_reverseViewIndex = -1;
@@ -1270,7 +1273,10 @@ private:
     void rememberReverseAnchor(const MachineState &state);
     void updateReverseStepAction();
     int currentReverseIndex() const;
-    void discardReverseFuture();
+    int reverseParent(int index) const;
+    bool reverseHasChild(int index) const;
+    bool confirmReverseBranch();
+    bool evictReverseAnchor();
     void rebuildRecordedStopsMenu();
     void startInputLog();
     void armReplayKeys();

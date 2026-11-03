@@ -518,6 +518,7 @@ private slots:
     void reverseContinueReturnsToTheBreakpoint();
     void runBackToCursorRestoresThatLine();
     void recordedStopsRestoreAnEarlierStop();
+    void branchKeepsTheLaterStops();
     void traceWritesListsTheStore();
     void tracePaletteListsTheScanline();
     void analysisNotesAnExecutedAddress();
@@ -5099,6 +5100,16 @@ void TstGui::reverseStepReturnsToThePreviousInstruction()
     QCOMPARE(armed, breakpoint);
     disconnect(conn);
 
+    // The entry stop already has the later snapshots. Continuing keeps them
+    // and records this run beside them.
+    QTimer::singleShot(0, &window, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            for (QAbstractButton *button : box->buttons()) {
+                if (button->text() == QStringLiteral("Continue"))
+                    button->click();
+            }
+        }
+    });
     QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
     if (!QTest::qWaitFor(
             [&] {
@@ -5612,6 +5623,163 @@ void TstGui::recordedStopsRestoreAnEarlierStop()
     if (!atBranch)
         qDebug().noquote() << window.debugConsoleText() << strip->text();
     QVERIFY(atBranch);
+}
+
+void TstGui::branchKeepsTheLaterStops()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/branch.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *menu = window.findChild<QMenu *>(QStringLiteral("recordedStopsMenu"));
+    QVERIFY(menu);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+    const auto clickBranch = [](const char *label) {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            if (QString::fromLatin1(label) == QLatin1String("Cancel")) {
+                if (auto *cancel = box->button(QMessageBox::Cancel))
+                    cancel->click();
+                return;
+            }
+            for (QAbstractButton *button : box->buttons()) {
+                if (button->text() == QString::fromLatin1(label))
+                    button->click();
+            }
+        }
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryD0 = 0;
+    quint32 entryD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &entryD0));
+    QVERIFY(reg(strip->text(), "D1", &entryD1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor(
+            [&] { return window.findChild<QAction *>(QStringLiteral("recordedStopAction2")) != nullptr; },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(menu->actions().size(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreRecordedStop", Qt::DirectConnection));
+    const bool atEntry = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(0))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0
+                   && d1 == entryD1;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!atEntry)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(atEntry);
+
+    const int listed = menu->actions().size();
+    const QString beforeCancel = window.debugConsoleText();
+    QTimer::singleShot(0, &window, [clickBranch] { clickBranch("Cancel"); });
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(menu->actions().size(), listed);
+    QCOMPARE(window.debugConsoleText(), beforeCancel);
+
+    QTimer::singleShot(0, &window, [clickBranch] { clickBranch("Continue"); });
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                auto *old = window.findChild<QAction *>(QStringLiteral("recordedStopAction2"));
+                return analysis->executionAddress() == std::optional<quint32>(2) && old
+                       && old->text().startsWith(QStringLiteral("Branch"));
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        if (auto *old = window.findChild<QAction *>(QStringLiteral("recordedStopAction2")))
+            qDebug().noquote() << old->text();
+    }
+    auto *oldStop = window.findChild<QAction *>(QStringLiteral("recordedStopAction2"));
+    QVERIFY(oldStop);
+    QVERIFY(oldStop->text().startsWith(QStringLiteral("Branch")));
+    QVERIFY(window.findChild<QAction *>(QStringLiteral("recordedStopAction3")));
+
+    const QString beforePreview = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 2)));
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    quint32 branchD0 = 0;
+    quint32 branchD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &branchD0));
+    QVERIFY(reg(strip->text(), "D1", &branchD1));
+    QCOMPARE(branchD0, entryD0 + 1);
+    QCOMPARE(branchD1, entryD1 + 1);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(4));
+    QCOMPARE(window.debugConsoleText(), beforePreview);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreRecordedStop", Qt::DirectConnection));
+    const bool atOld = QTest::qWaitFor(
+        [&] {
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(4))
+                return false;
+            auto *other = window.findChild<QAction *>(QStringLiteral("recordedStopAction3"));
+            if (!other || !other->text().startsWith(QStringLiteral("Branch")))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1)
+                   && d0 == entryD0 + 1 && d1 == entryD1 + 1;
+        },
+        30000);
+    if (!atOld)
+        qDebug().noquote() << window.debugConsoleText() << strip->text();
+    QVERIFY(atOld);
 }
 
 void TstGui::traceWritesListsTheStore()

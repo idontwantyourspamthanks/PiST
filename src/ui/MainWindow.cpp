@@ -238,6 +238,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_reverseSerial = 0;
         m_reverseIndex = -1;
         m_reverseViewIndex = -1;
+        m_reverseBranchConfirmed = false;
         m_reverseSeeking = false;
         m_reverseSeekSent = false;
         m_reverseRestore = false;

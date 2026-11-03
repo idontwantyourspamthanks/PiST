@@ -193,8 +193,10 @@ states the redistribution basis and a `KNOWN_LIBS` entry waits on a copy in `pac
 pause hint are in. A memory pane can mark the bytes it is showing and compare a later stop
 with that mark, or with the previous stop's window, and Build → Compare With Last Build
 previews how the linked image changed. Neither writes the machine, and neither records who
-stored a byte. Step-back is still not in, and the analysis below records why it is not merely
-unbuilt.
+stored a byte. Reverse Step is in. It restores the previous stop, and when more than one
+instruction ran it continues to the instruction history says executed last. A continue that
+passed that instruction more than once stops the first time, and keys typed on the way are
+not replayed.
 
 - **Register and memory editing.** Delivered. Registers and memory are editable while stopped — the
   typed backend intents `writeRegister` (`r <reg>=$<val>` on both backends) and `writeMemoryByte`
@@ -209,9 +211,18 @@ unbuilt.
   `stateload` the machine runs forward and never returns to a debugger prompt, which is
   incompatible with this IDE's prompt-framed debug transport. The fork's `reststop` does return
   to the prompt with that instruction unexecuted, and PiST uses it (§14). What is in the product
-  is Save Stop, Restore Stop, and a short read-only list of those stops. Reverse Step — restore
-  an earlier snapshot, then replay up to the instruction before the one on screen — has a
-  mechanism on the fork and is not in PiST. `--replay-snapshot` writes one statesave during
+  is Save Stop, Restore Stop, and a short read-only list of those stops. Reverse Step is
+  separate from that list. PiST snapshots each stop itself and Run ▸ Reverse Step restores
+  the one before. When history's last program counter is that stop, the restore is the whole
+  step back. When it is further on, PiST restores that stop and runs to the first reach of
+  the program counter history lists, with a one-shot breakpoint. `reststop` does not rewind
+  the history ring, so a second reverse walks the snapshots until a new instruction executes.
+  The proof is a real session on `addq.l #1,d0` / `addq.l #1,d1` / `bra.s` back. Two steps
+  land on the branch; reverse stops on the second add before it runs, so D1 is unchanged;
+  reverse again stops on the first add with both registers restored. Continuing from that
+  entry stop to the branch, then reversing, stops on the second add with only D0 changed.
+  A continue that executed the same instruction more than once stops the first time, and
+  keys typed during the continue are not in the snapshot. `--replay-snapshot` writes one statesave during
   the recording, after that frame's keys. `reststop` restores it. `replaykeys` applies the
   recording's later keys, and a breakpoint on a later instruction returns to the prompt
   before that instruction executes. The proof stops on the replay fixture's spin, with the
@@ -544,18 +555,18 @@ What each gate proved, and where the proof stops:
    is not a scanline inspector. The profiler overlay is not that stream. The media channel's frames
    are RGB, and `info video` does not carry the palette.
 
+**Reverse Step** is in (§6). PiST snapshots each stop and restores the previous one. When
+more than that instruction ran, it continues to the first reach of the program counter
+history lists. The proof is the three-instruction loop in §6: one step back, a second step
+back along the snapshots, and a continue from the entry stop that stops before the second
+add. A continue that executed the same instruction more than once stops the first time.
+Keys typed during the continue are not replayed. The fork can also do this from a
+recording: a snapshot, `reststop`, then `replaykeys`, then a breakpoint. PiST does not
+call `replaykeys`, `replayrecord`, or `replayplay`. The saved-stop list is still the
+user's own snapshots. Breakpoint seeking, branches, and a recording browser are not this.
+
 Still not built:
 
-- **Reverse Step** restores an earlier snapshot and replays to just before the instruction on
-  screen. The fork can do that for the replay fixture: a snapshot taken during the recording,
-  `reststop`, then `replaykeys`, then a breakpoint on the later instruction. The snapshot
-  can be the one `--replay-snapshot` writes while the recording runs, or a `statesave`
-  from the debugger prompt at the fixture's first instruction, or a `statesave` from the
-  one stop in the middle of the recording. The same restore-and-replay also reaches
-  the entry stop of a TOS 1.04 boot: the snapshot is the program's first instruction,
-  and the blanks after it replay (§14). PiST does not call
-  it. The saved-stop list is still the navigation in the product. Breakpoint seeking, branches, and a recording browser wait
-  with a PiST command for this.
 - **Reads, and where a value came from,** are the rest of memory history. The Writes list
   is the forward-only view of gate 3. The Palette list is the forward-only view of gate 4.
   Interrupts, video-base changes, the blitter, and a known-good frame are not that list.

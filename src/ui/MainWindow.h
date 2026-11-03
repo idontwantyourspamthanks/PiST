@@ -348,6 +348,12 @@ private slots:
     /// on its instruction. A Hatari without `reststop` reports that on the
     /// console and stays where it is.
     void restoreStop();
+    /// Stop on the instruction that just executed, before it runs again.
+    /// The previous stop is restored. When more than that one instruction
+    /// ran, execution continues to the program counter history lists last.
+    /// A Hatari without `reststop` reports that on the console and stays
+    /// where it is.
+    void reverseStep();
     /// Record writes in `length` bytes starting at `address`. The Writes list
     /// fills at each later stop. A Hatari without `writetrace` reports that
     /// on the console and records nothing.
@@ -1181,6 +1187,7 @@ private:
     QAction *m_actStepOut = nullptr;
     QAction *m_actSaveStop = nullptr;
     QAction *m_actRestoreStop = nullptr;
+    QAction *m_actReverseStep = nullptr;
     QMenu *m_savedStopsMenu = nullptr;
     /// One stopped machine: the snapshot Hatari wrote, and the registers and
     /// PC that were on screen then. `showSavedStop` paints those without
@@ -1196,6 +1203,37 @@ private:
     /// painted even if a saved stop is still on screen.
     bool m_restorePending = false;
     int m_savedStopSerial = 0;
+    /// One automatic snapshot per stop, separate from the stops the user
+    /// saved. The last entry is the stop on screen. Reverse Step restores
+    /// the one before it.
+    struct ReverseAnchor {
+        QString path;
+        quint32 pc = 0;
+    };
+    QList<ReverseAnchor> m_reverseAnchors;
+    int m_reverseSerial = 0;
+    /// Reverse Step restored the previous stop and still has to run forward
+    /// to `m_reverseSeekPc`, the instruction history says executed last.
+    bool m_reverseSeeking = false;
+    bool m_reverseSeekSent = false;
+    quint32 m_reverseSeekPc = 0;
+    /// The `reststop` in flight was Reverse Step, so the anchor list is the
+    /// chain it is walking. A manual Restore Stop clears that list instead.
+    bool m_reverseRestore = false;
+    /// `reststop` does not rewind the history ring, so its newest entry is the
+    /// instruction just un-done. Further reverses walk the anchor chain until
+    /// a real execution records a new one.
+    bool m_reverseHistoryStale = false;
+    /// The pane holds the history read for the stop on screen.
+    bool m_reverseHistoryReady = false;
+    /// `statesave` of the stop on screen, still in the debugger queue. A step
+    /// sent before it runs would be the machine the file captures, so Step and
+    /// Continue wait for this command to finish.
+    QString m_reverseSaveCommand;
+    enum class ReverseAfterAnchor { None, Step, StepOver, StepOut, Resume };
+    ReverseAfterAnchor m_reverseAfterAnchor = ReverseAfterAnchor::None;
+    void rememberReverseAnchor(const MachineState &state);
+    void updateReverseStepAction();
     void rebuildSavedStopsMenu();
     /// The next live stop should paint. Does not itself repaint.
     void dismissHistory();

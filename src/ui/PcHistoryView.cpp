@@ -41,6 +41,30 @@ void PcHistoryView::clear()
     m_text->clear();
 }
 
+bool PcHistoryView::lastExecutedAddress(quint32 *address) const
+{
+    if (!m_text || !address)
+        return false;
+    // A disassembly line starts with the address (`%08X` from the UAE
+    // disassembler). The debugger mark and the repeat note follow the
+    // instruction they belong to, so the last address line is the one that
+    // ran, not the stop the machine is sitting on.
+    static const QRegularExpression addressLine(QStringLiteral("^([0-9A-Fa-f]{6,8})\\b"));
+    const QStringList lines = m_text->toPlainText().split(QLatin1Char('\n'));
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QRegularExpressionMatch match = addressLine.match(lines.at(i).trimmed());
+        if (!match.hasMatch())
+            continue;
+        bool ok = false;
+        const quint32 value = match.captured(1).toUInt(&ok, 16);
+        if (!ok)
+            continue;
+        *address = value;
+        return true;
+    }
+    return false;
+}
+
 bool PcHistoryView::eventFilter(QObject *watched, QEvent *event)
 {
     if (m_text && watched == m_text->viewport() && event->type() == QEvent::MouseButtonDblClick) {

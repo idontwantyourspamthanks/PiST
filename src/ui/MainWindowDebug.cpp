@@ -241,6 +241,7 @@ void MainWindow::wireBackend()
             if (m_actStepOut) m_actStepOut->setEnabled(false);
             if (m_actSaveStop) m_actSaveStop->setEnabled(false);
             if (m_actRestoreStop) m_actRestoreStop->setEnabled(false);
+            if (m_actReverseStep) m_actReverseStep->setEnabled(false);
             if (m_savedStopsMenu) m_savedStopsMenu->setEnabled(false);
             if (m_actRunToCursor) m_actRunToCursor->setEnabled(false);
             if (m_actFollow) m_actFollow->setEnabled(false);
@@ -333,6 +334,10 @@ void MainWindow::wireBackend()
             [this](const QString &response) {
                 if (m_pcHistory)
                     m_pcHistory->setHistory(response);
+                // The read was queued at the stop, and the queue is ordered, so
+                // this is that stop's history rather than an earlier one's.
+                m_reverseHistoryReady = true;
+                updateReverseStepAction();
             });
     connect(m_host, &IDebugBackend::profileSaveFinished, this,
             [this](const QString &) {
@@ -416,6 +421,30 @@ void MainWindow::wireBackend()
                     m_pendingDebugCommand.clear();
                     emit debugCommandFinished(command, response);
                 }
+                // The snapshot command is the machine as it was when the stop
+                // was recorded. Step and Continue are held until it finishes,
+                // so a later instruction cannot be the one the file captures.
+                if (!m_reverseSaveCommand.isEmpty() && command == m_reverseSaveCommand) {
+                    m_reverseSaveCommand.clear();
+                    const ReverseAfterAnchor next = m_reverseAfterAnchor;
+                    m_reverseAfterAnchor = ReverseAfterAnchor::None;
+                    switch (next) {
+                    case ReverseAfterAnchor::Step:
+                        step();
+                        break;
+                    case ReverseAfterAnchor::StepOver:
+                        stepOver();
+                        break;
+                    case ReverseAfterAnchor::StepOut:
+                        stepOut();
+                        break;
+                    case ReverseAfterAnchor::Resume:
+                        resume();
+                        break;
+                    case ReverseAfterAnchor::None:
+                        break;
+                    }
+                }
             });
 
     // The media channel's frames (docs/PLAN.md §12): convert once, keep the
@@ -465,6 +494,10 @@ void MainWindow::wireBackend()
             m_actSaveStop->setEnabled(stopped);
         if (m_actRestoreStop)
             m_actRestoreStop->setEnabled(stopped && !m_savedStops.isEmpty());
+        // The reverse target is the snapshot of this stop, which arrives with
+        // the register batch. Leave the action off until that snapshot exists.
+        if (m_actReverseStep)
+            m_actReverseStep->setEnabled(false);
         m_actRunToCursor->setEnabled(stopped);
         m_actFollow->setEnabled(stopped);
         m_actResume->setEnabled(stopped);
@@ -651,6 +684,16 @@ void MainWindow::restoreStop()
     // Clearing the history index here would let the resume's refresh paint
     // the pre-restore machine over them.
     m_restorePending = true;
+    // The automatic chain belongs to the stops that actually happened. This
+    // restore can land somewhere else, and the history ring is not rewound
+    // either, so reverse starts again from the machine that comes back.
+    m_reverseAnchors.clear();
+    m_reverseSeeking = false;
+    m_reverseSeekSent = false;
+    m_reverseRestore = false;
+    m_reverseHistoryStale = true;
+    if (m_actReverseStep)
+        m_actReverseStep->setEnabled(false);
     // reststop answers DEBUGGER_END, so the transport sees a resume and then
     // the stop that comes back. The views follow that stop the same way they
     // follow any other one.
@@ -659,8 +702,93 @@ void MainWindow::restoreStop()
 }
 
 
+void MainWindow::rememberReverseAnchor(const MachineState &state)
+{
+    if (!m_host || m_currentSessionDir.isEmpty() || !state.regs.valid)
+        return;
+    // A second register batch for the stop already being saved is the same
+    // machine. Another file would become the "previous" stop and a reverse
+    // would return to the instruction on screen.
+    if (!m_reverseAnchors.isEmpty() && m_reverseAnchors.last().pc == state.pc)
+        return;
+    // The same bound as Save Stop. These files are the session's, and the
+    // session directory goes away with the session.
+    constexpr int kMaxReverseAnchors = 8;
+    while (m_reverseAnchors.size() >= kMaxReverseAnchors) {
+        QFile::remove(m_reverseAnchors.first().path);
+        m_reverseAnchors.removeFirst();
+    }
+    ReverseAnchor anchor;
+    anchor.path = m_currentSessionDir + QStringLiteral("/reverse-%1.sav").arg(++m_reverseSerial);
+    anchor.pc = state.pc;
+    m_reverseAnchors.append(anchor);
+    m_reverseSaveCommand = QStringLiteral("statesave %1").arg(anchor.path);
+    m_host->command(m_reverseSaveCommand);
+}
+
+
+void MainWindow::updateReverseStepAction()
+{
+    if (!m_actReverseStep)
+        return;
+    // Stale history means a restore has not been followed by a new instruction,
+    // so the anchor chain is the record. Fresh history has to be the read for
+    // this stop: the pane still holds the previous stop until that read lands.
+    const bool historyOk = m_reverseHistoryStale || m_reverseHistoryReady;
+    m_actReverseStep->setEnabled(m_host && m_host->isStopped() && !m_reverseSeeking
+                                 && m_reverseAnchors.size() >= 2 && historyOk);
+}
+
+
+void MainWindow::reverseStep()
+{
+    if (!m_host || !m_host->isStopped() || m_reverseAnchors.size() < 2 || m_reverseSeeking)
+        return;
+    quint32 previous = 0;
+    if (m_reverseHistoryStale) {
+        // The ring's newest entry is the instruction this restore un-did, which
+        // is the stop on screen. The anchor before it is the one to return to.
+        previous = m_reverseAnchors.at(m_reverseAnchors.size() - 2).pc;
+    } else if (!m_pcHistory || !m_pcHistory->lastExecutedAddress(&previous)) {
+        m_log->appendPlainText(tr("[reverse] the earlier instruction is not in the history yet"));
+        return;
+    }
+    if (m_historyIndex >= 0)
+        showLiveStop();
+    // The last anchor is the stop on screen. The one before it is where this
+    // movement started. Drop the one we are leaving so the next reverse walks
+    // further back; its file can stay, the session directory removes it.
+    m_reverseAnchors.removeLast();
+    const ReverseAnchor origin = m_reverseAnchors.last();
+    m_restorePending = true;
+    m_reverseRestore = true;
+    m_reverseSeeking = false;
+    m_reverseSeekSent = false;
+    // A step, or a continue that executed only the instruction we were stopped
+    // on, leaves history's last PC equal to that earlier stop. Restoring it
+    // is the whole reverse: the instruction is on screen and has not run.
+    // Anything further on is replayed from that stop to the first reach of
+    // the PC history lists, which is the previous instruction when it ran
+    // once. A loop continued more than once returns to the first visit.
+    if (previous != origin.pc) {
+        m_reverseSeeking = true;
+        m_reverseSeekPc = previous;
+        m_log->appendPlainText(tr("[reverse] replaying to 0x%1").arg(hex::hex32(previous)));
+    }
+    updateReverseStepAction();
+    m_host->command(QStringLiteral("reststop %1").arg(origin.path));
+    m_log->appendPlainText(tr("[reverse] restoring %1").arg(origin.path));
+}
+
+
 void MainWindow::step()
 {
+    // The snapshot of this stop is still queued. Sending the step first would
+    // let that file capture the instruction the step lands on.
+    if (!m_reverseSaveCommand.isEmpty()) {
+        m_reverseAfterAnchor = ReverseAfterAnchor::Step;
+        return;
+    }
     // A plain step is not a running->stopped transition, so stoppedChanged does
     // not fire and onDebuggerStopped is never called — the refresh has to be
     // explicit or nothing updates (registers, disassembly, the editor, and the
@@ -677,6 +805,10 @@ void MainWindow::step()
 
 void MainWindow::stepOver()
 {
+    if (!m_reverseSaveCommand.isEmpty()) {
+        m_reverseAfterAnchor = ReverseAfterAnchor::StepOver;
+        return;
+    }
     if (m_historyIndex >= 0)
         showLiveStop();
     m_session->setStepEventPending(true);
@@ -687,6 +819,10 @@ void MainWindow::stepOver()
 
 void MainWindow::stepOut()
 {
+    if (!m_reverseSaveCommand.isEmpty()) {
+        m_reverseAfterAnchor = ReverseAfterAnchor::StepOut;
+        return;
+    }
     if (m_historyIndex >= 0)
         showLiveStop();
     m_session->stepOut();
@@ -729,6 +865,12 @@ void MainWindow::pauseSession()
 
 void MainWindow::resume()
 {
+    // resume() drops queued commands it does not keep, and the snapshot is one
+    // of those. Continuing first would leave the file capturing a later machine.
+    if (!m_reverseSaveCommand.isEmpty()) {
+        m_reverseAfterAnchor = ReverseAfterAnchor::Resume;
+        return;
+    }
     if (m_historyIndex >= 0)
         showLiveStop();
     m_host->resume();
@@ -1132,6 +1274,7 @@ void MainWindow::clearAllDebugTargets()
 void MainWindow::onStateUpdated(const MachineState &state)
 {
     m_lastState = state;
+    const bool fromRestore = m_restorePending;
     if (m_restorePending) {
         // The machine is back at the snapshot. This state is that stop, so it
         // is the live one from here.
@@ -1150,6 +1293,37 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // A refresh already in flight must not replace the saved stop on
         // screen, and looking at one does not ask the debugger for anything.
         return;
+    }
+    // Snapshot before the stop hook and the view updates. Both can run the
+    // event loop, and a Step queued from there has to find this save already
+    // in the debugger queue — otherwise the file captures the stepped machine
+    // while the anchor still names this stop.
+    if (fromRestore) {
+        // reststop leaves the history ring where it was. Until something
+        // actually executes, reverse walks the snapshots instead of that ring.
+        m_reverseHistoryStale = true;
+        if (!m_reverseRestore && state.regs.valid)
+            rememberReverseAnchor(state);
+        m_reverseRestore = false;
+    }
+    if (m_reverseSeeking && state.regs.valid && state.pc == m_reverseSeekPc) {
+        m_reverseSeeking = false;
+        m_reverseSeekSent = false;
+        // The replay executed up to this instruction, so the ring ends there.
+        m_reverseHistoryStale = false;
+        m_reverseHistoryReady = false;
+        rememberReverseAnchor(state);
+    } else if (!fromRestore && state.regs.valid && m_host && m_host->isStopped()) {
+        // The register batch can arrive before stoppedChanged sets the stop
+        // flag, and the register strip — which is what Step waits on — is
+        // painted from that batch. A new program counter is a new stop either
+        // way, so the history ring is the record of how we got here. A later
+        // batch for the same program counter is the same stop.
+        if (m_reverseAnchors.isEmpty() || m_reverseAnchors.last().pc != state.pc) {
+            m_reverseHistoryStale = false;
+            m_reverseHistoryReady = false;
+        }
+        rememberReverseAnchor(state);
     }
     m_registers->setState(state);
     // Publish the stop only once a register batch has landed: the entry
@@ -1266,22 +1440,34 @@ void MainWindow::onStateUpdated(const MachineState &state)
     updateRegisterStrip();
     applyAnalysisExecution();
     requestCoverageSave();
-    if (m_writeTraceRearm) {
+    // A reverse that still has to run discards every command resume() does not
+    // keep, including a trace re-arm queued in this same turn. Leave the flags
+    // set so the stop we are running toward arms them instead.
+    const bool seekResume = m_reverseSeeking && state.regs.valid && state.pc != m_reverseSeekPc
+                            && !m_reverseSeekSent;
+    if (!seekResume && m_writeTraceRearm) {
         m_writeTraceRearm = false;
         m_host->writeTraceRange(m_writeTraceLo, m_writeTraceHi);
         if (m_writeTrace)
             m_writeTrace->clear();
-    } else {
+    } else if (!seekResume) {
         requestWriteTraceSave();
     }
-    if (m_palTraceRearm) {
+    if (!seekResume && m_palTraceRearm) {
         m_palTraceRearm = false;
         m_host->palTraceOn();
         if (m_palTrace)
             m_palTrace->clear();
-    } else {
+    } else if (!seekResume) {
         requestPalTraceSave();
     }
+
+    if (seekResume) {
+        m_reverseSeekSent = true;
+        m_host->breakAtAddressOnce(m_reverseSeekPc);
+        m_host->resume();
+    }
+    updateReverseStepAction();
 }
 
 

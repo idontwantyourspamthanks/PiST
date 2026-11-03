@@ -394,6 +394,15 @@ void MainWindow::createActions()
         tr("Return to the machine Save Stop remembered, still stopped on that instruction."));
     connect(m_actRestoreStop, &QAction::triggered, this, &MainWindow::restoreStop);
 
+    m_actReverseStep = new QAction(tr("Re&verse Step"), this);
+    m_actReverseStep->setObjectName(QStringLiteral("reverseStepAction"));
+    m_actReverseStep->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F10));
+    m_actReverseStep->setEnabled(false);
+    m_actReverseStep->setToolTip(
+        tr("Stop on the instruction that just executed, before it runs. "
+           "A continue that ran that instruction more than once stops the first time."));
+    connect(m_actReverseStep, &QAction::triggered, this, &MainWindow::reverseStep);
+
     m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actRunToCursor->setEnabled(false);
@@ -560,6 +569,7 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStep);
     runMenu->addAction(m_actStepOver);
     runMenu->addAction(m_actStepOut);
+    runMenu->addAction(m_actReverseStep);
     runMenu->addAction(m_actSaveStop);
     runMenu->addAction(m_actRestoreStop);
     m_savedStopsMenu = new QMenu(tr("Saved Stops"), this);
@@ -1549,6 +1559,8 @@ void MainWindow::applyShortcutScheme()
     const bool common = appearance::shortcutScheme() == QLatin1String("common");
     m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
     m_actStepOut->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F11));
+    if (m_actReverseStep)
+        m_actReverseStep->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F10));
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     if (common) {

@@ -498,8 +498,8 @@ Not in this pass, on purpose:
 
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
-**Status:** passed, on `hatari-pist`, pinned in PiST at `b3f3dc2`
-(`b3f3dc286f8ae1a42bb57d76f72e63cdf8a0aa2d`). The pin includes the live input log
+**Status:** passed, on `hatari-pist`, pinned in PiST at `9aa8718`
+(`9aa87181859f8d0f765e56c099ee356e66b7dba4`). The pin includes the live input log
 (`replaylog`), `replaykeys` of a log with no trace line, the entry-stop commands
 `replayrecord` and `replayplay`, and `readtrace` for CPU data reads. PiST calls
 `replaylog` and `replaykeys` on Reverse

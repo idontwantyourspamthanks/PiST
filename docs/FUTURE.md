@@ -195,8 +195,8 @@ with that mark, or with the previous stop's window, and Build → Compare With L
 previews how the linked image changed. Neither writes the machine, and neither records who
 stored a byte. Reverse Step is in. It restores the previous stop, and when more than one
 instruction ran it continues to the instruction history says executed last. A continue that
-passed that instruction more than once stops the first time, and keys typed on the way are
-not replayed.
+passed that instruction more than once stops the first time. Keys pressed after the
+restored stop are replayed from the session's input log when the fork has `replaylog`.
 
 - **Register and memory editing.** Delivered. Registers and memory are editable while stopped — the
   typed backend intents `writeRegister` (`r <reg>=$<val>` on both backends) and `writeMemoryByte`
@@ -221,8 +221,24 @@ not replayed.
   land on the branch; reverse stops on the second add before it runs, so D1 is unchanged;
   reverse again stops on the first add with both registers restored. Continuing from that
   entry stop to the branch, then reversing, stops on the second add with only D0 changed.
-  A continue that executed the same instruction more than once stops the first time, and
-  keys typed during the continue are not in the snapshot. `--replay-snapshot` writes one statesave during
+  A continue that executed the same instruction more than once stops the first time.
+  Run ▸ Reverse Continue restores the previous stop that was not a single step, skipping
+  the steps in between. The same loop, after two steps, returns to the entry instruction
+  with both registers restored. Run ▸ Run Back to Cursor restores an earlier stop whose
+  program counter is the caret's line, and otherwise replays from the previous stop to
+  the first reach of that line. Two steps of `moveq #1,d0` / `moveq #2,d1` / `moveq #3,d2`,
+  with the caret on the middle one, return there with D0 already 1 and D1 not yet 2.
+  A line reached more than once since the previous stop stops the first time. A line that
+  never executes after that stop does not come back. The session records media keys and
+  mouse in `inputs.log` (`replaylog`), with no trace. The 256-frame trace cap does not
+  apply to it. The log keeps 1024 keys and 1024 mouse events, and a further one is
+  delivered to the guest without being recorded. Reverse Step closes
+  that file and runs `replaykeys` before `reststop`, so a continue from the restored stop
+  applies the keys that happened after it. The proof sends scancode `$39` after `Super`
+  and `move.w #$2700,sr` (user mode bus-errors an ACIA read, and TOS otherwise consumes
+  the byte), breaks on the following `addq`, and Reverse Step lands on the `moveq` with
+  D1 still `$39`. A Hatari without `replaylog` skips that proof and the other reverses
+  still restore the machine. `--replay-snapshot` writes one statesave during
   the recording, after that frame's keys. `reststop` restores it. `replaykeys` applies the
   recording's later keys, and a breakpoint on a later instruction returns to the prompt
   before that instruction executes. The proof stops on the replay fixture's spin, with the
@@ -482,10 +498,12 @@ Not in this pass, on purpose:
 
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
-**Status:** passed, on `hatari-pist`, pinned in PiST at `623747d`
-(`623747d0d9decab28a9bf0badd09305bf8a6c033`). The debugger-on replay,
-`replaykeys`, and the entry-stop commands `replayrecord` and `replayplay` are on the
-fork after that pin; the pinned build does not have them.
+**Status:** passed, on `hatari-pist`, pinned in PiST at `40c92ee`
+(`40c92eef12ed450ecf5c9febd5445ffdcee2cc94`). The pin includes the live input log
+(`replaylog`), `replaykeys` of a log with no trace line, and the entry-stop commands
+`replayrecord` and `replayplay`. PiST calls `replaylog` and `replaykeys` on Reverse
+Step. Stock Hatari has none of these commands; a missing command skips the key proof
+and the reverses still restore the machine.
 Each gate was a pass/fail trace and no dock.
 Stock Hatari still has none of these commands. PiST probes by command name and treats
 `Command '<name>' not found.` as a skip, not a failure. The host-side memory compare, the
@@ -555,15 +573,16 @@ What each gate proved, and where the proof stops:
    is not a scanline inspector. The profiler overlay is not that stream. The media channel's frames
    are RGB, and `info video` does not carry the palette.
 
-**Reverse Step** is in (§6). PiST snapshots each stop and restores the previous one. When
-more than that instruction ran, it continues to the first reach of the program counter
-history lists. The proof is the three-instruction loop in §6: one step back, a second step
-back along the snapshots, and a continue from the entry stop that stops before the second
-add. A continue that executed the same instruction more than once stops the first time.
-Keys typed during the continue are not replayed. The fork can also do this from a
-recording: a snapshot, `reststop`, then `replaykeys`, then a breakpoint. PiST does not
-call `replaykeys`, `replayrecord`, or `replayplay`. The saved-stop list is still the
-user's own snapshots. Breakpoint seeking, branches, and a recording browser are not this.
+**Reverse Step**, **Reverse Continue**, and **Run Back to Cursor** are in (§6). PiST
+snapshots each stop and restores the previous one. When more than that instruction ran,
+it continues to the first reach of the program counter history lists. The proof is the
+three-instruction loop in §6. Keys pressed after the restored stop are replayed: the
+session runs `replaylog`, and the seek runs `replaykeys` on that file before `reststop`.
+A log with input lines and no trace line is accepted; a recording that has a trace and
+no frame count is still refused. PiST does not call `replayrecord` or `replayplay`.
+The saved-stop list is still the user's own snapshots. Branches and a recording browser
+are not this. Stock Hatari has no `replaylog`; that build skips the key proof and the
+reverses still restore the machine.
 
 Still not built:
 

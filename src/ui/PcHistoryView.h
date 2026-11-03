@@ -31,6 +31,9 @@ public slots:
     /// Clear the view (no session).
     void clear();
 
+    /// The text on screen, oldest instruction first.
+    QString text() const;
+
     /// The program counter of the instruction that executed most recently.
     /// History lists oldest first, and the stop on screen has not executed, so
     /// this is the line above a trailing debugger mark. False when the pane

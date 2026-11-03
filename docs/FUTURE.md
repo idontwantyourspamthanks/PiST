@@ -563,7 +563,10 @@ What each gate proved, and where the proof stops:
    comparison around 64 writes was clock noise, not a measured overhead. PiST's memory pane
    Trace button arms the window it is showing, and the Writes list reads the file at each
    later stop. A CPU row opens that instruction's source line when the program map knows
-   it. The list does not move the machine.
+   it. Right-clicking that row and choosing Previous Write restores the recorded stop
+   already taken at the writer's PC, or replays from the previous snapshot to the first
+   reach of it. A blitter or unknown row has no PC, so it stays a list row. Double-click
+   still only opens the source line.
 4. **Palette writes against a scanline clock.** Passed. `paltrace` records each palette write
    where the hardware writes it (format `HPISTPAL 1`), with the vertical blank, the line, and
    the position on that line. The same two writes landed on different lines at 50 Hz (512
@@ -581,8 +584,12 @@ three-instruction loop in §6. Keys pressed after the restored stop are replayed
 session runs `replaylog`, and the seek runs `replaykeys` on that file before `reststop`.
 A log with input lines and no trace line is accepted; a recording that has a trace and
 no frame count is still refused. PiST does not call `replayrecord` or `replayplay`.
-The saved-stop list is still the user's own snapshots. Run ▸ Recorded Stops lists the
-automatic snapshots (eight at most) and shows one's registers without moving the machine.
+The saved-stop list is still the user's own snapshots, eight of them. Run ▸ Recorded
+Stops lists the automatic snapshots (thirty-two at most) and shows one's registers,
+disassembly, and any memory, stack, and screen captured at that stop, without moving
+the machine. The Timeline dock lists those stops and the instructions still in
+Hatari's history ring (64). It is not a log of every instruction, exception, frame,
+or watchpoint.
 Restore Recorded Stop runs `reststop` on the one on screen, and the later snapshots stay
 listed. Stepping or continuing from a stop that already has a later one asks first, then
 records the new run as a branch and leaves the other run in Recorded Stops, so that stop
@@ -591,9 +598,15 @@ and the reverses still restore the machine.
 
 Still not built:
 
-- **Reads, and where a value came from,** are the rest of memory history. The Writes list
-  is the forward-only view of gate 3. The Palette list is the forward-only view of gate 4.
-  Interrupts, video-base changes, the blitter, and a known-good frame are not that list.
+- **One traced range, and the first reach.** `readtrace` records CPU data reads in one
+  range (format `HPISTREAD 1`). Instruction fetches are not reads. The Reads list's
+  Previous Read returns to that instruction the same way Previous Write does: the
+  recorded stop already taken at that PC, or the first reach of it after the previous
+  snapshot. Right-clicking D0–A7 and choosing where it came from uses the history
+  ring's disassembly, the last instruction whose destination is that register, then
+  the same return. An `exg` that writes both registers is named by its last operand
+  only. The Palette list stays the forward-only view of gate 4. Interrupts, video-base
+  changes, the blitter, and a known-good frame are not these lists.
 - **Applying a patch** stays closed until the preview has been wrong in public at least once,
   and then only for one same-length range, while stopped, with a read-back, and only when the
   preview said the section size matched. Gate 2 has passed, so a snapshot to roll back to is

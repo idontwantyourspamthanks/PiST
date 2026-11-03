@@ -757,6 +757,13 @@ void EmulatorHost::completeCurrent()
     }
     if (!m_current.writeTracePath.isEmpty())
         emit writeTraceSaveFinished(m_current.writeTracePath);
+    if (m_current.readTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'readtrace' not found"))
+                              || response.contains(QLatin1String("readtrace:"));
+        emit readTraceReady(!rejected);
+    }
+    if (!m_current.readTracePath.isEmpty())
+        emit readTraceSaveFinished(m_current.readTracePath);
     if (m_current.palTraceProbe) {
         const bool rejected = response.contains(QLatin1String("Command 'paltrace' not found"))
                               || response.contains(QLatin1String("paltrace:"));
@@ -1073,6 +1080,31 @@ void EmulatorHost::writeTraceSave(const QString &path)
 void EmulatorHost::writeTraceOff()
 {
     enqueueIntent(QStringLiteral("writetrace off"), ResponseKind::None, true);
+}
+
+void EmulatorHost::readTraceRange(quint32 start, quint32 end)
+{
+    // Kept across a resume(), same as writetrace: the arm has to land before
+    // the continue records anything.
+    Pending p;
+    p.text = QStringLiteral("readtrace $%1 $%2").arg(start, 0, 16).arg(end, 0, 16);
+    p.readTraceProbe = true;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::readTraceSave(const QString &path)
+{
+    Pending p;
+    p.text = QStringLiteral("readtrace save %1").arg(path);
+    p.readTracePath = path;
+    p.keepOnResume = true;
+    enqueue(p);
+}
+
+void EmulatorHost::readTraceOff()
+{
+    enqueueIntent(QStringLiteral("readtrace off"), ResponseKind::None, true);
 }
 
 void EmulatorHost::palTraceOn()

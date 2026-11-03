@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
 #include <QPalette>
 #include <QSignalBlocker>
 #include <QTableWidget>
@@ -52,6 +53,21 @@ RegistersView::RegistersView(QWidget *parent)
     }
 
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table->viewport(), &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        const QTableWidgetItem *item = m_table->itemAt(pos);
+        if (!item || (item->column() != 0 && item->column() != 2))
+            return;
+        const QString name = item->text().trimmed().toLower();
+        if (name.size() != 2)
+            return;
+        QMenu menu(this);
+        auto *action = menu.addAction(tr("Where it came from"));
+        action->setObjectName(QStringLiteral("explainRegisterAction"));
+        if (menu.exec(m_table->viewport()->mapToGlobal(pos)) != action)
+            return;
+        emit registerExplainRequested(name);
+    });
     layout->addWidget(m_table, 0, 0, 1, 2);
 
     m_flags = new QTableWidget(4, 2, this);

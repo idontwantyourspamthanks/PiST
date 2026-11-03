@@ -9,6 +9,7 @@
 
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -61,7 +62,8 @@ WriteTraceView::WriteTraceView(QWidget *parent)
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
     m_table->setToolTip(tr("Double-click a CPU row to open its source line. "
-                           "This does not move the machine."));
+                           "Right-click a CPU row for Previous Write, which returns "
+                           "the machine to that instruction."));
     appearance::markMono(m_table);
     layout->addWidget(m_table);
 
@@ -71,6 +73,30 @@ WriteTraceView::WriteTraceView(QWidget *parent)
         const WriteEvent &event = m_events.at(row);
         emit eventActivated(event.pc, event.origin == WriteOrigin::Cpu, event.address);
     });
+    m_table->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table->viewport(), &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        const int row = m_table->rowAt(pos.y());
+        quint32 pc = 0;
+        QMenu menu(this);
+        auto *action = menu.addAction(tr("Previous Write"));
+        action->setObjectName(QStringLiteral("previousWriteAction"));
+        action->setEnabled(cpuPcAt(row, &pc));
+        if (menu.exec(m_table->viewport()->mapToGlobal(pos)) != action || !action->isEnabled())
+            return;
+        emit previousWriteRequested(pc);
+    });
+}
+
+
+bool WriteTraceView::cpuPcAt(int row, quint32 *pc) const
+{
+    if (!pc || row < 0 || row >= m_events.size())
+        return false;
+    const WriteEvent &event = m_events.at(row);
+    if (event.origin != WriteOrigin::Cpu)
+        return false;
+    *pc = event.pc;
+    return true;
 }
 
 void WriteTraceView::setTrace(const WriteTraceLog &log, const QStringList &where)

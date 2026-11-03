@@ -617,6 +617,13 @@ void HrdbBackend::completeCurrent(const QByteArray &message)
     }
     if (!done.writeTracePath.isEmpty())
         emit writeTraceSaveFinished(done.writeTracePath);
+    if (done.readTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'readtrace' not found"))
+                              || response.contains(QLatin1String("readtrace:"));
+        emit readTraceReady(!rejected);
+    }
+    if (!done.readTracePath.isEmpty())
+        emit readTraceSaveFinished(done.readTracePath);
     if (done.palTraceProbe) {
         const bool rejected = response.contains(QLatin1String("Command 'paltrace' not found"))
                               || response.contains(QLatin1String("paltrace:"));
@@ -972,6 +979,29 @@ void HrdbBackend::writeTraceSave(const QString &path)
 void HrdbBackend::writeTraceOff()
 {
     enqueue(consoleRequest(QStringLiteral("writetrace off"), QStringLiteral("writetrace off"),
+                           ResponseKind::None, true));
+}
+
+void HrdbBackend::readTraceRange(quint32 start, quint32 end)
+{
+    // Kept across a resume(), same as writetrace.
+    const QString command = QStringLiteral("readtrace $%1 $%2").arg(start, 0, 16).arg(end, 0, 16);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.readTraceProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::readTraceSave(const QString &path)
+{
+    const QString command = QStringLiteral("readtrace save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.readTracePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::readTraceOff()
+{
+    enqueue(consoleRequest(QStringLiteral("readtrace off"), QStringLiteral("readtrace off"),
                            ResponseKind::None, true));
 }
 

@@ -309,6 +309,8 @@ pist_module(pist_analysis
     src/analysis/Coverage.h
     src/analysis/WriteTrace.cpp
     src/analysis/WriteTrace.h
+    src/analysis/ReadTrace.cpp
+    src/analysis/ReadTrace.h
     src/analysis/PalTrace.cpp
     src/analysis/PalTrace.h
 )
@@ -391,6 +393,10 @@ pist_module(pist_ui
     src/ui/PcHistoryView.h
     src/ui/WriteTraceView.cpp
     src/ui/WriteTraceView.h
+    src/ui/ReadTraceView.cpp
+    src/ui/ReadTraceView.h
+    src/ui/TimelineView.cpp
+    src/ui/TimelineView.h
     src/ui/PalTraceView.cpp
     src/ui/PalTraceView.h
     src/ui/InstructionRefView.cpp

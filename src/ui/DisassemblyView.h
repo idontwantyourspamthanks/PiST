@@ -27,6 +27,9 @@ public slots:
     /// Re-apply the theme font and the last listing's colours.
     void applyAppearance();
 
+    /// The program counter the last setState() highlighted.
+    quint32 programCounter() const { return m_pc; }
+
 signals:
     /// A row was double-clicked. The host opens the source line when the
     /// program map knows it, and leaves the row inert otherwise.

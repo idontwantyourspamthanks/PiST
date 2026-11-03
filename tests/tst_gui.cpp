@@ -37,6 +37,9 @@
 #include "emu/MachineState.h"
 #include "analysis/AnalysisNotes.h"
 #include "ui/AnalysisView.h"
+#include "ui/DisassemblyView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/WriteTraceView.h"
 #include "ui/MainWindow.h"
 #include "ui/SymbolPaletteDialog.h"
 #include "ui/StopHooksDialog.h"
@@ -520,6 +523,9 @@ private slots:
     void recordedStopsRestoreAnEarlierStop();
     void branchKeepsTheLaterStops();
     void traceWritesListsTheStore();
+    void previousWriteReturnsToTheStore();
+    void readTraceListsTheLoad();
+    void recordedStopShowsThatMachine();
     void tracePaletteListsTheScanline();
     void analysisNotesAnExecutedAddress();
     void analysisOpensAGuessedPicture();
@@ -5863,6 +5869,295 @@ void TstGui::traceWritesListsTheStore()
     QVERIFY(listed);
     QCOMPARE(analysis->executionAddress(), std::optional<quint32>(8));
     QVERIFY(!window.debugConsoleText().contains(QLatin1String("[stop] restoring")));
+}
+
+void TstGui::previousWriteReturnsToTheStore()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/prevwrite.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.b #$A5, $30000.l / bra.s to itself. One step stores one byte.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("13fc00a50003000060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("writeTraceListing"));
+    QVERIFY(listing);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "traceWrites", Qt::DirectConnection,
+                                      Q_ARG(quint32, 0x30000u), Q_ARG(int, 1)));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[trace] watching"))
+                   || text.contains(QLatin1String("no writetrace command"))
+                   || text.contains(QLatin1String("Command 'writetrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[trace] watching")))
+        QSKIP("this Hatari has no writetrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString writer = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(8))
+                return false;
+            if (listing->rowCount() != 1)
+                return false;
+            const QTableWidgetItem *who = listing->item(0, 1);
+            const QTableWidgetItem *pc = listing->item(0, 5);
+            return who && pc && who->text() == QLatin1String("CPU") && pc->text() == writer;
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    auto *view = window.findChild<WriteTraceView *>();
+    QVERIFY(view);
+    quint32 writePc = 0;
+    QVERIFY(view->cpuPcAt(0, &writePc));
+    QCOMPARE(writePc, entryPc);
+    QVERIFY(!view->cpuPcAt(1, &writePc));
+
+    const int consoleLength = window.debugConsoleText().size();
+    QVERIFY(QMetaObject::invokeMethod(&window, "previousWrite", Qt::DirectConnection,
+                                      Q_ARG(quint32, entryPc)));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (window.debugConsoleText().size() <= consoleLength)
+                return false;
+            if (!window.debugConsoleText().contains(QLatin1String("[reverse] restoring")))
+                return false;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            return analysis->executionAddress() == std::optional<quint32>(0);
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText() << strip->text();
+    QVERIFY(back);
+    auto *left = window.findChild<QAction *>(QStringLiteral("recordedStopAction1"));
+    QVERIFY(left);
+    QVERIFY(left->text().startsWith(QStringLiteral("Branch")));
+}
+
+void TstGui::readTraceListsTheLoad()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/load.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.b $30000.l,d0 / bra.s to itself. One step reads one byte.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("10390003000060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("readTraceListing"));
+    QVERIFY(listing);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "traceReads", Qt::DirectConnection,
+                                      Q_ARG(quint32, 0x30000u), Q_ARG(int, 1)));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[trace] reading"))
+                   || text.contains(QLatin1String("no readtrace command"))
+                   || text.contains(QLatin1String("Command 'readtrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[trace] reading")))
+        QSKIP("this Hatari has no readtrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString reader = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(6))
+                return false;
+            if (listing->rowCount() != 1)
+                return false;
+            const QTableWidgetItem *address = listing->item(0, 1);
+            const QTableWidgetItem *pc = listing->item(0, 3);
+            return address && pc && address->text() == QLatin1String("00030000") && pc->text() == reader;
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    auto *view = window.findChild<ReadTraceView *>();
+    QVERIFY(view);
+    quint32 readPc = 0;
+    QVERIFY(view->cpuPcAt(0, &readPc));
+    QCOMPARE(readPc, entryPc);
+}
+
+void TstGui::recordedStopShowsThatMachine()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/origin.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // addq.l #1,d0 / addq.l #1,d1 / bra.s back. Two steps land on the branch.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *disasm = window.findChild<DisassemblyView *>();
+    QVERIFY(disasm);
+    auto *historyDock = window.findChild<QDockWidget *>(QStringLiteral("pcHistoryDock"));
+    QVERIFY(historyDock);
+    auto *history = historyDock->findChild<QPlainTextEdit *>();
+    QVERIFY(history);
+    auto *stops = window.findChild<QListWidget *>(QStringLiteral("timelineStops"));
+    QVERIFY(stops);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryPc = 0;
+    QVERIFY(reg(strip->text(), "PC", &entryPc));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return stops->count() >= 3; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(stops->count(), 3);
+    const quint32 branchPc = disasm->programCounter();
+    QVERIFY(branchPc != entryPc);
+
+    const QString beforePreview = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    QCOMPARE(disasm->programCounter(), entryPc);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(window.debugConsoleText(), beforePreview);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "showLiveStop", Qt::DirectConnection));
+    QVERIFY(!strip->text().startsWith(QStringLiteral("History")));
+    QCOMPARE(disasm->programCounter(), branchPc);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(4));
+
+    const QString entryHex = QStringLiteral("%1").arg(entryPc, 8, 16, QLatin1Char('0'));
+    if (!QTest::qWaitFor(
+            [&] {
+                const QString text = history->toPlainText();
+                return text.contains(entryHex, Qt::CaseInsensitive)
+                       && text.contains(QLatin1String(",d0"), Qt::CaseInsensitive);
+            },
+            30000))
+        qDebug().noquote() << history->toPlainText();
+    QVERIFY(history->toPlainText().contains(entryHex, Qt::CaseInsensitive));
+
+    const int consoleLength = window.debugConsoleText().size();
+    QVERIFY(QMetaObject::invokeMethod(&window, "explainRegister", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("d0"))));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (window.debugConsoleText().size() <= consoleLength)
+                return false;
+            if (!window.debugConsoleText().contains(QLatin1String("came from")))
+                return false;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            return analysis->executionAddress() == std::optional<quint32>(0);
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText() << history->toPlainText();
+    QVERIFY(back);
 }
 
 void TstGui::tracePaletteListsTheScanline()

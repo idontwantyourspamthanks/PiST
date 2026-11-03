@@ -130,6 +130,9 @@ public:
     void writeTraceRange(quint32 start, quint32 end) override;
     void writeTraceSave(const QString &path) override;
     void writeTraceOff() override;
+    void readTraceRange(quint32 start, quint32 end) override;
+    void readTraceSave(const QString &path) override;
+    void readTraceOff() override;
     void palTraceOn() override;
     void palTraceSave(const QString &path) override;
     void palTraceOff() override;
@@ -182,6 +185,8 @@ private:
         bool writeTraceProbe = false;
         /// Set by writeTraceSave(): the file to name on writeTraceSaveFinished().
         QString writeTracePath;
+        bool readTraceProbe = false;
+        QString readTracePath;
 
         /// Set by palTraceOn(): the reply says whether this Hatari is recording.
         /// Reported on palTraceReady().

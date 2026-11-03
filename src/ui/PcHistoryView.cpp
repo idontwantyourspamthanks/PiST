@@ -41,6 +41,11 @@ void PcHistoryView::clear()
     m_text->clear();
 }
 
+QString PcHistoryView::text() const
+{
+    return m_text ? m_text->toPlainText() : QString();
+}
+
 bool PcHistoryView::lastExecutedAddress(quint32 *address) const
 {
     if (!m_text || !address)

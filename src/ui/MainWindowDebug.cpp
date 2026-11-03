@@ -6,10 +6,15 @@
 #include "ui/MainWindowPrivate.h"
 
 #include "analysis/PalTrace.h"
+#include "analysis/ReadTrace.h"
 #include "analysis/WriteTrace.h"
 #include "ui/PalTraceView.h"
 #include "ui/PcHistoryView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/TimelineView.h"
 #include "ui/WriteTraceView.h"
+
+#include <QRegularExpression>
 
 #include <QFile>
 #include <QFileInfo>
@@ -271,6 +276,10 @@ void MainWindow::wireBackend()
             m_hardware->clear();
         if (m_pcHistory)
             m_pcHistory->clear();
+        if (m_timeline)
+            m_timeline->clear();
+        if (m_readTrace)
+            m_readTrace->clear();
         // A session's profile and its gutter heat belong to that session.
         if (m_profiler)
             m_profiler->clear();
@@ -310,8 +319,12 @@ void MainWindow::wireBackend()
                     statusBar()->showMessage(tr("Wrote %1 bytes").arg(bytes.size()), 4000);
                     return;
                 }
-                if (auto *view = m_memoryPanes.value(tag, nullptr))
-                    view->applyDump(rows);
+                if (auto *view = m_memoryPanes.value(tag, nullptr)) {
+                    if (view == m_memory)
+                        noteLiveMemory(rows);
+                    if (!historicalStopOnScreen())
+                        view->applyDump(rows);
+                }
             });
     connect(m_host, &IDebugBackend::disassemblyReady, this,
             [this](quint32 address, const QString &response) {
@@ -334,6 +347,7 @@ void MainWindow::wireBackend()
             [this](const QString &response) {
                 if (m_pcHistory)
                     m_pcHistory->setHistory(response);
+                refreshTimelineInstructions(response);
                 // The read was queued at the stop, and the queue is ordered, so
                 // this is that stop's history rather than an earlier one's.
                 m_reverseHistoryReady = true;
@@ -385,6 +399,30 @@ void MainWindow::wireBackend()
                 if (!m_writeTraceRecording || m_currentSessionDir.isEmpty())
                     return;
                 applyWriteTraceFile(path);
+            });
+    connect(m_host, &IDebugBackend::readTraceReady, this, [this](bool accepted) {
+        if (!m_host->isRunning() || m_currentSessionDir.isEmpty() || !m_readTraceWanted)
+            return;
+        if (!accepted) {
+            m_readTraceWanted = false;
+            m_readTraceRecording = false;
+            setReadTraceArmed(false);
+            m_log->appendPlainText(tr("[trace] this Hatari has no readtrace command"));
+            return;
+        }
+        m_readTraceRecording = true;
+        if (m_readTraceDock) {
+            m_readTraceDock->show();
+            m_readTraceDock->raise();
+        }
+        m_log->appendPlainText(tr("[trace] reading $%1–$%2")
+                                   .arg(hex::hex32(m_readTraceLo), hex::hex32(m_readTraceHi)));
+    });
+    connect(m_host, &IDebugBackend::readTraceSaveFinished, this,
+            [this](const QString &path) {
+                if (!m_readTraceRecording || m_currentSessionDir.isEmpty())
+                    return;
+                applyReadTraceFile(path);
             });
     connect(m_host, &IDebugBackend::palTraceReady, this, [this](bool accepted) {
         if (!m_host->isRunning() || m_currentSessionDir.isEmpty() || !m_palTraceWanted)
@@ -458,7 +496,8 @@ void MainWindow::wireBackend()
                 if (image.isNull())
                     return;
                 m_lastMediaFrame = image;
-                m_display->setFrame(image);
+                if (!historicalStopOnScreen())
+                    m_display->setFrame(image);
             });
 
     // The media channel's audio (phase 3): chunks of s16le stereo from the
@@ -568,7 +607,8 @@ void MainWindow::wireBackend()
                 // both parsing the transcript.
                 if (!m_session->handleStackDumpForStepOut(rows))
                     return;
-                if (!m_stack)
+                noteLiveStack(sp, rows);
+                if (!m_stack || historicalStopOnScreen())
                     return;
                 // The annotation needs the *text* extent, not the data base.
                 // With no data section (or one that does not follow text) the
@@ -632,6 +672,11 @@ void MainWindow::saveStop()
     SavedStop stop;
     stop.path = m_currentSessionDir + QStringLiteral("/stop-%1.sav").arg(++m_savedStopSerial);
     stop.state = m_lastState;
+    stop.picture = m_livePicture;
+    if (!m_lastMediaFrame.isNull()) {
+        stop.picture.frame = m_lastMediaFrame;
+        stop.picture.haveFrame = true;
+    }
     m_savedStops.append(stop);
     m_host->command(QStringLiteral("statesave %1").arg(stop.path));
     m_log->appendPlainText(tr("[stop] saved %1").arg(stop.path));
@@ -655,6 +700,7 @@ void MainWindow::showSavedStop(int index)
     }
     updateRegisterStrip();
     applyAnalysisFrom(state);
+    paintStopPicture(state, m_savedStops.at(index).picture);
     rebuildSavedStopsMenu();
 }
 
@@ -672,8 +718,12 @@ void MainWindow::showLiveStop()
     }
     updateRegisterStrip();
     applyAnalysisExecution();
+    paintStopPicture(m_lastState, m_livePicture);
+    if (m_display && !m_lastMediaFrame.isNull())
+        m_display->setFrame(m_lastMediaFrame);
     rebuildSavedStopsMenu();
     requestWriteTraceSave();
+    requestReadTraceSave();
     requestPalTraceSave();
 }
 
@@ -718,12 +768,20 @@ void MainWindow::rememberReverseAnchor(const MachineState &state)
     // is a new stop. Its parent is the stop the machine was at, so a later
     // run that was already recorded stays in the list as the other branch.
     const int current = currentReverseIndex();
-    if (current >= 0 && m_reverseAnchors.at(current).pc == state.pc)
+    if (current >= 0 && m_reverseAnchors.at(current).pc == state.pc) {
+        // The register batch can arrive before the disassembly of the same
+        // stop. Keep the file, and keep the later, complete snapshot.
+        m_reverseAnchors[current].state = state;
+        if (!m_lastMediaFrame.isNull()) {
+            m_reverseAnchors[current].picture.frame = m_lastMediaFrame;
+            m_reverseAnchors[current].picture.haveFrame = true;
+        }
         return;
-    // The same bound as Save Stop. These files are the session's, and the
-    // session directory goes away with the session. A stop the machine is not
-    // on goes before an ancestor of the one it is on.
-    constexpr int kMaxReverseAnchors = 8;
+    }
+    // Thirty-two is the session's recent stops, not every instruction. The
+    // history ring is the longer list. These files go away with the session.
+    // A stop the machine is not on goes before an ancestor of the one it is on.
+    constexpr int kMaxReverseAnchors = 32;
     while (m_reverseAnchors.size() >= kMaxReverseAnchors) {
         if (!evictReverseAnchor())
             break;
@@ -736,6 +794,10 @@ void MainWindow::rememberReverseAnchor(const MachineState &state)
     // A step is the user moving one instruction. Everything else — the entry
     // stop, a breakpoint, a pause — is a place Reverse Continue can return to.
     anchor.breakpoint = !(m_session && m_session->stepEventPending());
+    if (!m_lastMediaFrame.isNull()) {
+        anchor.picture.frame = m_lastMediaFrame;
+        anchor.picture.haveFrame = true;
+    }
     m_reverseAnchors.append(anchor);
     m_reverseIndex = m_reverseAnchors.size() - 1;
     m_reverseSaveCommand = QStringLiteral("statesave %1").arg(anchor.path);
@@ -970,6 +1032,80 @@ void MainWindow::runBackToCursor()
                                    .arg(line));
         return;
     }
+    reverseToAddress(address);
+}
+
+
+void MainWindow::previousWrite(quint32 pc)
+{
+    if (!m_host || !m_host->isStopped() || m_reverseSeeking)
+        return;
+    setPcFollow(false);
+    const int current = currentReverseIndex();
+    if (current >= 0 && m_reverseAnchors.at(current).pc == pc) {
+        m_log->appendPlainText(tr("[reverse] already at this instruction"));
+        return;
+    }
+    m_log->appendPlainText(tr("[reverse] previous write 0x%1").arg(hex::hex32(pc)));
+    reverseToAddress(pc);
+}
+
+
+void MainWindow::previousRead(quint32 pc)
+{
+    if (!m_host || !m_host->isStopped() || m_reverseSeeking)
+        return;
+    setPcFollow(false);
+    const int current = currentReverseIndex();
+    if (current >= 0 && m_reverseAnchors.at(current).pc == pc) {
+        m_log->appendPlainText(tr("[reverse] already at this instruction"));
+        return;
+    }
+    m_log->appendPlainText(tr("[reverse] previous read 0x%1").arg(hex::hex32(pc)));
+    reverseToAddress(pc);
+}
+
+
+void MainWindow::explainRegister(const QString &name)
+{
+    if (!m_host || !m_host->isStopped() || m_reverseSeeking || !m_pcHistory)
+        return;
+    if (m_historyIndex >= 0 || m_reverseViewIndex >= 0)
+        showLiveStop();
+    const QString want = name.trimmed().toLower();
+    static const QRegularExpression addressLine(QStringLiteral("^\\$?([0-9A-Fa-f]{6,8})\\b"));
+    const QStringList lines = m_pcHistory->text().split(QLatin1Char('\n'));
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QString line = lines.at(i).trimmed();
+        const QRegularExpressionMatch match = addressLine.match(line);
+        if (!match.hasMatch())
+            continue;
+        QString dest;
+        const int comma = line.lastIndexOf(QLatin1Char(','));
+        if (comma >= 0)
+            dest = line.mid(comma + 1).trimmed().toLower();
+        else {
+            const int space = line.lastIndexOf(QLatin1Char(' '));
+            if (space < 0)
+                continue;
+            dest = line.mid(space + 1).trimmed().toLower();
+        }
+        if (dest != want)
+            continue;
+        bool ok = false;
+        const quint32 pc = match.captured(1).toUInt(&ok, 16);
+        if (!ok)
+            continue;
+        m_log->appendPlainText(tr("[reverse] %1 came from 0x%2").arg(want, hex::hex32(pc)));
+        previousWrite(pc);
+        return;
+    }
+    m_log->appendPlainText(tr("[reverse] no earlier write of %1 in the history").arg(want));
+}
+
+
+void MainWindow::reverseToAddress(quint32 address)
+{
     const int current = currentReverseIndex();
     if (reverseParent(current) < 0) {
         m_log->appendPlainText(tr("[reverse] no earlier stop to run back from"));
@@ -979,8 +1115,8 @@ void MainWindow::runBackToCursor()
         showLiveStop();
     // A stop we already took at this instruction is that instruction. Replay
     // from the previous snapshot would stop at the first reach, which can be
-    // an earlier visit than the stop the cursor is naming. The walk is this
-    // run's parents, so a stop on the other branch is not that visit.
+    // an earlier visit than the stop being named. The walk is this run's
+    // parents, so a stop on the other branch is not that visit.
     int exact = -1;
     for (int i = reverseParent(current); i >= 0; i = reverseParent(i)) {
         if (m_reverseAnchors.at(i).pc == address) {
@@ -1038,6 +1174,7 @@ void MainWindow::showRecordedStop(int index)
     }
     updateRegisterStrip();
     applyAnalysisFrom(state);
+    paintStopPicture(state, m_reverseAnchors.at(index).picture);
     rebuildRecordedStopsMenu();
     updateReverseStepAction();
 }
@@ -1106,6 +1243,18 @@ void MainWindow::rebuildRecordedStopsMenu()
         connect(action, &QAction::triggered, this, [this, i] { showRecordedStop(i); });
     }
     m_recordedStopsMenu->setEnabled(!m_reverseAnchors.isEmpty());
+    if (m_timeline) {
+        QStringList labels;
+        labels.reserve(m_reverseAnchors.size());
+        for (int i = 0; i < m_reverseAnchors.size(); ++i) {
+            const MachineState &state = m_reverseAnchors.at(i).state;
+            labels.append(spine.contains(i)
+                              ? tr("PC %1  D0 %2").arg(hex::hex32(state.pc), hex::hex32(state.regs.d[0]))
+                              : tr("Branch · PC %1  D0 %2")
+                                    .arg(hex::hex32(state.pc), hex::hex32(state.regs.d[0])));
+        }
+        m_timeline->setStops(labels);
+    }
 }
 
 
@@ -1652,6 +1801,8 @@ void MainWindow::onStateUpdated(const MachineState &state)
         // the same range again drops the writes from the path just abandoned.
         if (m_writeTraceRecording)
             m_writeTraceRearm = true;
+        if (m_readTraceRecording)
+            m_readTraceRearm = true;
         if (m_palTraceRecording)
             m_palTraceRearm = true;
     } else if (m_historyIndex >= 0 || m_reverseViewIndex >= 0) {
@@ -1811,8 +1962,13 @@ void MainWindow::onStateUpdated(const MachineState &state)
         m_host->infoSubject(m_hardware->subject());
 
     // And the execution path that led here.
-    if (m_pcHistory)
-        m_host->readHistory(16);
+    // Hatari's history command prints an instruction once, and prints the
+    // ring only when the newest one was already printed. The second read
+    // is that ring: the first marks the newest, the second lists it all.
+    if (m_pcHistory) {
+        m_host->readHistory(64);
+        m_host->readHistory(64);
+    }
 
     locationFromPc(state.pc);
     updateRegisterStrip();
@@ -1830,6 +1986,14 @@ void MainWindow::onStateUpdated(const MachineState &state)
             m_writeTrace->clear();
     } else if (!seekResume) {
         requestWriteTraceSave();
+    }
+    if (!seekResume && m_readTraceRearm) {
+        m_readTraceRearm = false;
+        m_host->readTraceRange(m_readTraceLo, m_readTraceHi);
+        if (m_readTrace)
+            m_readTrace->clear();
+    } else if (!seekResume) {
+        requestReadTraceSave();
     }
     if (!seekResume && m_palTraceRearm) {
         m_palTraceRearm = false;
@@ -1911,6 +2075,159 @@ void MainWindow::applyPalTraceFile(const QString &path)
     }
     m_palTrace->setTrace(log, where);
 }
+
+bool MainWindow::historicalStopOnScreen() const
+{
+    return !m_restorePending && (m_historyIndex >= 0 || m_reverseViewIndex >= 0);
+}
+
+
+void MainWindow::paintStopPicture(const MachineState &state, const StopPicture &picture)
+{
+    if (m_disassembly && !state.disassembly.isEmpty())
+        m_disassembly->setState(state);
+    if (picture.haveMemory && m_memory)
+        m_memory->showCaptured(picture.memory);
+    if (picture.haveStack && m_stack) {
+        const quint32 textEnd = m_programMap.textEnd();
+        m_stack->setStackDump(picture.stackSp, picture.stack, state.textBase,
+                              textEnd ? textEnd : state.dataBase);
+    }
+    if (picture.haveFrame && m_display)
+        m_display->setFrame(picture.frame);
+}
+
+
+void MainWindow::noteLiveMemory(const QList<MemoryRow> &rows)
+{
+    if (rows.isEmpty())
+        return;
+    m_livePicture.memory = rows;
+    m_livePicture.memoryBase = rows.first().address;
+    m_livePicture.haveMemory = true;
+    const int current = currentReverseIndex();
+    if (current >= 0 && m_reverseAnchors.at(current).pc == m_lastState.pc) {
+        m_reverseAnchors[current].picture.memory = rows;
+        m_reverseAnchors[current].picture.memoryBase = rows.first().address;
+        m_reverseAnchors[current].picture.haveMemory = true;
+    }
+}
+
+
+void MainWindow::noteLiveStack(quint32 sp, const QList<MemoryRow> &rows)
+{
+    m_livePicture.stack = rows;
+    m_livePicture.stackSp = sp;
+    m_livePicture.haveStack = true;
+    const int current = currentReverseIndex();
+    if (current >= 0 && m_reverseAnchors.at(current).pc == m_lastState.pc) {
+        m_reverseAnchors[current].picture.stack = rows;
+        m_reverseAnchors[current].picture.stackSp = sp;
+        m_reverseAnchors[current].picture.haveStack = true;
+    }
+}
+
+
+void MainWindow::refreshTimelineInstructions(const QString &text)
+{
+    if (!m_timeline)
+        return;
+    static const QRegularExpression addressLine(QStringLiteral("^\\$?([0-9A-Fa-f]{6,8})\\b"));
+    QStringList labels;
+    QList<quint32> pcs;
+    for (const QString &row : text.split(QLatin1Char('\n'))) {
+        const QString line = row.trimmed();
+        const QRegularExpressionMatch match = addressLine.match(line);
+        if (!match.hasMatch())
+            continue;
+        bool ok = false;
+        const quint32 pc = match.captured(1).toUInt(&ok, 16);
+        if (!ok)
+            continue;
+        labels.append(line);
+        pcs.append(pc);
+    }
+    m_timeline->setInstructions(labels, pcs);
+}
+
+
+void MainWindow::traceReads(quint32 address, int length)
+{
+    if (!m_host || !m_host->isStopped() || m_currentSessionDir.isEmpty() || length < 1) {
+        setReadTraceArmed(false);
+        if (m_log)
+            m_log->appendPlainText(tr("[trace] reads can only be traced while stopped"));
+        return;
+    }
+    const quint64 last = quint64(address) + quint64(length) - 1;
+    if (last > 0xffffffffull) {
+        setReadTraceArmed(false);
+        return;
+    }
+    m_readTraceLo = address;
+    m_readTraceHi = quint32(last);
+    m_readTraceWanted = true;
+    m_readTraceRecording = false;
+    m_readTraceRearm = false;
+    m_host->readTraceRange(address, quint32(last));
+}
+
+
+void MainWindow::stopReadTrace()
+{
+    m_readTraceWanted = false;
+    m_readTraceRecording = false;
+    m_readTraceRearm = false;
+    setReadTraceArmed(false);
+    if (m_readTrace)
+        m_readTrace->clear();
+    if (m_host && m_host->isRunning())
+        m_host->readTraceOff();
+}
+
+
+void MainWindow::setReadTraceArmed(bool armed)
+{
+    for (MemoryView *view : m_memoryPanes)
+        view->setReadTraceArmed(armed);
+}
+
+
+void MainWindow::requestReadTraceSave()
+{
+    if (!m_readTraceRecording || !m_host || !m_host->isRunning() || m_currentSessionDir.isEmpty())
+        return;
+    m_host->readTraceSave(m_currentSessionDir + QStringLiteral("/readtrace.txt"));
+}
+
+
+void MainWindow::applyReadTraceFile(const QString &path)
+{
+    if (!m_readTrace)
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        m_log->appendPlainText(tr("Could not read the read trace."));
+        return;
+    }
+    QString error;
+    ReadTraceLog log;
+    if (!parseReadTrace(QString::fromUtf8(file.readAll()), &log, &error)) {
+        m_log->appendPlainText(error);
+        return;
+    }
+    QStringList where;
+    where.reserve(log.events.size());
+    for (const ReadEvent &event : log.events) {
+        LineMap::Address loc;
+        if (m_bases.isValid() && !m_programMap.isEmpty() && m_programMap.lineFor(event.pc, &loc))
+            where.append(QFileInfo(loc.file).fileName() + QLatin1Char(':') + QString::number(loc.line));
+        else
+            where.append(QString());
+    }
+    m_readTrace->setTrace(log, where);
+}
+
 
 void MainWindow::traceWrites(quint32 address, int length)
 {

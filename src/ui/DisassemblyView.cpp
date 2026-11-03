@@ -20,6 +20,7 @@ DisassemblyView::DisassemblyView(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
 
     m_table = new QTableWidget(0, 3, this);
+    m_table->setObjectName(QStringLiteral("disassemblyListing"));
     m_table->setHorizontalHeaderLabels(
         {tr("Address"), tr("Bytes"), tr("Instruction")});
     m_table->verticalHeader()->setVisible(false);

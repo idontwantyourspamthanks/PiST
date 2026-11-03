@@ -10,6 +10,7 @@
 #include "analysis/AssemblyExport.h"
 #include "analysis/Coverage.h"
 #include "analysis/PalTrace.h"
+#include "analysis/ReadTrace.h"
 #include "analysis/WriteTrace.h"
 #include "analysis/M68kDisasm.h"
 #include "analysis/ProgramTrace.h"
@@ -118,6 +119,7 @@ private slots:
     void assembledExportMatchesTheImage();
     void coverageFileListsExecutedAddresses();
     void writeTraceFileListsWhoStored();
+    void readTraceFileListsTheLoad();
     void palTraceFileListsTheScanline();
 };
 
@@ -764,6 +766,35 @@ void tst_analysis::writeTraceFileListsWhoStored()
                                             "cost off 0 on 0 writes 0\n"),
                              &log, &error));
     QCOMPARE(error, QStringLiteral("the writetrace file has a pc on a write that has no writer"));
+}
+
+void tst_analysis::readTraceFileListsTheLoad()
+{
+    const QString report = QStringLiteral("HPISTREAD 1\n"
+                                          "range 00030000 00030000\n"
+                                          "capacity 256\n"
+                                          "dropped 0\n"
+                                          "event 1 cpu 1 00030000 a5 pc 00001100\n"
+                                          "cost off 1 on 2 reads 1\n");
+    ReadTraceLog log;
+    QString error;
+    QVERIFY2(parseReadTrace(report, &log, &error), qPrintable(error));
+    QCOMPARE(log.rangeLo, 0x30000u);
+    QCOMPARE(log.events.size(), 1);
+    QCOMPARE(log.events.at(0).width, 1);
+    QCOMPARE(log.events.at(0).address, 0x30000u);
+    QCOMPARE(log.events.at(0).value, 0xa5u);
+    QCOMPARE(log.events.at(0).pc, 0x1100u);
+
+    QVERIFY(parseReadTrace(QStringLiteral("HPISTREAD 1\n"
+                                          "range 00030000 00030000\n"
+                                          "capacity 256\n"
+                                          "dropped 0\n"
+                                          "cost off 0 on 0 reads 0\n"),
+                           &log, &error));
+    QCOMPARE(log.events.size(), 0);
+    QVERIFY(!parseReadTrace(QStringLiteral("HPISTWRITE 1\n"), &log, &error));
+    QCOMPARE(error, QStringLiteral("not a readtrace file"));
 }
 
 void tst_analysis::palTraceFileListsTheScanline()

@@ -273,6 +273,14 @@ public:
     virtual void writeTraceSave(const QString &path) = 0;
     virtual void writeTraceOff() = 0;
 
+    /// CPU data reads in one inclusive range, the hatari-pist `readtrace`
+    /// command. Instruction fetches are not events. The arm must survive a
+    /// resume(). A Hatari without the command answers "not found"; that is
+    /// readTraceReady(false).
+    virtual void readTraceRange(quint32 start, quint32 end) = 0;
+    virtual void readTraceSave(const QString &path) = 0;
+    virtual void readTraceOff() = 0;
+
     /// Shifter palette writes, the hatari-pist `paltrace` command. `palTraceOn`
     /// clears the log and starts recording; it must survive a resume(). A
     /// Hatari without the command answers "not found"; that is
@@ -380,6 +388,11 @@ signals:
     void writeTraceReady(bool accepted);
     /// A writeTraceSave() completed; `path` is the file it wrote.
     void writeTraceSaveFinished(const QString &path);
+    /// readTraceRange() was answered. `accepted` is true only when the
+    /// command exists and the range was armed.
+    void readTraceReady(bool accepted);
+    /// A readTraceSave() completed; `path` is the file it wrote.
+    void readTraceSaveFinished(const QString &path);
 
     /// palTraceOn() was answered. `accepted` is true only when recording started.
     void palTraceReady(bool accepted);

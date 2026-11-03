@@ -72,6 +72,8 @@
 #include "ui/MemoryView.h"
 #include "ui/PalTraceView.h"
 #include "ui/WriteTraceView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/TimelineView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
@@ -223,6 +225,15 @@ MainWindow::MainWindow(QWidget *parent)
         setWriteTraceArmed(false);
         if (m_writeTrace)
             m_writeTrace->clear();
+        m_readTraceWanted = false;
+        m_readTraceRecording = false;
+        m_readTraceRearm = false;
+        setReadTraceArmed(false);
+        if (m_readTrace)
+            m_readTrace->clear();
+        m_livePicture = StopPicture();
+        if (m_timeline)
+            m_timeline->clear();
         m_palTraceWanted = false;
         m_palTraceRecording = false;
         m_palTraceRearm = false;

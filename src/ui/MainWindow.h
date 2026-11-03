@@ -14,6 +14,7 @@
 #include "emu/HatariProbe.h"
 #include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
+#include "emu/MemoryDump.h"
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
 #include "ui/RemoteStateAdapter.h"
@@ -363,6 +364,15 @@ private slots:
     /// line. A line that never executes after the previous stop does not
     /// return here.
     void runBackToCursor();
+    /// Restore the recorded stop before the CPU store at `pc`, or replay
+    /// from that stop to the first reach of `pc`. The instruction is on
+    /// screen and has not run. A store with no PC is not offered.
+    void previousWrite(quint32 pc);
+    /// The same return, for a CPU data read.
+    void previousRead(quint32 pc);
+    /// The history line that last wrote `name` (`d0`–`a7`), then the same
+    /// return. A register the ring does not show a write of stays put.
+    void explainRegister(const QString &name);
     /// Show one automatic snapshot's registers and analysis mark. Does not
     /// call the debugger. `index` counts from the oldest.
     void showRecordedStop(int index);
@@ -374,6 +384,11 @@ private slots:
     /// on the console and records nothing.
     void traceWrites(quint32 address, int length);
     void stopWriteTrace();
+    /// Record CPU data reads in `length` bytes starting at `address`. The
+    /// Reads list fills at each later stop. Instruction fetches are not
+    /// events. A Hatari without `readtrace` reports that and records nothing.
+    void traceReads(quint32 address, int length);
+    void stopReadTrace();
     /// Record shifter palette writes. The Palette list fills at each later
     /// stop, with the scanline taken when the color was stored. A Hatari
     /// without `paltrace` reports that on the console and records nothing.
@@ -826,6 +841,9 @@ private:
     void requestWriteTraceSave();
     void applyWriteTraceFile(const QString &path);
     void setWriteTraceArmed(bool armed);
+    void requestReadTraceSave();
+    void applyReadTraceFile(const QString &path);
+    void setReadTraceArmed(bool armed);
     void requestPalTraceSave();
     void applyPalTraceFile(const QString &path);
     /// Read a coverage file and note its addresses on that tab. A file that
@@ -983,6 +1001,12 @@ private:
     bool m_writeTraceRearm = false;
     quint32 m_writeTraceLo = 0;
     quint32 m_writeTraceHi = 0;
+    /// Same shape as the write trace, for `readtrace`.
+    bool m_readTraceWanted = false;
+    bool m_readTraceRecording = false;
+    bool m_readTraceRearm = false;
+    quint32 m_readTraceLo = 0;
+    quint32 m_readTraceHi = 0;
     /// Same shape as the write trace: wanted until the emulator accepts
     /// `paltrace on`, then recording, and a re-arm after restore because the
     /// log is not rewound with the machine.
@@ -1064,6 +1088,9 @@ private:
     class PcHistoryView *m_pcHistory = nullptr;
     class WriteTraceView *m_writeTrace = nullptr;
     QDockWidget *m_writeTraceDock = nullptr;
+    class ReadTraceView *m_readTrace = nullptr;
+    QDockWidget *m_readTraceDock = nullptr;
+    class TimelineView *m_timeline = nullptr;
     class PalTraceView *m_palTrace = nullptr;
     QDockWidget *m_palTraceDock = nullptr;
     HardwareView *m_hardware = nullptr;
@@ -1208,12 +1235,26 @@ private:
     QAction *m_actRestoreRecorded = nullptr;
     QMenu *m_recordedStopsMenu = nullptr;
     QMenu *m_savedStopsMenu = nullptr;
+    /// Memory, the stack, and the screen captured at a stop. Disassembly
+    /// lives on the MachineState. A pane with no capture is left as it is.
+    struct StopPicture {
+        QList<MemoryRow> memory;
+        quint32 memoryBase = 0;
+        bool haveMemory = false;
+        QList<MemoryRow> stack;
+        quint32 stackSp = 0;
+        bool haveStack = false;
+        QImage frame;
+        bool haveFrame = false;
+    };
+    StopPicture m_livePicture;
     /// One stopped machine: the snapshot Hatari wrote, and the registers and
     /// PC that were on screen then. `showSavedStop` paints those without
     /// reading the live machine.
     struct SavedStop {
         QString path;
         MachineState state;
+        StopPicture picture;
     };
     QList<SavedStop> m_savedStops;
     /// Index into `m_savedStops` of the stop on screen, or -1 for the live machine.
@@ -1228,6 +1269,7 @@ private:
     struct ReverseAnchor {
         QString path;
         MachineState state;
+        StopPicture picture;
         quint32 pc = 0;
         int parent = -1;
         /// A stop the machine reached on its own (entry, a breakpoint), as
@@ -1278,6 +1320,14 @@ private:
     bool confirmReverseBranch();
     bool evictReverseAnchor();
     void rebuildRecordedStopsMenu();
+    /// `reststop` an ancestor already stopped at `address`, otherwise the
+    /// previous snapshot and a run forward to the first reach of it.
+    void reverseToAddress(quint32 address);
+    void paintStopPicture(const MachineState &state, const StopPicture &picture);
+    void noteLiveMemory(const QList<MemoryRow> &rows);
+    void noteLiveStack(quint32 sp, const QList<MemoryRow> &rows);
+    void refreshTimelineInstructions(const QString &text);
+    bool historicalStopOnScreen() const;
     void startInputLog();
     void armReplayKeys();
     void rebuildSavedStopsMenu();

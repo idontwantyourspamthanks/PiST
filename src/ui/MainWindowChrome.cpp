@@ -64,6 +64,8 @@
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/WriteTraceView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/TimelineView.h"
 #include "ui/PalTraceView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
@@ -133,6 +135,8 @@ bool isDebugDockName(const QString &name)
         || name == QLatin1String("hardwareDock")
         || name == QLatin1String("pcHistoryDock")
         || name == QLatin1String("writeTraceDock")
+        || name == QLatin1String("readTraceDock")
+        || name == QLatin1String("timelineDock")
         || name == QLatin1String("paletteDock")
         || name == QLatin1String("breakpointsDock")
         || name == QLatin1String("instructionRefDock")
@@ -973,6 +977,8 @@ void MainWindow::buildPanels()
 
     m_pcHistory = new PcHistoryView(this);
     m_writeTrace = new WriteTraceView(this);
+    m_readTrace = new ReadTraceView(this);
+    m_timeline = new TimelineView(this);
     m_palTrace = new PalTraceView(this);
     m_instrRef = new InstructionRefView(this);
     m_symbolsView = new SymbolsView(this);
@@ -981,8 +987,11 @@ void MainWindow::buildPanels()
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
+              << makeDock(tr("Timeline"), QStringLiteral("timelineDock"), m_timeline)
               << (m_writeTraceDock = makeDock(tr("Writes"), QStringLiteral("writeTraceDock"),
                                               m_writeTrace))
+              << (m_readTraceDock = makeDock(tr("Reads"), QStringLiteral("readTraceDock"),
+                                             m_readTrace))
               << (m_palTraceDock = makeDock(tr("Palette"), QStringLiteral("paletteDock"),
                                             m_palTrace))
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
@@ -1191,6 +1200,18 @@ void MainWindow::wirePanels()
                     return;
                 openMemory(hasPc ? pc : address);
             });
+    connect(m_writeTrace, &WriteTraceView::previousWriteRequested, this, &MainWindow::previousWrite);
+    connect(m_readTrace, &ReadTraceView::eventActivated, this,
+            [openMappedSource, openMemory](quint32 pc, quint32 address) {
+                if (openMappedSource(pc))
+                    return;
+                openMemory(address);
+            });
+    connect(m_readTrace, &ReadTraceView::previousReadRequested, this, &MainWindow::previousRead);
+    connect(m_timeline, &TimelineView::stopActivated, this, &MainWindow::showRecordedStop);
+    connect(m_timeline, &TimelineView::instructionActivated, this, &MainWindow::previousWrite);
+    connect(m_registers, &RegistersView::registerExplainRequested, this,
+            &MainWindow::explainRegister);
     // A palette row opens the writer's source line. The line and position in
     // the list were taken when the color was stored; opening the row does not
     // move the machine back there.
@@ -1287,6 +1308,8 @@ void MainWindow::buildViewMenu()
             QStringLiteral("hardwareDock"),
             QStringLiteral("pcHistoryDock"),
             QStringLiteral("writeTraceDock"),
+            QStringLiteral("readTraceDock"),
+            QStringLiteral("timelineDock"),
             QStringLiteral("paletteDock"),
             QStringLiteral("breakpointsDock"),
             QStringLiteral("instructionRefDock"),
@@ -1369,6 +1392,15 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
                 traceWrites(address, length);
             });
     connect(view, &MemoryView::traceWritesStopRequested, this, [this] { stopWriteTrace(); });
+    connect(view, &MemoryView::traceReadsRequested, this,
+            [this, view](quint32 address, int length) {
+                for (MemoryView *other : m_memoryPanes) {
+                    if (other != view)
+                        other->setReadTraceArmed(false);
+                }
+                traceReads(address, length);
+            });
+    connect(view, &MemoryView::traceReadsStopRequested, this, [this] { stopReadTrace(); });
 
     // Later panes tab onto the base memory dock.
     if (!first)

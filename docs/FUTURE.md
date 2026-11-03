@@ -498,10 +498,11 @@ Not in this pass, on purpose:
 
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
-**Status:** passed, on `hatari-pist`, pinned in PiST at `40c92ee`
-(`40c92eef12ed450ecf5c9febd5445ffdcee2cc94`). The pin includes the live input log
-(`replaylog`), `replaykeys` of a log with no trace line, and the entry-stop commands
-`replayrecord` and `replayplay`. PiST calls `replaylog` and `replaykeys` on Reverse
+**Status:** passed, on `hatari-pist`, pinned in PiST at `b3f3dc2`
+(`b3f3dc286f8ae1a42bb57d76f72e63cdf8a0aa2d`). The pin includes the live input log
+(`replaylog`), `replaykeys` of a log with no trace line, the entry-stop commands
+`replayrecord` and `replayplay`, and `readtrace` for CPU data reads. PiST calls
+`replaylog` and `replaykeys` on Reverse
 Step. Stock Hatari has none of these commands; a missing command skips the key proof
 and the reverses still restore the machine.
 Each gate was a pass/fail trace and no dock.

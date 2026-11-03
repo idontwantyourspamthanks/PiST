@@ -4684,7 +4684,7 @@ void TstGui::analysisRunLaunchesThatProgram()
 {
     REQUIRE_EMULATOR_OR_SKIP();
 
-    const QString source = m_work->path() + QStringLiteral("/other.s");
+    const QString source = m_work->path() + QStringLiteral("/idle.s");
     QFile src(source);
     QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
     src.write("\ttext\n"

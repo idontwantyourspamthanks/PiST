@@ -354,6 +354,15 @@ private slots:
     /// A Hatari without `reststop` reports that on the console and stays
     /// where it is.
     void reverseStep();
+    /// Restore the previous stop that was not a single step. Steps in
+    /// between are skipped. A Hatari without `reststop` reports that on
+    /// the console and stays where it is.
+    void reverseContinue();
+    /// Restore the previous stop when its program counter is the cursor
+    /// line, otherwise replay from that stop to the first reach of the
+    /// line. A line that never executes after the previous stop does not
+    /// return here.
+    void runBackToCursor();
     /// Record writes in `length` bytes starting at `address`. The Writes list
     /// fills at each later stop. A Hatari without `writetrace` reports that
     /// on the console and records nothing.
@@ -1188,6 +1197,8 @@ private:
     QAction *m_actSaveStop = nullptr;
     QAction *m_actRestoreStop = nullptr;
     QAction *m_actReverseStep = nullptr;
+    QAction *m_actReverseContinue = nullptr;
+    QAction *m_actRunBack = nullptr;
     QMenu *m_savedStopsMenu = nullptr;
     /// One stopped machine: the snapshot Hatari wrote, and the registers and
     /// PC that were on screen then. `showSavedStop` paints those without
@@ -1209,6 +1220,9 @@ private:
     struct ReverseAnchor {
         QString path;
         quint32 pc = 0;
+        /// A stop the machine reached on its own (entry, a breakpoint), as
+        /// opposed to a single step. Reverse Continue walks back to one.
+        bool breakpoint = false;
     };
     QList<ReverseAnchor> m_reverseAnchors;
     int m_reverseSerial = 0;
@@ -1232,8 +1246,16 @@ private:
     QString m_reverseSaveCommand;
     enum class ReverseAfterAnchor { None, Step, StepOver, StepOut, Resume };
     ReverseAfterAnchor m_reverseAfterAnchor = ReverseAfterAnchor::None;
+    /// Media keys and mouse for this session, one line each, no trace.
+    /// Reverse Step closes it and loads it with `replaykeys` before it
+    /// runs forward again, then opens it once more.
+    QString m_inputLogPath;
+    bool m_inputLogStarted = false;
+    bool m_inputLogRestart = false;
     void rememberReverseAnchor(const MachineState &state);
     void updateReverseStepAction();
+    void startInputLog();
+    void armReplayKeys();
     void rebuildSavedStopsMenu();
     /// The next live stop should paint. Does not itself repaint.
     void dismissHistory();

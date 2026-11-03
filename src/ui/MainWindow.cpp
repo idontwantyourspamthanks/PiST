@@ -243,10 +243,12 @@ MainWindow::MainWindow(QWidget *parent)
         m_reverseHistoryReady = false;
         m_reverseSaveCommand.clear();
         m_reverseAfterAnchor = ReverseAfterAnchor::None;
+        m_inputLogPath.clear();
+        m_inputLogStarted = false;
+        m_inputLogRestart = false;
         if (m_actRestoreStop)
             m_actRestoreStop->setEnabled(false);
-        if (m_actReverseStep)
-            m_actReverseStep->setEnabled(false);
+        updateReverseStepAction();
         rebuildSavedStopsMenu();
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())

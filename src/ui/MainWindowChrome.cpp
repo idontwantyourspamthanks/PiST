@@ -403,6 +403,23 @@ void MainWindow::createActions()
            "A continue that ran that instruction more than once stops the first time."));
     connect(m_actReverseStep, &QAction::triggered, this, &MainWindow::reverseStep);
 
+    m_actReverseContinue = new QAction(tr("Reverse &Continue"), this);
+    m_actReverseContinue->setObjectName(QStringLiteral("reverseContinueAction"));
+    m_actReverseContinue->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F9));
+    m_actReverseContinue->setEnabled(false);
+    m_actReverseContinue->setToolTip(
+        tr("Return to the previous stop that was not a single step."));
+    connect(m_actReverseContinue, &QAction::triggered, this, &MainWindow::reverseContinue);
+
+    m_actRunBack = new QAction(tr("Run &Back to Cursor"), this);
+    m_actRunBack->setObjectName(QStringLiteral("runBackToCursorAction"));
+    m_actRunBack->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F10));
+    m_actRunBack->setEnabled(false);
+    m_actRunBack->setToolTip(
+        tr("Return to the cursor line. A line reached more than once since the "
+           "previous stop stops at the first time."));
+    connect(m_actRunBack, &QAction::triggered, this, &MainWindow::runBackToCursor);
+
     m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actRunToCursor->setEnabled(false);
@@ -570,6 +587,8 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStepOver);
     runMenu->addAction(m_actStepOut);
     runMenu->addAction(m_actReverseStep);
+    runMenu->addAction(m_actReverseContinue);
+    runMenu->addAction(m_actRunBack);
     runMenu->addAction(m_actSaveStop);
     runMenu->addAction(m_actRestoreStop);
     m_savedStopsMenu = new QMenu(tr("Saved Stops"), this);
@@ -1561,6 +1580,10 @@ void MainWindow::applyShortcutScheme()
     m_actStepOut->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F11));
     if (m_actReverseStep)
         m_actReverseStep->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F10));
+    if (m_actReverseContinue)
+        m_actReverseContinue->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F9));
+    if (m_actRunBack)
+        m_actRunBack->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F10));
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     if (common) {

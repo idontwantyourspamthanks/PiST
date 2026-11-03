@@ -14,6 +14,7 @@
 #include "emu/HatariProbe.h"
 #include "emu/DebugBackend.h"
 #include "emu/MachineState.h"
+#include "emu/MemoryDump.h"
 #include "emu/SessionConfig.h"
 #include "project/ProjectSettings.h"
 #include "ui/RemoteStateAdapter.h"
@@ -337,6 +338,62 @@ private slots:
     /// Step out of the current subroutine: one-shot breakpoint at the return
     /// address read from the stack, then resume (no Hatari primitive exists).
     void stepOut();
+    /// Remember the stopped machine. A few are kept; the oldest is dropped.
+    void saveStop();
+    /// Show a saved stop's registers and analysis mark. Does not call the debugger.
+    /// `index` counts from the oldest.
+    void showSavedStop(int index);
+    /// Show the live machine again. Does not call the debugger.
+    void showLiveStop();
+    /// Restore the saved stop on screen, or the latest one, and stay stopped
+    /// on its instruction. A Hatari without `reststop` reports that on the
+    /// console and stays where it is.
+    void restoreStop();
+    /// Stop on the instruction that just executed, before it runs again.
+    /// The previous stop is restored. When more than that one instruction
+    /// ran, execution continues to the program counter history lists last.
+    /// A Hatari without `reststop` reports that on the console and stays
+    /// where it is.
+    void reverseStep();
+    /// Restore the previous stop that was not a single step. Steps in
+    /// between are skipped. A Hatari without `reststop` reports that on
+    /// the console and stays where it is.
+    void reverseContinue();
+    /// Restore the previous stop when its program counter is the cursor
+    /// line, otherwise replay from that stop to the first reach of the
+    /// line. A line that never executes after the previous stop does not
+    /// return here.
+    void runBackToCursor();
+    /// Restore the recorded stop before the CPU store at `pc`, or replay
+    /// from that stop to the first reach of `pc`. The instruction is on
+    /// screen and has not run. A store with no PC is not offered.
+    void previousWrite(quint32 pc);
+    /// The same return, for a CPU data read.
+    void previousRead(quint32 pc);
+    /// The history line that last wrote `name` (`d0`–`a7`), then the same
+    /// return. A register the ring does not show a write of stays put.
+    void explainRegister(const QString &name);
+    /// Show one automatic snapshot's registers and analysis mark. Does not
+    /// call the debugger. `index` counts from the oldest.
+    void showRecordedStop(int index);
+    /// Restore the recorded stop on screen and stay stopped on its
+    /// instruction. Later snapshots stay listed until execution leaves them.
+    void restoreRecordedStop();
+    /// Record writes in `length` bytes starting at `address`. The Writes list
+    /// fills at each later stop. A Hatari without `writetrace` reports that
+    /// on the console and records nothing.
+    void traceWrites(quint32 address, int length);
+    void stopWriteTrace();
+    /// Record CPU data reads in `length` bytes starting at `address`. The
+    /// Reads list fills at each later stop. Instruction fetches are not
+    /// events. A Hatari without `readtrace` reports that and records nothing.
+    void traceReads(quint32 address, int length);
+    void stopReadTrace();
+    /// Record shifter palette writes. The Palette list fills at each later
+    /// stop, with the scanline taken when the color was stored. A Hatari
+    /// without `paltrace` reports that on the console and records nothing.
+    void tracePalette();
+    void stopPaletteTrace();
     /// One-shot breakpoint at the cursor line's code address, then resume.
     void runToCursor();
     /// Run ▸ Follow execution: hand the caret to the program counter — it goes
@@ -532,6 +589,7 @@ private:
     /// the execution line shows both ("caret 22 · PC 18").
     void updateCaretChip();
     void updateRegisterStrip();
+    void paintRegisterStrip(const pist::MachineState &state, bool history);
 
     /// Point the instruction reference, and the one-line strip under the
     /// editor, at the word under the caret. Runs whether or not the
@@ -773,12 +831,21 @@ private:
     /// comes from the live basepage and this file's own section sizes, and it
     /// is not written into the notes.
     void applyAnalysisExecution();
+    void applyAnalysisFrom(const pist::MachineState &state);
     /// Title the emulator dock with the source this session is running, or
     /// restore "Emulator" when nothing is.
     void setEmulatorCaption();
     /// Ask the emulator for the coverage file when this session is recording
     /// and an analysis tab of the launched program is open.
     void requestCoverageSave();
+    void requestWriteTraceSave();
+    void applyWriteTraceFile(const QString &path);
+    void setWriteTraceArmed(bool armed);
+    void requestReadTraceSave();
+    void applyReadTraceFile(const QString &path);
+    void setReadTraceArmed(bool armed);
+    void requestPalTraceSave();
+    void applyPalTraceFile(const QString &path);
     /// Read a coverage file and note its addresses on that tab. A file that
     /// cannot be read leaves the previous notes in place.
     void applyCoverageFile(const QString &path);
@@ -923,6 +990,29 @@ private:
     /// The running Hatari accepted `coverage on`. A stock Hatari does not, and
     /// then no coverage file is read.
     bool m_coverageRecording = false;
+    /// The user asked to trace, and the emulator accepted `writetrace`. Saves
+    /// happen at later stops. `m_writeTraceWanted` is the request still in
+    /// flight or accepted; a rejection clears both.
+    bool m_writeTraceWanted = false;
+    bool m_writeTraceRecording = false;
+    /// The next stop should arm the same range again, which clears the ring.
+    /// A restore does not rewind it, so the abandoned path's writes would
+    /// otherwise stay in the list.
+    bool m_writeTraceRearm = false;
+    quint32 m_writeTraceLo = 0;
+    quint32 m_writeTraceHi = 0;
+    /// Same shape as the write trace, for `readtrace`.
+    bool m_readTraceWanted = false;
+    bool m_readTraceRecording = false;
+    bool m_readTraceRearm = false;
+    quint32 m_readTraceLo = 0;
+    quint32 m_readTraceHi = 0;
+    /// Same shape as the write trace: wanted until the emulator accepts
+    /// `paltrace on`, then recording, and a re-arm after restore because the
+    /// log is not rewound with the machine.
+    bool m_palTraceWanted = false;
+    bool m_palTraceRecording = false;
+    bool m_palTraceRearm = false;
     /// The dock and widget that host the emulator's display (the media panel).
     /// The dock is hidden until a media session engages it (docs/PLAN.md §12).
     QDockWidget *m_displayDock = nullptr;
@@ -996,6 +1086,13 @@ private:
 
     StackView *m_stack = nullptr;
     class PcHistoryView *m_pcHistory = nullptr;
+    class WriteTraceView *m_writeTrace = nullptr;
+    QDockWidget *m_writeTraceDock = nullptr;
+    class ReadTraceView *m_readTrace = nullptr;
+    QDockWidget *m_readTraceDock = nullptr;
+    class TimelineView *m_timeline = nullptr;
+    class PalTraceView *m_palTrace = nullptr;
+    QDockWidget *m_palTraceDock = nullptr;
     HardwareView *m_hardware = nullptr;
     class SymbolsView *m_symbolsView = nullptr;
     BreakpointPanel *m_breakpointPanel = nullptr;
@@ -1130,6 +1227,112 @@ private:
     QAction *m_actStep = nullptr;
     QAction *m_actStepOver = nullptr;
     QAction *m_actStepOut = nullptr;
+    QAction *m_actSaveStop = nullptr;
+    QAction *m_actRestoreStop = nullptr;
+    QAction *m_actReverseStep = nullptr;
+    QAction *m_actReverseContinue = nullptr;
+    QAction *m_actRunBack = nullptr;
+    QAction *m_actRestoreRecorded = nullptr;
+    QMenu *m_recordedStopsMenu = nullptr;
+    QMenu *m_savedStopsMenu = nullptr;
+    /// Memory, the stack, and the screen captured at a stop. Disassembly
+    /// lives on the MachineState. A pane with no capture is left as it is.
+    struct StopPicture {
+        QList<MemoryRow> memory;
+        quint32 memoryBase = 0;
+        bool haveMemory = false;
+        QList<MemoryRow> stack;
+        quint32 stackSp = 0;
+        bool haveStack = false;
+        QImage frame;
+        bool haveFrame = false;
+    };
+    StopPicture m_livePicture;
+    /// One stopped machine: the snapshot Hatari wrote, and the registers and
+    /// PC that were on screen then. `showSavedStop` paints those without
+    /// reading the live machine.
+    struct SavedStop {
+        QString path;
+        MachineState state;
+        StopPicture picture;
+    };
+    QList<SavedStop> m_savedStops;
+    /// Index into `m_savedStops` of the stop on screen, or -1 for the live machine.
+    int m_historyIndex = -1;
+    /// Restore Stop has been sent. The next state is that machine, so it is
+    /// painted even if a saved stop is still on screen.
+    bool m_restorePending = false;
+    int m_savedStopSerial = 0;
+    /// One automatic snapshot per stop, separate from the stops the user
+    /// saved. `parent` is the stop this one ran on from, or -1 for the first.
+    /// A stop with two children is a branch: both runs stay in the list.
+    struct ReverseAnchor {
+        QString path;
+        MachineState state;
+        StopPicture picture;
+        quint32 pc = 0;
+        int parent = -1;
+        /// A stop the machine reached on its own (entry, a breakpoint), as
+        /// opposed to a single step. Reverse Continue walks back to one.
+        bool breakpoint = false;
+    };
+    QList<ReverseAnchor> m_reverseAnchors;
+    int m_reverseSerial = 0;
+    /// Which recorded stop the machine is at, or -1 for the latest one.
+    int m_reverseIndex = -1;
+    /// The user already agreed to branch, and the step that follows is still
+    /// waiting for this stop's snapshot. The deferred step does not ask again.
+    bool m_reverseBranchConfirmed = false;
+    /// Which recorded stop is painted, or -1 for the live machine. Looking
+    /// does not restore.
+    int m_reverseViewIndex = -1;
+    /// Reverse Step restored the previous stop and still has to run forward
+    /// to `m_reverseSeekPc`, the instruction history says executed last.
+    bool m_reverseSeeking = false;
+    bool m_reverseSeekSent = false;
+    quint32 m_reverseSeekPc = 0;
+    /// The `reststop` in flight was Reverse Step, so the anchor list is the
+    /// chain it is walking. A manual Restore Stop clears that list instead.
+    bool m_reverseRestore = false;
+    /// `reststop` does not rewind the history ring, so its newest entry is the
+    /// instruction just un-done. Further reverses walk the anchor chain until
+    /// a real execution records a new one.
+    bool m_reverseHistoryStale = false;
+    /// The pane holds the history read for the stop on screen.
+    bool m_reverseHistoryReady = false;
+    /// `statesave` of the stop on screen, still in the debugger queue. A step
+    /// sent before it runs would be the machine the file captures, so Step and
+    /// Continue wait for this command to finish.
+    QString m_reverseSaveCommand;
+    enum class ReverseAfterAnchor { None, Step, StepOver, StepOut, Resume };
+    ReverseAfterAnchor m_reverseAfterAnchor = ReverseAfterAnchor::None;
+    /// Media keys and mouse for this session, one line each, no trace.
+    /// Reverse Step closes it and loads it with `replaykeys` before it
+    /// runs forward again, then opens it once more.
+    QString m_inputLogPath;
+    bool m_inputLogStarted = false;
+    bool m_inputLogRestart = false;
+    void rememberReverseAnchor(const MachineState &state);
+    void updateReverseStepAction();
+    int currentReverseIndex() const;
+    int reverseParent(int index) const;
+    bool reverseHasChild(int index) const;
+    bool confirmReverseBranch();
+    bool evictReverseAnchor();
+    void rebuildRecordedStopsMenu();
+    /// `reststop` an ancestor already stopped at `address`, otherwise the
+    /// previous snapshot and a run forward to the first reach of it.
+    void reverseToAddress(quint32 address);
+    void paintStopPicture(const MachineState &state, const StopPicture &picture);
+    void noteLiveMemory(const QList<MemoryRow> &rows);
+    void noteLiveStack(quint32 sp, const QList<MemoryRow> &rows);
+    void refreshTimelineInstructions(const QString &text);
+    bool historicalStopOnScreen() const;
+    void startInputLog();
+    void armReplayKeys();
+    void rebuildSavedStopsMenu();
+    /// The next live stop should paint. Does not itself repaint.
+    void dismissHistory();
     QAction *m_actRunToCursor = nullptr;
     /// Run ▸ Follow execution. Checkable, and the state it shows *is*
     /// m_pcFollow: the menu is where the caret's ownership is visible and can be

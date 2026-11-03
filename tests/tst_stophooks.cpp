@@ -184,6 +184,19 @@ public:
     void profileSave(const QString &path) override { Q_UNUSED(path); }
     void coverageOn() override {}
     void coverageSave(const QString &path) override { Q_UNUSED(path); }
+    void writeTraceRange(quint32 start, quint32 end) override
+    {
+        Q_UNUSED(start);
+        Q_UNUSED(end);
+    }
+    void writeTraceSave(const QString &path) override { Q_UNUSED(path); }
+    void writeTraceOff() override {}
+    void readTraceRange(quint32, quint32) override {}
+    void readTraceSave(const QString &) override {}
+    void readTraceOff() override {}
+    void palTraceOn() override {}
+    void palTraceSave(const QString &path) override { Q_UNUSED(path); }
+    void palTraceOff() override {}
     void breakAtAddressOnce(quint32 address) override { Q_UNUSED(address); }
 
     void writeMemoryByte(quint32 address, quint8 value) override

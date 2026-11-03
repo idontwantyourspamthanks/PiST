@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
+class QToolButton;
 class QTableWidgetItem;
 class QToolButton;
 
@@ -68,6 +69,15 @@ public slots:
     /// Re-apply the theme font and the last dump's colours.
     void applyAppearance();
 
+    /// The Trace button, without asking the emulator again. A rejected arm
+    /// and the end of the session both clear it.
+    void setTraceArmed(bool armed);
+    /// The Reads button, same contract as the Trace button.
+    void setReadTraceArmed(bool armed);
+    /// Paint `rows` without asking the emulator for another dump. A recorded
+    /// stop's memory is already the dump.
+    void showCaptured(const QList<MemoryRow> &rows);
+
 signals:
     /// The view wants a dump of `address`, `length` bytes.
     void dumpRequested(quint32 address, int length);
@@ -81,6 +91,15 @@ signals:
     /// Save bytes starting at the address this pane is showing. The window
     /// asks for a length and a path. The button does not open a dialog.
     void saveBytesRequested(quint32 address);
+
+    /// Record writes in the window this pane is showing. `length` is the
+    /// number of bytes on screen. The window arms the emulator.
+    void traceWritesRequested(quint32 address, int length);
+    /// Stop recording. The list already shown stays until the window clears it.
+    void traceWritesStopRequested();
+    /// Record CPU data reads in the window this pane is showing.
+    void traceReadsRequested(quint32 address, int length);
+    void traceReadsStopRequested();
 
 private slots:
     void onAddressEntered();
@@ -136,6 +155,8 @@ private:
     QByteArray m_bytes;
     QLineEdit *m_addressEdit = nullptr;
     QPushButton *m_save = nullptr;
+    QToolButton *m_trace = nullptr;
+    QToolButton *m_readTrace = nullptr;
     QTableWidget *m_table = nullptr;
     QLabel *m_status = nullptr;
 

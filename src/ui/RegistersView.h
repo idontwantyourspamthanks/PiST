@@ -44,6 +44,8 @@ public slots:
 signals:
     /// The user committed a new value for a register (e.g. "d0", "a7", "pc").
     void registerEdited(const QString &regName, quint32 value);
+    /// Right-click on a data or address register name. `name` is `d0`–`a7`.
+    void registerExplainRequested(const QString &name);
 
 private:
     /// `changedInk` is the palette's "this value changed" colour, hoisted by the

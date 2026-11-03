@@ -1354,7 +1354,12 @@ void MainWindow::setEmulatorCaption()
 
 void MainWindow::applyAnalysisExecution()
 {
-    const bool live = m_lastState.regs.valid && m_lastState.hasBases() && !m_launchedProgram.isEmpty();
+    applyAnalysisFrom(m_lastState);
+}
+
+void MainWindow::applyAnalysisFrom(const MachineState &state)
+{
+    const bool live = state.regs.valid && state.hasBases() && !m_launchedProgram.isEmpty();
     const QFileInfo launched(m_launchedProgram);
     for (AnalysisView *view : openAnalysisViews()) {
         const bool mine = live && !view->filePath().isEmpty() && QFileInfo(view->filePath()) == launched;
@@ -1362,8 +1367,7 @@ void MainWindow::applyAnalysisExecution()
             view->clearExecutionPc();
             continue;
         }
-        view->setExecutionPc(m_lastState.pc, m_lastState.textBase, m_lastState.dataBase,
-                             m_lastState.bssBase);
+        view->setExecutionPc(state.pc, state.textBase, state.dataBase, state.bssBase);
     }
 }
 

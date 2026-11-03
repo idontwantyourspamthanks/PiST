@@ -610,6 +610,27 @@ void HrdbBackend::completeCurrent(const QByteArray &message)
         emit coverageReady(response.contains(QLatin1String("Coverage recording on")));
     if (!done.coveragePath.isEmpty())
         emit coverageSaveFinished(done.coveragePath);
+    if (done.writeTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'writetrace' not found"))
+                              || response.contains(QLatin1String("writetrace:"));
+        emit writeTraceReady(!rejected);
+    }
+    if (!done.writeTracePath.isEmpty())
+        emit writeTraceSaveFinished(done.writeTracePath);
+    if (done.readTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'readtrace' not found"))
+                              || response.contains(QLatin1String("readtrace:"));
+        emit readTraceReady(!rejected);
+    }
+    if (!done.readTracePath.isEmpty())
+        emit readTraceSaveFinished(done.readTracePath);
+    if (done.palTraceProbe) {
+        const bool rejected = response.contains(QLatin1String("Command 'paltrace' not found"))
+                              || response.contains(QLatin1String("paltrace:"));
+        emit palTraceReady(!rejected);
+    }
+    if (!done.palTracePath.isEmpty())
+        emit palTraceSaveFinished(done.palTracePath);
 
     // The execution-path read's text, for the pane that asked (a typed request
     // reports its own answer rather than a caller matching command text).
@@ -935,6 +956,77 @@ void HrdbBackend::coverageSave(const QString &path)
     Pending p = consoleRequest(command, command, ResponseKind::None, true);
     p.coveragePath = path;
     enqueue(p);
+}
+
+void HrdbBackend::writeTraceRange(quint32 start, quint32 end)
+{
+    // Kept across a resume(), same as coverage: the arm has to be in force
+    // for the continue that follows it.
+    const QString command = QStringLiteral("writetrace $%1 $%2").arg(start, 0, 16).arg(end, 0, 16);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.writeTraceProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::writeTraceSave(const QString &path)
+{
+    const QString command = QStringLiteral("writetrace save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.writeTracePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::writeTraceOff()
+{
+    enqueue(consoleRequest(QStringLiteral("writetrace off"), QStringLiteral("writetrace off"),
+                           ResponseKind::None, true));
+}
+
+void HrdbBackend::readTraceRange(quint32 start, quint32 end)
+{
+    // Kept across a resume(), same as writetrace.
+    const QString command = QStringLiteral("readtrace $%1 $%2").arg(start, 0, 16).arg(end, 0, 16);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.readTraceProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::readTraceSave(const QString &path)
+{
+    const QString command = QStringLiteral("readtrace save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.readTracePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::readTraceOff()
+{
+    enqueue(consoleRequest(QStringLiteral("readtrace off"), QStringLiteral("readtrace off"),
+                           ResponseKind::None, true));
+}
+
+void HrdbBackend::palTraceOn()
+{
+    // Kept across a resume(), same as coverage: the arm has to be in force
+    // for the continue that follows it.
+    Pending p = consoleRequest(QStringLiteral("paltrace on"), QStringLiteral("paltrace on"),
+                               ResponseKind::None, true);
+    p.palTraceProbe = true;
+    enqueue(p);
+}
+
+void HrdbBackend::palTraceSave(const QString &path)
+{
+    const QString command = QStringLiteral("paltrace save %1").arg(path);
+    Pending p = consoleRequest(command, command, ResponseKind::None, true);
+    p.palTracePath = path;
+    enqueue(p);
+}
+
+void HrdbBackend::palTraceOff()
+{
+    enqueue(consoleRequest(QStringLiteral("paltrace off"), QStringLiteral("paltrace off"),
+                           ResponseKind::None, true));
 }
 
 void HrdbBackend::writeRegister(const QString &name, quint32 value)

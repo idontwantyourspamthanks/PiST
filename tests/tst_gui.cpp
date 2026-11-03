@@ -37,6 +37,9 @@
 #include "emu/MachineState.h"
 #include "analysis/AnalysisNotes.h"
 #include "ui/AnalysisView.h"
+#include "ui/DisassemblyView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/WriteTraceView.h"
 #include "ui/MainWindow.h"
 #include "ui/SymbolPaletteDialog.h"
 #include "ui/StopHooksDialog.h"
@@ -512,6 +515,18 @@ private slots:
     void analysisExportWritesAssembly();
     void analysisMarksTheRunningProgram();
     void analysisRunLaunchesThatProgram();
+    void restoreStopReturnsToTheSavedInstruction();
+    void reverseStepReturnsToThePreviousInstruction();
+    void reverseStepReplaysAMediaKey();
+    void reverseContinueReturnsToTheBreakpoint();
+    void runBackToCursorRestoresThatLine();
+    void recordedStopsRestoreAnEarlierStop();
+    void branchKeepsTheLaterStops();
+    void traceWritesListsTheStore();
+    void previousWriteReturnsToTheStore();
+    void readTraceListsTheLoad();
+    void recordedStopShowsThatMachine();
+    void tracePaletteListsTheScanline();
     void analysisNotesAnExecutedAddress();
     void analysisOpensAGuessedPicture();
     void analysisShowsWhatRan();
@@ -4752,6 +4767,1499 @@ void TstGui::analysisRunLaunchesThatProgram()
         qDebug().noquote() << window.debugConsoleText();
     QCOMPARE(listing->verticalHeaderItem(ret)->text(), QStringLiteral("ran"));
     QVERIFY(listing->item(ret, 4)->text().contains(QLatin1String("ran")));
+}
+
+void TstGui::restoreStopReturnsToTheSavedInstruction()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/count.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // addq.l #1,d0 / bra.s back to it. One step changes D0 by one.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("528060FC"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = analysis->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int branch = imageRow(listing, 2);
+    QVERIFY(entry >= 0 && branch >= 0);
+
+    auto *save = window.findChild<QAction *>(QStringLiteral("saveStopAction"));
+    auto *restore = window.findChild<QAction *>(QStringLiteral("restoreStopAction"));
+    QVERIFY(save && restore);
+    auto *run = window.findChild<QMenu *>(QStringLiteral("runMenu"));
+    QVERIFY(run && run->actions().contains(save) && run->actions().contains(restore));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+    QVERIFY(save->isEnabled());
+
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("D0 ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int d0At = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(d0At >= 0);
+    bool d0Ok = false;
+    const quint32 entryD0 = strip->text().mid(d0At + 3, 8).toUInt(&d0Ok, 16);
+    QVERIFY(d0Ok);
+
+    const auto savedPaths = [&window] {
+        QStringList paths;
+        const QString mark = QStringLiteral("[stop] saved ");
+        int at = 0;
+        const QString text = window.debugConsoleText();
+        while ((at = text.indexOf(mark, at)) >= 0) {
+            at += mark.size();
+            paths << text.mid(at).section(QLatin1Char('\n'), 0, 0).trimmed();
+        }
+        return paths;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "saveStop", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                const QStringList paths = savedPaths();
+                return paths.size() == 1 && QFileInfo::exists(paths.at(0));
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(restore->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
+    const int steppedAt = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(steppedAt >= 0);
+    bool steppedOk = false;
+    const quint32 steppedD0 = strip->text().mid(steppedAt + 3, 8).toUInt(&steppedOk, 16);
+    QVERIFY(steppedOk);
+    QCOMPARE(steppedD0, entryD0 + 1u);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "saveStop", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                const QStringList paths = savedPaths();
+                return paths.size() == 2 && paths.at(0) != paths.at(1)
+                       && QFileInfo::exists(paths.at(0)) && QFileInfo::exists(paths.at(1));
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    auto *stops = window.findChild<QMenu *>(QStringLiteral("savedStopsMenu"));
+    QVERIFY(stops && run->actions().contains(stops->menuAction()));
+    QCOMPARE(stops->actions().size(), 3);
+
+    const QString consoleBeforeHistory = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showSavedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QString());
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    const int historyAt = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(historyAt >= 0);
+    bool historyOk = false;
+    const quint32 historyD0 = strip->text().mid(historyAt + 3, 8).toUInt(&historyOk, 16);
+    QVERIFY(historyOk);
+    QCOMPARE(historyD0, entryD0);
+    QCOMPARE(window.debugConsoleText(), consoleBeforeHistory);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "showLiveStop", Qt::DirectConnection));
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
+    QVERIFY(!strip->text().contains(QStringLiteral("History")));
+    const int liveAt = strip->text().indexOf(QLatin1String("D0 "));
+    QVERIFY(liveAt >= 0);
+    bool liveOk = false;
+    const quint32 liveD0 = strip->text().mid(liveAt + 3, 8).toUInt(&liveOk, 16);
+    QVERIFY(liveOk);
+    QCOMPARE(liveD0, entryD0 + 1u);
+
+    // Restore the earlier stop, the one on screen, rather than the latest.
+    QVERIFY(QMetaObject::invokeMethod(&window, "showSavedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreStop", Qt::DirectConnection));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            // History already paints this address and D0. The line comes off
+            // when the restored machine arrives, so the wait is that arrival.
+            if (strip->text().contains(QLatin1String("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(0))
+                return false;
+            const int at = strip->text().indexOf(QLatin1String("D0 "));
+            if (at < 0)
+                return false;
+            bool ok = false;
+            const quint32 d0 = strip->text().mid(at + 3, 8).toUInt(&ok, 16);
+            return ok && d0 == entryD0;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(back);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QString());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (analysis->executionAddress() != std::optional<quint32>(2))
+                    return false;
+                const int at = strip->text().indexOf(QLatin1String("D0 "));
+                if (at < 0)
+                    return false;
+                bool ok = false;
+                const quint32 d0 = strip->text().mid(at + 3, 8).toUInt(&ok, 16);
+                return ok && d0 == entryD0 + 1u;
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
+}
+
+void TstGui::reverseStepReturnsToThePreviousInstruction()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/reverse.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // addq.l #1,d0 / addq.l #1,d1 / bra.s back to the first. Two steps land on
+    // the branch. A continue from the entry stop to the branch runs both adds.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = analysis->findChild<QTableWidget *>(QStringLiteral("analysisListing"));
+    QVERIFY(listing);
+    const int entry = imageRow(listing, 0);
+    const int second = imageRow(listing, 2);
+    const int branch = imageRow(listing, 4);
+    QVERIFY(entry >= 0 && second >= 0 && branch >= 0);
+
+    auto *reverse = window.findChild<QAction *>(QStringLiteral("reverseStepAction"));
+    QVERIFY(reverse);
+    auto *run = window.findChild<QMenu *>(QStringLiteral("runMenu"));
+    QVERIFY(run && run->actions().contains(reverse));
+    QVERIFY(!reverse->isEnabled());
+
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *historyDock = window.findChild<QDockWidget *>(QStringLiteral("pcHistoryDock"));
+    QVERIFY(historyDock);
+    auto *history = historyDock->findChild<QPlainTextEdit *>();
+    QVERIFY(history);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("D0 ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryD0 = 0;
+    quint32 entryD1 = 0;
+    quint32 entryPc = 0;
+    QVERIFY(reg(strip->text(), "D0", &entryD0));
+    QVERIFY(reg(strip->text(), "D1", &entryD1));
+    QVERIFY(reg(strip->text(), "PC", &entryPc));
+    QVERIFY(!reverse->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 midPc = 0;
+    QVERIFY(reg(strip->text(), "PC", &midPc));
+    QCOMPARE(midPc, entryPc + 2u);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 steppedD0 = 0;
+    quint32 steppedD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &steppedD0));
+    QVERIFY(reg(strip->text(), "D1", &steppedD1));
+    QCOMPARE(steppedD0, entryD0 + 1u);
+    QCOMPARE(steppedD1, entryD1 + 1u);
+
+    const QString midHex = QStringLiteral("%1").arg(midPc, 8, 16, QLatin1Char('0'));
+    if (!QTest::qWaitFor(
+            [&] {
+                return reverse->isEnabled()
+                       && history->toPlainText().contains(midHex, Qt::CaseInsensitive);
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << history->toPlainText();
+    }
+    QVERIFY(reverse->isEnabled());
+
+    // One step back, inside the loop: the branch has not run, so D1 is the
+    // value from before the add that the second step executed.
+    QVERIFY(QMetaObject::invokeMethod(&window, "reverseStep", Qt::DirectConnection));
+    const bool backToSecond = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (analysis->executionAddress() != std::optional<quint32>(2))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0 + 1u
+                   && d1 == entryD1;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!backToSecond) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << history->toPlainText();
+    }
+    QVERIFY(backToSecond);
+    QCOMPARE(listing->verticalHeaderItem(second)->text(), QStringLiteral("pc"));
+
+    // The history ring still lists the add that restore un-did. The next
+    // reverse walks the earlier snapshot, back to the entry instruction.
+    if (!QTest::qWaitFor([&] { return reverse->isEnabled(); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(reverse->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(&window, "reverseStep", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (analysis->executionAddress() != std::optional<quint32>(0))
+                    return false;
+                quint32 d0 = 0;
+                quint32 d1 = 0;
+                return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0
+                       && d1 == entryD1;
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(listing->verticalHeaderItem(entry)->text(), QStringLiteral("pc"));
+
+    // Continue across both adds. The previous stop is the entry instruction,
+    // and the one that executed last is the second add, so reverse replays
+    // from the entry snapshot and stops before that add runs.
+    quint32 againPc = 0;
+    QVERIFY(reg(strip->text(), "PC", &againPc));
+    QCOMPARE(againPc, entryPc);
+    QString armed;
+    const QMetaObject::Connection conn = connect(
+        &window, &MainWindow::debugCommandFinished, &window,
+        [&](const QString &command, const QString &) { armed = command; });
+    const QString breakpoint =
+        QStringLiteral("b pc = $%1 :once").arg(entryPc + 4, 0, 16);
+    window.debugCommand(breakpoint);
+    if (!QTest::qWaitFor([&] { return armed == breakpoint; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(armed, breakpoint);
+    disconnect(conn);
+
+    // The entry stop already has the later snapshots. Continuing keeps them
+    // and records this run beside them.
+    QTimer::singleShot(0, &window, [] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            for (QAbstractButton *button : box->buttons()) {
+                if (button->text() == QStringLiteral("Continue"))
+                    button->click();
+            }
+        }
+    });
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (analysis->executionAddress() != std::optional<quint32>(4))
+                    return false;
+                quint32 d0 = 0;
+                quint32 d1 = 0;
+                return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1)
+                       && d0 == entryD0 + 1u && d1 == entryD1 + 1u;
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(listing->verticalHeaderItem(branch)->text(), QStringLiteral("pc"));
+
+    const QString secondHex = QStringLiteral("%1").arg(entryPc + 2, 8, 16, QLatin1Char('0'));
+    if (!QTest::qWaitFor(
+            [&] {
+                return reverse->isEnabled()
+                       && history->toPlainText().contains(secondHex, Qt::CaseInsensitive);
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << history->toPlainText();
+    }
+    QVERIFY(QMetaObject::invokeMethod(&window, "reverseStep", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (analysis->executionAddress() != std::optional<quint32>(2))
+                    return false;
+                quint32 d0 = 0;
+                quint32 d1 = 0;
+                return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0 + 1u
+                       && d1 == entryD1;
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << history->toPlainText();
+    }
+    quint32 replayD0 = 0;
+    quint32 replayD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &replayD0));
+    QVERIFY(reg(strip->text(), "D1", &replayD1));
+    QCOMPARE(replayD0, entryD0 + 1u);
+    QCOMPARE(replayD1, entryD1);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(2));
+    QCOMPARE(listing->verticalHeaderItem(second)->text(), QStringLiteral("pc"));
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("[reverse] replaying")));
+}
+
+void TstGui::reverseStepReplaysAMediaKey()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/key.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // Super(0), mask interrupts, then poll the ACIA. User mode cannot read
+    // it, and with interrupts enabled TOS consumes the byte before the poll
+    // sees it. The breakpoint is the addq after moveq. Reverse Step lands on
+    // the moveq, which has not run, so D1 still holds the scancode.
+    const QByteArray bytes = guiTos(QByteArray::fromHex(
+        "42A73F3C00204E415C8F46FC27000839000000FFFC0067F6123900FFFC0274075282"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    if (!QTest::qWaitFor(
+            [&] {
+                return window.debugConsoleText().contains(QLatin1String("replaylog: on"))
+                       || window.debugConsoleText().contains(QLatin1String("Command 'replaylog' not found"))
+                       || window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found"));
+            },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (window.debugConsoleText().contains(QLatin1String("Command 'replaylog' not found"))
+        || window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no replaylog command");
+    if (!QTest::qWaitFor(
+            [&] { return window.debugConsoleText().contains(QLatin1String("media: client connected")); },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("media: client connected")));
+
+    quint32 entryD2 = 0;
+    quint32 entryPc = 0;
+    QVERIFY(reg(strip->text(), "D2", &entryD2));
+    QVERIFY(reg(strip->text(), "PC", &entryPc));
+    auto *host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+
+    // Stop once interrupts are masked, then inject the key. Sending it at
+    // the entry stop lets TOS's own handler read the ACIA first.
+    QString armed;
+    const QMetaObject::Connection conn = connect(
+        &window, &MainWindow::debugCommandFinished, &window,
+        [&](const QString &command, const QString &) { armed = command; });
+    const QString masked =
+        QStringLiteral("b pc = $%1 :once").arg(entryPc + 14, 0, 16);
+    window.debugCommand(masked);
+    if (!QTest::qWaitFor([&] { return armed == masked; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(armed, masked);
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(14); }, 30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << strip->text();
+    }
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(14));
+    host = window.findChild<IDebugBackend *>();
+    QVERIFY(host);
+    host->mediaKey(0x39, true);
+
+    armed.clear();
+    const QString breakpoint =
+        QStringLiteral("b pc = $%1 :once").arg(entryPc + 32, 0, 16);
+    window.debugCommand(breakpoint);
+    if (!QTest::qWaitFor([&] { return armed == breakpoint; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(armed, breakpoint);
+    disconnect(conn);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "resume", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (analysis->executionAddress() != std::optional<quint32>(32))
+                    return false;
+                quint32 d1 = 0;
+                quint32 d2 = 0;
+                return reg(strip->text(), "D1", &d1) && reg(strip->text(), "D2", &d2)
+                       && (d1 & 0xffu) == 0x39u && d2 == 7u;
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << strip->text();
+    }
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(32));
+
+    auto *reverse = window.findChild<QAction *>(QStringLiteral("reverseStepAction"));
+    QVERIFY(reverse);
+    const QString copyHex = QStringLiteral("%1").arg(entryPc + 30, 8, 16, QLatin1Char('0'));
+    auto *historyDock = window.findChild<QDockWidget *>(QStringLiteral("pcHistoryDock"));
+    QVERIFY(historyDock);
+    auto *history = historyDock->findChild<QPlainTextEdit *>();
+    QVERIFY(history);
+    if (!QTest::qWaitFor(
+            [&] {
+                return reverse->isEnabled()
+                       && history->toPlainText().contains(copyHex, Qt::CaseInsensitive);
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << history->toPlainText();
+    }
+    QVERIFY(QMetaObject::invokeMethod(&window, "reverseStep", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                if (window.debugConsoleText().contains(QLatin1String("Command 'replaykeys' not found")))
+                    return true;
+                if (analysis->executionAddress() != std::optional<quint32>(30))
+                    return false;
+                quint32 d1 = 0;
+                quint32 d2 = 0;
+                return reg(strip->text(), "D1", &d1) && reg(strip->text(), "D2", &d2)
+                       && (d1 & 0xffu) == 0x39u && d2 == entryD2;
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        qDebug().noquote() << history->toPlainText();
+        qDebug().noquote() << strip->text();
+    }
+    if (window.debugConsoleText().contains(QLatin1String("Command 'replaykeys' not found")))
+        QSKIP("this Hatari has no replaykeys command");
+    quint32 landedD1 = 0;
+    quint32 landedD2 = 0;
+    QVERIFY(reg(strip->text(), "D1", &landedD1));
+    QVERIFY(reg(strip->text(), "D2", &landedD2));
+    QCOMPARE(landedD1 & 0xffu, 0x39u);
+    QCOMPARE(landedD2, entryD2);
+    QVERIFY(window.debugConsoleText().contains(QLatin1String("replaykeys:")));
+}
+
+void TstGui::reverseContinueReturnsToTheBreakpoint()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/backcont.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *action = window.findChild<QAction *>(QStringLiteral("reverseContinueAction"));
+    QVERIFY(action);
+    auto *run = window.findChild<QMenu *>(QStringLiteral("runMenu"));
+    QVERIFY(run && run->actions().contains(action));
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryD0 = 0;
+    quint32 entryD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &entryD0));
+    QVERIFY(reg(strip->text(), "D1", &entryD1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return action->isEnabled(); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(action->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "reverseContinue", Qt::DirectConnection));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (analysis->executionAddress() != std::optional<quint32>(0))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0
+                   && d1 == entryD1;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(back);
+}
+
+void TstGui::runBackToCursorRestoresThatLine()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString source = m_work->path() + QStringLiteral("/back.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly | QIODevice::Text));
+    src.write("\ttext\n"               // 1
+              "start:\tmoveq\t#1,d0\n" // 2
+              "\tmoveq\t#2,d1\n"       // 3
+              "\tmoveq\t#3,d2\n"       // 4
+              "loop:\tbra.s\tloop\n"   // 5
+              "\tend\n");
+    src.close();
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("mono");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *editor = window.findChild<CodeEditor *>();
+    QVERIFY(editor);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *action = window.findChild<QAction *>(QStringLiteral("runBackToCursorAction"));
+    QVERIFY(action);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 2; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryD1 = 0;
+    QVERIFY(reg(strip->text(), "D1", &entryD1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 3; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 midD0 = 0;
+    QVERIFY(reg(strip->text(), "D0", &midD0));
+    QCOMPARE(midD0, 1u);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return editor->currentExecutionLine() == 4; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return action->isEnabled(); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+
+    QTextCursor cursor = editor->textCursor();
+    cursor.setPosition(editor->document()->findBlockByNumber(2).position());
+    editor->setTextCursor(cursor);
+    QVERIFY(QMetaObject::invokeMethod(&window, "runBackToCursor", Qt::DirectConnection));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (editor->currentExecutionLine() != 3)
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == 1u
+                   && d1 == entryD1;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(back);
+}
+
+void TstGui::recordedStopsRestoreAnEarlierStop()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/recorded.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // addq.l #1,d0 / addq.l #1,d1 / bra.s back. Two steps land on the branch.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *menu = window.findChild<QMenu *>(QStringLiteral("recordedStopsMenu"));
+    QVERIFY(menu);
+    auto *restore = window.findChild<QAction *>(QStringLiteral("restoreRecordedStopAction"));
+    QVERIFY(restore);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryD0 = 0;
+    quint32 entryD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &entryD0));
+    QVERIFY(reg(strip->text(), "D1", &entryD1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor(
+            [&] { return window.findChild<QAction *>(QStringLiteral("recordedStopAction2")) != nullptr; },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(window.findChild<QAction *>(QStringLiteral("recordedStopAction2")));
+    QCOMPARE(menu->actions().size(), 4);
+
+    const QString beforePreview = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    quint32 previewD0 = 0;
+    QVERIFY(reg(strip->text(), "D0", &previewD0));
+    QCOMPARE(previewD0, entryD0);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(window.debugConsoleText(), beforePreview);
+    QVERIFY(restore->isEnabled());
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreRecordedStop", Qt::DirectConnection));
+    const bool atEntry = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (!window.debugConsoleText().contains(QLatin1String("[reverse] restoring")))
+                return false;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(0))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0
+                   && d1 == entryD1;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!atEntry)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(atEntry);
+    QVERIFY(window.findChild<QAction *>(QStringLiteral("recordedStopAction2")));
+
+    const QString beforeBranch = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 2)));
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    quint32 branchD0 = 0;
+    quint32 branchD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &branchD0));
+    QVERIFY(reg(strip->text(), "D1", &branchD1));
+    QCOMPARE(branchD0, entryD0 + 1);
+    QCOMPARE(branchD1, entryD1 + 1);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(4));
+    QCOMPARE(window.debugConsoleText(), beforeBranch);
+
+    const int consoleLength = window.debugConsoleText().size();
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreRecordedStop", Qt::DirectConnection));
+    const bool atBranch = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().size() <= consoleLength)
+                return false;
+            if (!window.debugConsoleText().contains(QLatin1String("[reverse] restoring")))
+                return false;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(4))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1)
+                   && d0 == entryD0 + 1 && d1 == entryD1 + 1;
+        },
+        30000);
+    if (!atBranch)
+        qDebug().noquote() << window.debugConsoleText() << strip->text();
+    QVERIFY(atBranch);
+}
+
+void TstGui::branchKeepsTheLaterStops()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/branch.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *menu = window.findChild<QMenu *>(QStringLiteral("recordedStopsMenu"));
+    QVERIFY(menu);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+    const auto clickBranch = [](const char *label) {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            if (QString::fromLatin1(label) == QLatin1String("Cancel")) {
+                if (auto *cancel = box->button(QMessageBox::Cancel))
+                    cancel->click();
+                return;
+            }
+            for (QAbstractButton *button : box->buttons()) {
+                if (button->text() == QString::fromLatin1(label))
+                    button->click();
+            }
+        }
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryD0 = 0;
+    quint32 entryD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &entryD0));
+    QVERIFY(reg(strip->text(), "D1", &entryD1));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor(
+            [&] { return window.findChild<QAction *>(QStringLiteral("recordedStopAction2")) != nullptr; },
+            30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(menu->actions().size(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreRecordedStop", Qt::DirectConnection));
+    const bool atEntry = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(0))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1) && d0 == entryD0
+                   && d1 == entryD1;
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!atEntry)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(atEntry);
+
+    const int listed = menu->actions().size();
+    const QString beforeCancel = window.debugConsoleText();
+    QTimer::singleShot(0, &window, [clickBranch] { clickBranch("Cancel"); });
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(menu->actions().size(), listed);
+    QCOMPARE(window.debugConsoleText(), beforeCancel);
+
+    QTimer::singleShot(0, &window, [clickBranch] { clickBranch("Continue"); });
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] {
+                auto *old = window.findChild<QAction *>(QStringLiteral("recordedStopAction2"));
+                return analysis->executionAddress() == std::optional<quint32>(2) && old
+                       && old->text().startsWith(QStringLiteral("Branch"));
+            },
+            30000)) {
+        qDebug().noquote() << window.debugConsoleText();
+        if (auto *old = window.findChild<QAction *>(QStringLiteral("recordedStopAction2")))
+            qDebug().noquote() << old->text();
+    }
+    auto *oldStop = window.findChild<QAction *>(QStringLiteral("recordedStopAction2"));
+    QVERIFY(oldStop);
+    QVERIFY(oldStop->text().startsWith(QStringLiteral("Branch")));
+    QVERIFY(window.findChild<QAction *>(QStringLiteral("recordedStopAction3")));
+
+    const QString beforePreview = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 2)));
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    quint32 branchD0 = 0;
+    quint32 branchD1 = 0;
+    QVERIFY(reg(strip->text(), "D0", &branchD0));
+    QVERIFY(reg(strip->text(), "D1", &branchD1));
+    QCOMPARE(branchD0, entryD0 + 1);
+    QCOMPARE(branchD1, entryD1 + 1);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(4));
+    QCOMPARE(window.debugConsoleText(), beforePreview);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "restoreRecordedStop", Qt::DirectConnection));
+    const bool atOld = QTest::qWaitFor(
+        [&] {
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            if (analysis->executionAddress() != std::optional<quint32>(4))
+                return false;
+            auto *other = window.findChild<QAction *>(QStringLiteral("recordedStopAction3"));
+            if (!other || !other->text().startsWith(QStringLiteral("Branch")))
+                return false;
+            quint32 d0 = 0;
+            quint32 d1 = 0;
+            return reg(strip->text(), "D0", &d0) && reg(strip->text(), "D1", &d1)
+                   && d0 == entryD0 + 1 && d1 == entryD1 + 1;
+        },
+        30000);
+    if (!atOld)
+        qDebug().noquote() << window.debugConsoleText() << strip->text();
+    QVERIFY(atOld);
+}
+
+void TstGui::traceWritesListsTheStore()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/store.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.b #$A5, $30000.l / bra.s to itself. One step stores one byte.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("13fc00a50003000060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *traceButton = window.findChild<QToolButton *>(QStringLiteral("memoryTraceButton"));
+    QVERIFY(traceButton);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("writeTraceListing"));
+    QVERIFY(listing);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "traceWrites", Qt::DirectConnection,
+                                      Q_ARG(quint32, 0x30000u), Q_ARG(int, 1)));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[trace] watching"))
+                   || text.contains(QLatin1String("no writetrace command"))
+                   || text.contains(QLatin1String("Command 'writetrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[trace] watching")))
+        QSKIP("this Hatari has no writetrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString writer = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(8))
+                return false;
+            for (int row = 0; row < listing->rowCount(); ++row) {
+                const QTableWidgetItem *who = listing->item(row, 1);
+                const QTableWidgetItem *address = listing->item(row, 2);
+                const QTableWidgetItem *neu = listing->item(row, 4);
+                const QTableWidgetItem *pc = listing->item(row, 5);
+                if (!who || !address || !neu || !pc)
+                    return false;
+                if (who->text() == QLatin1String("CPU") && address->text() == QLatin1String("00030000")
+                    && neu->text() == QLatin1String("A5") && pc->text() == writer)
+                    return listing->rowCount() == 1;
+            }
+            return false;
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(8));
+    QVERIFY(!window.debugConsoleText().contains(QLatin1String("[stop] restoring")));
+}
+
+void TstGui::previousWriteReturnsToTheStore()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/prevwrite.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.b #$A5, $30000.l / bra.s to itself. One step stores one byte.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("13fc00a50003000060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("writeTraceListing"));
+    QVERIFY(listing);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "traceWrites", Qt::DirectConnection,
+                                      Q_ARG(quint32, 0x30000u), Q_ARG(int, 1)));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[trace] watching"))
+                   || text.contains(QLatin1String("no writetrace command"))
+                   || text.contains(QLatin1String("Command 'writetrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[trace] watching")))
+        QSKIP("this Hatari has no writetrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString writer = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(8))
+                return false;
+            if (listing->rowCount() != 1)
+                return false;
+            const QTableWidgetItem *who = listing->item(0, 1);
+            const QTableWidgetItem *pc = listing->item(0, 5);
+            return who && pc && who->text() == QLatin1String("CPU") && pc->text() == writer;
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    auto *view = window.findChild<WriteTraceView *>();
+    QVERIFY(view);
+    quint32 writePc = 0;
+    QVERIFY(view->cpuPcAt(0, &writePc));
+    QCOMPARE(writePc, entryPc);
+    QVERIFY(!view->cpuPcAt(1, &writePc));
+
+    const int consoleLength = window.debugConsoleText().size();
+    QVERIFY(QMetaObject::invokeMethod(&window, "previousWrite", Qt::DirectConnection,
+                                      Q_ARG(quint32, entryPc)));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (window.debugConsoleText().size() <= consoleLength)
+                return false;
+            if (!window.debugConsoleText().contains(QLatin1String("[reverse] restoring")))
+                return false;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            return analysis->executionAddress() == std::optional<quint32>(0);
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText() << strip->text();
+    QVERIFY(back);
+    auto *left = window.findChild<QAction *>(QStringLiteral("recordedStopAction1"));
+    QVERIFY(left);
+    QVERIFY(left->text().startsWith(QStringLiteral("Branch")));
+}
+
+void TstGui::readTraceListsTheLoad()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/load.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.b $30000.l,d0 / bra.s to itself. One step reads one byte.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("10390003000060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("readTraceListing"));
+    QVERIFY(listing);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "traceReads", Qt::DirectConnection,
+                                      Q_ARG(quint32, 0x30000u), Q_ARG(int, 1)));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[trace] reading"))
+                   || text.contains(QLatin1String("no readtrace command"))
+                   || text.contains(QLatin1String("Command 'readtrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[trace] reading")))
+        QSKIP("this Hatari has no readtrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString reader = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(6))
+                return false;
+            if (listing->rowCount() != 1)
+                return false;
+            const QTableWidgetItem *address = listing->item(0, 1);
+            const QTableWidgetItem *pc = listing->item(0, 3);
+            return address && pc && address->text() == QLatin1String("00030000") && pc->text() == reader;
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    auto *view = window.findChild<ReadTraceView *>();
+    QVERIFY(view);
+    quint32 readPc = 0;
+    QVERIFY(view->cpuPcAt(0, &readPc));
+    QCOMPARE(readPc, entryPc);
+}
+
+void TstGui::recordedStopShowsThatMachine()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/origin.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // addq.l #1,d0 / addq.l #1,d1 / bra.s back. Two steps land on the branch.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("5280528160FA"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    auto *disasm = window.findChild<DisassemblyView *>();
+    QVERIFY(disasm);
+    auto *historyDock = window.findChild<QDockWidget *>(QStringLiteral("pcHistoryDock"));
+    QVERIFY(historyDock);
+    auto *history = historyDock->findChild<QPlainTextEdit *>();
+    QVERIFY(history);
+    auto *stops = window.findChild<QListWidget *>(QStringLiteral("timelineStops"));
+    QVERIFY(stops);
+
+    const auto reg = [](const QString &text, const char *name, quint32 *value) {
+        const QString key = QString::fromLatin1(name) + QLatin1Char(' ');
+        const int at = text.indexOf(key);
+        if (at < 0)
+            return false;
+        bool ok = false;
+        const quint32 parsed = text.mid(at + key.size(), 8).toUInt(&ok, 16);
+        if (!ok)
+            return false;
+        *value = parsed;
+        return true;
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    quint32 entryPc = 0;
+    QVERIFY(reg(strip->text(), "PC", &entryPc));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(2); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    if (!QTest::qWaitFor(
+            [&] { return analysis->executionAddress() == std::optional<quint32>(4); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    if (!QTest::qWaitFor([&] { return stops->count() >= 3; }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(stops->count(), 3);
+    const quint32 branchPc = disasm->programCounter();
+    QVERIFY(branchPc != entryPc);
+
+    const QString beforePreview = window.debugConsoleText();
+    QVERIFY(QMetaObject::invokeMethod(&window, "showRecordedStop", Qt::DirectConnection,
+                                      Q_ARG(int, 0)));
+    QVERIFY(strip->text().startsWith(QStringLiteral("History")));
+    QCOMPARE(disasm->programCounter(), entryPc);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+    QCOMPARE(window.debugConsoleText(), beforePreview);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "showLiveStop", Qt::DirectConnection));
+    QVERIFY(!strip->text().startsWith(QStringLiteral("History")));
+    QCOMPARE(disasm->programCounter(), branchPc);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(4));
+
+    const QString entryHex = QStringLiteral("%1").arg(entryPc, 8, 16, QLatin1Char('0'));
+    if (!QTest::qWaitFor(
+            [&] {
+                const QString text = history->toPlainText();
+                return text.contains(entryHex, Qt::CaseInsensitive)
+                       && text.contains(QLatin1String(",d0"), Qt::CaseInsensitive);
+            },
+            30000))
+        qDebug().noquote() << history->toPlainText();
+    QVERIFY(history->toPlainText().contains(entryHex, Qt::CaseInsensitive));
+
+    const int consoleLength = window.debugConsoleText().size();
+    QVERIFY(QMetaObject::invokeMethod(&window, "explainRegister", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("d0"))));
+    const bool back = QTest::qWaitFor(
+        [&] {
+            if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+                return true;
+            if (window.debugConsoleText().size() <= consoleLength)
+                return false;
+            if (!window.debugConsoleText().contains(QLatin1String("came from")))
+                return false;
+            if (strip->text().startsWith(QStringLiteral("History")))
+                return false;
+            return analysis->executionAddress() == std::optional<quint32>(0);
+        },
+        30000);
+    if (window.debugConsoleText().contains(QLatin1String("Command 'reststop' not found")))
+        QSKIP("this Hatari has no reststop command");
+    if (!back)
+        qDebug().noquote() << window.debugConsoleText() << history->toPlainText();
+    QVERIFY(back);
+}
+
+void TstGui::tracePaletteListsTheScanline()
+{
+    REQUIRE_EMULATOR_OR_SKIP();
+
+    const QString program = m_work->path() + QStringLiteral("/palette.prg");
+    QFile prg(program);
+    QVERIFY(prg.open(QIODevice::WriteOnly));
+    // move.w #$0700, $ffff8240.w / bra.s to itself. One step stores one color.
+    const QByteArray bytes = guiTos(QByteArray::fromHex("31fc0700824060fe"));
+    QCOMPARE(prg.write(bytes), qint64(bytes.size()));
+    prg.close();
+
+    // The default session is a mono monitor, and a mono ST bus-errors a write
+    // to the colour palette. The colour shifter is what paltrace records.
+    const QString source = m_work->path() + QStringLiteral("/palette.s");
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly));
+    src.write("\ttext\n\tnop\n");
+    src.close();
+    ProjectSettings settings;
+    settings.sourceFile = source;
+    settings.machine = Machine::St;
+    settings.monitor = QStringLiteral("rgb");
+    settings.memSizeMiB = 1;
+    QString error;
+    QVERIFY2(settings::save(settings, settings::projectFileFor(source), &error), qPrintable(error));
+
+    MainWindow window;
+    EmulatorStopper stopper(window);
+    window.openPath(source);
+    auto *browser = window.findChild<FileBrowser *>();
+    QVERIFY(browser);
+    browser->openAnalysisFile(program);
+    auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    auto *analysis = qobject_cast<AnalysisView *>(tabs->currentWidget());
+    QVERIFY(analysis);
+    auto *traceButton = window.findChild<QToolButton *>(QStringLiteral("paletteTraceButton"));
+    QVERIFY(traceButton);
+    auto *listing = window.findChild<QTableWidget *>(QStringLiteral("paletteListing"));
+    QVERIFY(listing);
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "run", Qt::DirectConnection));
+    if (!QTest::qWaitFor([&] { return analysis->executionAddress() == std::optional<quint32>(0); },
+                         30000))
+        qDebug().noquote() << window.debugConsoleText();
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(0));
+
+    auto *strip = window.findChild<QLabel *>(QStringLiteral("registerStrip"));
+    QVERIFY(strip);
+    if (!QTest::qWaitFor([&] { return strip->text().contains(QLatin1String("PC ")); }, 30000))
+        qDebug().noquote() << window.debugConsoleText();
+    const int pcAt = strip->text().indexOf(QLatin1String("PC "));
+    QVERIFY(pcAt >= 0);
+    bool pcOk = false;
+    const quint32 entryPc = strip->text().mid(pcAt + 3, 8).toUInt(&pcOk, 16);
+    QVERIFY(pcOk);
+
+    // $FF8240 is a supervisor register. A user-mode write bus-errors and
+    // paltrace never sees it. The colour was chosen above so the shifter exists.
+    QVERIFY(window.setRegister(QStringLiteral("sr"), 0x2300u));
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "tracePalette", Qt::DirectConnection));
+    const bool armed = QTest::qWaitFor(
+        [&] {
+            const QString text = window.debugConsoleText();
+            return text.contains(QLatin1String("[palette] recording"))
+                   || text.contains(QLatin1String("no paltrace command"))
+                   || text.contains(QLatin1String("Command 'paltrace' not found"));
+        },
+        30000);
+    QVERIFY(armed);
+    if (!window.debugConsoleText().contains(QLatin1String("[palette] recording")))
+        QSKIP("this Hatari has no paltrace command");
+
+    QVERIFY(QMetaObject::invokeMethod(&window, "step", Qt::DirectConnection));
+    const QString writer = QString::number(entryPc, 16).rightJustified(8, QLatin1Char('0')).toUpper();
+    const bool listed = QTest::qWaitFor(
+        [&] {
+            if (analysis->executionAddress() != std::optional<quint32>(6))
+                return false;
+            if (listing->rowCount() != 1)
+                return false;
+            const QTableWidgetItem *pc = listing->item(0, 1);
+            const QTableWidgetItem *reg = listing->item(0, 2);
+            const QTableWidgetItem *color = listing->item(0, 3);
+            const QTableWidgetItem *line = listing->item(0, 5);
+            const QTableWidgetItem *pos = listing->item(0, 6);
+            if (!pc || !reg || !color || !line || !pos)
+                return false;
+            return pc->text() == writer && reg->text() == QLatin1String("FF8240")
+                   && color->text() == QLatin1String("0700") && !line->text().isEmpty()
+                   && !pos->text().isEmpty();
+        },
+        30000);
+    if (!listed)
+        qDebug().noquote() << window.debugConsoleText();
+    QVERIFY(listed);
+    QCOMPARE(analysis->executionAddress(), std::optional<quint32>(6));
+    QVERIFY(!window.debugConsoleText().contains(QLatin1String("[stop] restoring")));
 }
 
 void TstGui::analysisNotesAnExecutedAddress()
@@ -11272,6 +12780,21 @@ void TstGui::pcHistoryDoubleClickReportsTheAddress()
     QVERIFY(QApplication::sendEvent(edit->viewport(), &dbl));
     QCOMPARE(historySpy.count(), 1);
     QCOMPARE(historySpy.at(0).at(0).toUInt(), 0x12396u);
+
+    quint32 last = 0;
+    QVERIFY(history.lastExecutedAddress(&last));
+    QCOMPARE(last, 0x12396u);
+    // The stop on screen has not executed. The debugger mark and the repeat
+    // note follow the instruction that did, so the address above them is the
+    // one a reverse step has to land on.
+    history.setHistory(QStringLiteral("00000000 5280 addq.l #1,d0\n"
+                                      "00000002 5281 addq.l #1,d1\n"
+                                      "Debugger: *Breakpoint*\n"
+                                      "Last item repeated 2 times.\n"));
+    QVERIFY(history.lastExecutedAddress(&last));
+    QCOMPARE(last, 2u);
+    history.clear();
+    QVERIFY(!history.lastExecutedAddress(&last));
 }
 
 void TstGui::floppyRewriteOfAForeignDiskAsks()

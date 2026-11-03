@@ -70,6 +70,10 @@
 #include "ui/WelcomeView.h"
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
+#include "ui/PalTraceView.h"
+#include "ui/WriteTraceView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/TimelineView.h"
 #include "ui/PcHistoryView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
@@ -215,6 +219,52 @@ MainWindow::MainWindow(QWidget *parent)
         m_launchedName.clear();
         setEmulatorCaption();
         m_coverageRecording = false;
+        m_writeTraceWanted = false;
+        m_writeTraceRecording = false;
+        m_writeTraceRearm = false;
+        setWriteTraceArmed(false);
+        if (m_writeTrace)
+            m_writeTrace->clear();
+        m_readTraceWanted = false;
+        m_readTraceRecording = false;
+        m_readTraceRearm = false;
+        setReadTraceArmed(false);
+        if (m_readTrace)
+            m_readTrace->clear();
+        m_livePicture = StopPicture();
+        if (m_timeline)
+            m_timeline->clear();
+        m_palTraceWanted = false;
+        m_palTraceRecording = false;
+        m_palTraceRearm = false;
+        if (m_palTrace) {
+            m_palTrace->setTraceArmed(false);
+            m_palTrace->clear();
+        }
+        m_savedStops.clear();
+        m_historyIndex = -1;
+        m_restorePending = false;
+        m_savedStopSerial = 0;
+        m_reverseAnchors.clear();
+        m_reverseSerial = 0;
+        m_reverseIndex = -1;
+        m_reverseViewIndex = -1;
+        m_reverseBranchConfirmed = false;
+        m_reverseSeeking = false;
+        m_reverseSeekSent = false;
+        m_reverseRestore = false;
+        m_reverseHistoryStale = false;
+        m_reverseHistoryReady = false;
+        m_reverseSaveCommand.clear();
+        m_reverseAfterAnchor = ReverseAfterAnchor::None;
+        m_inputLogPath.clear();
+        m_inputLogStarted = false;
+        m_inputLogRestart = false;
+        if (m_actRestoreStop)
+            m_actRestoreStop->setEnabled(false);
+        updateReverseStepAction();
+        rebuildSavedStopsMenu();
+        rebuildRecordedStopsMenu();
         m_pendingDebugCommand.clear();
         for (CodeEditor *editor : openEditors())
             editor->clearCurrentExecutionLine();

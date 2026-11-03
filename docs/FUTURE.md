@@ -193,8 +193,10 @@ states the redistribution basis and a `KNOWN_LIBS` entry waits on a copy in `pac
 pause hint are in. A memory pane can mark the bytes it is showing and compare a later stop
 with that mark, or with the previous stop's window, and Build → Compare With Last Build
 previews how the linked image changed. Neither writes the machine, and neither records who
-stored a byte. Step-back is still not in, and the analysis below records why it is not merely
-unbuilt.
+stored a byte. Reverse Step is in. It restores the previous stop, and when more than one
+instruction ran it continues to the instruction history says executed last. A continue that
+passed that instruction more than once stops the first time. Keys pressed after the
+restored stop are replayed from the session's input log when the fork has `replaylog`.
 
 - **Register and memory editing.** Delivered. Registers and memory are editable while stopped — the
   typed backend intents `writeRegister` (`r <reg>=$<val>` on both backends) and `writeMemoryByte`
@@ -203,16 +205,62 @@ unbuilt.
 - **Multiple memory panes.** Delivered. `MainWindow::addMemoryPane()` adds panes, each routed by an
   integer tag so concurrent dumps reach the right pane rather than sharing one `memoryDumpReady`.
 - **PC history and step-back.** The PC-history view is delivered (Hatari's `history` command,
-  refreshed on each stop). True step-back was attempted and is documented here because it is *not*
-  simply unbuilt: the only mechanism Hatari offers, `statesave`/`stateload`, restores by resetting
+  refreshed on each stop). Stock `stateload` is still not a step back: it restores by resetting
   the machine into a *running* state and completing the restore on the next CPU instruction
   (`m68k_go`, `UAE_Set_State_Restore` + `SPCFLAG_MODE_CHANGE`). Verified against 2.6.1: after a
   `stateload` the machine runs forward and never returns to a debugger prompt, which is
-  fundamentally incompatible with this IDE's prompt-framed debug transport — the whole debugger is
-  built on "stopped at a prompt". So a clean "stop at the previous state" cannot be built on
-  stateload. Real step-back would need either upstream Hatari support for a non-destructive
-  restore, or a record/replay mechanism (relaunch + step forward N times), the latter being slow
-  and state-lossy.
+  incompatible with this IDE's prompt-framed debug transport. The fork's `reststop` does return
+  to the prompt with that instruction unexecuted, and PiST uses it (§14). What is in the product
+  is Save Stop, Restore Stop, and a short read-only list of those stops. Reverse Step is
+  separate from that list. PiST snapshots each stop itself and Run ▸ Reverse Step restores
+  the one before. When history's last program counter is that stop, the restore is the whole
+  step back. When it is further on, PiST restores that stop and runs to the first reach of
+  the program counter history lists, with a one-shot breakpoint. `reststop` does not rewind
+  the history ring, so a second reverse walks the snapshots until a new instruction executes.
+  The proof is a real session on `addq.l #1,d0` / `addq.l #1,d1` / `bra.s` back. Two steps
+  land on the branch; reverse stops on the second add before it runs, so D1 is unchanged;
+  reverse again stops on the first add with both registers restored. Continuing from that
+  entry stop to the branch, then reversing, stops on the second add with only D0 changed.
+  A continue that executed the same instruction more than once stops the first time.
+  Run ▸ Reverse Continue restores the previous stop that was not a single step, skipping
+  the steps in between. The same loop, after two steps, returns to the entry instruction
+  with both registers restored. Run ▸ Run Back to Cursor restores an earlier stop whose
+  program counter is the caret's line, and otherwise replays from the previous stop to
+  the first reach of that line. Two steps of `moveq #1,d0` / `moveq #2,d1` / `moveq #3,d2`,
+  with the caret on the middle one, return there with D0 already 1 and D1 not yet 2.
+  A line reached more than once since the previous stop stops the first time. A line that
+  never executes after that stop does not come back. The session records media keys and
+  mouse in `inputs.log` (`replaylog`), with no trace. The 256-frame trace cap does not
+  apply to it. The log keeps 1024 keys and 1024 mouse events, and a further one is
+  delivered to the guest without being recorded. Reverse Step closes
+  that file and runs `replaykeys` before `reststop`, so a continue from the restored stop
+  applies the keys that happened after it. The proof sends scancode `$39` after `Super`
+  and `move.w #$2700,sr` (user mode bus-errors an ACIA read, and TOS otherwise consumes
+  the byte), breaks on the following `addq`, and Reverse Step lands on the `moveq` with
+  D1 still `$39`. A Hatari without `replaylog` skips that proof and the other reverses
+  still restore the machine. `--replay-snapshot` writes one statesave during
+  the recording, after that frame's keys. `reststop` restores it. `replaykeys` applies the
+  recording's later keys, and a breakpoint on a later instruction returns to the prompt
+  before that instruction executes. The proof stops on the replay fixture's spin, with the
+  add that the key selects still unexecuted, and a different key stops on the other spin
+  the same way. A statesave from the debugger prompt does too: the fixture's first
+  instruction, vertical blank 0, supervisor set from that prompt, then the same
+  replay. Stopping the recording itself once, on that spin before its addq
+  executes, then continuing, still matches the run that never entered the debugger.
+  A statesave from that stop, with the breakpoint left armed, restores through
+  reststop to the same unexecuted addq, and the recording's trace still matches.
+  A key from the media channel is logged on the vertical blank that polls it:
+  sent while stopped at vertical blank 5, it is frame 6 in the file, and that
+  trace matches `--replay-key` at the same frame. A media mouse message is logged
+  on that same blank: stopped at vertical blank 25, dx 4, dy -2 and the left
+  button are frame 26, the guest reads them, and a different dx diverges.
+  Motion in the first vertical blanks is not logged. The per-instruction
+  debugger can also stay on for a recording that never stops: one breakpoint that cannot match
+  leaves it on, the debugger is never entered, and the trace matches the run with the flag clear.
+  A from-reset recording of the TOS image PiST finds still does not fit: at frame 256 the
+  guest is in the floppy timeout. From the entry stop it does. `replayrecord` snapshots
+  that unexecuted first instruction and records the vertical blanks after it, and
+  `replayplay` after `reststop` matches (§14). PiST does not call either command.
 - **Pause hint on the embedded display.** Delivered. The embedded panel shows a "Paused" badge when
   the debugger is stopped, so a frozen frame is not mistaken for a crash. The badge is placed in
   widget coordinates, so on a dock small enough for the fitted video to reach the widget's top-right
@@ -450,34 +498,117 @@ Not in this pass, on purpose:
 
 ## 14. hatari-pist experiments: replay, stopped restore, write trace, palette clock
 
-**Status:** not started. No product UI until the gate for that feature passes. These belong
-in `hatari-pist` (upstream 2.6.1 plus the HRDB listener and the media channel), behind a
-capability probe. Stock Hatari keeps today's debugger. The host-side memory compare, the
-last-build preview, and declared sprite export do not wait on any of them.
+**Status:** passed, on `hatari-pist`, pinned in PiST at `b3f3dc2`
+(`b3f3dc286f8ae1a42bb57d76f72e63cdf8a0aa2d`). The pin includes the live input log
+(`replaylog`), `replaykeys` of a log with no trace line, the entry-stop commands
+`replayrecord` and `replayplay`, and `readtrace` for CPU data reads. PiST calls
+`replaylog` and `replaykeys` on Reverse
+Step. Stock Hatari has none of these commands; a missing command skips the key proof
+and the reverses still restore the machine.
+Each gate was a pass/fail trace and no dock.
+Stock Hatari still has none of these commands. PiST probes by command name and treats
+`Command '<name>' not found.` as a skip, not a failure. The host-side memory compare, the
+last-build preview, and declared sprite export never waited on them.
 
-The gates, in order, each with a pass/fail trace and no dock:
+What each gate proved, and where the proof stops:
 
-1. **Replay one fixture twice.** Record one fixture's inputs and a short trace (frame, PC,
-   registers). Replay it. A second run with a different key must diverge. If this fails,
-   time travel, headless deterministic tests, and a compatibility matrix stop. A Lua file
-   that boots Hatari and hashes RAM is not this gate: TOS, the FDC, and the debugger's own
-   stops are not proven deterministic, and stop hooks must not be named record/replay.
-2. **Restore and stay stopped.** Restore one snapshot and remain at a debugger prompt, with
-   no extra guest instruction. `stateload` does not do this (see §6): it resumes the machine
-   and never returns to a prompt. If this fails, Reverse Step and patch rollback stop.
-   Forward-only memory diff, patch preview, and sprite export do not.
-3. **Targeted write events.** Instrument writes to one small range. Log PC, address, old,
-   and new. State the cost, and what happens when the ring fills. CPU writes and DMA or
-   blitter writes need different origin tags. A missing tag is an unknown writer, not the
-   current PC. Until that trace is trustworthy there is no memory-history view: guessing
-   the writer from the CPU's PC would mis-attribute a DMA or blitter store.
-4. **Palette writes against a scanline clock**, on one test pattern. Cycles are not
-   scanlines once the machine changes clocks, and the events have to be recorded at the
-   hardware write. If they do not land on the expected lines, do not draw a scanline
-   inspector. The profiler overlay is not that stream. The media channel's frames are RGB,
-   and `info video` does not carry the palette.
+1. **Replay one fixture twice.** Passed. `--replay-record` / `--replay` record one program's
+   inputs and a per-vertical-blank trace (format `HPISTREPLAY 1`) and play it back. The
+   matching run agreed for all 40 frames. Changing one key made the traces diverge at frame
+   16. The same fixture also matches with the per-instruction debugger left on: one breakpoint
+   at `pc = $1` never fires, the file says `debugger yes`, and all 40 frames are identical to
+   the run with the flag clear. A change in that flag during the run is still refused. A stop
+   in the middle of the recording is proven for this fixture: the breakpoint fires once on the
+   space spin, the addq has not executed, continue finishes the 40 frames, and that trace matches
+   the run that never entered the debugger. A changed key still diverges at frame 16.
+   A statesave from that stop, breakpoint left armed, restores through `reststop` to the
+   same unexecuted addq, and the recording's trace still matches. A key from the
+   media channel, sent while that recording is stopped at vertical blank 5, is logged
+   as frame 6 and matches a `--replay-key` of the same scancode at that frame. A different
+   scancode diverges after it. A media mouse message sent while stopped at vertical
+   blank 25 is logged as frame 26 (`mouse 26 4 -2 1`). The guest reads that dx, dy and
+   the left button, the replay matches, and a different dx diverges. Motion in the first
+   vertical blanks is not logged. From a snapshot taken at vertical blank 10,
+   `reststop` then `replaykeys` applies the later keys and a breakpoint stops on the spin the
+   key selects, with that add still unexecuted. A different key stops on the other spin the
+   same way. A `statesave` from the debugger prompt, on the fixture's first instruction
+   at vertical blank 0, restores through `reststop` and reaches that same unexecuted add.
+   The recording is otherwise narrow: `--tos none`, no floppy. A from-reset recording
+   of a TOS image is still refused. The image PiST selects for an ST is TOS 1.04, and
+   with no floppy, GEMDOS host time off, and fast boot left off, that boot is still in
+   the floppy timeout at vertical blank 1500 (`btst.b #5,$FFFFFA01` at `$FC156A`). The
+   cap stays 256, so those blanks are not the recording. The entry stop is. The same
+   launch breakpoint PiST uses, `pc = TEXT && pc < $e00000`, with one breakpoint that
+   cannot match left armed, stops on the program's first instruction before it has
+   executed: `moveq #1,d1` at `$12596`, user mode, vertical blank 1544. `replayrecord`
+   writes the snapshot there and records the next 40 vertical blanks. They are the
+   spin, D1 stays 1, D2 stays 2, D3 increases, and the PC stays in RAM. `reststop`
+   returns to that same unexecuted `moveq`. `replayplay` matches all 40. The file names
+   the ROM by SHA-256, and a different hash is refused. PiST does not call these
+   commands.
+   A Lua file that boots Hatari and hashes RAM is not this result, and stop hooks are not
+   record/replay.
+2. **Restore and stay stopped.** Passed. `reststop` restores one `statesave` file and returns
+   to the debugger prompt with that instruction unexecuted. `stateload` is unchanged (§6): it
+   resumes the machine and never returns to a prompt. Restoring that stop and executing the
+   same steps again matched, including one vertical blank. PiST drives this from a real HRDB
+   session: Run ▸ Save Stop writes the stopped machine, Run ▸ Restore Stop runs `reststop`,
+   and Run ▸ Saved Stops shows an earlier stop's registers and analysis mark without calling
+   the debugger. That session stopped on the entry breakpoint and on steps. A restore from a
+   stop that arrived via pause was not part of the proof.
+3. **Targeted write events.** Passed. `writetrace` records writes in one range as they happen
+   (format `HPISTWRITE 1`). A CPU store carries its PC. A blitter store does not. A debugger
+   poke is `unknown`, not whichever instruction the CPU is stopped on. The ring keeps the
+   oldest events and counts the rest as `dropped`. It does not stop the CPU. The host-time
+   comparison around 64 writes was clock noise, not a measured overhead. PiST's memory pane
+   Trace button arms the window it is showing, and the Writes list reads the file at each
+   later stop. A CPU row opens that instruction's source line when the program map knows
+   it. Right-clicking that row and choosing Previous Write restores the recorded stop
+   already taken at the writer's PC, or replays from the previous snapshot to the first
+   reach of it. A blitter or unknown row has no PC, so it stays a list row. Double-click
+   still only opens the source line.
+4. **Palette writes against a scanline clock.** Passed. `paltrace` records each palette write
+   where the hardware writes it (format `HPISTPAL 1`), with the vertical blank, the line, and
+   the position on that line. The same two writes landed on different lines at 50 Hz (512
+   cycles per line) and 60 Hz (508), because the position is the shifter's own line clock and
+   not a frame-cycle count divided by 512. PiST's Palette dock Trace button runs `paltrace
+   on`, and the list reads the file at each later stop. A row opens that instruction's
+   source line when the program map knows it. The list does not move the machine, and it
+   is not a scanline inspector. The profiler overlay is not that stream. The media channel's frames
+   are RGB, and `info video` does not carry the palette.
 
-Applying a patch stays closed until the preview has been wrong in public at least once, and
-then only for one same-length range, while stopped, with a read-back, and only when the
-preview said the section size matched. "Take snapshot and apply" waits on gate 2. Until
-then the recovery path is restart. Same length does not prove absolute references survived.
+**Reverse Step**, **Reverse Continue**, and **Run Back to Cursor** are in (§6). PiST
+snapshots each stop and restores the previous one. When more than that instruction ran,
+it continues to the first reach of the program counter history lists. The proof is the
+three-instruction loop in §6. Keys pressed after the restored stop are replayed: the
+session runs `replaylog`, and the seek runs `replaykeys` on that file before `reststop`.
+A log with input lines and no trace line is accepted; a recording that has a trace and
+no frame count is still refused. PiST does not call `replayrecord` or `replayplay`.
+The saved-stop list is still the user's own snapshots, eight of them. Run ▸ Recorded
+Stops lists the automatic snapshots (thirty-two at most) and shows one's registers,
+disassembly, and any memory, stack, and screen captured at that stop, without moving
+the machine. The Timeline dock lists those stops and the instructions still in
+Hatari's history ring (64). It is not a log of every instruction, exception, frame,
+or watchpoint.
+Restore Recorded Stop runs `reststop` on the one on screen, and the later snapshots stay
+listed. Stepping or continuing from a stop that already has a later one asks first, then
+records the new run as a branch and leaves the other run in Recorded Stops, so that stop
+can be restored again. Stock Hatari has no `replaylog`; that build skips the key proof
+and the reverses still restore the machine.
+
+Still not built:
+
+- **One traced range, and the first reach.** `readtrace` records CPU data reads in one
+  range (format `HPISTREAD 1`). Instruction fetches are not reads. The Reads list's
+  Previous Read returns to that instruction the same way Previous Write does: the
+  recorded stop already taken at that PC, or the first reach of it after the previous
+  snapshot. Right-clicking D0–A7 and choosing where it came from uses the history
+  ring's disassembly, the last instruction whose destination is that register, then
+  the same return. An `exg` that writes both registers is named by its last operand
+  only. The Palette list stays the forward-only view of gate 4. Interrupts, video-base
+  changes, the blitter, and a known-good frame are not these lists.
+- **Applying a patch** stays closed until the preview has been wrong in public at least once,
+  and then only for one same-length range, while stopped, with a read-back, and only when the
+  preview said the section size matched. Gate 2 has passed, so a snapshot to roll back to is
+  available. Until a preview has been wrong in public, the recovery path is still restart.
+  Same length does not prove absolute references survived.

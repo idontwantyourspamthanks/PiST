@@ -63,6 +63,10 @@
 #include "ui/AboutDialog.h"
 #include "ui/MemoryView.h"
 #include "ui/PcHistoryView.h"
+#include "ui/WriteTraceView.h"
+#include "ui/ReadTraceView.h"
+#include "ui/TimelineView.h"
+#include "ui/PalTraceView.h"
 #include "ui/HardwareView.h"
 #include "ui/SettingsDialog.h"
 #include "ui/SetupDialog.h"
@@ -130,6 +134,10 @@ bool isDebugDockName(const QString &name)
         || name == QLatin1String("stackDock")
         || name == QLatin1String("hardwareDock")
         || name == QLatin1String("pcHistoryDock")
+        || name == QLatin1String("writeTraceDock")
+        || name == QLatin1String("readTraceDock")
+        || name == QLatin1String("timelineDock")
+        || name == QLatin1String("paletteDock")
         || name == QLatin1String("breakpointsDock")
         || name == QLatin1String("instructionRefDock")
         || name == QLatin1String("symbolsDock")
@@ -377,6 +385,52 @@ void MainWindow::createActions()
     m_actStepOut->setEnabled(false);
     connect(m_actStepOut, &QAction::triggered, this, &MainWindow::stepOut);
 
+    m_actSaveStop = new QAction(tr("Save Stop"), this);
+    m_actSaveStop->setObjectName(QStringLiteral("saveStopAction"));
+    m_actSaveStop->setEnabled(false);
+    m_actSaveStop->setToolTip(tr("Remember this stopped machine. Restore Stop returns to it."));
+    connect(m_actSaveStop, &QAction::triggered, this, &MainWindow::saveStop);
+
+    m_actRestoreStop = new QAction(tr("Restore Stop"), this);
+    m_actRestoreStop->setObjectName(QStringLiteral("restoreStopAction"));
+    m_actRestoreStop->setEnabled(false);
+    m_actRestoreStop->setToolTip(
+        tr("Return to the machine Save Stop remembered, still stopped on that instruction."));
+    connect(m_actRestoreStop, &QAction::triggered, this, &MainWindow::restoreStop);
+
+    m_actReverseStep = new QAction(tr("Re&verse Step"), this);
+    m_actReverseStep->setObjectName(QStringLiteral("reverseStepAction"));
+    m_actReverseStep->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F10));
+    m_actReverseStep->setEnabled(false);
+    m_actReverseStep->setToolTip(
+        tr("Stop on the instruction that just executed, before it runs. "
+           "A continue that ran that instruction more than once stops the first time."));
+    connect(m_actReverseStep, &QAction::triggered, this, &MainWindow::reverseStep);
+
+    m_actReverseContinue = new QAction(tr("Reverse &Continue"), this);
+    m_actReverseContinue->setObjectName(QStringLiteral("reverseContinueAction"));
+    m_actReverseContinue->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F9));
+    m_actReverseContinue->setEnabled(false);
+    m_actReverseContinue->setToolTip(
+        tr("Return to the previous stop that was not a single step."));
+    connect(m_actReverseContinue, &QAction::triggered, this, &MainWindow::reverseContinue);
+
+    m_actRunBack = new QAction(tr("Run &Back to Cursor"), this);
+    m_actRunBack->setObjectName(QStringLiteral("runBackToCursorAction"));
+    m_actRunBack->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F10));
+    m_actRunBack->setEnabled(false);
+    m_actRunBack->setToolTip(
+        tr("Return to the cursor line. A line reached more than once since the "
+           "previous stop stops at the first time."));
+    connect(m_actRunBack, &QAction::triggered, this, &MainWindow::runBackToCursor);
+
+    m_actRestoreRecorded = new QAction(tr("Restore &Recorded Stop"), this);
+    m_actRestoreRecorded->setObjectName(QStringLiteral("restoreRecordedStopAction"));
+    m_actRestoreRecorded->setEnabled(false);
+    m_actRestoreRecorded->setToolTip(
+        tr("Return the machine to the recorded stop on screen. Later stops stay listed."));
+    connect(m_actRestoreRecorded, &QAction::triggered, this, &MainWindow::restoreRecordedStop);
+
     m_actRunToCursor = new QAction(tr("Run to &Cursor"), this);
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actRunToCursor->setEnabled(false);
@@ -543,6 +597,20 @@ void MainWindow::createMenus()
     runMenu->addAction(m_actStep);
     runMenu->addAction(m_actStepOver);
     runMenu->addAction(m_actStepOut);
+    runMenu->addAction(m_actReverseStep);
+    runMenu->addAction(m_actReverseContinue);
+    runMenu->addAction(m_actRunBack);
+    m_recordedStopsMenu = new QMenu(tr("Recorded Stops"), this);
+    m_recordedStopsMenu->setObjectName(QStringLiteral("recordedStopsMenu"));
+    m_recordedStopsMenu->setEnabled(false);
+    runMenu->addMenu(m_recordedStopsMenu);
+    runMenu->addAction(m_actRestoreRecorded);
+    runMenu->addAction(m_actSaveStop);
+    runMenu->addAction(m_actRestoreStop);
+    m_savedStopsMenu = new QMenu(tr("Saved Stops"), this);
+    m_savedStopsMenu->setObjectName(QStringLiteral("savedStopsMenu"));
+    m_savedStopsMenu->setEnabled(false);
+    runMenu->addMenu(m_savedStopsMenu);
     runMenu->addAction(m_actRunToCursor);
     // Next to Run to Cursor: both are about where the caret is relative to the
     // executing program, one of them for a single stop and one for the session.
@@ -908,6 +976,10 @@ void MainWindow::buildPanels()
     m_breakpointPanel = new BreakpointPanel(this);
 
     m_pcHistory = new PcHistoryView(this);
+    m_writeTrace = new WriteTraceView(this);
+    m_readTrace = new ReadTraceView(this);
+    m_timeline = new TimelineView(this);
+    m_palTrace = new PalTraceView(this);
     m_instrRef = new InstructionRefView(this);
     m_symbolsView = new SymbolsView(this);
     debugTabs << makeDock(tr("Registers"), QStringLiteral("registersDock"), m_registers)
@@ -915,6 +987,13 @@ void MainWindow::buildPanels()
               << makeDock(tr("Stack"), QStringLiteral("stackDock"), m_stack)
               << makeDock(tr("Hardware"), QStringLiteral("hardwareDock"), m_hardware)
               << makeDock(tr("PC history"), QStringLiteral("pcHistoryDock"), m_pcHistory)
+              << makeDock(tr("Timeline"), QStringLiteral("timelineDock"), m_timeline)
+              << (m_writeTraceDock = makeDock(tr("Writes"), QStringLiteral("writeTraceDock"),
+                                              m_writeTrace))
+              << (m_readTraceDock = makeDock(tr("Reads"), QStringLiteral("readTraceDock"),
+                                             m_readTrace))
+              << (m_palTraceDock = makeDock(tr("Palette"), QStringLiteral("paletteDock"),
+                                            m_palTrace))
               << makeDock(tr("Breakpoints"), QStringLiteral("breakpointsDock"), m_breakpointPanel)
               << makeDock(tr("Instructions"), QStringLiteral("instructionRefDock"), m_instrRef)
               << makeDock(tr("Symbols"), QStringLiteral("symbolsDock"), m_symbolsView)
@@ -1111,6 +1190,42 @@ void MainWindow::wirePanels()
                 if (!openMappedSource(address))
                     openMemory(address);
             });
+    // A write row opens the writer's source line. It does not restore the
+    // machine: the list is a record of stores, and the bytes on screen now
+    // are the live ones. A blitter or unknown store has no PC, so it opens
+    // the address that was written.
+    connect(m_writeTrace, &WriteTraceView::eventActivated, this,
+            [openMappedSource, openMemory](quint32 pc, bool hasPc, quint32 address) {
+                if (hasPc && openMappedSource(pc))
+                    return;
+                openMemory(hasPc ? pc : address);
+            });
+    connect(m_writeTrace, &WriteTraceView::previousWriteRequested, this, &MainWindow::previousWrite);
+    connect(m_readTrace, &ReadTraceView::eventActivated, this,
+            [openMappedSource, openMemory](quint32 pc, quint32 address) {
+                if (openMappedSource(pc))
+                    return;
+                openMemory(address);
+            });
+    connect(m_readTrace, &ReadTraceView::previousReadRequested, this, &MainWindow::previousRead);
+    connect(m_timeline, &TimelineView::stopActivated, this, &MainWindow::showRecordedStop);
+    connect(m_timeline, &TimelineView::instructionActivated, this, &MainWindow::previousWrite);
+    connect(m_registers, &RegistersView::registerExplainRequested, this,
+            &MainWindow::explainRegister);
+    // A palette row opens the writer's source line. The line and position in
+    // the list were taken when the color was stored; opening the row does not
+    // move the machine back there.
+    connect(m_palTrace, &PalTraceView::eventActivated, this,
+            [openMappedSource, openMemory](quint32 pc) {
+                if (!openMappedSource(pc))
+                    openMemory(pc);
+            });
+    connect(m_palTrace, &PalTraceView::traceToggled, this, [this](bool on) {
+        if (on)
+            tracePalette();
+        else
+            stopPaletteTrace();
+    });
     connect(m_hardware, &HardwareView::subjectChanged, this,
             [this](const QString &subject) {
                 if (m_host->isRunning())
@@ -1192,6 +1307,10 @@ void MainWindow::buildViewMenu()
             QStringLiteral("stackDock"),
             QStringLiteral("hardwareDock"),
             QStringLiteral("pcHistoryDock"),
+            QStringLiteral("writeTraceDock"),
+            QStringLiteral("readTraceDock"),
+            QStringLiteral("timelineDock"),
+            QStringLiteral("paletteDock"),
             QStringLiteral("breakpointsDock"),
             QStringLiteral("instructionRefDock"),
             QStringLiteral("symbolsDock"),
@@ -1264,6 +1383,24 @@ void MainWindow::addMemoryPane(quint32 initialAddress)
     connect(view, &MemoryView::memoryEdited, this,
             [this, view](quint32 address, quint32 value) { setMemoryByte(address, value, view); });
     connect(view, &MemoryView::addPaneRequested, this, [this] { addMemoryPane(); });
+    connect(view, &MemoryView::traceWritesRequested, this,
+            [this, view](quint32 address, int length) {
+                for (MemoryView *other : m_memoryPanes) {
+                    if (other != view)
+                        other->setTraceArmed(false);
+                }
+                traceWrites(address, length);
+            });
+    connect(view, &MemoryView::traceWritesStopRequested, this, [this] { stopWriteTrace(); });
+    connect(view, &MemoryView::traceReadsRequested, this,
+            [this, view](quint32 address, int length) {
+                for (MemoryView *other : m_memoryPanes) {
+                    if (other != view)
+                        other->setReadTraceArmed(false);
+                }
+                traceReads(address, length);
+            });
+    connect(view, &MemoryView::traceReadsStopRequested, this, [this] { stopReadTrace(); });
 
     // Later panes tab onto the base memory dock.
     if (!first)
@@ -1485,6 +1622,12 @@ void MainWindow::applyShortcutScheme()
     const bool common = appearance::shortcutScheme() == QLatin1String("common");
     m_actBuild->setShortcut(QKeySequence(Qt::Key_F7));
     m_actStepOut->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F11));
+    if (m_actReverseStep)
+        m_actReverseStep->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F10));
+    if (m_actReverseContinue)
+        m_actReverseContinue->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F9));
+    if (m_actRunBack)
+        m_actRunBack->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F10));
     m_actRunToCursor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F10));
     m_actClearBreakpoints->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F9));
     if (common) {
@@ -1695,14 +1838,27 @@ void MainWindow::updateCaretChip()
 
 void MainWindow::updateRegisterStrip()
 {
+    if (m_historyIndex >= 0 && m_historyIndex < m_savedStops.size()) {
+        paintRegisterStrip(m_savedStops.at(m_historyIndex).state, true);
+        return;
+    }
+    if (m_reverseViewIndex >= 0 && m_reverseViewIndex < m_reverseAnchors.size()) {
+        paintRegisterStrip(m_reverseAnchors.at(m_reverseViewIndex).state, true);
+        return;
+    }
+    paintRegisterStrip(m_lastState, false);
+}
+
+void MainWindow::paintRegisterStrip(const MachineState &state, bool history)
+{
     if (!m_registerStrip)
         return;
     const bool show = m_host && m_host->isRunning() && m_host->isStopped()
-                      && m_lastState.regs.valid;
+                      && state.regs.valid;
     m_registerStrip->setVisible(show);
     if (!show)
         return;
-    const Registers &r = m_lastState.regs;
+    const Registers &r = state.regs;
     auto word = [](quint32 value) {
         return hex::hex32(value);
     };
@@ -1719,9 +1875,11 @@ void MainWindow::updateRegisterStrip()
                               .arg(mark(r.flagZ))
                               .arg(mark(r.flagV))
                               .arg(mark(r.flagC));
-    const QString text = data.trimmed() + QLatin1Char('\n')
-                       + addr.trimmed()
-                       + QStringLiteral("   PC %1  %2").arg(word(m_lastState.pc), flags);
+    QString text = data.trimmed() + QLatin1Char('\n')
+                 + addr.trimmed()
+                 + QStringLiteral("   PC %1  %2").arg(word(state.pc), flags);
+    if (history)
+        text = tr("History") + QLatin1Char('\n') + text;
     m_registerStrip->setText(text);
     m_registerStrip->setToolTip(text);
 }

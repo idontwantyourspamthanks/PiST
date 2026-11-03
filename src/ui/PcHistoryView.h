@@ -31,6 +31,15 @@ public slots:
     /// Clear the view (no session).
     void clear();
 
+    /// The text on screen, oldest instruction first.
+    QString text() const;
+
+    /// The program counter of the instruction that executed most recently.
+    /// History lists oldest first, and the stop on screen has not executed, so
+    /// this is the line above a trailing debugger mark. False when the pane
+    /// has no instruction yet.
+    bool lastExecutedAddress(quint32 *address) const;
+
 signals:
     /// A line was double-clicked. The host opens the source line when the
     /// program map knows it, and otherwise opens that address in memory.

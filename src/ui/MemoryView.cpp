@@ -79,6 +79,36 @@ MemoryView::MemoryView(QWidget *parent)
     connect(m_save, &QPushButton::clicked, this, [this] { emit saveBytesRequested(currentAddress()); });
     controls->addWidget(m_save);
 
+    m_trace = new QToolButton(this);
+    m_trace->setObjectName(QStringLiteral("memoryTraceButton"));
+    m_trace->setText(tr("Trace"));
+    m_trace->setToolTip(tr("Record who writes the bytes in this window. "
+                           "The list fills at each stop and does not stop the machine."));
+    m_trace->setCheckable(true);
+    m_trace->setAutoRaise(true);
+    connect(m_trace, &QToolButton::toggled, this, [this](bool on) {
+        if (on)
+            emit traceWritesRequested(currentAddress(), kRowBytes * kRows);
+        else
+            emit traceWritesStopRequested();
+    });
+    controls->addWidget(m_trace);
+
+    m_readTrace = new QToolButton(this);
+    m_readTrace->setObjectName(QStringLiteral("memoryReadTraceButton"));
+    m_readTrace->setText(tr("Reads"));
+    m_readTrace->setToolTip(tr("Record who reads the bytes in this window. "
+                               "The list fills at each stop and does not stop the machine."));
+    m_readTrace->setCheckable(true);
+    m_readTrace->setAutoRaise(true);
+    connect(m_readTrace, &QToolButton::toggled, this, [this](bool on) {
+        if (on)
+            emit traceReadsRequested(currentAddress(), kRowBytes * kRows);
+        else
+            emit traceReadsStopRequested();
+    });
+    controls->addWidget(m_readTrace);
+
     controls->addStretch(1);
 
     // Open another memory pane, so two regions can be watched at once.
@@ -114,6 +144,34 @@ MemoryView::MemoryView(QWidget *parent)
     connect(m_addressEdit, &QLineEdit::returnPressed, this, &MemoryView::onAddressEntered);
     connect(m_table, &QTableWidget::cellDoubleClicked, this, &MemoryView::onCellDoubleClicked);
     connect(m_table, &QTableWidget::itemChanged, this, &MemoryView::onByteEdited);
+}
+
+void MemoryView::setTraceArmed(bool armed)
+{
+    if (!m_trace)
+        return;
+    const QSignalBlocker blocker(m_trace);
+    m_trace->setChecked(armed);
+}
+
+void MemoryView::setReadTraceArmed(bool armed)
+{
+    if (!m_readTrace)
+        return;
+    const QSignalBlocker blocker(m_readTrace);
+    m_readTrace->setChecked(armed);
+}
+
+void MemoryView::showCaptured(const QList<MemoryRow> &rows)
+{
+    if (rows.isEmpty())
+        return;
+    m_pendingEdit = false;
+    m_staleDumps = 0;
+    const quint32 address = rows.first().address;
+    m_base = address - (address % kRowBytes);
+    m_addressEdit->setText(hex::hex32(m_base));
+    paintDump(rows, false);
 }
 
 quint32 MemoryView::currentAddress() const

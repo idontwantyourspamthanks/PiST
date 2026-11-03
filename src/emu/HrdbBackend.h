@@ -232,6 +232,9 @@ private:
     /// Between process start and the socket handshake: commands queue up and
     /// dispatch once the listener accepts us.
     bool m_ready = false;
+    /// One socket-error line per session. A refused connect retries, and the
+    /// error would otherwise be logged on every attempt.
+    bool m_loggedConnectError = false;
 };
 
 } // namespace pist

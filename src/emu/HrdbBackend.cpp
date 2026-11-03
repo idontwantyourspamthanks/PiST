@@ -12,6 +12,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QNetworkProxy>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QTcpSocket>
@@ -137,6 +138,7 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
     m_state = MachineState();
     m_stopped = false;
     m_ready = false;
+    m_loggedConnectError = false;
     m_queue.clear();
     m_haveCurrent = false;
     m_owedReply = false;
@@ -256,7 +258,16 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
     }
 
     m_socket = new QTcpSocket(this);
+    // A system proxy must not sit on this loopback channel. On macOS that
+    // proxy completes the TCP connect and then drops it.
+    m_socket->setProxy(QNetworkProxy::NoProxy);
     connect(m_socket, &QTcpSocket::readyRead, this, &HrdbBackend::onSocketData);
+    connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        if (m_ready || m_loggedConnectError || !m_socket)
+            return;
+        m_loggedConnectError = true;
+        emit logLine(tr("Remote-debug connect: %1").arg(m_socket->errorString()));
+    });
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
         if (!isRunning())
             return;
@@ -279,35 +290,22 @@ bool HrdbBackend::start(const SessionConfig &config, QString *error)
             emit commandFinished(command, QString());
         }
 
-        // Give the exit notification its chance before saying anything about
-        // the cause: a child that died pre-handshake looks exactly like a cut
-        // connection (!m_ready, no handshake), and only the exit line names
-        // that — the disconnect must not contradict it. A child that is
-        // still alive fails this wait at once; stop() below kills it, as
-        // before.
-        m_process->waitForFinished(300);
-        const bool childAlive = m_process->state() != QProcess::NotRunning;
+        // Give an already-queued exit its chance to land. waitForFinished(0)
+        // does not block: a live Hatari returns at once, and a child that
+        // has already exited is NotRunning afterwards.
+        m_process->waitForFinished(0);
+        if (!m_ready && m_process->state() != QProcess::NotRunning) {
+            // Hatari accepts on its IKBD tick, which is after TOS has started
+            // running. A connect made before that tick is refused or reset,
+            // and on macOS that reset is delivered as disconnected(). Ending
+            // the session there kills Hatari before it ever accepts. The
+            // retry timer connects again; the handshake watchdog is the
+            // deadline if the listener never answers.
+            m_buffer.clear();
+            return;
+        }
 
-        const bool beforeHandshake = !m_ready && childAlive;
-        if (beforeHandshake) {
-            // The TCP connect succeeded (the kernel completes it against a
-            // listening socket before the fork ever accept()s) but no
-            // handshake ever arrived while the emulator kept booting. With
-            // the process alive that is not a transport fault and not the
-            // fork's either: something between the two processes closed the
-            // accepted connection — endpoint/filtering software that hooks
-            // the network stack, including loopback, is the known shape of
-            // this on managed machines. Name what was observed, not a
-            // prescription: the fix depends on which software it is.
-            emit errorOccurred(tr(
-                "The debug connection was cut before the handshake: the "
-                "emulator connected, then something closed it while the "
-                "emulator kept running. This is not the emulator dying or "
-                "a PiST fault — a firewall or endpoint agent filtering "
-                "loopback connections is the usual cause on managed "
-                "machines."));
-            emit logLine(tr("Remote-debug socket closed before the handshake."));
-        } else if (!m_ready) {
+        if (!m_ready) {
             // The child died before the handshake: its finished handler,
             // already connected above, has now run during the wait and
             // logged how it ended. Still surface the failure as an error —

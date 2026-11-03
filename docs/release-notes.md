@@ -16,30 +16,30 @@ the archives, not a past version.
 
 PiST — an IDE for Atari ST assembly development.
 
-## What's new in 0.10.6
+## What's new in 0.11.0
 
-### Fixed
-
-- **macOS: a failing emulator no longer hangs the app.** SDL's default
-  assertion handler on macOS is a modal dialog; inside a background emulator
-  nobody could see it, so a probe or session just blocked forever. Capability
-  probes now run with no SDL window and `SDL_ASSERT=abort`, sessions set
-  `SDL_ASSERT=abort`, and media sessions (which have no SDL window of their
-  own) use the dummy video driver — a failure is reported, not waited on.
-- **A crashed emulator is reported with the right number.** On Unix the
-  message said "killed by signal -11" instead of signal 11; on Windows the
-  exit code is a crash code, not a signal, and now says so.
-- **Stop-hook scripts could swallow an error budget.** `pcall`/`xpcall`
-  and Lua's `longjmp` paths no longer escape the runaway-script budget.
-
-### Improved
-
-- **MainWindow is split** into focused translation units (chrome, documents,
-  image, project, build/run, debug, reference) — no behaviour change, faster
-  compiles, easier navigation.
-- **Hook and demo trust tightened.** Demo provenance is recorded and
-  source-checkout demos are trusted; refused hook settings are preserved
-  rather than silently dropped.
+- Compare the built program with the previous build.
+- Mark bytes in a memory pane and compare them with a later stop, or with the previous stop.
+- Export sprites from the build.
+- Open a binary as a hex listing.
+- Extract sprites and samples from a file or the stopped machine, and play a sample.
+- Disassemble a TOS program from its entry point.
+- Store names, comments, and code or data ranges in a notes file beside the program.
+- Mark the stopped instruction on that listing.
+- Record which addresses ran.
+- Export the listing as source vasm can assemble.
+- Run the program open in the analysis tab and follow the stop.
+- Save a stopped machine and restore it on that instruction.
+- Keep a short list of saved stops.
+- Trace writes in a memory window and list who stored each byte.
+- Trace reads in a memory window and list who loaded each byte.
+- Trace palette writes and list the scanline.
+- Step back one instruction, continue back to an earlier stop, or run back to the cursor line, replaying keys pressed after that stop.
+- Recorded stops stay listed when one is restored or when a new run branches off an earlier stop.
+- Previous Write and Previous Read return to the instruction that stored or loaded the byte.
+- Right-click a data or address register to return to the instruction that last wrote it.
+- A recorded stop shows its disassembly, and the memory, stack, and screen captured then.
+- A timeline lists the recorded stops and the recent instructions.
 
 ### Linux
 
